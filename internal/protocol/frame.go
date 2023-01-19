@@ -3,26 +3,25 @@ package protocol
 import (
 	"bytes"
 	"io"
-)
 
-// 标识位[2] + 消息头[21] + 消息体[1023 * 2(转义预留)]  + 校验码[1] + 标识位[2]
-const MAX_FRAME_LEN = 2 + 21 + 1023*2 + 1 + 2
+	"github.com/fakeYanss/jt808-server-go/pkg/model"
+)
 
 type FramePayload []byte
 
-type FrameCodec interface {
+type FrameHandler interface {
 	Write(io.Writer, FramePayload) error  // data -> frame，并写入io.Writer
 	Read(io.Reader) (FramePayload, error) // 从io.Reader中提取frame payload，并返回给上层
 }
 
-type JT808FrameCodec struct {
+type JT808FrameHandler struct {
 }
 
-func NewJT808FrameCodec() *JT808FrameCodec {
-	return &JT808FrameCodec{}
+func NewJT808FrameHandler() *JT808FrameHandler {
+	return &JT808FrameHandler{}
 }
 
-func (pc *JT808FrameCodec) Write(w io.Writer, payload FramePayload) error {
+func (fh *JT808FrameHandler) Write(w io.Writer, payload FramePayload) error {
 	var p = payload
 	for {
 		n, err := w.Write([]byte(p))
@@ -39,8 +38,8 @@ func (pc *JT808FrameCodec) Write(w io.Writer, payload FramePayload) error {
 	return nil
 }
 
-func (pc *JT808FrameCodec) Read(r io.Reader) (FramePayload, error) {
-	buf := make([]byte, MAX_FRAME_LEN)
+func (fh *JT808FrameHandler) Read(r io.Reader) (FramePayload, error) {
+	buf := make([]byte, model.MaxFrameLen)
 	_, err := r.Read(buf)
 	if err != nil {
 		return nil, err

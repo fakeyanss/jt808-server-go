@@ -2,13 +2,13 @@ package server
 
 import (
 	"bufio"
+	"encoding/json"
 	"io"
 	"net"
 	"sync"
 	"time"
 
 	"github.com/fakeYanss/jt808-server-go/internal/protocol"
-	"github.com/google/uuid"
 	"github.com/rs/zerolog/log"
 )
 
@@ -71,8 +71,9 @@ func (serv *TcpServer) monitorSessionCnt() {
 }
 
 func (serv *TcpServer) accept(conn net.Conn) *session {
+	remoteAddr := conn.RemoteAddr().String()
 	log.Debug().
-		Str("remote_addr", conn.RemoteAddr().String()).
+		Str("remote_addr", remoteAddr).
 		Int("total_session_cnt", len(serv.sessions)+1).
 		Msg("Accepting connection from remtote")
 
@@ -81,7 +82,7 @@ func (serv *TcpServer) accept(conn net.Conn) *session {
 
 	session := &session{
 		conn:   conn,
-		id:     uuid.NewString(),
+		id:     remoteAddr, // using remote addr default
 		writer: struct{}{},
 	}
 
@@ -103,30 +104,55 @@ func (serv *TcpServer) remove(session *session) {
 func (serv *TcpServer) serve(session *session) {
 	defer serv.remove(session)
 
-	frameCodec := protocol.NewJT808FrameCodec()
+	frameCodec := protocol.NewJT808FrameHandler()
+	packetCodec := protocol.NewJT808PacketCodec()
 	rbuf := bufio.NewReader(session.conn)
 
 	for {
-		// read from the connection and decode the packet
-		packetPayload, err := frameCodec.Read(rbuf)
+		// read from the connection and decode the frame
+		framePayload, err := frameCodec.Read(rbuf)
+
+		if err == io.EOF {
+			break // close connection when EOF
+		}
+
 		if err != nil && err != io.EOF {
 			log.Error().
 				Err(err).
 				Str("session", session.id).
-				Msg("Failed to decode packet")
+				Msg("Failed to decode frame")
+			continue
+		}
+
+		if len(framePayload) == 0 {
 			continue
 		}
 
 		log.Debug().
 			Str("session", session.id).
-			Int("packet_len", len(packetPayload)).
-			Bytes("packet_content", packetPayload).
-			Msg("Received packet")
+			Int("frame_len", len(framePayload)).
+			Hex("frame_payload", framePayload). // for debug
+			Msg("Received frame")
+
+		jtmsg, err := packetCodec.Decode(framePayload)
+		if err != nil {
+			log.Error().
+				Str("session", session.id).
+				Msg("Failed to decode packet")
+			continue
+		}
+
+		// handle jt808 msg
+		msgJson, _ := json.Marshal(jtmsg)
+		log.Debug().
+			Str("session", session.id).
+			RawJSON("msg", msgJson).
+			Msg("Handle jt808 msg")
 
 		ack := "OK\n"
 		err = frameCodec.Write(session.conn, []byte(ack))
 		if err != nil {
-			log.Error().Msg("Failed to encode packet")
+			log.Error().Msg("Failed to encode frame")
 			return
 		}
 
@@ -136,6 +162,7 @@ func (serv *TcpServer) serve(session *session) {
 	}
 }
 
-func (serv *TcpServer) Send(JTMsg interface{}) {
+// 发送消息到终端设备
+func (serv *TcpServer) Send(id string, JTMsg interface{}) {
 
 }
