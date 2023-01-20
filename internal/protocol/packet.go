@@ -3,7 +3,7 @@ package protocol
 import (
 	"fmt"
 
-	"github.com/fakeYanss/jt808-server-go/pkg/model"
+	"github.com/fakeYanss/jt808-server-go/internal/model"
 )
 
 type PacketCodec interface {
@@ -23,12 +23,15 @@ func NewJT808PacketCodec() *JT808PacketCodec {
 // 反转义 -> 校验 -> 反序列化
 func (pc *JT808PacketCodec) Decode(packet []byte) (model.JT808Msg, error) {
 	pkt := pc.unescape(packet)
-	err := pc.verify(pkt)
+	pkt, err := pc.verify(pkt)
 	if err != nil {
 		return nil, err
 	}
 	m := &model.Msg0100{}
-	m.Decode(pkt)
+	err = m.Decode(pkt)
+	if err != nil {
+		return nil, err
+	}
 
 	return m, nil
 }
@@ -36,13 +39,13 @@ func (pc *JT808PacketCodec) Decode(packet []byte) (model.JT808Msg, error) {
 // Encode JT808 packet.
 //
 // 序列化 -> 生成校验码 -> 转义
-func (pc *JT808PacketCodec) Encode(msg model.JT808Msg) ([]byte, error) {
+func (pc *JT808PacketCodec) Encode(cmd model.JT808Cmd) ([]byte, error) {
 	var pkt []byte
 	var err error
 
-	switch t := msg.(type) {
-	case *model.Msg0100:
-		pkt, err = msg.Encode()
+	switch t := cmd.(type) {
+	case *model.Cmd8100:
+		pkt, err = cmd.Encode()
 		if err != nil {
 			return nil, err
 		}
@@ -100,15 +103,19 @@ func (pc *JT808PacketCodec) escape(src []byte) []byte {
 	return dst
 }
 
-func (pc *JT808PacketCodec) verify(pkt []byte) error {
+// 消息体异或校验，并去掉校验码
+func (pc *JT808PacketCodec) verify(pkt []byte) ([]byte, error) {
 	n := len(pkt)
+	if n == 0 {
+		return nil, fmt.Errorf("EmptyPacketWhenVerify")
+	}
 	expected := int(pkt[n-1])
 	actual := 0
 	for _, v := range pkt[:n-1] {
 		actual ^= int(v)
 	}
 	if expected == actual {
-		return nil
+		return pkt[:n-1], nil
 	}
-	return fmt.Errorf("verify error, expect=%v, actual=%v", expected, actual)
+	return nil, fmt.Errorf("verify error, expect=%v, actual=%v", expected, actual)
 }

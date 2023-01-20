@@ -1,7 +1,6 @@
 package server
 
 import (
-	"bufio"
 	"encoding/json"
 	"io"
 	"net"
@@ -104,13 +103,12 @@ func (serv *TcpServer) remove(session *session) {
 func (serv *TcpServer) serve(session *session) {
 	defer serv.remove(session)
 
-	frameCodec := protocol.NewJT808FrameHandler()
+	frameHandler := protocol.NewJT808FrameHandler(session.conn)
 	packetCodec := protocol.NewJT808PacketCodec()
-	rbuf := bufio.NewReader(session.conn)
 
 	for {
 		// read from the connection and decode the frame
-		framePayload, err := frameCodec.Read(rbuf)
+		framePayload, err := frameHandler.Read()
 
 		if err == io.EOF {
 			break // close connection when EOF
@@ -134,6 +132,7 @@ func (serv *TcpServer) serve(session *session) {
 			Hex("frame_payload", framePayload). // for debug
 			Msg("Received frame")
 
+		// 按jt808协议解析消息
 		jtmsg, err := packetCodec.Decode(framePayload)
 		if err != nil {
 			log.Error().
@@ -149,13 +148,13 @@ func (serv *TcpServer) serve(session *session) {
 			RawJSON("msg", msgJson).
 			Msg("Handle jt808 msg")
 
+		// 回复消息
 		ack := "OK\n"
-		err = frameCodec.Write(session.conn, []byte(ack))
+		err = frameHandler.Write([]byte(ack))
 		if err != nil {
 			log.Error().Msg("Failed to encode frame")
 			return
 		}
-
 		if err == io.EOF {
 			break // close connection when EOF
 		}

@@ -2,7 +2,7 @@ package main
 
 import (
 	"github.com/fakeYanss/jt808-server-go/internal/server"
-	"github.com/fakeYanss/jt808-server-go/pkg/log"
+	"github.com/fakeYanss/jt808-server-go/pkg/logger"
 )
 
 const (
@@ -11,7 +11,7 @@ const (
 )
 
 func main() {
-	log.Init()
+	logger.Init()
 
 	serv := server.NewTcpServer()
 	serv.Listen(":" + TCPPort)
