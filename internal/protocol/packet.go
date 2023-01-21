@@ -2,7 +2,16 @@ package protocol
 
 import (
 	"fmt"
+
+	"github.com/fakeYanss/jt808-server-go/internal/protocol/model"
 )
+
+type JT808Msg = model.JT808Msg
+type JT808Cmd = model.JT808Cmd
+type Msg0100 = model.Msg0100
+
+type Packet struct {
+}
 
 type PacketCodec interface {
 	Decode([]byte) (JT808Msg, error)

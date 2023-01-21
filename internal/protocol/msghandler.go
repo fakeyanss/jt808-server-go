@@ -1,6 +1,12 @@
 package protocol
 
-import "fmt"
+import (
+	"fmt"
+
+	"github.com/fakeYanss/jt808-server-go/internal/protocol/model"
+)
+
+type Cmd8100 = model.Cmd8100
 
 type MsgHandler interface {
 	Handle(JT808Msg) (JT808Cmd, error)
@@ -34,7 +40,7 @@ func (h *JT808MsgHandler) genCmd8100(msg Msg0100) (JT808Cmd, error) {
 	cmd.Result = 0
 	cmd.AuthCode = "123"
 
-	cmd.JT808MsgHeader = msg.JT808MsgHeader
+	cmd.MsgHeader = msg.MsgHeader
 
 	return cmd, err
 }
