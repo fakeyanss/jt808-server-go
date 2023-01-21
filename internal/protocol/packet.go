@@ -2,13 +2,11 @@ package protocol
 
 import (
 	"fmt"
-
-	"github.com/fakeYanss/jt808-server-go/internal/model"
 )
 
 type PacketCodec interface {
-	Decode([]byte) (model.JT808Msg, error)
-	Encode(model.JT808Msg) ([]byte, error)
+	Decode([]byte) (JT808Msg, error)
+	Encode(JT808Msg) ([]byte, error)
 }
 
 type JT808PacketCodec struct {
@@ -21,13 +19,15 @@ func NewJT808PacketCodec() *JT808PacketCodec {
 // Decode JT808 packet.
 //
 // 反转义 -> 校验 -> 反序列化
-func (pc *JT808PacketCodec) Decode(packet []byte) (model.JT808Msg, error) {
+func (pc *JT808PacketCodec) Decode(packet []byte) (JT808Msg, error) {
 	pkt := pc.unescape(packet)
+
 	pkt, err := pc.verify(pkt)
 	if err != nil {
 		return nil, err
 	}
-	m := &model.Msg0100{}
+
+	m := &Msg0100{}
 	err = m.Decode(pkt)
 	if err != nil {
 		return nil, err
@@ -39,19 +39,16 @@ func (pc *JT808PacketCodec) Decode(packet []byte) (model.JT808Msg, error) {
 // Encode JT808 packet.
 //
 // 序列化 -> 生成校验码 -> 转义
-func (pc *JT808PacketCodec) Encode(cmd model.JT808Cmd) ([]byte, error) {
-	var pkt []byte
-	var err error
-
-	switch t := cmd.(type) {
-	case *model.Cmd8100:
-		pkt, err = cmd.Encode()
-		if err != nil {
-			return nil, err
-		}
-	default:
-		return nil, fmt.Errorf("unknown type [%s]", t) // todo: error定义
+func (pc *JT808PacketCodec) Encode(cmd JT808Cmd) ([]byte, error) {
+	pkt, err := cmd.Encode()
+	if err != nil {
+		return nil, err
 	}
+
+	pkt = pc.genVerifier(pkt)
+
+	pkt = pc.escape(pkt)
+
 	return pkt, nil
 }
 
@@ -109,13 +106,22 @@ func (pc *JT808PacketCodec) verify(pkt []byte) ([]byte, error) {
 	if n == 0 {
 		return nil, fmt.Errorf("EmptyPacketWhenVerify")
 	}
-	expected := int(pkt[n-1])
-	actual := 0
+	expected := pkt[n-1]
+	var actual byte
 	for _, v := range pkt[:n-1] {
-		actual ^= int(v)
+		actual ^= v
 	}
 	if expected == actual {
 		return pkt[:n-1], nil
 	}
 	return nil, fmt.Errorf("verify error, expect=%v, actual=%v", expected, actual)
+}
+
+func (pc *JT808PacketCodec) genVerifier(pkt []byte) []byte {
+	var code byte
+	for _, v := range pkt {
+		code ^= v
+	}
+	pkt = append(pkt, code)
+	return pkt
 }

@@ -1,4 +1,4 @@
-package model
+package protocol
 
 import (
 	"bytes"
@@ -91,7 +91,7 @@ func (h *JT808MsgHeader) Encode() ([]byte, error) {
 	pkt := make([]byte, 0)
 
 	// 消息id
-	id := []byte{}
+	id := make([]byte, 2)
 	binary.BigEndian.PutUint16(id, h.MsgID)
 	pkt = append(pkt, id...)
 
@@ -106,7 +106,7 @@ func (h *JT808MsgHeader) Encode() ([]byte, error) {
 	pkt = append(pkt, h.ProtocolVersion)
 
 	// 消息流水号
-	sn := []byte{}
+	sn := make([]byte, 2)
 	binary.BigEndian.PutUint16(sn, h.SerialNumber)
 	pkt = append(pkt, sn...)
 
@@ -168,15 +168,15 @@ func (a *JT808MsgBodyAttr) Encode() ([]byte, error) {
 	}
 	bitNum += uint16(a.Extra) << 15
 
-	pkt := make([]byte, 0)
+	pkt := make([]byte, 2)
 	binary.BigEndian.PutUint16(pkt, bitNum)
 	return pkt, nil
 }
 
 // 定义分包的封装项
 type JT808MsgFragmentation struct {
-	Total uint16 // 分包后的包总数
-	Index uint16 // 包序号，从1开始
+	Total uint16 `json:"total"` // 分包后的包总数
+	Index uint16 `json:"index"` // 包序号，从1开始
 }
 
 func (f *JT808MsgFragmentation) Decode(sub []byte) error {
@@ -188,11 +188,11 @@ func (f *JT808MsgFragmentation) Decode(sub []byte) error {
 func (f *JT808MsgFragmentation) Encode() ([]byte, error) {
 	pkt := make([]byte, 0)
 
-	tot := []byte{}
+	tot := make([]byte, 2)
 	binary.BigEndian.PutUint16(tot, f.Total)
 	pkt = append(pkt, tot...)
 
-	idx := []byte{}
+	idx := make([]byte, 2)
 	binary.BigEndian.PutUint16(idx, f.Index)
 	pkt = append(pkt, idx...)
 
@@ -296,7 +296,7 @@ type Cmd8100 struct {
 func (c *Cmd8100) Encode() ([]byte, error) {
 	pkt := make([]byte, 0)
 
-	asn := []byte{}
+	asn := make([]byte, 2)
 	binary.BigEndian.PutUint16(asn, c.AnswerSerialNumber)
 	pkt = append(pkt, asn...)
 

@@ -105,6 +105,7 @@ func (serv *TcpServer) serve(session *session) {
 
 	frameHandler := protocol.NewJT808FrameHandler(session.conn)
 	packetCodec := protocol.NewJT808PacketCodec()
+	msgHandler := protocol.NewJT808MsgHandler()
 
 	for {
 		// read from the connection and decode the frame
@@ -136,6 +137,7 @@ func (serv *TcpServer) serve(session *session) {
 		jtmsg, err := packetCodec.Decode(framePayload)
 		if err != nil {
 			log.Error().
+				Err(err).
 				Str("session", session.id).
 				Msg("Failed to decode packet")
 			continue
@@ -149,12 +151,21 @@ func (serv *TcpServer) serve(session *session) {
 			Msg("Handle jt808 msg")
 
 		// 回复消息
-		ack := "OK\n"
-		err = frameHandler.Write([]byte(ack))
+		jtcmd, err := msgHandler.Handle(jtmsg)
 		if err != nil {
-			log.Error().Msg("Failed to encode frame")
-			return
+			log.Error().
+				Err(err).
+				Str("session", session.id).
+				Msg("Failed to handle msg")
 		}
+		pkt, err := packetCodec.Encode(jtcmd)
+		if err != nil {
+			log.Error().
+				Err(err).
+				Str("session", session.id).
+				Msg("Failed to encode cmd")
+		}
+		frameHandler.Write(pkt)
 		if err == io.EOF {
 			break // close connection when EOF
 		}
@@ -162,6 +173,16 @@ func (serv *TcpServer) serve(session *session) {
 }
 
 // 发送消息到终端设备
-func (serv *TcpServer) Send(id string, JTMsg interface{}) {
-
+func (serv *TcpServer) Send(id string, cmd protocol.JT808Cmd) {
+	session := serv.sessions[id]
+	frameHandler := protocol.NewJT808FrameHandler(session.conn)
+	packet, err := cmd.Encode()
+	if err != nil {
+		log.Error().
+			Err(err).
+			Str("session", id).
+			Msg("Failed to send cmd")
+		return
+	}
+	frameHandler.Write(packet)
 }
