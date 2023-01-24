@@ -14,21 +14,38 @@ type Cmd8001 struct {
 	Result             uint8  `json:"result"`             // 结果，0成功/确认，1失败，2消息有误，3不支持
 }
 
-func (c *Cmd8001) Encode() ([]byte, error) {
-	return nil, nil
+func (c *Cmd8001) Encode() (pkt []byte, err error) {
+	asn := make([]byte, 2)
+	binary.BigEndian.PutUint16(asn, c.AnswerSerialNumber)
+	pkt = append(pkt, asn...)
+
+	amid := make([]byte, 2)
+	binary.BigEndian.PutUint16(amid, c.AnswerMessageID)
+	pkt = append(pkt, amid...)
+
+	pkt = append(pkt, c.Result)
+
+	c.BodyLength = uint16(len(pkt))
+
+	headerPkt, err := c.MsgHeader.Encode()
+	if err != nil {
+		return nil, err
+	}
+
+	pkt = append(headerPkt, pkt...)
+
+	return
 }
 
 // 终端注册应答消息
 type Cmd8100 struct {
 	MsgHeader
-	AnswerSerialNumber uint16 `json:"answerSerialNumber"`
-	Result             byte   `json:"result"`
-	AuthCode           string `json:"authCode"`
+	AnswerSerialNumber uint16 `json:"answerSerialNumber"` // 应答流水号，对应平台消息的流水号
+	Result             byte   `json:"result"`             // 结果，0成功，1车辆已被注册，2数据库中无此车辆，3此终端已被注册，4数据库中无此终端
+	AuthCode           string `json:"authCode"`           // 鉴权码
 }
 
-func (c *Cmd8100) Encode() ([]byte, error) {
-	pkt := make([]byte, 0)
-
+func (c *Cmd8100) Encode() (pkt []byte, err error) {
 	asn := make([]byte, 2)
 	binary.BigEndian.PutUint16(asn, c.AnswerSerialNumber)
 	pkt = append(pkt, asn...)
@@ -46,5 +63,5 @@ func (c *Cmd8100) Encode() ([]byte, error) {
 
 	pkt = append(headerPkt, pkt...)
 
-	return pkt, nil
+	return
 }

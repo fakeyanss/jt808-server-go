@@ -28,10 +28,10 @@ func NewJT808PacketCodec() *JT808PacketCodec {
 // Decode JT808 packet.
 //
 // 反转义 -> 校验 -> 反序列化
-func (pc *JT808PacketCodec) Decode(packet []byte) (*Packet, error) {
-	pkt := pc.unescape(packet)
+func (pc *JT808PacketCodec) Decode(payload []byte) (*Packet, error) {
+	pkt := pc.unescape(payload)
 
-	verifyCode := packet[len(packet)-1]
+	verifyCode := payload[len(payload)-1]
 	pkt, err := pc.verify(pkt)
 	if err != nil {
 		return nil, err
@@ -41,6 +41,11 @@ func (pc *JT808PacketCodec) Decode(packet []byte) (*Packet, error) {
 		Header:     &model.MsgHeader{},
 		Body:       pkt,
 		VerifyCode: verifyCode,
+	}
+
+	err = pd.Header.Decode(pkt)
+	if err != nil {
+		return nil, err
 	}
 
 	return pd, nil
@@ -57,9 +62,9 @@ func (pc *JT808PacketCodec) Encode(cmd model.JT808Cmd) ([]byte, error) {
 
 	pkt = pc.genVerifier(pkt)
 
-	pkt = pc.escape(pkt)
+	payload := pc.escape(pkt)
 
-	return pkt, nil
+	return payload, nil
 }
 
 // Unescape JT808 packet.

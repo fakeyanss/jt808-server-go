@@ -21,7 +21,7 @@ type FrameHandler interface {
 
 type JT808FrameHandler struct {
 	rbuf *bufio.Reader
-	// wbuf *bufio.Writer
+	// wbuf *bufio.Writer // 发送消息应该立即发出，不能使用缓存writer
 	writer io.Writer
 }
 
@@ -30,6 +30,18 @@ func NewJT808FrameHandler(conn net.Conn) *JT808FrameHandler {
 		rbuf:   bufio.NewReader(conn),
 		writer: conn,
 	}
+}
+
+func (fh *JT808FrameHandler) Recv() (FramePayload, error) {
+	buf := make([]byte, MaxFrameLen)
+	_, err := fh.rbuf.Read(buf)
+	if err != nil {
+		return nil, err
+	}
+	// 移除末尾多余的0
+	buf = bytes.TrimRight(buf, "\x00")
+
+	return FramePayload(buf), nil
 }
 
 func (fh *JT808FrameHandler) Send(payload FramePayload) error {
@@ -47,16 +59,4 @@ func (fh *JT808FrameHandler) Send(payload FramePayload) error {
 		}
 	}
 	return nil
-}
-
-func (fh *JT808FrameHandler) Recv() (FramePayload, error) {
-	buf := make([]byte, MaxFrameLen)
-	_, err := fh.rbuf.Read(buf)
-	if err != nil {
-		return nil, err
-	}
-	// 移除末尾多余的0
-	buf = bytes.TrimRight(buf, "\x00")
-
-	return FramePayload(buf), nil
 }

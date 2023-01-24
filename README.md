@@ -2,14 +2,37 @@
 
 实现 TCP 消息处理逻辑，实现双向通信。
 
+设计原则：
+
+这个项目实现之前，我在 github 比较了 5 个同类项目，有一些不同的实现。以 Java 语言的举例，基本是基于 Netty 包实现的数据读取和 JTT808 的协议封装，并依赖 Spring 提供一个 Web 操作入口。从我的角度来看，这些项目不能说做的不好，单从性能指标来讲甚至很突出，但是在代码可读性上一定是做的不够的。我猜测这可能囿于 Java 本身的设计模式，或者是模仿 Spring 切面编程实现的各种注解/拦截器，看起来是很美好，但是在代码可读性上带来了更多的困难。
+
+这个项目创建初衷，主要有这几点：
+- 作为我的 golang 项目实践，真正的考虑实际业务场景，让我更熟悉 golang 的编程模式
+- 我之前主要做 Web 开发，希望借此熟悉更底层 socket 编程
+- 给需要对接 JTT808 协议的开发者提供一个简明参考，**如果你觉得有帮助，请给一个 star 和 fork 吧**
+
+以此，jt808-server-go 的设计原则只有两点：
+- 逻辑简洁
+- 代码易读
+
+实现思路：
+
+1. FrameHandler 调用 TCP read，读取终端送达的字节流，在这里称作 FramePayload
+2. PacketCodec 将 FramePayload 解码成 PacketData
+3. MsgHandler 处理 PacketData，转换为 JT808Msg
+4. MsgHandler 处理 JT808Msg，生成响应消息 JT808Cmd，转为 PacketData
+5. PacketCodec 将 PacketData 编码成 FramePayload
+6. FrameHandler 调用 TCP write，将 FramePayload 发送给终端
+
 核心框架
 - [x] TCP 双向通信基础逻辑实现
-- [ ] codec 层实现
+- [x] codec 层实现
 
 终端管理类协议
 - [ ] 注销
-- [ ] 注册
-- [ ] 鉴权
+- [x] 注册
+- [x] 鉴权
+- [x] 心跳
 - [ ] 设置终端参数
 - [ ] 管理终端参数
 - [ ] 终端控制信息

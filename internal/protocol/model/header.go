@@ -31,7 +31,7 @@ type MsgHeader struct {
 	SerialNumber     uint16 `json:"serialNumber"`    // 消息流水号
 	MsgFragmentation        // 消息包封装项
 
-	idx int32 // 读取的packet下标ID
+	idx int32 `json:"-"` // 读取的packet下标ID
 }
 
 // 将[]byte解码成消息头结构体

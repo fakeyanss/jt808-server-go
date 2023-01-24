@@ -20,7 +20,10 @@ type Msg0001 struct {
 }
 
 func (m *Msg0001) Decode(pkt []byte) error {
-	m.MsgHeader.Decode(pkt)
+	err := m.MsgHeader.Decode(pkt)
+	if err != nil {
+		return err
+	}
 
 	idx := m.idx
 
@@ -37,6 +40,34 @@ func (m *Msg0001) Decode(pkt []byte) error {
 	return nil
 }
 
+// 终端心跳
+type Msg0002 struct {
+	MsgHeader
+	// 消息体为空
+}
+
+func (m *Msg0002) Decode(pkt []byte) error {
+	err := m.MsgHeader.Decode(pkt)
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+// 终端注销消息
+type Msg0003 struct {
+	MsgHeader
+	// 消息体为空
+}
+
+func (m *Msg0003) Decode(pkt []byte) error {
+	err := m.MsgHeader.Decode(pkt)
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
 // 终端注册消息
 type Msg0100 struct {
 	MsgHeader
@@ -50,7 +81,10 @@ type Msg0100 struct {
 }
 
 func (m *Msg0100) Decode(pkt []byte) error {
-	m.MsgHeader.Decode(pkt)
+	err := m.MsgHeader.Decode(pkt)
+	if err != nil {
+		return err
+	}
 
 	idx := m.idx
 
@@ -85,10 +119,41 @@ func (m *Msg0100) Decode(pkt []byte) error {
 	return nil
 }
 
-// 终端注销消息
-type Msg0003 struct {
-}
-
 // 终端鉴权消息
 type Msg0102 struct {
+	MsgHeader
+	AuthCode        string `json:"authCode"`        // 鉴权码
+	IMEI            string `json:"imei"`            // 终端IMEI
+	SoftwareVersion string `json:"softwareVersion"` // 软件版本号
+}
+
+func (m *Msg0102) Decode(pkt []byte) error {
+	err := m.MsgHeader.Decode(pkt)
+	if err != nil {
+		return err
+	}
+
+	idx := m.idx
+
+	// 鉴权码、IMEI、版本号，以0xFF分隔
+
+	ac := make([]byte, 0)
+	for ; idx < int32(len(pkt)) && pkt[idx] != 0xFF; idx++ {
+		ac = append(ac, pkt[idx])
+	}
+	m.AuthCode = string(ac)
+
+	idx++
+
+	imei := make([]byte, 0)
+	for ; idx < int32(len(pkt)) && pkt[idx] != 0xFF; idx++ {
+		imei = append(imei, pkt[idx])
+	}
+	m.IMEI = string(imei)
+
+	idx++
+
+	m.SoftwareVersion = string(pkt[idx:])
+
+	return nil
 }

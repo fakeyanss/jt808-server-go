@@ -157,16 +157,26 @@ func (serv *TcpServer) serve(session *session) {
 		log.Debug().
 			Str("session", session.id).
 			RawJSON("msg", msgJson).
-			Msg("Handle jt808 msg")
+			Msg("Received jt808 msg")
 
 		// 回复消息
 		jtcmd, err := msgHandler.ProcessMsg(jtmsg)
+		if jtcmd == nil { // 不需要回复
+			continue
+		}
 		if err != nil {
 			log.Error().
 				Err(err).
 				Str("session", session.id).
 				Msg("Failed to handle msg")
 		}
+
+		cmdJson, _ := json.Marshal(jtcmd)
+		log.Debug().
+			Str("session", session.id).
+			RawJSON("cmd", cmdJson).
+			Msg("Sent jt808 cmd")
+
 		pkt, err := packetCodec.Encode(jtcmd)
 		if err != nil {
 			log.Error().
