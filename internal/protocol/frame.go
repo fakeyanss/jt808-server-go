@@ -15,8 +15,8 @@ const (
 type FramePayload []byte
 
 type FrameHandler interface {
-	Write(FramePayload) error    // data -> frame，并写入io.Writer
-	Read() (FramePayload, error) // 从io.Reader中提取frame payload，并返回给上层
+	Recv(FramePayload) error     // data -> frame，并写入io.Writer
+	Send() (FramePayload, error) // 从io.Reader中提取frame payload，并返回给上层
 }
 
 type JT808FrameHandler struct {
@@ -32,7 +32,7 @@ func NewJT808FrameHandler(conn net.Conn) *JT808FrameHandler {
 	}
 }
 
-func (fh *JT808FrameHandler) Write(payload FramePayload) error {
+func (fh *JT808FrameHandler) Send(payload FramePayload) error {
 	var p = payload
 	for {
 		n, err := fh.writer.Write([]byte(p))
@@ -49,7 +49,7 @@ func (fh *JT808FrameHandler) Write(payload FramePayload) error {
 	return nil
 }
 
-func (fh *JT808FrameHandler) Read() (FramePayload, error) {
+func (fh *JT808FrameHandler) Recv() (FramePayload, error) {
 	buf := make([]byte, MaxFrameLen)
 	_, err := fh.rbuf.Read(buf)
 	if err != nil {

@@ -6,16 +6,16 @@ import (
 	"github.com/fakeYanss/jt808-server-go/internal/protocol/model"
 )
 
-type JT808Msg = model.JT808Msg
-type JT808Cmd = model.JT808Cmd
-type Msg0100 = model.Msg0100
-
+// 定义Packet Data
 type Packet struct {
+	Header     *model.MsgHeader // 消息头
+	Body       []byte           // 消息体
+	VerifyCode byte             // 校验码
 }
 
 type PacketCodec interface {
-	Decode([]byte) (JT808Msg, error)
-	Encode(JT808Msg) ([]byte, error)
+	Decode([]byte) (model.JT808Msg, error)
+	Encode(model.JT808Msg) ([]byte, error)
 }
 
 type JT808PacketCodec struct {
@@ -28,27 +28,28 @@ func NewJT808PacketCodec() *JT808PacketCodec {
 // Decode JT808 packet.
 //
 // 反转义 -> 校验 -> 反序列化
-func (pc *JT808PacketCodec) Decode(packet []byte) (JT808Msg, error) {
+func (pc *JT808PacketCodec) Decode(packet []byte) (*Packet, error) {
 	pkt := pc.unescape(packet)
 
+	verifyCode := packet[len(packet)-1]
 	pkt, err := pc.verify(pkt)
 	if err != nil {
 		return nil, err
 	}
 
-	m := &Msg0100{}
-	err = m.Decode(pkt)
-	if err != nil {
-		return nil, err
+	pd := &Packet{
+		Header:     &model.MsgHeader{},
+		Body:       pkt,
+		VerifyCode: verifyCode,
 	}
 
-	return m, nil
+	return pd, nil
 }
 
 // Encode JT808 packet.
 //
 // 序列化 -> 生成校验码 -> 转义
-func (pc *JT808PacketCodec) Encode(cmd JT808Cmd) ([]byte, error) {
+func (pc *JT808PacketCodec) Encode(cmd model.JT808Cmd) ([]byte, error) {
 	pkt, err := cmd.Encode()
 	if err != nil {
 		return nil, err
@@ -126,6 +127,7 @@ func (pc *JT808PacketCodec) verify(pkt []byte) ([]byte, error) {
 	return nil, fmt.Errorf("verify error, expect=%v, actual=%v", expected, actual)
 }
 
+// 生成校验码
 func (pc *JT808PacketCodec) genVerifier(pkt []byte) []byte {
 	var code byte
 	for _, v := range pkt {

@@ -38,7 +38,7 @@ type MsgHeader struct {
 func (h *MsgHeader) Decode(pkt []byte) error {
 	var idx int32
 
-	h.MsgID = binary.BigEndian.Uint16(pkt[:idx+2]) // 消息ID [0,2)位
+	h.MsgID = binary.BigEndian.Uint16(pkt[:idx+2]) // 消息id [0,2)位
 	idx += 2
 
 	err := h.MsgBodyAttr.Decode(pkt[idx : idx+2]) // 消息体属性 [2,4)位
@@ -78,28 +78,25 @@ func (h *MsgHeader) Decode(pkt []byte) error {
 func (h *MsgHeader) Encode() ([]byte, error) {
 	pkt := make([]byte, 0)
 
-	// 消息id
 	id := make([]byte, 2)
-	binary.BigEndian.PutUint16(id, h.MsgID)
+	binary.BigEndian.PutUint16(id, h.MsgID) // 消息id
 	pkt = append(pkt, id...)
 
-	// 消息体属性
-	bodyAttrPkt, err := h.MsgBodyAttr.Encode()
+	bodyAttrPkt, err := h.MsgBodyAttr.Encode() // 消息体属性
 	if err != nil {
 		return nil, err
 	}
 	pkt = append(pkt, bodyAttrPkt...)
 
-	// 协议版本号
-	pkt = append(pkt, h.ProtocolVersion)
+	pkt = append(pkt, h.ProtocolVersion) // 协议版本号
 
-	// 消息流水号
+	pkt = append(pkt, util.NumberStr2bcd(h.PhoneNumber)...) // 手机号
+
 	sn := make([]byte, 2)
-	binary.BigEndian.PutUint16(sn, h.SerialNumber)
+	binary.BigEndian.PutUint16(sn, h.SerialNumber) // 消息流水号
 	pkt = append(pkt, sn...)
 
-	// 消息包封装项
-	fragPkt, err := h.MsgFragmentation.Encode()
+	fragPkt, err := h.MsgFragmentation.Encode() // 消息包封装项
 	if err != nil {
 		return nil, err
 	}
@@ -146,15 +143,15 @@ func (a *MsgBodyAttr) Decode(sub []byte) error {
 func (a *MsgBodyAttr) Encode() ([]byte, error) {
 	var bitNum uint16
 
-	bitNum += a.BodyLength
-	bitNum += uint16(a.encryptionOriginal) << 10
+	bitNum += a.BodyLength                       // 消息体长度
+	bitNum += uint16(a.encryptionOriginal) << 10 // 加密方式
 	if a.PacketFragmented {
-		bitNum += 1 << 13
+		bitNum += 1 << 13 // 分包
 	}
 	if a.VersionSign {
-		bitNum += 1 << 14
+		bitNum += 1 << 14 // 版本标识
 	}
-	bitNum += uint16(a.Extra) << 15
+	bitNum += uint16(a.Extra) << 15 // 保留位
 
 	pkt := make([]byte, 2)
 	binary.BigEndian.PutUint16(pkt, bitNum)

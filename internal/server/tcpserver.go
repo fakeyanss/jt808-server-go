@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/fakeYanss/jt808-server-go/internal/protocol"
+	"github.com/fakeYanss/jt808-server-go/internal/protocol/model"
 	"github.com/rs/zerolog/log"
 )
 
@@ -109,18 +110,17 @@ func (serv *TcpServer) serve(session *session) {
 
 	for {
 		// read from the connection and decode the frame
-		framePayload, err := frameHandler.Read()
-
-		if err == io.EOF {
-			break // close connection when EOF
-		}
-
-		if err != nil && err != io.EOF {
-			log.Error().
-				Err(err).
-				Str("session", session.id).
-				Msg("Failed to decode frame")
-			continue
+		framePayload, err := frameHandler.Recv()
+		if err != nil {
+			if err == io.EOF {
+				break // close connection when EOF
+			} else {
+				log.Error().
+					Err(err).
+					Str("session", session.id).
+					Msg("Failed to read stream to framePayload, continue...")
+				continue
+			}
 		}
 
 		if len(framePayload) == 0 {
@@ -134,16 +134,25 @@ func (serv *TcpServer) serve(session *session) {
 			Msg("Received frame")
 
 		// 按jt808协议解析消息
-		jtmsg, err := packetCodec.Decode(framePayload)
+		packet, err := packetCodec.Decode(framePayload)
 		if err != nil {
 			log.Error().
 				Err(err).
 				Str("session", session.id).
-				Msg("Failed to decode packet")
+				Msg("Failed to decode packet from []byte to Packet, continue...")
 			continue
 		}
 
 		// handle jt808 msg
+		jtmsg, err := msgHandler.ProcessPacket(packet)
+		if err != nil {
+			log.Error().
+				Err(err).
+				Str("session", session.id).
+				Msg("Failed to handle packet to JT808Msg, continue...")
+			continue
+		}
+
 		msgJson, _ := json.Marshal(jtmsg)
 		log.Debug().
 			Str("session", session.id).
@@ -151,7 +160,7 @@ func (serv *TcpServer) serve(session *session) {
 			Msg("Handle jt808 msg")
 
 		// 回复消息
-		jtcmd, err := msgHandler.Handle(jtmsg)
+		jtcmd, err := msgHandler.ProcessMsg(jtmsg)
 		if err != nil {
 			log.Error().
 				Err(err).
@@ -165,7 +174,7 @@ func (serv *TcpServer) serve(session *session) {
 				Str("session", session.id).
 				Msg("Failed to encode cmd")
 		}
-		frameHandler.Write(pkt)
+		frameHandler.Send(pkt)
 		if err == io.EOF {
 			break // close connection when EOF
 		}
@@ -173,7 +182,7 @@ func (serv *TcpServer) serve(session *session) {
 }
 
 // 发送消息到终端设备
-func (serv *TcpServer) Send(id string, cmd protocol.JT808Cmd) {
+func (serv *TcpServer) Send(id string, cmd model.JT808Cmd) {
 	session := serv.sessions[id]
 	frameHandler := protocol.NewJT808FrameHandler(session.conn)
 	packet, err := cmd.Encode()
@@ -181,8 +190,8 @@ func (serv *TcpServer) Send(id string, cmd protocol.JT808Cmd) {
 		log.Error().
 			Err(err).
 			Str("session", id).
-			Msg("Failed to send cmd")
+			Msg("Failed to send cmd to device")
 		return
 	}
-	frameHandler.Write(packet)
+	frameHandler.Send(packet)
 }
