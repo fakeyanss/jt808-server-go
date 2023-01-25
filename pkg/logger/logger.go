@@ -91,16 +91,16 @@ func zerologConfiguration() {
 }
 
 func zerologFormat(logger *zerolog.ConsoleWriter) {
-	logger.FormatLevel = func(i interface{}) string {
+	logger.FormatLevel = func(i any) string {
 		return strings.ToUpper(fmt.Sprintf("| %-6s|", i))
 	}
-	logger.FormatMessage = func(i interface{}) string {
+	logger.FormatMessage = func(i any) string {
 		return fmt.Sprintf("%s |", i)
 	}
-	logger.FormatFieldName = func(i interface{}) string {
+	logger.FormatFieldName = func(i any) string {
 		return fmt.Sprintf("%s=", i)
 	}
-	logger.FormatFieldValue = func(i interface{}) string {
+	logger.FormatFieldValue = func(i any) string {
 		return fmt.Sprintf("%s", i)
 	}
 }

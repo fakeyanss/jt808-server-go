@@ -8,7 +8,8 @@ import (
 )
 
 type JT808Msg interface {
-	Decode([]byte) error // []byte -> struct
+	Decode(*Packet) error // Packet -> JT808Msg
+	GetHeader() *MsgHeader
 }
 
 // 终端通用应答
@@ -19,13 +20,11 @@ type Msg0001 struct {
 	Result             uint8  `json:"result"`             // 结果，0成功/确认，1失败，2消息有误，3不支持
 }
 
-func (m *Msg0001) Decode(pkt []byte) error {
-	err := m.MsgHeader.Decode(pkt)
-	if err != nil {
-		return err
-	}
+func (m *Msg0001) Decode(packet *Packet) error {
+	m.MsgHeader = *packet.Header
 
-	idx := m.idx
+	pkt := packet.Body
+	idx := m.Idx
 
 	m.AnswerSerialNumber = binary.BigEndian.Uint16(pkt[idx : idx+2])
 	idx += 2
@@ -36,8 +35,12 @@ func (m *Msg0001) Decode(pkt []byte) error {
 	m.Result = pkt[idx]
 	idx++
 
-	m.idx = idx
+	m.Idx = idx
 	return nil
+}
+
+func (m *Msg0001) GetHeader() *MsgHeader {
+	return &m.MsgHeader
 }
 
 // 终端心跳
@@ -46,29 +49,31 @@ type Msg0002 struct {
 	// 消息体为空
 }
 
-func (m *Msg0002) Decode(pkt []byte) error {
-	err := m.MsgHeader.Decode(pkt)
-	if err != nil {
-		return err
-	}
+func (m *Msg0002) Decode(packet *Packet) error {
+	m.MsgHeader = *packet.Header
 	return nil
 }
 
-// 终端注销消息
+func (m *Msg0002) GetHeader() *MsgHeader {
+	return &m.MsgHeader
+}
+
+// 终端注销
 type Msg0003 struct {
 	MsgHeader
 	// 消息体为空
 }
 
-func (m *Msg0003) Decode(pkt []byte) error {
-	err := m.MsgHeader.Decode(pkt)
-	if err != nil {
-		return err
-	}
+func (m *Msg0003) Decode(packet *Packet) error {
+	m.MsgHeader = *packet.Header
 	return nil
 }
 
-// 终端注册消息
+func (m *Msg0003) GetHeader() *MsgHeader {
+	return &m.MsgHeader
+}
+
+// 终端注册
 type Msg0100 struct {
 	MsgHeader
 	ProvinceID     uint16 `json:"provinceId"`     // 省域ID，GBT2260 行政区号6位前2位
@@ -80,13 +85,11 @@ type Msg0100 struct {
 	PlateNumber    string `json:"plateNumber"`    // 车牌号
 }
 
-func (m *Msg0100) Decode(pkt []byte) error {
-	err := m.MsgHeader.Decode(pkt)
-	if err != nil {
-		return err
-	}
+func (m *Msg0100) Decode(packet *Packet) error {
+	m.MsgHeader = *packet.Header
 
-	idx := m.idx
+	idx := m.Idx
+	pkt := packet.Body
 
 	m.ProvinceID = binary.BigEndian.Uint16(pkt[idx : idx+2])
 	idx += 2
@@ -112,14 +115,18 @@ func (m *Msg0100) Decode(pkt []byte) error {
 	}
 	idx += 2
 	m.PlateNumber = string(plateRegion) + string(pkt[idx:])
-
 	idx = int32(len(pkt) - 1)
-	m.idx = idx
+
+	m.Idx = idx
 
 	return nil
 }
 
-// 终端鉴权消息
+func (m *Msg0100) GetHeader() *MsgHeader {
+	return &m.MsgHeader
+}
+
+// 终端鉴权
 type Msg0102 struct {
 	MsgHeader
 	AuthCode        string `json:"authCode"`        // 鉴权码
@@ -127,13 +134,11 @@ type Msg0102 struct {
 	SoftwareVersion string `json:"softwareVersion"` // 软件版本号
 }
 
-func (m *Msg0102) Decode(pkt []byte) error {
-	err := m.MsgHeader.Decode(pkt)
-	if err != nil {
-		return err
-	}
+func (m *Msg0102) Decode(packet *Packet) error {
+	m.MsgHeader = *packet.Header
 
-	idx := m.idx
+	idx := m.Idx
+	pkt := packet.Body
 
 	// 鉴权码、IMEI、版本号，以0xFF分隔
 
@@ -154,6 +159,65 @@ func (m *Msg0102) Decode(pkt []byte) error {
 	idx++
 
 	m.SoftwareVersion = string(pkt[idx:])
+	idx = int32(len(pkt) - 1)
+
+	m.Idx = idx
 
 	return nil
+}
+
+func (m *Msg0102) GetHeader() *MsgHeader {
+	return &m.MsgHeader
+}
+
+// 位置信息汇报
+type Msg0200 struct {
+	MsgHeader
+	AlarmSign uint32 `json:"alarmSign"` // 报警标志位
+	Status    uint32 `json:"status"`    // 状态位
+	Latitude  uint32 `json:"latitude"`  // 纬度，以度为单位的纬度值乘以10的6次方，精确到百万分之一度
+	Longitude uint32 `json:"longitude"` // 精度，以度为单位的经度值乘以10的6次方，精确到百万分之一度
+	Altitude  uint16 `json:"altitude"`  // 高程，海拔高度，单位为米(m)
+	Speed     uint16 `json:"speed"`     // 速度，单位为0.1公里每小时(1/10km/h)
+	Direction uint16 `json:"direction"` // 方向，0-359，正北为 0，顺时针
+	Time      string `json:"time"`      // YY-MM-DD-hh-mm-ss(GMT+8 时间)
+}
+
+func (m *Msg0200) Decode(packet *Packet) error {
+	m.MsgHeader = *packet.Header
+
+	idx := m.Idx
+	pkt := packet.Body
+
+	m.AlarmSign = binary.BigEndian.Uint32(pkt[idx : idx+4])
+	idx += 4
+
+	m.Status = binary.BigEndian.Uint32(pkt[idx : idx+4])
+	idx += 4
+
+	m.Latitude = binary.BigEndian.Uint32(pkt[idx : idx+4])
+	idx += 4
+
+	m.Longitude = binary.BigEndian.Uint32(pkt[idx : idx+4])
+	idx += 4
+
+	m.Altitude = binary.BigEndian.Uint16(pkt[idx : idx+2])
+	idx += 2
+
+	m.Speed = binary.BigEndian.Uint16(pkt[idx : idx+2])
+	idx += 2
+
+	m.Direction = binary.BigEndian.Uint16(pkt[idx : idx+2])
+	idx += 2
+
+	m.Time = util.Bcd2NumberStr(pkt[idx : idx+6])
+	idx += 6
+
+	m.Idx = idx
+
+	return nil
+}
+
+func (m *Msg0200) GetHeader() *MsgHeader {
+	return &m.MsgHeader
 }

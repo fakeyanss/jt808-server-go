@@ -7,7 +7,7 @@ import (
 )
 
 type MsgHandler interface {
-	ProcessPacket(*Packet) (model.JT808Msg, error)
+	ProcessPacket(*model.Packet) (model.JT808Msg, error)
 	ProcessMsg(model.JT808Msg) (model.JT808Cmd, error)
 }
 
@@ -18,7 +18,7 @@ func NewJT808MsgHandler() *JT808MsgHandler {
 	return &JT808MsgHandler{}
 }
 
-func (h *JT808MsgHandler) ProcessPacket(pkt *Packet) (msg model.JT808Msg, err error) {
+func (h *JT808MsgHandler) ProcessPacket(pkt *model.Packet) (msg model.JT808Msg, err error) {
 	switch msgID := pkt.Header.MsgID; msgID {
 	case 0x0001:
 		msg = &model.Msg0001{}
@@ -30,6 +30,8 @@ func (h *JT808MsgHandler) ProcessPacket(pkt *Packet) (msg model.JT808Msg, err er
 		msg = &model.Msg0100{}
 	case 0x0102:
 		msg = &model.Msg0102{}
+	case 0x0200:
+		msg = &model.Msg0200{}
 	default:
 		err = fmt.Errorf("unexpected msgID %v", msgID)
 	}
@@ -38,7 +40,7 @@ func (h *JT808MsgHandler) ProcessPacket(pkt *Packet) (msg model.JT808Msg, err er
 		return
 	}
 
-	err = msg.Decode(pkt.Body)
+	err = msg.Decode(pkt)
 	if err != nil {
 		return
 	}
@@ -51,39 +53,25 @@ func (h *JT808MsgHandler) ProcessMsg(msg model.JT808Msg) (cmd model.JT808Cmd, er
 	case *model.Msg0001:
 		return
 	case *model.Msg0002:
-		m := msg.(*model.Msg0002)
-		cmd, err = h.genCmd8001(&(m.MsgHeader))
+		cmd = &model.Cmd8001{}
+	case *model.Msg0003:
+		cmd = &model.Cmd8001{}
 	case *model.Msg0100:
-		m := msg.(*model.Msg0100)
-		cmd, err = h.genCmd8100(m)
+		cmd = &model.Cmd8100{}
+	case *model.Msg0200:
+		cmd = &model.Cmd8001{}
 	default:
 		err = fmt.Errorf("unexpected type %T", t)
 	}
-	return
-}
 
-func (h *JT808MsgHandler) genCmd8001(header *model.MsgHeader) (cmd model.JT808Cmd, err error) {
-	cmd = &model.Cmd8001{}
-	c := cmd.(*model.Cmd8001)
-	c.AnswerSerialNumber = header.SerialNumber
-	c.AnswerMessageID = header.MsgID
-	c.Result = 0
+	if err != nil {
+		return
+	}
 
-	c.MsgHeader = *header
-	c.MsgID = 0x8001
-
-	return
-}
-
-func (h *JT808MsgHandler) genCmd8100(msg *model.Msg0100) (cmd model.JT808Cmd, err error) {
-	cmd = &model.Cmd8100{}
-	c := cmd.(*model.Cmd8100)
-	c.AnswerSerialNumber = msg.SerialNumber
-	c.Result = 0
-	c.AuthCode = "AuthCode-Test" // todo: 鉴权码，配置生成
-
-	c.MsgHeader = msg.MsgHeader
-	c.MsgID = 0x8100
+	err = cmd.GenCmd(msg)
+	if err != nil {
+		return
+	}
 
 	return
 }

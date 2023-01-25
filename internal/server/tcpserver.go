@@ -109,7 +109,7 @@ func (serv *TcpServer) serve(session *session) {
 	msgHandler := protocol.NewJT808MsgHandler()
 
 	for {
-		// read from the connection and decode the frame
+		// Read from the connection and decode the frame.
 		framePayload, err := frameHandler.Recv()
 		if err != nil {
 			if err == io.EOF {
@@ -133,7 +133,7 @@ func (serv *TcpServer) serve(session *session) {
 			Hex("frame_payload", framePayload). // for debug
 			Msg("Received frame")
 
-		// 按jt808协议解析消息
+		// Decode bytes to packet.
 		packet, err := packetCodec.Decode(framePayload)
 		if err != nil {
 			log.Error().
@@ -143,7 +143,7 @@ func (serv *TcpServer) serve(session *session) {
 			continue
 		}
 
-		// handle jt808 msg
+		// Handle jt808 msg.
 		jtmsg, err := msgHandler.ProcessPacket(packet)
 		if err != nil {
 			log.Error().

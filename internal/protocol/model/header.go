@@ -26,12 +26,12 @@ const (
 type MsgHeader struct {
 	MsgID uint16 `json:"msgID"` // 消息ID
 	MsgBodyAttr
-	ProtocolVersion  uint8  `json:"protocolVersion"` // 协议版本号，默认0表示2013版本，其他为2019后续版本，每次修订递增，初始为1
+	ProtocolVersion  uint8  `json:"protocolVersion"` // 协议版本号，默认0表示2011/2013版本，其他为2019后续版本，每次修订递增，初始为1
 	PhoneNumber      string `json:"phoneNumber"`     // 终端手机号
 	SerialNumber     uint16 `json:"serialNumber"`    // 消息流水号
 	MsgFragmentation        // 消息包封装项
 
-	idx int32 `json:"-"` // 读取的packet下标ID
+	Idx int32 `json:"-"` // 读取的packet下标ID
 }
 
 // 将[]byte解码成消息头结构体
@@ -69,7 +69,7 @@ func (h *MsgHeader) Decode(pkt []byte) error {
 		idx += 2
 	}
 
-	h.idx = idx
+	h.Idx = idx
 
 	return nil
 }

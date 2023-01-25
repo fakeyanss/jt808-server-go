@@ -6,13 +6,6 @@ import (
 	"github.com/fakeYanss/jt808-server-go/internal/protocol/model"
 )
 
-// 定义Packet Data
-type Packet struct {
-	Header     *model.MsgHeader // 消息头
-	Body       []byte           // 消息体
-	VerifyCode byte             // 校验码
-}
-
 type PacketCodec interface {
 	Decode([]byte) (model.JT808Msg, error)
 	Encode(model.JT808Msg) ([]byte, error)
@@ -28,7 +21,7 @@ func NewJT808PacketCodec() *JT808PacketCodec {
 // Decode JT808 packet.
 //
 // 反转义 -> 校验 -> 反序列化
-func (pc *JT808PacketCodec) Decode(payload []byte) (*Packet, error) {
+func (pc *JT808PacketCodec) Decode(payload []byte) (*model.Packet, error) {
 	pkt := pc.unescape(payload)
 
 	verifyCode := payload[len(payload)-1]
@@ -37,7 +30,7 @@ func (pc *JT808PacketCodec) Decode(payload []byte) (*Packet, error) {
 		return nil, err
 	}
 
-	pd := &Packet{
+	pd := &model.Packet{
 		Header:     &model.MsgHeader{},
 		Body:       pkt,
 		VerifyCode: verifyCode,
@@ -47,6 +40,8 @@ func (pc *JT808PacketCodec) Decode(payload []byte) (*Packet, error) {
 	if err != nil {
 		return nil, err
 	}
+
+	pd.Body = pkt[pd.Header.Idx:]
 
 	return pd, nil
 }

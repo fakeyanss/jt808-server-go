@@ -12,7 +12,7 @@ func TestMsg0001_Decode(t *testing.T) {
 		Result             uint8
 	}
 	type args struct {
-		pkt []byte
+		pkt *Packet
 	}
 	tests := []struct {
 		name    string
@@ -42,7 +42,7 @@ func TestMsg0002_Decode(t *testing.T) {
 		MsgHeader MsgHeader
 	}
 	type args struct {
-		pkt []byte
+		pkt *Packet
 	}
 	tests := []struct {
 		name    string
