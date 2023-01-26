@@ -6,7 +6,7 @@ import (
 
 func TestMsg0001_Decode(t *testing.T) {
 	type fields struct {
-		MsgHeader          MsgHeader
+		Header             *MsgHeader
 		AnswerSerialNumber uint16
 		AnswerMessageID    uint16
 		Result             uint8
@@ -25,7 +25,7 @@ func TestMsg0001_Decode(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			m := &Msg0001{
-				MsgHeader:          tt.fields.MsgHeader,
+				Header:             tt.fields.Header,
 				AnswerSerialNumber: tt.fields.AnswerSerialNumber,
 				AnswerMessageID:    tt.fields.AnswerMessageID,
 				Result:             tt.fields.Result,
@@ -39,7 +39,7 @@ func TestMsg0001_Decode(t *testing.T) {
 
 func TestMsg0002_Decode(t *testing.T) {
 	type fields struct {
-		MsgHeader MsgHeader
+		Header *MsgHeader
 	}
 	type args struct {
 		pkt *Packet
@@ -55,7 +55,7 @@ func TestMsg0002_Decode(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			m := &Msg0002{
-				MsgHeader: tt.fields.MsgHeader,
+				Header: tt.fields.Header,
 			}
 			if err := m.Decode(tt.args.pkt); (err != nil) != tt.wantErr {
 				t.Errorf("Msg0002.Decode() error = %v, wantErr %v", err, tt.wantErr)

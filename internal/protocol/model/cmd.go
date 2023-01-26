@@ -54,7 +54,7 @@ func (c *Cmd8001) Encode() (pkt []byte, err error) {
 
 // 终端注册应答消息
 type Cmd8100 struct {
-	MsgHeader
+	Header             *MsgHeader
 	AnswerSerialNumber uint16 `json:"answerSerialNumber"` // 应答流水号，对应平台消息的流水号
 	Result             byte   `json:"result"`             // 结果，0成功，1车辆已被注册，2数据库中无此车辆，3此终端已被注册，4数据库中无此终端
 	AuthCode           string `json:"authCode"`           // 鉴权码
@@ -62,12 +62,12 @@ type Cmd8100 struct {
 
 func (c *Cmd8100) GenCmd(msg JT808Msg) error {
 	m := msg.(*Msg0100)
-	c.AnswerSerialNumber = m.SerialNumber
+	c.AnswerSerialNumber = m.Header.SerialNumber
 	c.Result = 0
 	c.AuthCode = "AuthCode-Test" // todo: 鉴权码，配置生成
 
-	c.MsgHeader = m.MsgHeader
-	c.MsgID = 0x8100
+	c.Header = m.Header
+	c.Header.MsgID = 0x8100
 
 	return nil
 }
@@ -81,9 +81,9 @@ func (c *Cmd8100) Encode() (pkt []byte, err error) {
 
 	pkt = append(pkt, []byte(c.AuthCode)...)
 
-	c.BodyLength = uint16(len(pkt))
+	c.Header.BodyLength = uint16(len(pkt))
 
-	headerPkt, err := c.MsgHeader.Encode()
+	headerPkt, err := c.Header.Encode()
 	if err != nil {
 		return nil, err
 	}

@@ -32,7 +32,6 @@ func (pc *JT808PacketCodec) Decode(payload []byte) (*model.Packet, error) {
 
 	pd := &model.Packet{
 		Header:     &model.MsgHeader{},
-		Body:       pkt,
 		VerifyCode: verifyCode,
 	}
 

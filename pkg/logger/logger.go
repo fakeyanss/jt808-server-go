@@ -25,13 +25,13 @@ var stdErrFileHandler *os.File
 
 func Init() {
 	// ConosleLogger
-	consoleLogger := zerolog.ConsoleWriter{Out: os.Stdout, TimeFormat: time.RFC3339}
+	consoleLogger := zerolog.ConsoleWriter{Out: os.Stdout, TimeFormat: time.RFC3339Nano}
 	zerologFormat(&consoleLogger)
 
 	// FileLogger
 	makeLogDir()
 	rotateOut := rotatePolicy()
-	fileLogger := zerolog.ConsoleWriter{Out: &rotateOut, TimeFormat: time.RFC3339}
+	fileLogger := zerolog.ConsoleWriter{Out: &rotateOut, TimeFormat: time.RFC3339Nano}
 	zerologFormat(&fileLogger)
 
 	multi := zerolog.MultiLevelWriter(consoleLogger, fileLogger)
@@ -84,9 +84,6 @@ func zerologConfiguration() {
 		file = short
 		return file + ":" + strconv.Itoa(line)
 	}
-	// 定义时间精度
-	zerolog.TimeFieldFormat = time.RFC3339Nano
-
 	zerolog.ErrorStackMarshaler = pkgerrors.MarshalStack
 }
 
