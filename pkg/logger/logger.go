@@ -16,21 +16,16 @@ import (
 	"gopkg.in/natefinch/lumberjack.v2"
 )
 
-const (
-	LogDir  = "./logs/" // todo: read from configuration
-	LogFile = LogDir + "jt808-server-go.log"
-)
-
 var stdErrFileHandler *os.File
 
-func Init() {
+func Init(logDir, logFile string) {
 	// ConosleLogger
 	consoleLogger := zerolog.ConsoleWriter{Out: os.Stdout, TimeFormat: time.RFC3339Nano}
 	zerologFormat(&consoleLogger)
 
 	// FileLogger
-	makeLogDir()
-	rotateOut := rotatePolicy()
+	makeLogDir(logDir)
+	rotateOut := rotatePolicy(logDir + logFile)
 	fileLogger := zerolog.ConsoleWriter{Out: &rotateOut, TimeFormat: time.RFC3339Nano}
 	zerologFormat(&fileLogger)
 
@@ -45,23 +40,23 @@ func Init() {
 		Caller().
 		Logger()
 
-	err := rewriteStderrFile()
+	err := rewriteStderrFile(logDir + logFile)
 	if err != nil {
 		log.Error().Err(err).Msg("Failed to rewite stderr")
 	}
 }
 
-func makeLogDir() {
-	err := os.MkdirAll(LogDir, os.ModePerm)
+func makeLogDir(logDir string) {
+	err := os.MkdirAll(logDir, os.ModePerm)
 	if err != nil {
 		fmt.Println("Failed to create log dir")
 		os.Exit(1)
 	}
 }
 
-func rotatePolicy() lumberjack.Logger {
+func rotatePolicy(logFile string) lumberjack.Logger {
 	fileLogger := &lumberjack.Logger{
-		Filename:   LogFile,
+		Filename:   logFile,
 		MaxSize:    1, //
 		MaxBackups: 10,
 		MaxAge:     14,
@@ -102,12 +97,12 @@ func zerologFormat(logger *zerolog.ConsoleWriter) {
 	}
 }
 
-func rewriteStderrFile() error {
+func rewriteStderrFile(logFile string) error {
 	if runtime.GOOS == "windows" {
 		return nil
 	}
 
-	file, err := os.OpenFile(LogFile, os.O_RDWR|os.O_CREATE|os.O_APPEND, 0666)
+	file, err := os.OpenFile(logFile, os.O_RDWR|os.O_CREATE|os.O_APPEND, 0666)
 	if err != nil {
 		fmt.Println(err)
 		return err

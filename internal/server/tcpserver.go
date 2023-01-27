@@ -19,9 +19,8 @@ type TcpServer struct {
 }
 
 type session struct {
-	conn   net.Conn
-	id     string
-	writer struct{}
+	id   string
+	conn net.Conn
 }
 
 func NewTcpServer() *TcpServer {
@@ -81,9 +80,8 @@ func (serv *TcpServer) accept(conn net.Conn) *session {
 	defer serv.mutex.Unlock()
 
 	session := &session{
-		conn:   conn,
-		id:     remoteAddr, // using remote addr default
-		writer: struct{}{},
+		conn: conn,
+		id:   remoteAddr, // using remote addr default
 	}
 
 	serv.sessions[session.id] = session
@@ -169,6 +167,7 @@ func (serv *TcpServer) serve(session *session) {
 				Err(err).
 				Str("session", session.id).
 				Msg("Failed to handle msg")
+			continue
 		}
 
 		cmdJson, _ := json.Marshal(jtcmd)
@@ -183,10 +182,14 @@ func (serv *TcpServer) serve(session *session) {
 				Err(err).
 				Str("session", session.id).
 				Msg("Failed to encode cmd")
+			continue
 		}
-		frameHandler.Send(pkt)
-		if err == io.EOF {
-			break // close connection when EOF
+		err = frameHandler.Send(pkt)
+		if err != nil {
+			log.Error().
+				Err(err).
+				Str("session", session.id).
+				Msg("Failed to send cmd")
 		}
 	}
 }

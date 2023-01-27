@@ -10,8 +10,13 @@ const (
 	UDPPort = "8081"
 )
 
+const (
+	LogDir  = "./logs/" // todo: read from configuration
+	LogFile = "jt808-server-go.log"
+)
+
 func main() {
-	logger.Init()
+	logger.Init(LogDir, LogFile)
 
 	serv := server.NewTcpServer()
 	serv.Listen(":" + TCPPort)
