@@ -1,9 +1,16 @@
 package protocol
 
 import (
-	"fmt"
+	"sync"
+
+	"github.com/pkg/errors"
 
 	"github.com/fakeYanss/jt808-server-go/internal/protocol/model"
+)
+
+var (
+	ErrEmptyPacket  = errors.New("Empty packet")
+	ErrVerifyFailed = errors.New("Verify failed")
 )
 
 type PacketCodec interface {
@@ -14,8 +21,14 @@ type PacketCodec interface {
 type JT808PacketCodec struct {
 }
 
+var jt808PacketCodec *JT808PacketCodec
+var codecOnce sync.Once
+
 func NewJT808PacketCodec() *JT808PacketCodec {
-	return &JT808PacketCodec{}
+	codecOnce.Do(func() {
+		jt808PacketCodec = &JT808PacketCodec{}
+	})
+	return jt808PacketCodec
 }
 
 // Decode JT808 packet.
@@ -37,7 +50,7 @@ func (pc *JT808PacketCodec) Decode(payload []byte) (*model.Packet, error) {
 
 	err = pd.Header.Decode(pkt)
 	if err != nil {
-		return nil, err
+		return nil, errors.Wrap(err, "Fail to decode packet")
 	}
 
 	pd.Body = pkt[pd.Header.Idx:]
@@ -51,7 +64,7 @@ func (pc *JT808PacketCodec) Decode(payload []byte) (*model.Packet, error) {
 func (pc *JT808PacketCodec) Encode(cmd model.JT808Cmd) ([]byte, error) {
 	pkt, err := cmd.Encode()
 	if err != nil {
-		return nil, err
+		return nil, errors.Wrap(err, "Fail to encode jtcmd")
 	}
 
 	pkt = pc.genVerifier(pkt)
@@ -113,7 +126,7 @@ func (pc *JT808PacketCodec) escape(src []byte) []byte {
 func (pc *JT808PacketCodec) verify(pkt []byte) ([]byte, error) {
 	n := len(pkt)
 	if n == 0 {
-		return nil, fmt.Errorf("EmptyPacketWhenVerify")
+		return nil, ErrEmptyPacket
 	}
 	expected := pkt[n-1]
 	var actual byte
@@ -123,7 +136,7 @@ func (pc *JT808PacketCodec) verify(pkt []byte) ([]byte, error) {
 	if expected == actual {
 		return pkt[:n-1], nil
 	}
-	return nil, fmt.Errorf("verify error, expect=%v, actual=%v", expected, actual)
+	return nil, errors.WithMessagef(ErrVerifyFailed, "expect=%v, actual=%v", expected, actual)
 }
 
 // 生成校验码

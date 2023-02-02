@@ -3,23 +3,29 @@ package model
 import (
 	"encoding/binary"
 
+	"github.com/pkg/errors"
+
 	"github.com/fakeYanss/jt808-server-go/internal/util"
 )
 
+// 消息体属性字段的bit位
 const (
-	// 消息体属性字段的bit位
-
 	BodyLengthBitInMsgBodyAttr    uint16 = 0b0000001111111111
 	EncryptionBitInMsgBodyAttr    uint16 = 0b0001110000000000
 	FragmentationBitInMsgBodyAttr uint16 = 0b0010000000000000
 	VersionSignBitInMsgBodyAttr   uint16 = 0b0100000000000000
 	ExtraBitInMsgBodyAttr         uint16 = 0b1000000000000000
+)
 
-	// 加密类型
-
+// 加密类型
+const (
 	EncryptionNone    = "Encryption None"
 	EncryptionRSA     = "Encryption RSA"
 	EncryptionUnknown = "Encryption Unknown"
+)
+
+var (
+	ErrDecodeHeader = errors.New("Decode header error")
 )
 
 // 定义消息头
@@ -43,7 +49,7 @@ func (h *MsgHeader) Decode(pkt []byte) error {
 
 	err := h.MsgBodyAttr.Decode(pkt[idx : idx+2]) // 消息体属性 [2,4)位
 	if err != nil {
-		return nil
+		return ErrDecodeHeader
 	}
 	idx += 2
 
@@ -54,10 +60,10 @@ func (h *MsgHeader) Decode(pkt []byte) error {
 
 	// 2013版本，phoneNumber [5,11)位 长度6位；2019版本，phoneNumber [5,15)位 长度10位。
 	if h.VersionSign {
-		h.PhoneNumber = util.Bcd2NumberStr(pkt[idx : idx+10])
+		h.PhoneNumber = util.BCD2NumberStr(pkt[idx : idx+10])
 		idx += 10
 	} else {
-		h.PhoneNumber = util.Bcd2NumberStr(pkt[idx : idx+6])
+		h.PhoneNumber = util.BCD2NumberStr(pkt[idx : idx+6])
 		idx += 6
 	}
 
@@ -65,7 +71,10 @@ func (h *MsgHeader) Decode(pkt []byte) error {
 	idx += 2
 
 	if h.PacketFragmented {
-		h.MsgFragmentation.Decode(pkt[idx : idx+2]) // 消息包封装项，两位
+		err = h.MsgFragmentation.Decode(pkt[idx : idx+2]) // 消息包封装项，两位
+		if err != nil {
+			return ErrDecodeHeader
+		}
 		idx += 2
 	}
 
@@ -90,7 +99,7 @@ func (h *MsgHeader) Encode() ([]byte, error) {
 
 	pkt = append(pkt, h.ProtocolVersion) // 协议版本号
 
-	pkt = append(pkt, util.NumberStr2bcd(h.PhoneNumber)...) // 手机号
+	pkt = append(pkt, util.NumberStr2BCD(h.PhoneNumber)...) // 手机号
 
 	sn := make([]byte, 2)
 	binary.BigEndian.PutUint16(sn, h.SerialNumber) // 消息流水号

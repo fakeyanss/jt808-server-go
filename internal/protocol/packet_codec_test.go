@@ -2,6 +2,7 @@ package protocol
 
 import (
 	"encoding/json"
+	"reflect"
 	"testing"
 
 	"github.com/fakeYanss/jt808-server-go/internal/protocol/model"
@@ -9,7 +10,6 @@ import (
 )
 
 func TestJT808PacketCodec_Decode(t *testing.T) {
-
 	type args struct {
 		payload []byte
 	}
@@ -67,10 +67,37 @@ func TestJT808PacketCodec_Decode(t *testing.T) {
 				t.Errorf("JT808PacketCodec.Decode() error = %v, wantErr %v", err, tt.wantErr)
 				return
 			}
-			gotJson, _ := json.Marshal(got)
-			wantJson, _ := json.Marshal(tt.want)
-			if string(gotJson) != string(wantJson) {
-				t.Errorf("JT808PacketCodec.Decode() = %v, want %v", string(gotJson), string(wantJson))
+			gotJSON, _ := json.Marshal(got)
+			wantJSON, _ := json.Marshal(tt.want)
+			if string(gotJSON) != string(wantJSON) {
+				t.Errorf("JT808PacketCodec.Decode() = %v, want %v", string(gotJSON), string(wantJSON))
+			}
+		})
+	}
+}
+
+func TestJT808PacketCodec_genVerifier(t *testing.T) {
+	type args struct {
+		pkt []byte
+	}
+	tests := []struct {
+		name string
+		pc   *JT808PacketCodec
+		args args
+		want []byte
+	}{
+		{
+			name: "case1",
+			pc:   &JT808PacketCodec{},
+			args: args{pkt: util.Hex2Byte("000140050100000000017299841738ffff007b01c803")},
+			want: append(util.Hex2Byte("000140050100000000017299841738ffff007b01c803"), 0xb5),
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			pc := &JT808PacketCodec{}
+			if got := pc.genVerifier(tt.args.pkt); !reflect.DeepEqual(got, tt.want) {
+				t.Errorf("JT808PacketCodec.genVerifier() = %v, want %v", got, tt.want)
 			}
 		})
 	}

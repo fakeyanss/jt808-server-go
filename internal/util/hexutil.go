@@ -1,9 +1,12 @@
 package util
 
 import (
+	"encoding/hex"
+	"errors"
 	"fmt"
-	"strconv"
 	"strings"
+
+	"github.com/rs/zerolog/log"
 )
 
 // 十进制数 <-> BCD 8421码
@@ -18,7 +21,7 @@ import (
 //	7 <-> 0111
 //	8 <-> 1000
 //	9 <-> 1001
-func Bcd2NumberStr(bcd []byte) string {
+func BCD2NumberStr(bcd []byte) string {
 	var number string
 	for _, i := range bcd {
 		number += fmt.Sprintf("%02X", i)
@@ -42,7 +45,7 @@ func Bcd2NumberStr(bcd []byte) string {
 //	7 <-> 0111
 //	8 <-> 1000
 //	9 <-> 1001
-func NumberStr2bcd(number string) []byte {
+func NumberStr2BCD(number string) []byte {
 	var rNumber = number
 	for i := 0; i < 8-len(number); i++ {
 		rNumber = "f" + rNumber
@@ -51,18 +54,19 @@ func NumberStr2bcd(number string) []byte {
 	return bcd
 }
 
-func Hex2Byte(str string) []byte {
-	slen := len(str)
-	bHex := make([]byte, len(str)/2)
-	ii := 0
-	for i := 0; i < len(str); i = i + 2 {
-		if slen != 1 {
-			ss := string(str[i]) + string(str[i+1])
-			bt, _ := strconv.ParseInt(ss, 16, 32)
-			bHex[ii] = byte(bt)
-			ii = ii + 1
-			slen = slen - 2
+func Hex2Byte(src string) []byte {
+	dst, err := hex.DecodeString(src)
+	if err != nil {
+		if errors.Is(err, hex.ErrLength) {
+			log.Warn().
+				Err(err).
+				Str("src", src).
+				Msg("Source str invalid, will ignore extra byte")
+		} else {
+			log.Error().
+				Err(err).
+				Msg("Fail to transform hex str to byte array")
 		}
 	}
-	return bHex
+	return dst
 }

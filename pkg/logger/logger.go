@@ -4,11 +4,10 @@ import (
 	"fmt"
 	"os"
 	"runtime"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
-
-	"strconv"
 
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
@@ -20,14 +19,14 @@ var stdErrFileHandler *os.File
 
 func Init(logDir, logFile string) {
 	// ConosleLogger
-	consoleLogger := zerolog.ConsoleWriter{Out: os.Stdout, TimeFormat: time.RFC3339Nano}
-	zerologFormat(&consoleLogger)
+	consoleLogger := &zerolog.ConsoleWriter{Out: os.Stdout, TimeFormat: time.RFC3339Nano}
+	zerologFormat(consoleLogger)
 
 	// FileLogger
 	makeLogDir(logDir)
 	rotateOut := rotatePolicy(logDir + logFile)
-	fileLogger := zerolog.ConsoleWriter{Out: &rotateOut, TimeFormat: time.RFC3339Nano}
-	zerologFormat(&fileLogger)
+	fileLogger := &zerolog.ConsoleWriter{Out: rotateOut, TimeFormat: time.RFC3339Nano}
+	zerologFormat(fileLogger)
 
 	multi := zerolog.MultiLevelWriter(consoleLogger, fileLogger)
 
@@ -42,19 +41,19 @@ func Init(logDir, logFile string) {
 
 	err := rewriteStderrFile(logDir + logFile)
 	if err != nil {
-		log.Error().Err(err).Msg("Failed to rewite stderr")
+		log.Error().Err(err).Msg("Fail to rewite stderr")
 	}
 }
 
 func makeLogDir(logDir string) {
 	err := os.MkdirAll(logDir, os.ModePerm)
 	if err != nil {
-		fmt.Println("Failed to create log dir")
+		fmt.Println("Fail to create log dir")
 		os.Exit(1)
 	}
 }
 
-func rotatePolicy(logFile string) lumberjack.Logger {
+func rotatePolicy(logFile string) *lumberjack.Logger {
 	fileLogger := &lumberjack.Logger{
 		Filename:   logFile,
 		MaxSize:    1, //
@@ -63,7 +62,7 @@ func rotatePolicy(logFile string) lumberjack.Logger {
 		LocalTime:  true,
 		Compress:   false,
 	}
-	return *fileLogger
+	return fileLogger
 }
 
 func zerologConfiguration() {
@@ -107,7 +106,7 @@ func rewriteStderrFile(logFile string) error {
 		fmt.Println(err)
 		return err
 	}
-	stdErrFileHandler = file //把文件句柄保存到全局变量，避免被GC回收
+	stdErrFileHandler = file // 把文件句柄保存到全局变量，避免被GC回收
 
 	if err = syscall.Dup2(int(file.Fd()), int(os.Stderr.Fd())); err != nil {
 		fmt.Println(err)

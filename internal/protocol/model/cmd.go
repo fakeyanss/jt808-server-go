@@ -64,7 +64,7 @@ func (c *Cmd8100) GenCmd(msg JT808Msg) error {
 	m := msg.(*Msg0100)
 	c.AnswerSerialNumber = m.Header.SerialNumber
 	c.Result = 0
-	c.AuthCode = "AuthCode-Test" // todo: 鉴权码，配置生成
+	c.AuthCode = "AuthCode" // 初始值，在后续处理中根据id重写
 
 	c.Header = m.Header
 	c.Header.MsgID = 0x8100

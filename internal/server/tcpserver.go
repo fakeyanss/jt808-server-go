@@ -1,36 +1,33 @@
 package server
 
 import (
-	"encoding/json"
+	"context"
+	"errors"
 	"io"
 	"net"
 	"sync"
 	"time"
 
+	"github.com/rs/zerolog/log"
+
 	"github.com/fakeYanss/jt808-server-go/internal/protocol"
 	"github.com/fakeYanss/jt808-server-go/internal/protocol/model"
-	"github.com/rs/zerolog/log"
 )
 
-type TcpServer struct {
+type TCPServer struct {
 	listener net.Listener
-	sessions map[string]*session
+	sessions map[string]*model.Session
 	mutex    *sync.Mutex
 }
 
-type session struct {
-	id   string
-	conn net.Conn
-}
-
-func NewTcpServer() *TcpServer {
-	return &TcpServer{
+func NewTCPServer() *TCPServer {
+	return &TCPServer{
 		mutex:    &sync.Mutex{},
-		sessions: make(map[string]*session),
+		sessions: make(map[string]*model.Session),
 	}
 }
 
-func (serv *TcpServer) Listen(addr string) error {
+func (serv *TCPServer) Listen(addr string) error {
 	l, err := net.Listen("tcp", addr)
 	if err == nil {
 		serv.listener = l
@@ -38,16 +35,16 @@ func (serv *TcpServer) Listen(addr string) error {
 		return nil
 	}
 
-	log.Error().Err(err).Str("addr", addr).Msg("Failed to listen addr")
 	return err
 }
 
-func (serv *TcpServer) Start() {
+func (serv *TCPServer) Start() {
 	go serv.monitorSessionCnt()
+
 	for {
 		conn, err := serv.listener.Accept()
 		if err != nil {
-			log.Error().Err(err).Msg("Failed to accept ")
+			log.Error().Err(err).Msg("Fail to accept ")
 		} else {
 			session := serv.accept(conn)
 			go serv.serve(session)
@@ -55,156 +52,110 @@ func (serv *TcpServer) Start() {
 	}
 }
 
-func (serv *TcpServer) Stop() {
+func (serv *TCPServer) Stop() {
 	serv.listener.Close()
 }
 
-func (serv *TcpServer) monitorSessionCnt() {
+func (serv *TCPServer) monitorSessionCnt() {
 	for {
 		log.Debug().
-			Int("total_session_cnt", len(serv.sessions)).
-			Msg("Monitoring total session count")
+			Int("total_conn_cnt", len(serv.sessions)).
+			Msg("Monitoring total conn count")
 
 		time.Sleep(10 * time.Second)
 	}
 }
 
-func (serv *TcpServer) accept(conn net.Conn) *session {
+// 将conn封装为逻辑session
+func (serv *TCPServer) accept(conn net.Conn) *model.Session {
 	remoteAddr := conn.RemoteAddr().String()
-	log.Debug().
-		Str("remote_addr", remoteAddr).
-		Int("total_session_cnt", len(serv.sessions)+1).
-		Msg("Accepting connection from remtote")
 
 	serv.mutex.Lock()
 	defer serv.mutex.Unlock()
 
-	session := &session{
-		conn: conn,
-		id:   remoteAddr, // using remote addr default
+	session := &model.Session{
+		Conn: conn,
+		ID:   remoteAddr, // using remote addr default
 	}
 
-	serv.sessions[session.id] = session
+	serv.sessions[remoteAddr] = session
+
+	log.Debug().
+		Str("remote_addr", remoteAddr).
+		Int("total_conn_cnt", len(serv.sessions)).
+		Msg("Accepting connection from remtote.")
 
 	return session
 }
 
-func (serv *TcpServer) remove(session *session) {
+func (serv *TCPServer) remove(session *model.Session) {
 	serv.mutex.Lock()
 	defer serv.mutex.Unlock()
 
-	delete(serv.sessions, session.id)
+	delete(serv.sessions, session.ID)
+
 	log.Debug().
-		Str("remote_addr", session.conn.RemoteAddr().String()).
-		Msg("Closing connection from remote")
+		Str("id", session.ID).
+		Int("total_conn_cnt", len(serv.sessions)).
+		Msg("Closing connection from remote.")
 }
 
-func (serv *TcpServer) serve(session *session) {
+// 处理每个session的消息
+func (serv *TCPServer) serve(session *model.Session) {
 	defer serv.remove(session)
 
-	frameHandler := protocol.NewJT808FrameHandler(session.conn)
-	packetCodec := protocol.NewJT808PacketCodec()
-	msgHandler := protocol.NewJT808MsgHandler()
+	processGroup := &protocol.ProcessGroup{
+		FH: protocol.NewJT808FrameHandler(session.Conn),
+		PC: protocol.NewJT808PacketCodec(),
+		MH: protocol.NewJT808MsgHandler(),
+	}
 
 	for {
-		// Read from the connection and decode the frame.
-		framePayload, err := frameHandler.Recv()
-		if err != nil {
-			if err == io.EOF {
-				break // close connection when EOF
-			} else {
-				log.Error().
-					Err(err).
-					Str("session", session.id).
-					Msg("Failed to read stream to framePayload, continue...")
-				continue
-			}
-		}
+		// 记录value ctx
+		ctx := context.WithValue(context.Background(), model.SessionCtxKey{}, session)
 
-		if len(framePayload) == 0 {
+		err := protocol.ProcessConn(ctx, processGroup)
+
+		if err == nil {
 			continue
 		}
 
-		log.Debug().
-			Str("session", session.id).
-			Int("frame_len", len(framePayload)).
-			Hex("frame_payload", framePayload). // for debug
-			Msg("Received frame")
-
-		// Decode bytes to packet.
-		packet, err := packetCodec.Decode(framePayload)
-		if err != nil {
-			log.Error().
-				Err(err).
-				Str("session", session.id).
-				Msg("Failed to decode packet from []byte to Packet, continue...")
-			continue
-		}
-
-		// Handle jt808 msg.
-		jtmsg, err := msgHandler.ProcessPacket(packet)
-		if err != nil {
-			log.Error().
-				Err(err).
-				Str("session", session.id).
-				Msg("Failed to handle packet to JT808Msg, continue...")
-			continue
-		}
-
-		msgJson, _ := json.Marshal(jtmsg)
-		log.Debug().
-			Str("session", session.id).
-			RawJSON("msg", msgJson).
-			Msg("Received jt808 msg")
-
-		// 回复消息
-		jtcmd, err := msgHandler.ProcessMsg(jtmsg)
-		if jtcmd == nil { // 不需要回复
-			continue
-		}
-		if err != nil {
-			log.Error().
-				Err(err).
-				Str("session", session.id).
-				Msg("Failed to handle msg")
-			continue
-		}
-
-		cmdJson, _ := json.Marshal(jtcmd)
-		log.Debug().
-			Str("session", session.id).
-			RawJSON("cmd", cmdJson).
-			Msg("Sent jt808 cmd")
-
-		pkt, err := packetCodec.Encode(jtcmd)
-		if err != nil {
-			log.Error().
-				Err(err).
-				Str("session", session.id).
-				Msg("Failed to encode cmd")
-			continue
-		}
-		err = frameHandler.Send(pkt)
-		if err != nil {
-			log.Error().
-				Err(err).
-				Str("session", session.id).
-				Msg("Failed to send cmd")
+		log.Error().
+			Err(err).
+			Str("id", session.ID).
+			Msg("Failed to serve session")
+		if errors.Is(err, io.EOF) {
+			break // close connection when EOF
 		}
 	}
 }
 
-// 发送消息到终端设备
-func (serv *TcpServer) Send(id string, cmd model.JT808Cmd) {
+// 发送消息到终端设备, 外部调用
+func (serv *TCPServer) Send(id string, cmd model.JT808Cmd) {
 	session := serv.sessions[id]
-	frameHandler := protocol.NewJT808FrameHandler(session.conn)
+	if session == nil {
+		log.Warn().
+			Str("id", id).
+			Msg("Fail to get session from cache, maybe conn was closed.")
+		return
+	}
+
+	frameHandler := protocol.NewJT808FrameHandler(session.Conn)
+
 	packet, err := cmd.Encode()
 	if err != nil {
 		log.Error().
 			Err(err).
-			Str("session", id).
-			Msg("Failed to send cmd to device")
+			Str("id", id).
+			Msg("Fail to encode cmd to packet.")
 		return
 	}
-	frameHandler.Send(packet)
+	err = frameHandler.Send(packet)
+	if err != nil {
+		log.Error().
+			Err(err).
+			Str("device", id).
+			Msg("Fail to send cmd to device.")
+		return
+	}
 }

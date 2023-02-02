@@ -76,7 +76,7 @@ func (m *Msg0003) GetHeader() *MsgHeader {
 type Msg0100 struct {
 	Header         *MsgHeader `json:"header"`
 	ProvinceID     uint16     `json:"provinceId"`     // 省域ID，GBT2260 行政区号6位前2位
-	CityID         uint16     `json:"cityId"`         // 市县域ID，GBT2260 行政区好6位后4位
+	CityID         uint16     `json:"cityId"`         // 市县域ID，GBT2260 行政区号6位后4位
 	ManufacturerID string     `json:"manufacturerId"` // 制造商ID
 	DeviceMode     string     `json:"deviceMode"`     // 终端型号
 	DeviceID       string     `json:"deviceId"`       // 终端ID，大写字母和数字
@@ -93,7 +93,6 @@ func (m *Msg0100) Decode(packet *Packet) error {
 	m.ProvinceID = binary.BigEndian.Uint16(pkt[idx : idx+2])
 	idx += 2
 
-	// 002401AA414130303141313233343536003232333332303002BEA9415050303033
 	m.CityID = binary.BigEndian.Uint16(pkt[idx : idx+2])
 	idx += 2
 
@@ -109,12 +108,13 @@ func (m *Msg0100) Decode(packet *Packet) error {
 	m.PlateColor = pkt[idx]
 	idx++
 
-	plateRegion, err := util.Utf8ToGbk(pkt[idx : idx+2])
+	plateRegion, err := util.GBKToUTF8(pkt[idx : idx+2])
 	if err != nil {
-		// return err // todo: gbk编码
+		// 解析车牌region失败, 留空
+		plateRegion = []byte{}
 	}
 	idx += 2
-	m.PlateNumber = string(plateRegion) + string(pkt[idx:])
+	m.PlateNumber = string(append(plateRegion, pkt[idx:]...))
 
 	return nil
 }
@@ -204,7 +204,7 @@ func (m *Msg0200) Decode(packet *Packet) error {
 	m.Direction = binary.BigEndian.Uint16(pkt[idx : idx+2])
 	idx += 2
 
-	m.Time = util.Bcd2NumberStr(pkt[idx : idx+6])
+	m.Time = util.BCD2NumberStr(pkt[idx : idx+6])
 
 	return nil
 }

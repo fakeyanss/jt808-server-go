@@ -19,6 +19,7 @@ COVHTML := $(HOMEDIR)/covhtml.html # HTML representation of coverage profile
 
 PROG_NAME    := jt808-server-go
 BUILD_TIME   := $(shell date +'%Y-%m-%dT%H:%M:%S')
+$(info BUILD_TIME: $(BUILD_TIME))
 BUILD_COMMIT := $(shell git rev-parse HEAD)
 $(info BUILD_COMMIT: $(BUILD_COMMIT))
 
@@ -28,6 +29,7 @@ all: prepare compile package
 # set proxy env
 set-env:
 	$(GO) env -w GO111MODULE=on
+	$(shell bash $(CURDIR)/scripts/install.sh golangcilint)
 
 #make prepare, download dependencies
 prepare: gomod
@@ -42,13 +44,16 @@ build:
 	$(GOBUILD) -o $(OUTDIR)/$(PROG_NAME) \
 	            -ldflags "-X main.buildTime=$(BUILD_TIME) -X main.buildCommit=$(BUILD_COMMIT) -X main.progName=$(PROG_NAME)"
 
-lint:
-	go vet $(GOPKGS)
+lint: set-env
+	golangci-lint run ./...
 
 # make test, test your code
 test: prepare test-case
 test-case:
-	$(GOTEST) -v -cover $(GOPKGS)
+	$(GOTEST) -race -timeout 30s -cover $(GOPKGS)
+testv: prepare test-case-v
+test-case-v:
+	$(GOTEST) -v -race -timeout 30s -cover $(GOPKGS)
 
 # make package
 package: 
