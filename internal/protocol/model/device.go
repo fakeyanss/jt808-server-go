@@ -2,13 +2,6 @@ package model
 
 import "net"
 
-type TransportProtocol string
-
-const (
-	TCPProto TransportProtocol = "TCP"
-	UDPProto TransportProtocol = "UDP"
-)
-
 type Device struct {
 	ID          string            `json:"id"`
 	TransProto  TransportProtocol `json:"transProto"`

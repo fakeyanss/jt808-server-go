@@ -17,7 +17,7 @@ func TestJT808PacketCodec_Decode(t *testing.T) {
 		name    string
 		pc      *JT808PacketCodec
 		args    args
-		want    *model.Packet
+		want    *model.PacketData
 		wantErr bool
 	}{
 		{
@@ -35,7 +35,7 @@ func TestJT808PacketCodec_Decode(t *testing.T) {
 			args: args{
 				payload: util.Hex2Byte("7E0200001C2234567890150000000000000002080301CD779E0728C032003C0000008F230125145158FB7E"),
 			},
-			want: &model.Packet{
+			want: &model.PacketData{
 				Header: &model.MsgHeader{
 					MsgID: 0x0200,
 					MsgBodyAttr: model.MsgBodyAttr{
