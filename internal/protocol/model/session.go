@@ -1,6 +1,8 @@
 package model
 
-import "net"
+import (
+	"net"
+)
 
 const (
 	TCPProto TransportProtocol = "TCP"

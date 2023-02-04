@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"sync"
-	"time"
 
 	"github.com/pkg/errors"
 	"github.com/rs/zerolog"
@@ -16,64 +15,11 @@ import (
 
 var (
 	ErrMsgIDNotSupportted = errors.New("Msg id is not supportted")
+	ErrNotAuthorized      = errors.New("Not authorized")
 )
 
-// 消息处理方法调用表
-type processGroup struct {
-	msgCalls map[uint16]*call // <msgId, call>
-}
-
-type call struct {
-	newMsg func() model.JT808Msg                                       // newMsg必须定义
-	newCmd func() model.JT808Cmd                                       // newCmd可以为空
-	handle func(context.Context, model.JT808Msg, model.JT808Cmd) error // handle可以为空
-
-	process  func(context.Context, *model.ProcessData) error
-	callback func(context.Context, *model.ProcessData) error
-}
-
-// 表驱动，初始化消息处理方法组
-func initHandleGroup() *processGroup {
-	mc := make(map[uint16]*call)
-	// mc[0x0001] = &call{ // 通用应答
-	// newMsg: func() model.JT808Msg { return &model.Msg0001{} },
-	// }
-	mc[0x0002] = &call{ // 心跳
-		newMsg: func() model.JT808Msg { return &model.Msg0002{} },
-		newCmd: func() model.JT808Cmd { return &model.Cmd8001{} },
-		handle: handleMsg0002,
-
-		process: func(ctx context.Context, pd *model.ProcessData) error {
-
-			return nil
-		},
-	}
-	// mc[0x0003] = &call{ // 注销
-	// 	newMsg: func() model.JT808Msg { return &model.Msg0003{} },
-	// 	newCmd: func() model.JT808Cmd { return &model.Cmd8001{} },
-	// 	handle: handleMsg0003,
-	// }
-	// mc[0x0100] = &call{ // 注册
-	// 	newMsg: func() model.JT808Msg { return &model.Msg0100{} },
-	// 	newCmd: func() model.JT808Cmd { return &model.Cmd8100{} },
-	// 	handle: handleMsg0100,
-	// }
-	// mc[0x0102] = &call{ // 鉴权
-	// 	newMsg: func() model.JT808Msg { return &model.Msg0102{} },
-	// 	newCmd: func() model.JT808Cmd { return &model.Cmd8001{} },
-	// 	handle: handleMsg0102,
-	// }
-	// mc[0x0200] = &call{ // 位置信息上报
-	// 	newMsg: func() model.JT808Msg { return &model.Msg0200{} },
-	// 	newCmd: func() model.JT808Cmd { return &model.Cmd8001{} },
-	// 	handle: handleMsg0200,
-	// }
-
-	return &processGroup{msgCalls: mc}
-}
-
 // 处理消息的Handler接口
-type MsgHandler interface {
+type MsgProcessor interface {
 	// 处理Packet包，生成Msg
 	ProcessPacket(context.Context, *model.PacketData) (model.JT808Msg, error)
 
@@ -83,31 +29,81 @@ type MsgHandler interface {
 
 // 处理jt808消息的Handler方法
 type JT808MsgProcessor struct {
-	pg *processGroup
+	options processOptions
+}
+
+// 消息处理方法调用表, <msgId, action>
+type processOptions map[uint16]*action
+
+type action struct {
+	genData func() *model.ProcessData
+	process func(context.Context, *model.ProcessData) error
 }
 
 // processor单例
 var jt808MsgProcessorSingleton *JT808MsgProcessor
-var handlerOnce sync.Once
+var processOnce sync.Once
 
-func NewJT808MsgHandler() *JT808MsgProcessor {
-	handlerOnce.Do(func() {
+func NewJT808MsgProcessor() *JT808MsgProcessor {
+	processOnce.Do(func() {
 		jt808MsgProcessorSingleton = &JT808MsgProcessor{
-			pg: initHandleGroup(),
+			options: initProcessOption(),
 		}
 	})
 	return jt808MsgProcessorSingleton
 }
 
-func (mp *JT808MsgProcessor) ProcessPacket(ctx context.Context, pkt *model.PacketData) (msg model.JT808Msg, err error) {
+// 表驱动，初始化消息处理方法组
+func initProcessOption() processOptions {
+	options := make(processOptions)
+	options[0x0001] = &action{ // 通用应答
+		genData: func() *model.ProcessData {
+			return &model.ProcessData{Msg: &model.Msg0001{}}
+		},
+	}
+	options[0x0002] = &action{ // 心跳
+		genData: func() *model.ProcessData {
+			return &model.ProcessData{Msg: &model.Msg0002{}, Cmd: &model.Cmd8001{}}
+		},
+		process: processMsg0002,
+	}
+	options[0x0003] = &action{ // 注销
+		genData: func() *model.ProcessData {
+			return &model.ProcessData{Msg: &model.Msg0003{}, Cmd: &model.Cmd8001{}}
+		},
+		process: processMsg0003,
+	}
+	options[0x0100] = &action{ // 注册
+		genData: func() *model.ProcessData {
+			return &model.ProcessData{Msg: &model.Msg0100{}, Cmd: &model.Cmd8100{}}
+		},
+		process: processMsg0100,
+	}
+	options[0x0102] = &action{ // 鉴权
+		genData: func() *model.ProcessData {
+			return &model.ProcessData{Msg: &model.Msg0102{}, Cmd: &model.Cmd8001{}}
+		},
+		process: processMsg0102,
+	}
+	// mc[0x0200] = &call{ // 位置信息上报
+	// 	newMsg: func() model.JT808Msg { return &model.Msg0200{} },
+	// 	newCmd: func() model.JT808Cmd { return &model.Cmd8001{} },
+	// 	handle: handleMsg0200,
+	// }
+
+	return options
+}
+
+func (mp *JT808MsgProcessor) Process(ctx context.Context, pkt *model.PacketData) (*model.ProcessData, error) {
 	msgID := pkt.Header.MsgID
-	funcNewMsg := mp.pg.msgCalls[msgID].newMsg
-	if funcNewMsg == nil {
+	dataFunc := mp.options[msgID].genData
+	if dataFunc == nil {
 		return nil, ErrMsgIDNotSupportted
 	}
-	msg = funcNewMsg()
+	data := dataFunc()
 
-	err = msg.Decode(pkt)
+	msg := data.Msg
+	err := msg.Decode(pkt)
 	if err != nil {
 		return nil, errors.Wrap(err, "Fail to decode packet to jtmsg")
 	}
@@ -125,13 +121,16 @@ func (mp *JT808MsgProcessor) ProcessPacket(ctx context.Context, pkt *model.Packe
 			Msg("Received jt808 msg.")
 	}
 
-	return msg, nil
-}
+	if data.Cmd == nil {
+		return nil, nil // 此类型msg不需要回复cmd
+	}
+	cmd := data.Cmd
+	err = cmd.GenCmd(msg)
+	if err != nil {
+		return data, errors.Wrap(err, "Fail to generate jtcmd")
+	}
 
-func (mp *JT808MsgProcessor) ProcessMsg(ctx context.Context, msg model.JT808Msg) (cmd model.JT808Cmd, err error) {
-	msgID := msg.GetHeader().MsgID
-	funcNewCmd := mp.pg.msgCalls[msgID].newCmd
-
+	// print log of cmd content
 	defer func() {
 		if cmd == nil || log.Logger.GetLevel() != zerolog.DebugLevel {
 			return
@@ -141,77 +140,58 @@ func (mp *JT808MsgProcessor) ProcessMsg(ctx context.Context, msg model.JT808Msg)
 		session := ctx.Value(model.SessionCtxKey{}).(*model.Session)
 		log.Debug().
 			Str("id", session.ID).
-			RawJSON("cmd", cmdJSON).
-			Msg("Sending jt808 cmd.")
+			RawJSON("cmd", cmdJSON). // for debug
+			Msg("Generating jt808 cmd.")
 	}()
 
-	if funcNewCmd == nil {
-		// 此类型msg不需要回复cmd
-		return nil, nil
-	}
-	cmd = funcNewCmd()
-
-	err = cmd.GenCmd(msg)
+	processFunc := mp.options[msgID].process
+	err = processFunc(ctx, data)
 	if err != nil {
-		return nil, errors.Wrap(err, "Fail to generate jtcmd")
+		return data, errors.Wrap(err, "Fail to process data")
 	}
-
-	funcHandle := mp.pg.msgCalls[msgID].handle
-	if funcHandle == nil {
-		// 此类型msg不需要handle处理
-		return cmd, err
-	}
-
-	err = funcHandle(ctx, msg, cmd)
-	if err != nil {
-		return nil, errors.Wrap(err, "Fail to handle jtmsg")
-	}
-
-	return cmd, err
-}
-
-func (mp *JT808MsgProcessor) ProcessMsg1(ctx context.Context, pkt *model.PacketData) (*model.ProcessData, error) {
-	return nil, nil
+	return data, nil
 }
 
 // 收到心跳，应刷新终端缓存有效期
-func handleMsg0002(ctx context.Context, msg model.JT808Msg, cmd model.JT808Cmd) error {
+func processMsg0002(ctx context.Context, data *model.ProcessData) error {
 	session := ctx.Value(model.SessionCtxKey{}).(*model.Session)
 	device, err := storage.GetDevice(session.ID)
 
 	// 缓存不存在，说明连接已断开，需要返回错误
 	if errors.Is(err, storage.ErrDeviceNotFound) {
+		return errors.Wrap(err, "Fail to find device cache")
 	}
 
-	device.LastComTime = time.Now().UnixMilli()
 	storage.CacheDevice(device)
 
 	return nil
 }
 
-// 收到注销，应清除缓存，断开连接
-func handleMsg0003(ctx context.Context, msg model.JT808Msg, cmd model.JT808Cmd) error {
+// 收到注销，应清除缓存，断开连接。
+// 为避免连接TIMEWAIT，应等待对方主动关闭
+func processMsg0003(ctx context.Context, data *model.ProcessData) error {
+	session := ctx.Value(model.SessionCtxKey{}).(*model.Session)
+	storage.DelDevice(session.ID)
 	return nil
 }
 
 // 收到注册，应校验设备ID，如果可注册，则缓存设备信息并返回鉴权码
-func handleMsg0100(ctx context.Context, msg model.JT808Msg, cmd model.JT808Cmd) error {
+func processMsg0100(ctx context.Context, data *model.ProcessData) error {
 	session := ctx.Value(model.SessionCtxKey{}).(*model.Session)
 	device := &model.Device{
-		ID:          session.ID,
-		TransProto:  session.GetTransProto(),
-		Conn:        session.Conn,
-		Authed:      false,
-		LastComTime: time.Now().UnixMilli(),
+		ID:         session.ID,
+		TransProto: session.GetTransProto(),
+		Conn:       session.Conn,
+		Authed:     false,
 	}
 	storage.CacheDevice(device)
 	return nil
 }
 
-func handleMsg0102(ctx context.Context, msg model.JT808Msg, cmd model.JT808Cmd) error {
+func processMsg0102(ctx context.Context, data *model.ProcessData) error {
 	return nil
 }
 
-func handleMsg0200(ctx context.Context, msg model.JT808Msg, cmd model.JT808Cmd) error {
+func handleMsg0200(ctx context.Context, data *model.ProcessData) error {
 	return nil
 }

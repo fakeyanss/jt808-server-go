@@ -12,6 +12,7 @@ import (
 
 	"github.com/fakeYanss/jt808-server-go/internal/protocol"
 	"github.com/fakeYanss/jt808-server-go/internal/protocol/model"
+	"github.com/fakeYanss/jt808-server-go/internal/storage"
 	"github.com/fakeYanss/jt808-server-go/pkg/routines"
 )
 
@@ -49,6 +50,7 @@ func (serv *TCPServer) Start() {
 		} else {
 			session := serv.accept(conn)
 			routines.GoSafe(func() { serv.serve(session) })
+			// go serv.serve(session)
 		}
 	}
 }
@@ -105,7 +107,7 @@ func (serv *TCPServer) remove(session *model.Session) {
 func (serv *TCPServer) serve(session *model.Session) {
 	defer serv.remove(session)
 
-	pg := protocol.NewProcessGroup(session.Conn)
+	pg := protocol.NewPipeline(session.Conn)
 	for {
 		// 记录value ctx
 		ctx := context.WithValue(context.Background(), model.SessionCtxKey{}, session)
@@ -122,7 +124,7 @@ func (serv *TCPServer) serve(session *model.Session) {
 			Msg("Failed to serve session")
 
 		switch {
-		case errors.Is(err, io.EOF), errors.Is(err, io.ErrClosedPipe), errors.Is(err, net.ErrClosed):
+		case errors.Is(err, io.EOF), errors.Is(err, io.ErrClosedPipe), errors.Is(err, net.ErrClosed), errors.Is(err, storage.ErrDeviceNotFound):
 			return // close connection when EOF or closed
 		default:
 			time.Sleep(1 * time.Second)
@@ -140,7 +142,7 @@ func (serv *TCPServer) Send(id string, cmd model.JT808Cmd) {
 		return
 	}
 
-	pg := protocol.NewProcessGroup(session.Conn)
+	pg := protocol.NewPipeline(session.Conn)
 
 	// 记录value ctx
 	ctx := context.WithValue(context.Background(), model.CmdCtxKey{}, cmd)

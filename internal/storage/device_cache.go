@@ -20,7 +20,7 @@ func GetDevice(id string) (*model.Device, error) {
 }
 
 func CacheDevice(d *model.Device) {
-	d.LastComTime = time.Now().Unix()
+	d.LastComTime = time.Now().UnixMilli()
 	deviceCache.Store(d.ID, d)
 }
 
