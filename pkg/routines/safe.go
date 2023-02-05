@@ -2,6 +2,7 @@ package routines
 
 import (
 	"fmt"
+	"runtime/debug"
 
 	"github.com/rs/zerolog/log"
 )
@@ -27,6 +28,7 @@ func Recover(cleanups ...func()) {
 	}
 
 	if p := recover(); p != nil {
-		log.Error().Msg(fmt.Sprint(p))
+		s := string(debug.Stack())
+		log.Error().Msgf("err=%s, stack=%s", fmt.Sprint(p), s)
 	}
 }

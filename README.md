@@ -17,6 +17,8 @@
 
 ## 项目设计
 
+![2023-02-05_jt808-server-go_msgflow](https://ghproxy.com/https://raw.githubusercontent.com/fakeYanss/imgplace/master/2023/2023-02-05_jt808-server-go_msgflow.png)
+
 1. FrameHandler 调用 TCP read，读取终端送达的字节流，在这里称作 FramePayload
 2. PacketCodec 将 FramePayload 解码成 PacketData
 3. MsgHandler 处理 PacketData，转换为 JT808Msg

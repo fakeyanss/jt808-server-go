@@ -50,7 +50,6 @@ func (serv *TCPServer) Start() {
 		} else {
 			session := serv.accept(conn)
 			routines.GoSafe(func() { serv.serve(session) })
-			// go serv.serve(session)
 		}
 	}
 }
