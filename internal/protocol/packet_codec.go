@@ -4,6 +4,7 @@ import (
 	"sync"
 
 	"github.com/pkg/errors"
+	"github.com/rs/zerolog/log"
 
 	"github.com/fakeYanss/jt808-server-go/internal/protocol/model"
 )
@@ -34,7 +35,7 @@ func NewJT808PacketCodec() *JT808PacketCodec {
 // Decode JT808 packet.
 //
 // 反转义 -> 校验 -> 反序列化
-func (pc *JT808PacketCodec) Decode(payload []byte) (*model.Packet, error) {
+func (pc *JT808PacketCodec) Decode(payload []byte) (*model.PacketData, error) {
 	pkt := pc.unescape(payload)
 
 	verifyCode := payload[len(payload)-1]
@@ -43,7 +44,7 @@ func (pc *JT808PacketCodec) Decode(payload []byte) (*model.Packet, error) {
 		return nil, err
 	}
 
-	pd := &model.Packet{
+	pd := &model.PacketData{
 		Header:     &model.MsgHeader{},
 		VerifyCode: verifyCode,
 	}
@@ -136,7 +137,9 @@ func (pc *JT808PacketCodec) verify(pkt []byte) ([]byte, error) {
 	if expected == actual {
 		return pkt[:n-1], nil
 	}
-	return nil, errors.WithMessagef(ErrVerifyFailed, "expect=%v, actual=%v", expected, actual)
+	log.Debug().
+		Msgf("verify expect=%v, but actual=%v", expected, actual)
+	return nil, ErrVerifyFailed
 }
 
 // 生成校验码

@@ -2,16 +2,18 @@ package server
 
 import (
 	"context"
-	"errors"
 	"io"
 	"net"
 	"sync"
 	"time"
 
+	"github.com/pkg/errors"
 	"github.com/rs/zerolog/log"
 
 	"github.com/fakeYanss/jt808-server-go/internal/protocol"
 	"github.com/fakeYanss/jt808-server-go/internal/protocol/model"
+	"github.com/fakeYanss/jt808-server-go/internal/storage"
+	"github.com/fakeYanss/jt808-server-go/pkg/routines"
 )
 
 type TCPServer struct {
@@ -39,7 +41,7 @@ func (serv *TCPServer) Listen(addr string) error {
 }
 
 func (serv *TCPServer) Start() {
-	go serv.monitorSessionCnt()
+	serv.monitorSessionCnt()
 
 	for {
 		conn, err := serv.listener.Accept()
@@ -47,7 +49,7 @@ func (serv *TCPServer) Start() {
 			log.Error().Err(err).Msg("Fail to accept ")
 		} else {
 			session := serv.accept(conn)
-			go serv.serve(session)
+			routines.GoSafe(func() { serv.serve(session) })
 		}
 	}
 }
@@ -57,28 +59,27 @@ func (serv *TCPServer) Stop() {
 }
 
 func (serv *TCPServer) monitorSessionCnt() {
-	for {
-		log.Debug().
-			Int("total_conn_cnt", len(serv.sessions)).
-			Msg("Monitoring total conn count")
+	routines.GoSafe(func() {
+		for {
+			log.Debug().
+				Int("total_conn_cnt", len(serv.sessions)).
+				Msg("Monitoring total conn count")
 
-		time.Sleep(10 * time.Second)
-	}
+			time.Sleep(10 * time.Second)
+		}
+	})
 }
 
 // 将conn封装为逻辑session
 func (serv *TCPServer) accept(conn net.Conn) *model.Session {
 	remoteAddr := conn.RemoteAddr().String()
-
 	serv.mutex.Lock()
-	defer serv.mutex.Unlock()
-
 	session := &model.Session{
 		Conn: conn,
 		ID:   remoteAddr, // using remote addr default
 	}
-
 	serv.sessions[remoteAddr] = session
+	serv.mutex.Unlock()
 
 	log.Debug().
 		Str("remote_addr", remoteAddr).
@@ -92,6 +93,7 @@ func (serv *TCPServer) remove(session *model.Session) {
 	serv.mutex.Lock()
 	defer serv.mutex.Unlock()
 
+	session.Conn.Close()
 	delete(serv.sessions, session.ID)
 
 	log.Debug().
@@ -104,17 +106,12 @@ func (serv *TCPServer) remove(session *model.Session) {
 func (serv *TCPServer) serve(session *model.Session) {
 	defer serv.remove(session)
 
-	processGroup := &protocol.ProcessGroup{
-		FH: protocol.NewJT808FrameHandler(session.Conn),
-		PC: protocol.NewJT808PacketCodec(),
-		MH: protocol.NewJT808MsgHandler(),
-	}
-
+	pg := protocol.NewPipeline(session.Conn)
 	for {
 		// 记录value ctx
 		ctx := context.WithValue(context.Background(), model.SessionCtxKey{}, session)
 
-		err := protocol.ProcessConn(ctx, processGroup)
+		err := pg.ProcessConnRead(ctx)
 
 		if err == nil {
 			continue
@@ -124,8 +121,12 @@ func (serv *TCPServer) serve(session *model.Session) {
 			Err(err).
 			Str("id", session.ID).
 			Msg("Failed to serve session")
-		if errors.Is(err, io.EOF) {
-			break // close connection when EOF
+
+		switch {
+		case errors.Is(err, io.EOF), errors.Is(err, io.ErrClosedPipe), errors.Is(err, net.ErrClosed), errors.Is(err, storage.ErrDeviceNotFound):
+			return // close connection when EOF or closed
+		default:
+			time.Sleep(1 * time.Second)
 		}
 	}
 }
@@ -140,22 +141,24 @@ func (serv *TCPServer) Send(id string, cmd model.JT808Cmd) {
 		return
 	}
 
-	frameHandler := protocol.NewJT808FrameHandler(session.Conn)
+	pg := protocol.NewPipeline(session.Conn)
 
-	packet, err := cmd.Encode()
-	if err != nil {
-		log.Error().
-			Err(err).
-			Str("id", id).
-			Msg("Fail to encode cmd to packet.")
+	// 记录value ctx
+	ctx := context.WithValue(context.Background(), model.CmdCtxKey{}, cmd)
+
+	err := pg.ProcessConnWrite(ctx)
+
+	if err == nil {
 		return
 	}
-	err = frameHandler.Send(packet)
-	if err != nil {
-		log.Error().
-			Err(err).
-			Str("device", id).
-			Msg("Fail to send cmd to device.")
-		return
+
+	if errors.Is(err, io.ErrClosedPipe) {
+		serv.remove(session)
 	}
+
+	errMsg := "Failed to send jtcmd to device"
+	log.Error().
+		Err(err).
+		Str("device", id).
+		Msg(errMsg)
 }

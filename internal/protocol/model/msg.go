@@ -8,7 +8,7 @@ import (
 )
 
 type JT808Msg interface {
-	Decode(*Packet) error // Packet -> JT808Msg
+	Decode(*PacketData) error // Packet -> JT808Msg
 	GetHeader() *MsgHeader
 }
 
@@ -20,7 +20,7 @@ type Msg0001 struct {
 	Result             uint8      `json:"result"`             // 结果，0成功/确认，1失败，2消息有误，3不支持
 }
 
-func (m *Msg0001) Decode(packet *Packet) error {
+func (m *Msg0001) Decode(packet *PacketData) error {
 	m.Header = packet.Header
 
 	pkt := packet.Body
@@ -48,7 +48,7 @@ type Msg0002 struct {
 	// 消息体为空
 }
 
-func (m *Msg0002) Decode(packet *Packet) error {
+func (m *Msg0002) Decode(packet *PacketData) error {
 	m.Header = packet.Header
 	return nil
 }
@@ -63,7 +63,7 @@ type Msg0003 struct {
 	// 消息体为空
 }
 
-func (m *Msg0003) Decode(packet *Packet) error {
+func (m *Msg0003) Decode(packet *PacketData) error {
 	m.Header = packet.Header
 	return nil
 }
@@ -84,7 +84,7 @@ type Msg0100 struct {
 	PlateNumber    string     `json:"plateNumber"`    // 车牌号
 }
 
-func (m *Msg0100) Decode(packet *Packet) error {
+func (m *Msg0100) Decode(packet *PacketData) error {
 	m.Header = packet.Header
 
 	pkt := packet.Body
@@ -131,7 +131,7 @@ type Msg0102 struct {
 	SoftwareVersion string     `json:"softwareVersion"` // 软件版本号
 }
 
-func (m *Msg0102) Decode(packet *Packet) error {
+func (m *Msg0102) Decode(packet *PacketData) error {
 	m.Header = packet.Header
 
 	pkt := packet.Body
@@ -177,7 +177,7 @@ type Msg0200 struct {
 	Time      string     `json:"time"`      // YY-MM-DD-hh-mm-ss(GMT+8 时间)
 }
 
-func (m *Msg0200) Decode(packet *Packet) error {
+func (m *Msg0200) Decode(packet *PacketData) error {
 	m.Header = packet.Header
 
 	pkt := packet.Body
