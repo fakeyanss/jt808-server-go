@@ -3,6 +3,8 @@ package protocol
 import (
 	"context"
 	"encoding/json"
+	"strconv"
+	"strings"
 	"sync"
 
 	"github.com/pkg/errors"
@@ -11,6 +13,7 @@ import (
 
 	"github.com/fakeYanss/jt808-server-go/internal/protocol/model"
 	"github.com/fakeYanss/jt808-server-go/internal/storage"
+	"github.com/fakeYanss/jt808-server-go/internal/util/hash"
 )
 
 var (
@@ -27,30 +30,12 @@ type MsgProcessor interface {
 	ProcessMsg(context.Context, model.JT808Msg) (model.JT808Cmd, error)
 }
 
-// 处理jt808消息的Handler方法
-type JT808MsgProcessor struct {
-	options processOptions
-}
-
 // 消息处理方法调用表, <msgId, action>
 type processOptions map[uint16]*action
 
 type action struct {
 	genData func() *model.ProcessData
 	process func(context.Context, *model.ProcessData) error
-}
-
-// processor单例
-var jt808MsgProcessorSingleton *JT808MsgProcessor
-var processOnce sync.Once
-
-func NewJT808MsgProcessor() *JT808MsgProcessor {
-	processOnce.Do(func() {
-		jt808MsgProcessorSingleton = &JT808MsgProcessor{
-			options: initProcessOption(),
-		}
-	})
-	return jt808MsgProcessorSingleton
 }
 
 // 表驱动，初始化消息处理方法组
@@ -85,13 +70,32 @@ func initProcessOption() processOptions {
 		},
 		process: processMsg0102,
 	}
-	// mc[0x0200] = &call{ // 位置信息上报
-	// 	newMsg: func() model.JT808Msg { return &model.Msg0200{} },
-	// 	newCmd: func() model.JT808Cmd { return &model.Cmd8001{} },
-	// 	handle: handleMsg0200,
-	// }
+	options[0x0200] = &action{ // 位置信息上报
+		genData: func() *model.ProcessData {
+			return &model.ProcessData{Msg: &model.Msg0200{}, Cmd: &model.Cmd8001{}}
+		},
+		process: handleMsg0200,
+	}
 
 	return options
+}
+
+// 处理jt808消息的Handler方法
+type JT808MsgProcessor struct {
+	options processOptions
+}
+
+// processor单例
+var jt808MsgProcessorSingleton *JT808MsgProcessor
+var processorInitOnce sync.Once
+
+func NewJT808MsgProcessor() *JT808MsgProcessor {
+	processorInitOnce.Do(func() {
+		jt808MsgProcessorSingleton = &JT808MsgProcessor{
+			options: initProcessOption(),
+		}
+	})
+	return jt808MsgProcessorSingleton
 }
 
 func (mp *JT808MsgProcessor) Process(ctx context.Context, pkt *model.PacketData) (*model.ProcessData, error) {
@@ -155,41 +159,87 @@ func (mp *JT808MsgProcessor) Process(ctx context.Context, pkt *model.PacketData)
 // 收到心跳，应刷新终端缓存有效期
 func processMsg0002(ctx context.Context, data *model.ProcessData) error {
 	session := ctx.Value(model.SessionCtxKey{}).(*model.Session)
-	device, err := storage.GetDevice(session.ID)
+	cache := storage.GetDeviceCache()
+	device, err := cache.GetDeviceByID(session.ID)
 
-	// 缓存不存在，说明连接已断开，需要返回错误
+	// 缓存不存在，说明设备不合法，需要返回错误，让服务层处理关闭
 	if errors.Is(err, storage.ErrDeviceNotFound) {
 		return errors.Wrap(err, "Fail to find device cache")
 	}
 
-	storage.CacheDevice(device)
+	cache.CacheDevice(device)
 
 	return nil
 }
 
 // 收到注销，应清除缓存，断开连接。
-// 为避免连接TIMEWAIT，应等待对方主动关闭
 func processMsg0003(ctx context.Context, data *model.ProcessData) error {
 	session := ctx.Value(model.SessionCtxKey{}).(*model.Session)
-	storage.DelDevice(session.ID)
+	cache := storage.GetDeviceCache()
+	cache.DelDeviceByID(session.ID)
+	// 为避免连接TIMEWAIT，应等待对方主动关闭
 	return nil
 }
 
 // 收到注册，应校验设备ID，如果可注册，则缓存设备信息并返回鉴权码
 func processMsg0100(ctx context.Context, data *model.ProcessData) error {
+	msg := data.Msg.(*model.Msg0100)
+
+	cache := storage.GetDeviceCache()
+	// 校验注册逻辑
+	cmd := data.Cmd.(*model.Cmd8100)
+	// 车辆已被注册
+	if cache.HasPlate(msg.PlateNumber) {
+		cmd.Result = model.ResCarAlreadyRegister
+	}
+	// 终端已被注册
+	if cache.HasID(msg.DeviceID) {
+		cmd.Result = model.ResDeviceAlreadyRegister
+	}
+
 	session := ctx.Value(model.SessionCtxKey{}).(*model.Session)
 	device := &model.Device{
-		ID:         session.ID,
-		TransProto: session.GetTransProto(),
-		Conn:       session.Conn,
-		Authed:     false,
+		ID:          msg.DeviceID,
+		PlateNumber: msg.PlateNumber,
+		SessionID:   session.ID,
+		TransProto:  session.GetTransProto(),
+		Conn:        session.Conn,
+		Authed:      false,
+		Status:      model.DeviceOffline,
 	}
-	storage.CacheDevice(device)
+	cmd.AuthCode = genAuthCode(device) // 设置鉴权码
+	cache.CacheDevice(device)
 	return nil
 }
 
+// 收到鉴权，应校验鉴权token
 func processMsg0102(ctx context.Context, data *model.ProcessData) error {
+	msg := data.Msg.(*model.Msg0102)
+
+	cache := storage.GetDeviceCache()
+	device, err := cache.GetDeviceByPhone(msg.Header.PhoneNumber)
+	// 缓存不存在，说明设备不合法，需要返回错误，让服务层处理关闭
+	if errors.Is(err, storage.ErrDeviceNotFound) {
+		return errors.Wrap(err, "Fail to find device cache")
+	}
+
+	cmd := data.Cmd.(*model.Cmd8001)
+	// 校验鉴权逻辑
+	if msg.AuthCode != genAuthCode(device) {
+		cmd.Result = model.ResultFail
+	}
+
 	return nil
+}
+
+func genAuthCode(d *model.Device) string {
+	codeBuilder := new(strings.Builder)
+	codeBuilder.WriteString(string(d.ID))
+	codeBuilder.WriteByte('_')
+	codeBuilder.Write([]byte(d.PlateNumber))
+	codeBuilder.WriteByte('_')
+	codeBuilder.Write([]byte(d.PhoneNumber))
+	return strconv.Itoa(int(hash.Hash(codeBuilder.String())))
 }
 
 func handleMsg0200(ctx context.Context, data *model.ProcessData) error {

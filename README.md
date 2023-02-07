@@ -30,6 +30,10 @@
 - [x] TCP 双向通信基础逻辑实现
 - [x] codec 层实现
 
+### 平台与终端的连接处理
+
+![2023-02-07_20230207140003](https://ghproxy.com/https://raw.githubusercontent.com/fakeYanss/imgplace/master/2023/2023-02-07_20230207140003.png)
+
 ## 支持的功能
 
 ### 支持的消息列表

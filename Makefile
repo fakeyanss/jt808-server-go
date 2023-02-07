@@ -1,69 +1,67 @@
-# init project path
+# 初始化项目目录变量
 HOMEDIR := $(shell pwd)
 OUTDIR  := $(HOMEDIR)/output
-CONFDIR := $(OUTDIR)/conf
+COVDIR  := $(HOMEDIR)/cov
 
-# init command params
-GO      := go
-GOROOT  := $(shell $(GO) env GOROOT)
-GOPATH  := $(shell $(GO) env GOPATH)
-GOMOD   := $(GO) mod
-GOBUILD := $(GO) build
-GOTEST  := $(GO) test -race -timeout 30s -gcflags="-N -l"
-GOPKGS  := $$($(GO) list ./...| grep -vE "vendor")
+GOPKGS  := $$(go list ./...| grep -vE "vendor")
 
-# test cover files
-COVPROF := $(HOMEDIR)/covprof.out  # coverage profile
-COVFUNC := $(HOMEDIR)/covfunc.txt  # coverage profile information for each function
-COVHTML := $(HOMEDIR)/covhtml.html # HTML representation of coverage profile
+# 设置编译时所需要的 Go 环境
+export GOENV = $(HOMEDIR)/go.env
 
+# 测试覆盖率文件 
+COVPROF := $(COVDIR)/covprof.out  # coverage profile
+COVFUNC := $(COVDIR)/covfunc.txt  # coverage profile information for each function
+COVHTML := $(COVDIR)/covhtml.html # HTML representation of coverage profile
+
+# 程序编译产出信息
 PROG_NAME    := jt808-server-go
 BUILD_TIME   := $(shell date +'%Y-%m-%dT%H:%M:%S')
 $(info BUILD_TIME: $(BUILD_TIME))
 BUILD_COMMIT := $(shell git rev-parse HEAD)
 $(info BUILD_COMMIT: $(BUILD_COMMIT))
 
-# make, make all
-all: prepare compile package
+# 执行编译，可使用命令 make 或 make all 执行， 顺序执行 prepare -> lint -> compile -> test -> package 几个阶段
+all: prepare lint compile test package
 
-# set proxy env
+# prepare阶段， 使用 bcloud 下载非 Go 依赖，可单独执行命令: make prepare
+prepare: prepare-dep
+prepare-dep:
+	$(shell bash $(CURDIR)/scripts/install.sh golangcilint) # 下载非 Go 依赖
+	git version # 低于 2.17.1 可能不能正常工作
+	go env # 打印出 go 环境信息，可用于排查问题
+
 set-env:
-	$(GO) env -w GO111MODULE=on
-	$(shell bash $(CURDIR)/scripts/install.sh golangcilint)
+	go mod download -x || go mod download -x # 下载 Go 依赖
 
-#make prepare, download dependencies
-prepare: gomod
-
-gomod: set-env
-	$(GOMOD) download -x
-
-#make compile
+# complile 阶段，执行编译命令，可单独执行命令: make compile
 compile: build
+build: set-env
+	go build -o $(HOMEDIR)/${PROG_NAME} \
+	-ldflags "-X main.buildTime=$(BUILD_TIME) -X main.buildCommit=$(BUILD_COMMIT) -X main.progName=$(PROG_NAME)" \
+	main.go
 
-build:
-	$(GOBUILD) -o $(OUTDIR)/$(PROG_NAME) \
-	            -ldflags "-X main.buildTime=$(BUILD_TIME) -X main.buildCommit=$(BUILD_COMMIT) -X main.progName=$(PROG_NAME)"
+# test 阶段，进行单元测试， 可单独执行命令: make test
+test: test-case
+test-case: set-env
+	mkdir -p $(COVDIR)
+	go test -race -timeout=120s -v -cover $(GOPKGS) -coverprofile=$(COVPROF) | tee $(COVDIR)/unittest.txt
+	go tool cover -func=$(COVPROF) -o $(COVFUNC)
+	go tool cover -html=$(COVPROF) -o $(COVHTML)
+
+# package 阶段，对编译产出进行打包，输出到 output 目录， 可单独执行命令: make package
+package: package-bin
+package-bin:
+	mkdir -p $(OUTDIR)/bin
+	mv $(HOMEDIR)/${PROG_NAME} $(OUTDIR)/bin/
+	mkdir -p $(OUTDIR)/bin
+	cp -r $(HOMEDIR)/configs/ $(OUTDIR)/conf/
 
 lint: set-env
 	golangci-lint run ./...
 
-# make test, test your code
-test: prepare test-case
-test-case:
-	$(GOTEST) -race -timeout 30s -cover $(GOPKGS)
-testv: prepare test-case-v
-test-case-v:
-	$(GOTEST) -v -race -timeout 30s -cover $(GOPKGS)
-
-# make package
-package: 
-	mkdir -p $(CONFDIR) 
-	cp -r configs/ $(CONFDIR)
-
-# make clean
+# clean 阶段，清除过程中的输出， 可单独执行命令: make clean
 clean:
-	$(GO) clean
-	rm -rf $(OUTDIR)
+	rm -rf $(OUTDIR) $(COVDIR)
 
-# avoid filename conflict and speed up build 
-.PHONY: all prepare compile test package clean build
+# avoid filename conflict and speed up build
+.PHONY: all prepare compile test package clean build lint

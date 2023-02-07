@@ -8,22 +8,6 @@ import (
 	"github.com/fakeYanss/jt808-server-go/internal/util"
 )
 
-// 消息体属性字段的bit位
-const (
-	BodyLengthBitInMsgBodyAttr    uint16 = 0b0000001111111111
-	EncryptionBitInMsgBodyAttr    uint16 = 0b0001110000000000
-	FragmentationBitInMsgBodyAttr uint16 = 0b0010000000000000
-	VersionSignBitInMsgBodyAttr   uint16 = 0b0100000000000000
-	ExtraBitInMsgBodyAttr         uint16 = 0b1000000000000000
-)
-
-// 加密类型
-const (
-	EncryptionNone    = "Encryption None"
-	EncryptionRSA     = "Encryption RSA"
-	EncryptionUnknown = "Encryption Unknown"
-)
-
 var (
 	ErrDecodeHeader = errors.New("Decode header error")
 )
@@ -114,6 +98,22 @@ func (h *MsgHeader) Encode() ([]byte, error) {
 	return pkt, nil
 }
 
+// 消息体属性字段的bit位
+const (
+	bodyLengthBit    uint16 = 0b0000001111111111
+	encryptionBit    uint16 = 0b0001110000000000
+	fragmentationBit uint16 = 0b0010000000000000
+	versionSignBit   uint16 = 0b0100000000000000
+	extraBit         uint16 = 0b1000000000000000
+)
+
+// 加密类型
+const (
+	EncryptionNone    = "Encryption None"
+	EncryptionRSA     = "Encryption RSA"
+	EncryptionUnknown = "Encryption Unknown"
+)
+
 // 定义消息体属性
 type MsgBodyAttr struct {
 	BodyLength       uint16 `json:"bodyLength"`       // 消息体长度
@@ -129,10 +129,10 @@ func (a *MsgBodyAttr) Decode(sub []byte) error {
 	// 2-3位字节转为二进制数字
 	bitNum := binary.BigEndian.Uint16(sub)
 
-	a.BodyLength = bitNum & BodyLengthBitInMsgBodyAttr // 消息体长度 低10位
+	a.BodyLength = bitNum & bodyLengthBit // 消息体长度 低10位
 
 	// 加密方式 10-12位
-	a.encryptionOriginal = uint8((bitNum & EncryptionBitInMsgBodyAttr) >> 10)
+	a.encryptionOriginal = uint8((bitNum & encryptionBit) >> 10)
 	switch a.encryptionOriginal {
 	case 0b000:
 		a.Encryption = EncryptionNone
@@ -142,10 +142,10 @@ func (a *MsgBodyAttr) Decode(sub []byte) error {
 		a.Encryption = EncryptionUnknown
 	}
 
-	a.PacketFragmented = (bitNum&FragmentationBitInMsgBodyAttr>>13 == 1) // 分包 13位
+	a.PacketFragmented = (bitNum&fragmentationBit>>13 == 1) // 分包 13位
 
-	a.VersionSign = (bitNum&VersionSignBitInMsgBodyAttr>>14 == 1) // 版本标识 14位
-	a.Extra = uint8(bitNum & ExtraBitInMsgBodyAttr >> 15)         // 保留 15位
+	a.VersionSign = (bitNum&versionSignBit>>14 == 1) // 版本标识 14位
+	a.Extra = uint8(bitNum & extraBit >> 15)         // 保留 15位
 	return nil
 }
 
