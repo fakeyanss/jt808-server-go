@@ -49,7 +49,7 @@ func (c *Cmd8001) Encode() (pkt []byte, err error) {
 
 	pkt = append(pkt, byte(c.Result))
 
-	c.Header.BodyLength = uint16(len(pkt))
+	c.Header.Attr.BodyLength = uint16(len(pkt))
 
 	headerPkt, err := c.Header.Encode()
 	if err != nil {
@@ -100,7 +100,7 @@ func (c *Cmd8100) Encode() (pkt []byte, err error) {
 
 	pkt = append(pkt, []byte(c.AuthCode)...)
 
-	c.Header.BodyLength = uint16(len(pkt))
+	c.Header.Attr.BodyLength = uint16(len(pkt))
 
 	headerPkt, err := c.Header.Encode()
 	if err != nil {

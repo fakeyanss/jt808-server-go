@@ -4,8 +4,12 @@ import (
 	"bytes"
 	"encoding/binary"
 
+	"github.com/pkg/errors"
+
 	"github.com/fakeYanss/jt808-server-go/internal/util"
 )
+
+var ErrDecodeMsg = errors.New("Fail to decode Msg")
 
 type JT808Msg interface {
 	Decode(*PacketData) error // Packet -> JT808Msg
@@ -96,14 +100,27 @@ func (m *Msg0100) Decode(packet *PacketData) error {
 	m.CityID = binary.BigEndian.Uint16(pkt[idx : idx+2])
 	idx += 2
 
-	m.ManufacturerID = string(pkt[idx : idx+5])
-	idx += 5
+	if m.Header.Attr.VersionDesc == Version2019 {
+		m.ManufacturerID = string(bytes.TrimRight(pkt[idx:idx+11], "\x00"))
+		idx += 11
 
-	m.DeviceMode = string(bytes.TrimRight(pkt[idx:idx+8], "\x00"))
-	idx += 8
+		m.DeviceMode = string(bytes.TrimRight(pkt[idx:idx+30], "\x00"))
+		idx += 30
 
-	m.DeviceID = string(pkt[idx : idx+7])
-	idx += 7
+		m.DeviceID = string(bytes.TrimRight(pkt[idx:idx+30], "\x00"))
+		idx += 30
+	} else if m.Header.Attr.VersionDesc == Version2013 {
+		m.ManufacturerID = string(pkt[idx : idx+5])
+		idx += 5
+
+		m.DeviceMode = string(bytes.TrimRight(pkt[idx:idx+20], "\x00"))
+		idx += 20
+
+		m.DeviceID = string(bytes.TrimRight(pkt[idx:idx+7], "\x00"))
+		idx += 7
+	} else {
+		return ErrDecodeHeader
+	}
 
 	m.PlateColor = pkt[idx]
 	idx++

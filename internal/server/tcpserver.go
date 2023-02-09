@@ -46,7 +46,9 @@ func (serv *TCPServer) Start() {
 	for {
 		conn, err := serv.listener.Accept()
 		if err != nil {
-			log.Error().Err(err).Msg("Fail to accept ")
+			log.Error().
+				Err(err).
+				Msg("Fail to do listener accept")
 		} else {
 			session := serv.accept(conn)
 			routines.GoSafe(func() { serv.serve(session) })

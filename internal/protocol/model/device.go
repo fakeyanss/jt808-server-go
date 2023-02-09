@@ -79,6 +79,10 @@ type GISMeta struct {
 	// bit23-31位保留
 }
 
+func NewGISMeta() *GISMeta {
+	return &GISMeta{}
+}
+
 // 输入Msg0200的Status，按照协议解码GISMeta结构体
 func (g *GISMeta) Decode(status uint32) {
 	g.ACCStatus = uint8(status & accBit)

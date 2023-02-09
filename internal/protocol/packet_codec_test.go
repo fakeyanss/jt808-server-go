@@ -38,20 +38,17 @@ func TestJT808PacketCodec_Decode(t *testing.T) {
 			want: &model.PacketData{
 				Header: &model.MsgHeader{
 					MsgID: 0x0200,
-					MsgBodyAttr: model.MsgBodyAttr{
+					Attr: &model.MsgBodyAttr{
 						BodyLength:       28,
-						Encryption:       model.EncryptionNone,
-						PacketFragmented: false,
-						VersionSign:      false,
+						Encryption:       0b000,
+						PacketFragmented: 0,
+						VersionSign:      0,
 						Extra:            0,
 					},
 					ProtocolVersion: 0,
 					PhoneNumber:     "223456789015",
 					SerialNumber:    0,
-					MsgFragmentation: model.MsgFragmentation{
-						Total: 0,
-						Index: 0,
-					},
+					Frag:            nil,
 				},
 				Body:       util.Hex2Byte("000000000002080301CD779E0728C032003C0000008F230125145158"),
 				VerifyCode: 126,

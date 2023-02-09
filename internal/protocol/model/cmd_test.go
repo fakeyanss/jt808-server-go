@@ -11,16 +11,16 @@ import (
 func genMsgHeader() *MsgHeader {
 	return &MsgHeader{
 		MsgID: 0x8100,
-		MsgBodyAttr: MsgBodyAttr{
-			Encryption:       EncryptionNone,
-			PacketFragmented: false,
-			VersionSign:      false,
+		Attr: &MsgBodyAttr{
+			Encryption:       0b000,
+			PacketFragmented: 0,
+			VersionSign:      0,
 			// 加密方式原文
 		},
-		ProtocolVersion:  1,
-		PhoneNumber:      "1234567890",
-		SerialNumber:     1,
-		MsgFragmentation: MsgFragmentation{},
+		ProtocolVersion: 1,
+		PhoneNumber:     "1234567890",
+		SerialNumber:    1,
+		Frag:            nil,
 	}
 }
 

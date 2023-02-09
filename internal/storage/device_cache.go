@@ -5,6 +5,8 @@ import (
 	"sync"
 	"time"
 
+	"golang.org/x/exp/maps"
+
 	"github.com/fakeYanss/jt808-server-go/internal/protocol/model"
 )
 
@@ -30,6 +32,10 @@ func GetDeviceCache() *DeviceCache {
 		}
 	})
 	return deviceCacheSingleton
+}
+
+func (cache *DeviceCache) ListDevice() []*model.Device {
+	return maps.Values(cache.cacheByID)
 }
 
 func (cache *DeviceCache) GetDeviceByID(id string) (*model.Device, error) {
@@ -69,29 +75,53 @@ func (cache *DeviceCache) GetDeviceByPhone(phone string) (*model.Device, error) 
 	return nil, ErrDeviceNotFound
 }
 
-func (cache *DeviceCache) CacheDevice(d *model.Device) {
-	cache.mutex.Lock()
-	defer cache.mutex.Unlock()
-	d.LastComTime = time.Now().UnixMilli()
+func (cache *DeviceCache) cacheDevice(d *model.Device) {
 	cache.cacheByID[d.ID] = d
 	cache.cacheByPlate[d.PlateNumber] = d
 	cache.cacheByPhone[d.PhoneNumber] = d
 }
 
+func (cache *DeviceCache) CacheDevice(d *model.Device) {
+	cache.mutex.Lock()
+	defer cache.mutex.Unlock()
+	d.LastComTime = time.Now().UnixMilli()
+	cache.cacheDevice(d)
+}
+
+func (cache *DeviceCache) delDevice(id *string, carPlate *string, phone *string) {
+	var d *model.Device
+	var ok bool
+	if id != nil {
+		d, ok = cache.cacheByID[*id]
+	}
+	if carPlate != nil {
+		d, ok = cache.cacheByPlate[*carPlate]
+	}
+	if phone != nil {
+		d, ok = cache.cacheByPhone[*phone]
+	}
+	if !ok {
+		return // find none device, skip
+	}
+	delete(cache.cacheByID, d.ID)
+	delete(cache.cacheByPlate, d.PlateNumber)
+	delete(cache.cacheByPhone, d.PhoneNumber)
+}
+
 func (cache *DeviceCache) DelDeviceByID(id string) {
 	cache.mutex.Lock()
 	defer cache.mutex.Unlock()
-	if d, ok := cache.cacheByID[id]; ok {
-		delete(cache.cacheByPlate, d.PlateNumber)
-	}
-	delete(cache.cacheByID, id)
+	cache.delDevice(&id, nil, nil)
 }
 
 func (cache *DeviceCache) DelDeviceByCarPlate(carPlate string) {
 	cache.mutex.Lock()
 	defer cache.mutex.Unlock()
-	if d, ok := cache.cacheByPlate[carPlate]; ok {
-		delete(cache.cacheByID, d.ID)
-	}
-	delete(cache.cacheByPlate, carPlate)
+	cache.delDevice(nil, &carPlate, nil)
+}
+
+func (cache *DeviceCache) DelDeviceByPhone(phone string) {
+	cache.mutex.Lock()
+	defer cache.mutex.Unlock()
+	cache.delDevice(nil, nil, &phone)
 }
