@@ -84,7 +84,8 @@ func (cache *DeviceCache) cacheDevice(d *model.Device) {
 func (cache *DeviceCache) CacheDevice(d *model.Device) {
 	cache.mutex.Lock()
 	defer cache.mutex.Unlock()
-	d.LastComTime = time.Now().UnixMilli()
+	now := time.Now()
+	d.LastComTime = &now
 	cache.cacheDevice(d)
 }
 

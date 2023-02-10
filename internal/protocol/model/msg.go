@@ -76,6 +76,21 @@ func (m *Msg0003) GetHeader() *MsgHeader {
 	return m.Header
 }
 
+// 查询服务器时间请求，2019版消息
+type Msg0004 struct {
+	Header *MsgHeader `json:"header"`
+	// 消息体为空
+}
+
+func (m *Msg0004) Decode(packet *PacketData) error {
+	m.Header = packet.Header
+	return nil
+}
+
+func (m *Msg0004) GetHeader() *MsgHeader {
+	return m.Header
+}
+
 // 终端注册
 type Msg0100 struct {
 	Header         *MsgHeader `json:"header"`
