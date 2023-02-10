@@ -154,7 +154,7 @@ func (serv *TCPServer) Send(id string, cmd model.JT808Cmd) {
 		return
 	}
 
-	if errors.Is(err, io.ErrClosedPipe) {
+	if errors.Is(err, io.ErrClosedPipe) || errors.Is(err, net.ErrClosed) {
 		serv.remove(session)
 	}
 

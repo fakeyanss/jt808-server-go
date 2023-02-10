@@ -6,7 +6,8 @@ import (
 
 	"github.com/pkg/errors"
 
-	"github.com/fakeYanss/jt808-server-go/internal/util"
+	"github.com/fakeYanss/jt808-server-go/internal/codec/bcd"
+	"github.com/fakeYanss/jt808-server-go/internal/codec/gbk"
 )
 
 var ErrDecodeMsg = errors.New("Fail to decode Msg")
@@ -140,7 +141,7 @@ func (m *Msg0100) Decode(packet *PacketData) error {
 	m.PlateColor = pkt[idx]
 	idx++
 
-	plateRegion, err := util.GBKToUTF8(pkt[idx : idx+2])
+	plateRegion, err := gbk.GBKToUTF8(pkt[idx : idx+2])
 	if err != nil {
 		// 解析车牌region失败, 留空
 		plateRegion = []byte{}
@@ -236,7 +237,7 @@ func (m *Msg0200) Decode(packet *PacketData) error {
 	m.Direction = binary.BigEndian.Uint16(pkt[idx : idx+2])
 	idx += 2
 
-	m.Time = util.BCD2NumberStr(pkt[idx : idx+6])
+	m.Time = bcd.BCD2NumberStr(pkt[idx : idx+6])
 
 	return nil
 }

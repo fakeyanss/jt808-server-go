@@ -3,15 +3,19 @@ package storage
 import (
 	"sync"
 
+	"github.com/pkg/errors"
+
+	"github.com/fakeYanss/jt808-server-go/internal/container"
 	"github.com/fakeYanss/jt808-server-go/internal/protocol/model"
-	"github.com/fakeYanss/jt808-server-go/internal/util/ring"
 )
 
 const RingCapacity int32 = 100
 
+var ErrGisNotFound = errors.New("gis not found")
+
 type GisCache struct {
-	cacheByID map[string]*ring.RingBuffer
-	mutex     *sync.Mutex
+	cacheByPhone map[string]*container.RingBuffer
+	mutex        *sync.Mutex
 }
 
 var gisCacheSingleton *GisCache
@@ -20,31 +24,34 @@ var gisCacheInitOnce sync.Once
 func GetGisCache() *GisCache {
 	gisCacheInitOnce.Do(func() {
 		gisCacheSingleton = &GisCache{
-			cacheByID: make(map[string]*ring.RingBuffer),
-			mutex:     &sync.Mutex{},
+			cacheByPhone: make(map[string]*container.RingBuffer),
+			mutex:        &sync.Mutex{},
 		}
 	})
 	return gisCacheSingleton
 }
 
-func (cache *GisCache) GetGisRingByID(id string) *ring.RingBuffer {
+func (cache *GisCache) GetGisRingByPhone(phone string) *container.RingBuffer {
 	cache.mutex.Lock()
 	defer cache.mutex.Unlock()
-	if rb, ok := cache.cacheByID[id]; ok {
+	if rb, ok := cache.cacheByPhone[phone]; ok {
 		return rb
 	}
-	rb := ring.NewRingBuffer(RingCapacity)
-	cache.cacheByID[id] = rb
-	return cache.cacheByID[id]
+	rb := container.NewRingBuffer(RingCapacity)
+	cache.cacheByPhone[phone] = rb
+	return cache.cacheByPhone[phone]
 }
 
-func (cache *GisCache) GetGisLatestByID(id string) *model.GISMeta {
-	rb := cache.GetGisRingByID(id)
-	return rb.Latest().(*model.GISMeta)
+func (cache *GisCache) GetGisLatestByPhone(id string) (*model.GISMeta, error) {
+	rb := cache.GetGisRingByPhone(id)
+	if latest, ok := rb.Latest().(*model.GISMeta); ok {
+		return latest, nil
+	}
+	return nil, ErrGisNotFound
 }
 
-func (cache *GisCache) DelGisByID(id string) {
+func (cache *GisCache) DelGisByPhone(id string) {
 	cache.mutex.Lock()
 	defer cache.mutex.Unlock()
-	delete(cache.cacheByID, id)
+	delete(cache.cacheByPhone, id)
 }

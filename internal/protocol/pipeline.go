@@ -58,33 +58,33 @@ func (p *Pipeline) callWithBlocking(ctx context.Context, funcs []delegateFunc) e
 }
 
 func recv() delegateFunc {
-	return func(ctx context.Context, p *Pipeline) (context.Context, error) {
+	return delegateFunc(func(ctx context.Context, p *Pipeline) (context.Context, error) {
 		framePayload, err := p.fh.Recv(ctx)
 		nxtCtx := context.WithValue(ctx, model.FrameCtxKey{}, framePayload)
 		return nxtCtx, err
-	}
+	})
 }
 
 func decode() delegateFunc {
-	return func(ctx context.Context, p *Pipeline) (context.Context, error) {
+	return delegateFunc(func(ctx context.Context, p *Pipeline) (context.Context, error) {
 		framePayload := ctx.Value(model.FrameCtxKey{}).(FramePayload)
 		packet, err := p.pc.Decode(framePayload)
 		nxtCtx := context.WithValue(ctx, model.PacketDecodeCtxKey{}, packet)
 		return nxtCtx, err
-	}
+	})
 }
 
 func process() delegateFunc {
-	return func(ctx context.Context, p *Pipeline) (context.Context, error) {
+	return delegateFunc(func(ctx context.Context, p *Pipeline) (context.Context, error) {
 		packet := ctx.Value(model.PacketDecodeCtxKey{}).(*model.PacketData)
 		pd, err := p.mp.Process(ctx, packet)
 		nxtCtx := context.WithValue(ctx, model.ProcessDataCtxKey{}, pd)
 		return nxtCtx, err
-	}
+	})
 }
 
 func encode() delegateFunc {
-	return func(ctx context.Context, p *Pipeline) (context.Context, error) {
+	return delegateFunc(func(ctx context.Context, p *Pipeline) (context.Context, error) {
 		pd := ctx.Value(model.ProcessDataCtxKey{}).(*model.ProcessData)
 		if pd == nil || pd.Cmd == nil { // 不需要回复cmd，不用后续处理
 			return nil, nil
@@ -92,13 +92,13 @@ func encode() delegateFunc {
 		pkt, err := p.pc.Encode(pd.Cmd)
 		nxtCtx := context.WithValue(ctx, model.PacketEncodeCtxKey{}, pkt)
 		return nxtCtx, err
-	}
+	})
 }
 
 func send() delegateFunc {
-	return func(ctx context.Context, p *Pipeline) (context.Context, error) {
+	return delegateFunc(func(ctx context.Context, p *Pipeline) (context.Context, error) {
 		packet := ctx.Value(model.PacketEncodeCtxKey{}).([]byte)
 		err := p.fh.Send(packet)
 		return ctx, err
-	}
+	})
 }

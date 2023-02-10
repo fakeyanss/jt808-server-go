@@ -4,7 +4,7 @@
 // Ringbuffer is non blocking for readers and writers, writers will
 // overwrite older data in a circular fashion. Readers will read
 // from the current position and update it.
-package ring
+package container
 
 import (
 	"reflect"
@@ -88,10 +88,12 @@ func TestRingBuffer_seekReader(t *testing.T) {
 		},
 	}
 	r := NewRingBuffer(5)
+	var idx int32
 	for i, tt := range tests {
+		idx = idx + int32(i) + 1
 		t.Run(tt.name, func(t *testing.T) {
 			r.seekReader(tt.args.delta)
-			require.Equal(t, int32(i+1), r.Reader)
+			require.Equal(t, idx, r.Reader)
 		})
 	}
 }

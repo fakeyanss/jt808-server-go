@@ -8,26 +8,36 @@ import (
 type DeviceStatus int8
 
 const (
-	DeviceOffline  DeviceStatus = 0
-	DeviceOnline   DeviceStatus = 1
-	DeviceSleeping DeviceStatus = 2
+	DeviceStatusOffline  DeviceStatus = 0
+	DeviceStatusOnline   DeviceStatus = 1
+	DeviceStatusSleeping DeviceStatus = 2
 )
 
 type Device struct {
-	ID          string            `json:"id"`
-	PlateNumber string            `json:"plateNumber"`
-	PhoneNumber string            `json:"phoneNumber"`
-	SessionID   string            `json:"sessionId"`
-	TransProto  TransportProtocol `json:"transProto"`
-	Conn        net.Conn          `json:"conn"`
-	Authed      bool              `json:"authed"`      // 是否鉴权通过
-	LastComTime *time.Time        `json:"lastComTime"` // 最近一次交互时间
-	Status      DeviceStatus      `json:"status"`
+	ID             string            `json:"id"` // ID是否可重复？
+	PlateNumber    string            `json:"plateNumber"`
+	PhoneNumber    string            `json:"phoneNumber"` // 默认通过PhoneNumber来索引设备
+	SessionID      string            `json:"sessionId"`
+	TransProto     TransportProtocol `json:"transProto"`
+	Conn           net.Conn          `json:"conn"`
+	Keepalive      time.Duration     `json:"keepalive"`   // 保活时长
+	LastestComTime *time.Time        `json:"lastComTime"` // 最近一次交互时间
+	Status         DeviceStatus      `json:"status"`
+}
+
+func (d *Device) ShouleTurnOffline() bool {
+	now := time.Now().UnixMilli()
+	return d.Status != DeviceStatusOffline && now > d.Keepalive.Milliseconds()+d.LastestComTime.UnixMilli()
+}
+
+func (d *Device) ShouldClear() bool {
+	now := time.Now().UnixMilli()
+	return d.Status == DeviceStatusOffline && now > d.Keepalive.Milliseconds()+d.LastestComTime.UnixMilli()
 }
 
 type DeviceGis struct {
-	ID  string  `json:"id"`
-	GIS GISMeta `json:"gis"`
+	Phone string  `json:"phone"`
+	GIS   GISMeta `json:"gis"`
 }
 
 // 地理位置信息状态位字段的bit位

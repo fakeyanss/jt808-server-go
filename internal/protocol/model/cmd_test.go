@@ -5,7 +5,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/fakeYanss/jt808-server-go/internal/util"
+	"github.com/fakeYanss/jt808-server-go/internal/codec/hex"
 )
 
 func genMsgHeader() *MsgHeader {
@@ -14,8 +14,8 @@ func genMsgHeader() *MsgHeader {
 		Attr: &MsgBodyAttr{
 			Encryption:       0b000,
 			PacketFragmented: 0,
-			VersionSign:      0,
-			// 加密方式原文
+			VersionSign:      1,
+			Extra:            0,
 		},
 		ProtocolVersion: 1,
 		PhoneNumber:     "1234567890",
@@ -45,7 +45,7 @@ func TestCmd8100_Encode(t *testing.T) {
 				Result:             0,
 				AuthCode:           "test",
 			},
-			wantPkt: util.Hex2Byte("8100001e0123456789017fff970c00636877443053453166636877443053453166636877443053453166"),
+			wantPkt: hex.Str2Byte("81004007011234567890000100000074657374"),
 			wantErr: false,
 		},
 	}
@@ -58,7 +58,6 @@ func TestCmd8100_Encode(t *testing.T) {
 				AuthCode:           tt.fields.AuthCode,
 			}
 			gotPkt, err := c.Encode()
-
 			require.Equal(t, tt.wantErr, err != nil, err)
 			require.Equal(t, tt.wantPkt, gotPkt)
 		})

@@ -4,7 +4,7 @@
 // Ringbuffer is non blocking for readers and writers, writers will
 // overwrite older data in a circular fashion. Readers will read
 // from the current position and update it.
-package ring
+package container
 
 import "sync/atomic"
 
@@ -51,6 +51,9 @@ func (r *RingBuffer) Read() any {
 
 // Returns the latest element in the RingBuffer
 func (r *RingBuffer) Latest() any {
+	if r.Writer == 0 {
+		return nil
+	}
 	return r.Container[(atomic.LoadInt32(&r.Writer)-1)%r.Size]
 }
 

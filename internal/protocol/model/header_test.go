@@ -3,12 +3,12 @@ package model
 import (
 	"testing"
 
-	"github.com/fakeYanss/jt808-server-go/internal/util"
+	"github.com/fakeYanss/jt808-server-go/internal/codec/hex"
 )
 
 func TestMsgHeader_Decode(t *testing.T) {
 	argMap := make(map[string][]byte, 0)
-	argMap["case1"] = util.Hex2Byte("010000212234567890150000")
+	argMap["case1"] = hex.Str2Byte("010000212234567890150000")
 
 	type fields struct {
 		MsgID uint16

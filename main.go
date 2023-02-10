@@ -8,6 +8,7 @@ import (
 	"github.com/mitchellh/mapstructure"
 	"github.com/rs/zerolog/log"
 
+	"github.com/fakeYanss/jt808-server-go/internal/protocol"
 	"github.com/fakeYanss/jt808-server-go/internal/server"
 	"github.com/fakeYanss/jt808-server-go/internal/storage"
 	"github.com/fakeYanss/jt808-server-go/pkg/logger"
@@ -53,6 +54,8 @@ func main() {
 	}
 	routines.GoSafe(func() { serv.Start() })
 
+	protocol.CheckDeviceKeepaliveTimer()
+
 	// todo: web server structure
 	router := gin.Default()
 	cache := storage.GetDeviceCache()
@@ -62,18 +65,27 @@ func main() {
 		c.JSON(http.StatusOK, cache.ListDevice())
 	})
 
-	router.GET("/device/:id", func(c *gin.Context) {
-		id := c.Param("id")
+	router.GET("/device/:phone", func(c *gin.Context) {
+		phone := c.Param("phone")
 
-		device, err := cache.GetDeviceByID(id)
+		device, err := cache.GetDeviceByPhone(phone)
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
 		}
 
 		res := make(map[string]any)
-		mapstructure.Decode(device, &res)
-		res["gis"] = gisCache.GetGisLatestByID(device.ID)
+		err = mapstructure.Decode(device, &res)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
+			return
+		}
+		gis, err := gisCache.GetGisLatestByPhone(device.ID)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
+			return
+		}
+		res["gis"] = gis
 
 		c.JSON(http.StatusOK, res)
 	})

@@ -6,14 +6,15 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/pkg/errors"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 
+	"github.com/fakeYanss/jt808-server-go/internal/codec/hash"
 	"github.com/fakeYanss/jt808-server-go/internal/protocol/model"
 	"github.com/fakeYanss/jt808-server-go/internal/storage"
-	"github.com/fakeYanss/jt808-server-go/internal/util/hash"
 )
 
 var (
@@ -179,7 +180,7 @@ func processMsg0003(ctx context.Context, data *model.ProcessData) error {
 	if errors.Is(err, storage.ErrDeviceNotFound) {
 		return errors.Wrapf(err, "Fail to find device cache, phoneNumber=%s", data.Msg.GetHeader().PhoneNumber)
 	}
-	cache.DelDeviceByID(device.ID)
+	cache.DelDeviceByPhone(device.PhoneNumber)
 	// 为避免连接TIMEWAIT，应等待对方主动关闭
 	return nil
 }
@@ -196,7 +197,7 @@ func processMsg0100(ctx context.Context, data *model.ProcessData) error {
 		cmd.Result = model.ResCarAlreadyRegister
 	}
 	// 终端已被注册
-	if cache.HasID(msg.DeviceID) {
+	if cache.HasPhone(msg.Header.PhoneNumber) {
 		cmd.Result = model.ResDeviceAlreadyRegister
 	}
 
@@ -208,8 +209,8 @@ func processMsg0100(ctx context.Context, data *model.ProcessData) error {
 		SessionID:   session.ID,
 		TransProto:  session.GetTransProto(),
 		Conn:        session.Conn,
-		Authed:      false,
-		Status:      model.DeviceOffline,
+		Keepalive:   time.Minute * 1,
+		Status:      model.DeviceStatusOffline,
 	}
 	cmd.AuthCode = genAuthCode(device) // 设置鉴权码
 	cache.CacheDevice(device)
@@ -231,6 +232,12 @@ func processMsg0102(ctx context.Context, data *model.ProcessData) error {
 	// 校验鉴权逻辑
 	if msg.AuthCode != genAuthCode(device) {
 		cmd.Result = model.ResultFail
+		// 删除设备缓存
+		cache.DelDeviceByPhone(device.PhoneNumber)
+	} else {
+		// 鉴权通过
+		device.Status = model.DeviceStatusOnline
+		cache.CacheDevice(device)
 	}
 
 	return nil
@@ -260,8 +267,13 @@ func handleMsg0200(ctx context.Context, data *model.ProcessData) error {
 	gis := model.NewGISMeta()
 	gis.Decode(msg.StatusSign)
 
+	if gis.ACCStatus == 0 { // ACC关闭，设备休眠
+		device.Status = model.DeviceStatusSleeping
+		cache.CacheDevice(device)
+	}
+
 	gisCache := storage.GetGisCache()
-	rb := gisCache.GetGisRingByID(device.ID)
+	rb := gisCache.GetGisRingByPhone(device.ID)
 	rb.Write(gis)
 
 	return nil

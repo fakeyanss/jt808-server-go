@@ -3,9 +3,8 @@ package model
 import (
 	"encoding/binary"
 
+	"github.com/fakeYanss/jt808-server-go/internal/codec/bcd"
 	"github.com/pkg/errors"
-
-	"github.com/fakeYanss/jt808-server-go/internal/util"
 )
 
 var (
@@ -45,10 +44,10 @@ func (h *MsgHeader) Decode(pkt []byte) error {
 
 	// 2013版本，phoneNumber [5,11)位 长度6位；2019版本，phoneNumber [5,15)位 长度10位。
 	if h.Attr.VersionDesc == Version2019 {
-		h.PhoneNumber = util.BCD2NumberStr(pkt[idx : idx+10])
+		h.PhoneNumber = bcd.BCD2NumberStr(pkt[idx : idx+10])
 		idx += 10
 	} else if h.Attr.VersionDesc == Version2013 {
-		h.PhoneNumber = util.BCD2NumberStr(pkt[idx : idx+6])
+		h.PhoneNumber = bcd.BCD2NumberStr(pkt[idx : idx+6])
 		idx += 6
 	} else {
 		return ErrDecodeHeader
@@ -87,7 +86,7 @@ func (h *MsgHeader) Encode() ([]byte, error) {
 
 	pkt = append(pkt, h.ProtocolVersion) // 协议版本号
 
-	pkt = append(pkt, util.NumberStr2BCD(h.PhoneNumber)...) // 手机号
+	pkt = append(pkt, bcd.NumberStr2BCD(h.PhoneNumber)...) // 手机号
 
 	sn := make([]byte, 2)
 	binary.BigEndian.PutUint16(sn, h.SerialNumber) // 消息流水号

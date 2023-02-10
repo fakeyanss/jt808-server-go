@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/fakeYanss/jt808-server-go/internal/util"
+	"github.com/fakeYanss/jt808-server-go/internal/codec/bcd"
 )
 
 type JT808Cmd interface {
@@ -91,7 +91,7 @@ func (c *Cmd8004) Encode() (pkt []byte, err error) {
 	minute := now.Minute() // 分钟
 	second := now.Second() // 秒
 	fmtTime := fmt.Sprintf("%02d%02d%02d%02d%02d%02d", year, month, day, hour, minute, second)
-	pkt = append(pkt, util.NumberStr2BCD(fmtTime)...)
+	pkt = append(pkt, bcd.NumberStr2BCD(fmtTime)...)
 
 	headerPkt, err := c.Header.Encode()
 	if err != nil {
