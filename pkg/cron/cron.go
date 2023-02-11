@@ -3,6 +3,8 @@ package cron
 import (
 	"sort"
 	"time"
+
+	"github.com/fakeYanss/jt808-server-go/pkg/routines"
 )
 
 // Entry consists of a schedule and the job to be executed on that schedule.
@@ -77,15 +79,16 @@ type Cron struct {
 // New instantiates new Cron instant c.
 func New() *Cron {
 	return &Cron{
-		stop: make(chan struct{}),
-		add:  make(chan *Entry),
+		stop:   make(chan struct{}),
+		add:    make(chan *Entry),
+		cancel: make(chan string),
 	}
 }
 
 // Start signals cron instant c to get up and running.
 func (c *Cron) Start() {
 	c.running = true
-	go c.run()
+	routines.GoSafe(func() { c.run() })
 }
 
 // Add appends schedule, job to entries.
@@ -113,8 +116,29 @@ func (c *Cron) AddFunc(s Schedule, jobID string, j func()) {
 	})
 }
 
+// Cancel job from entries
+//
+// if cron instant is not running, remove job from entries directly.
+// otherwise, to prevent data-race, removes from channel.
 func (c *Cron) Cancel(jobID string) {
+	if !c.running {
+		c.cancelJob(jobID)
+		return
+	}
 	c.cancel <- jobID
+}
+
+func (c *Cron) cancelJob(jonID string) {
+	idx := -1
+	for i, entry := range c.entries {
+		if jonID == entry.Job.JobID() {
+			idx = i
+			break
+		}
+	}
+	if idx != -1 {
+		c.entries = append(c.entries[:idx], c.entries[idx+1:]...)
+	}
 }
 
 // Stop halts cron instant c from running.
@@ -164,16 +188,7 @@ func (c *Cron) run() {
 			e.Next = e.Schedule.Next(time.Now())
 			c.entries = append(c.entries, e)
 		case cancelJobID := <-c.cancel:
-			idx := -1
-			for i, entry := range c.entries {
-				if cancelJobID == entry.Job.JobID() {
-					idx = i
-					break
-				}
-			}
-			if idx != -1 {
-				c.entries = append(c.entries[:idx], c.entries[idx+1:]...)
-			}
+			c.cancelJob(cancelJobID)
 		case <-c.stop:
 			return // terminate go-routine.
 		}
@@ -183,18 +198,4 @@ func (c *Cron) run() {
 // Entries returns cron etn
 func (c Cron) Entries() []*Entry {
 	return c.entries
-}
-
-// JobFunc is an adapter to allow the use of ordinary functions as gron.Job
-// If f is a function with the appropriate signature, JobFunc(f) is a handler
-// that calls f.
-type JobFunc func(string)
-
-// Run calls j()
-func (j JobFunc) Run() {
-	j("")
-}
-
-func (j JobFunc) JobId() string {
-	return ""
 }

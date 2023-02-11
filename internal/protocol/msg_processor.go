@@ -195,10 +195,12 @@ func processMsg0100(ctx context.Context, data *model.ProcessData) error {
 	// 车辆已被注册
 	if cache.HasPlate(msg.PlateNumber) {
 		cmd.Result = model.ResCarAlreadyRegister
+		return nil
 	}
 	// 终端已被注册
 	if cache.HasPhone(msg.Header.PhoneNumber) {
 		cmd.Result = model.ResDeviceAlreadyRegister
+		return nil
 	}
 
 	session := ctx.Value(model.SessionCtxKey{}).(*model.Session)
@@ -214,6 +216,9 @@ func processMsg0100(ctx context.Context, data *model.ProcessData) error {
 	}
 	cmd.AuthCode = genAuthCode(device) // 设置鉴权码
 	cache.CacheDevice(device)
+
+	timer := NewKeepaliveTimer()
+	timer.Register(device.PhoneNumber)
 	return nil
 }
 

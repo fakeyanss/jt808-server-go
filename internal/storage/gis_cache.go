@@ -5,8 +5,8 @@ import (
 
 	"github.com/pkg/errors"
 
-	"github.com/fakeYanss/jt808-server-go/internal/container"
 	"github.com/fakeYanss/jt808-server-go/internal/protocol/model"
+	"github.com/fakeYanss/jt808-server-go/pkg/container"
 )
 
 const RingCapacity int32 = 100
