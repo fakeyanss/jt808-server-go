@@ -1,26 +1,28 @@
-# syntax=docker/dockerfile:1
-
 # Build
-
-FROM golang:1.19-buster AS build
+# golang:1.19-buster
+FROM golang:1.19-alpine AS build
 ARG GOPROXY=https://goproxy.cn,direct
 WORKDIR /app
 
-COPY ./ /app/
+RUN apk add \
+    bash \
+    git \
+    make
 
-RUN make prepare compile package
+COPY . .
+
+RUN make prepare build-tag package
 
 # Deploy
 
 FROM alpine:latest
 
-WORKDIR /
+WORKDIR /app
 
-COPY --from=build /output/ /app/
+COPY --from=build /app/output/ /app/
 
 EXPOSE 8081
 EXPOSE 8080
-
-USER nonroot:nonroot
+EXPOSE 8008
 
 CMD ["/app/bin/jt808-server-go"]

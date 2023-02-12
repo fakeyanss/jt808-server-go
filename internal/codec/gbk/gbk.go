@@ -10,7 +10,7 @@ import (
 )
 
 // GBK 转 UTF-8
-func GBKToUTF8(src []byte) ([]byte, error) {
+func GBK2UTF8(src []byte) ([]byte, error) {
 	dst, err := io.ReadAll(transform.NewReader(bytes.NewBuffer(src), simplifiedchinese.GBK.NewDecoder()))
 	if err != nil {
 		log.Error().
@@ -22,7 +22,7 @@ func GBKToUTF8(src []byte) ([]byte, error) {
 }
 
 // UTF-8 转 GBK
-func UTF8ToGBK(src []byte) ([]byte, error) {
+func UTF82GBK(src []byte) ([]byte, error) {
 	dst, err := io.ReadAll(transform.NewReader(bytes.NewBuffer(src), simplifiedchinese.GBK.NewEncoder()))
 	if err != nil {
 		log.Error().

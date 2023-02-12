@@ -129,8 +129,15 @@ func (m *Msg0100) Decode(packet *PacketData) error {
 		m.ManufacturerID = string(pkt[idx : idx+5])
 		idx += 5
 
-		m.DeviceMode = string(bytes.TrimRight(pkt[idx:idx+20], "\x00"))
-		idx += 20
+		// 终端型号，2011版本8位，2013版本20位
+		remainLen := int(m.Header.Attr.BodyLength) - idx
+		if remainLen > 20+7+1 { // 型号+ID+车牌颜色，2013版本至少28位
+			m.DeviceMode = string(bytes.TrimRight(pkt[idx:idx+20], "\x00"))
+			idx += 20
+		} else {
+			m.DeviceMode = string(bytes.TrimRight(pkt[idx:idx+8], "\x00"))
+			idx += 8
+		}
 
 		m.DeviceID = string(bytes.TrimRight(pkt[idx:idx+7], "\x00"))
 		idx += 7
@@ -141,7 +148,7 @@ func (m *Msg0100) Decode(packet *PacketData) error {
 	m.PlateColor = pkt[idx]
 	idx++
 
-	plateRegion, err := gbk.GBKToUTF8(pkt[idx : idx+2])
+	plateRegion, err := gbk.GBK2UTF8(pkt[idx : idx+2])
 	if err != nil {
 		// 解析车牌region失败, 留空
 		plateRegion = []byte{}

@@ -17,7 +17,7 @@ COVHTML := $(COVDIR)/covhtml.html # HTML representation of coverage profile
 PROG_NAME    := jt808-server-go
 BUILD_TIME   := $(shell date +'%Y-%m-%dT%H:%M:%S')
 $(info BUILD_TIME: $(BUILD_TIME))
-BUILD_COMMIT := $(shell git rev-parse HEAD)
+BUILD_COMMIT := $(shell git rev-parse --short HEAD)
 $(info BUILD_COMMIT: $(BUILD_COMMIT))
 
 # 执行编译，可使用命令 make 或 make all 执行， 顺序执行 prepare -> lint -> compile -> test -> package 几个阶段
@@ -37,6 +37,12 @@ set-env:
 compile: build
 build: set-env
 	go build -o $(HOMEDIR)/${PROG_NAME} \
+	-ldflags "-X main.buildTime=$(BUILD_TIME) -X main.buildCommit=$(BUILD_COMMIT) -X main.progName=$(PROG_NAME)" \
+	main.go
+# 编译静态链接，Linux alpine 发行版要求可执行文件是静态链接
+build-tag: set-env
+	go build -tags ${PROG_NAME} \
+	-o $(HOMEDIR)/${PROG_NAME} \
 	-ldflags "-X main.buildTime=$(BUILD_TIME) -X main.buildCommit=$(BUILD_COMMIT) -X main.progName=$(PROG_NAME)" \
 	main.go
 
@@ -62,6 +68,10 @@ lint: set-env
 # clean 阶段，清除过程中的输出， 可单独执行命令: make clean
 clean:
 	rm -rf $(OUTDIR) $(COVDIR)
+
+# 构建镜像
+dockerbuild:
+	docker build -f build/Dockerfile -t fakeyanss/jt808-server-go:$(BUILD_COMMIT) .
 
 # avoid filename conflict and speed up build
 .PHONY: all prepare compile test package clean build lint
