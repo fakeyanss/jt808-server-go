@@ -8,6 +8,7 @@ import (
 	"net"
 
 	"github.com/pkg/errors"
+	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 
 	"github.com/fakeYanss/jt808-server-go/internal/protocol/model"
@@ -56,13 +57,18 @@ func (fh *JT808FrameHandler) Recv(ctx context.Context) (FramePayload, error) {
 		return nil, ErrFrameReadEmpty
 	}
 
-	session := ctx.Value(model.SessionCtxKey{}).(*model.Session)
-
-	log.Debug().
-		Str("id", session.ID).
-		Int("frame_len", len(buf)).
-		Hex("frame_payload", buf). // for debug
-		Msg("Received frame.")
+	if log.Logger.GetLevel() == zerolog.DebugLevel {
+		var sessionID string
+		session := ctx.Value(model.SessionCtxKey{}).(*model.Session)
+		if session != nil {
+			sessionID = session.ID // client端不设置session
+		}
+		log.Debug().
+			Str("id", sessionID).
+			Int("frame_len", len(buf)).
+			Hex("frame_payload", buf). // for debug
+			Msg("Received frame.")
+	}
 
 	return FramePayload(buf), nil
 }

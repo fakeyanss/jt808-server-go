@@ -34,7 +34,6 @@ func (serv *TCPServer) Listen(addr string) error {
 	if err == nil {
 		serv.listener = l
 		log.Debug().Msgf("Listening on %v", addr)
-		return nil
 	}
 
 	return err
@@ -134,7 +133,7 @@ func (serv *TCPServer) serve(session *model.Session) {
 }
 
 // 发送消息到终端设备, 外部调用
-func (serv *TCPServer) Send(id string, cmd model.JT808Cmd) {
+func (serv *TCPServer) Send(id string, cmd model.JT808Msg) {
 	session := serv.sessions[id]
 	if session == nil {
 		log.Warn().
@@ -146,7 +145,7 @@ func (serv *TCPServer) Send(id string, cmd model.JT808Cmd) {
 	pg := protocol.NewPipeline(session.Conn)
 
 	// 记录value ctx
-	ctx := context.WithValue(context.Background(), model.CmdCtxKey{}, cmd)
+	ctx := context.WithValue(context.Background(), model.ProcessDataCtxKey{}, &model.ProcessData{Cmd: cmd})
 
 	err := pg.ProcessConnWrite(ctx)
 

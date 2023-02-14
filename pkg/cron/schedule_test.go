@@ -4,8 +4,6 @@ import (
 	"errors"
 	"testing"
 	"time"
-
-	"github.com/roylee0704/gron/xtime"
 )
 
 func TestPeriodicAtNext(t *testing.T) {
@@ -16,8 +14,8 @@ func TestPeriodicAtNext(t *testing.T) {
 		want   string
 	}{
 		// simple cases
-		{"Mon Jun 6 20:00 2016", 1 * xtime.Day, "23:00", "Tue Jun 6 23:00 2016"},
-		{"Mon Jun 6 23:01 2016", 1 * xtime.Day, "23:00", "Tue Jun 7 23:00 2016"},
+		{"Mon Jun 6 20:00 2016", 24 * time.Hour, "23:00", "Tue Jun 6 23:00 2016"},
+		{"Mon Jun 6 23:01 2016", 24 * time.Hour, "23:00", "Tue Jun 7 23:00 2016"},
 	}
 
 	for _, test := range tests {
@@ -60,7 +58,7 @@ func TestPeriodicNext(t *testing.T) {
 		// Wrap around months
 		{
 			time:   "Mon Jun 6 16:49 2016",
-			period: 30 * xtime.Day, // adds 30 days, equates to #days in June.
+			period: 30 * 24 * time.Hour, // adds 30 days, equates to #days in June.
 			want:   "Mon Jul 6 16:49 2016",
 		},
 

@@ -22,7 +22,7 @@
 1. FrameHandler 调用 TCP read，读取终端送达的字节流，在这里称作 FramePayload
 2. PacketCodec 将 FramePayload 解码成 PacketData
 3. MsgHandler 处理 PacketData，转换为 JT808Msg
-4. MsgHandler 处理 JT808Msg，生成响应消息 JT808Cmd，转为 PacketData
+4. MsgHandler 处理 JT808Msg，生成响应消息 JT808Msg，转为 PacketData
 5. PacketCodec 将 PacketData 编码成 FramePayload
 6. FrameHandler 调用 TCP write，将 FramePayload 发送给终端
 

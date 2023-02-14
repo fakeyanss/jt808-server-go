@@ -49,5 +49,5 @@ type PacketData struct {
 // 定义消息处理结果数据
 type ProcessData struct {
 	Msg JT808Msg
-	Cmd JT808Cmd
+	Cmd JT808Msg
 }

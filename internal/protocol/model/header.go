@@ -3,12 +3,14 @@ package model
 import (
 	"encoding/binary"
 
-	"github.com/fakeYanss/jt808-server-go/internal/codec/bcd"
 	"github.com/pkg/errors"
+
+	"github.com/fakeYanss/jt808-server-go/internal/codec/bcd"
 )
 
 var (
 	ErrDecodeHeader = errors.New("Fail to decode header")
+	ErrEncodeHeader = errors.New("Fail to encode header")
 )
 
 // 定义消息头
@@ -131,8 +133,9 @@ const (
 type VersionType int8
 
 const (
-	Version2013 = 0
-	Version2019 = 1
+	Version2011 VersionType = 0
+	Version2013 VersionType = 1
+	Version2019 VersionType = 2
 )
 
 // 定义消息体属性
@@ -140,7 +143,7 @@ type MsgBodyAttr struct {
 	BodyLength       uint16 `json:"bodyLength"`       // 消息体长度
 	Encryption       uint8  `json:"encryption"`       // 加密类型
 	PacketFragmented uint8  `json:"packetFragmented"` // 分包标识，1：长消息，有分包；2：无分包
-	VersionSign      uint8  `json:"versionSign"`      // 版本标识，1：2019版本；2：2013版本
+	VersionSign      uint8  `json:"versionSign"`      // 版本标识，1：2019版本；0：2013版本
 	Extra            uint8  `json:"extra"`            // 预留一个bit位的保留字段
 
 	EncryptionDesc       EncryptionType       `json:"encryptionDesc"`       // 加密类型描述

@@ -28,7 +28,7 @@ type MsgProcessor interface {
 	ProcessPacket(context.Context, *model.PacketData) (model.JT808Msg, error)
 
 	// 处理Msg，生产Cmd
-	ProcessMsg(context.Context, model.JT808Msg) (model.JT808Cmd, error)
+	ProcessMsg(context.Context, model.JT808Msg) (model.JT808Msg, error)
 }
 
 // 消息处理方法调用表, <msgId, action>
@@ -49,31 +49,31 @@ func initProcessOption() processOptions {
 	}
 	options[0x0002] = &action{ // 心跳
 		genData: func() *model.ProcessData {
-			return &model.ProcessData{Msg: &model.Msg0002{}, Cmd: &model.Cmd8001{}}
+			return &model.ProcessData{Msg: &model.Msg0002{}, Cmd: &model.Msg8001{}}
 		},
 		process: processMsg0002,
 	}
 	options[0x0003] = &action{ // 注销
 		genData: func() *model.ProcessData {
-			return &model.ProcessData{Msg: &model.Msg0003{}, Cmd: &model.Cmd8001{}}
+			return &model.ProcessData{Msg: &model.Msg0003{}, Cmd: &model.Msg8001{}}
 		},
 		process: processMsg0003,
 	}
 	options[0x0100] = &action{ // 注册
 		genData: func() *model.ProcessData {
-			return &model.ProcessData{Msg: &model.Msg0100{}, Cmd: &model.Cmd8100{}}
+			return &model.ProcessData{Msg: &model.Msg0100{}, Cmd: &model.Msg8100{}}
 		},
 		process: processMsg0100,
 	}
 	options[0x0102] = &action{ // 鉴权
 		genData: func() *model.ProcessData {
-			return &model.ProcessData{Msg: &model.Msg0102{}, Cmd: &model.Cmd8001{}}
+			return &model.ProcessData{Msg: &model.Msg0102{}, Cmd: &model.Msg8001{}}
 		},
 		process: processMsg0102,
 	}
 	options[0x0200] = &action{ // 位置信息上报
 		genData: func() *model.ProcessData {
-			return &model.ProcessData{Msg: &model.Msg0200{}, Cmd: &model.Cmd8001{}}
+			return &model.ProcessData{Msg: &model.Msg0200{}, Cmd: &model.Msg8001{}}
 		},
 		process: handleMsg0200,
 	}
@@ -130,7 +130,7 @@ func (mp *JT808MsgProcessor) Process(ctx context.Context, pkt *model.PacketData)
 		return nil, nil // 此类型msg不需要回复cmd
 	}
 	cmd := data.Cmd
-	err = cmd.GenCmd(msg)
+	err = cmd.GenOutgoing(msg)
 	if err != nil {
 		return data, errors.Wrap(err, "Fail to generate jtcmd")
 	}
@@ -191,7 +191,7 @@ func processMsg0100(ctx context.Context, data *model.ProcessData) error {
 
 	cache := storage.GetDeviceCache()
 	// 校验注册逻辑
-	cmd := data.Cmd.(*model.Cmd8100)
+	cmd := data.Cmd.(*model.Msg8100)
 	// 车辆已被注册
 	if cache.HasPlate(msg.PlateNumber) {
 		cmd.Result = model.ResCarAlreadyRegister
@@ -233,7 +233,7 @@ func processMsg0102(ctx context.Context, data *model.ProcessData) error {
 		return errors.Wrapf(err, "Fail to find device cache, phoneNumber=%s", msg.Header.PhoneNumber)
 	}
 
-	cmd := data.Cmd.(*model.Cmd8001)
+	cmd := data.Cmd.(*model.Msg8001)
 	// 校验鉴权逻辑
 	if msg.AuthCode != genAuthCode(device) {
 		cmd.Result = model.ResultFail
