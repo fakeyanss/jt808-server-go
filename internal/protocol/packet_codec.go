@@ -12,11 +12,13 @@ import (
 var (
 	ErrEmptyPacket  = errors.New("Empty packet")
 	ErrVerifyFailed = errors.New("Verify failed")
+	ErrEncodeType   = errors.New("Error data type")
 )
 
 type PacketCodec interface {
-	Decode([]byte) (model.JT808Msg, error)
-	Encode(model.JT808Msg) ([]byte, error)
+	Decode([]byte) (*model.PacketData, error)
+
+	Encode(any) ([]byte, error)
 }
 
 type JT808PacketCodec struct {
@@ -56,16 +58,25 @@ func (pc *JT808PacketCodec) Decode(payload []byte) (*model.PacketData, error) {
 
 	pd.Body = pkt[pd.Header.Idx:]
 
+	pd.Header.Idx = 0 // reset idx
+
 	return pd, nil
 }
 
 // Encode JT808 packet.
 //
 // 序列化 -> 生成校验码 -> 转义
-func (pc *JT808PacketCodec) Encode(cmd model.JT808Cmd) ([]byte, error) {
-	pkt, err := cmd.Encode()
+func (pc *JT808PacketCodec) Encode(data any) (pkt []byte, err error) {
+	if in, ok := data.(model.JT808Msg); ok {
+		pkt, err = in.Encode()
+	} else if out, ok := data.(model.JT808Msg); ok {
+		pkt, err = out.Encode()
+	} else {
+		return nil, ErrEncodeType
+	}
+
 	if err != nil {
-		return nil, errors.Wrap(err, "Fail to encode jtcmd")
+		return nil, errors.Wrap(err, "Fail to encode jtmsg")
 	}
 
 	pkt = pc.genVerifier(pkt)

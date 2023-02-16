@@ -1,4 +1,4 @@
-package util
+package gbk
 
 import (
 	"testing"
@@ -6,7 +6,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestGBKToUTF8(t *testing.T) {
+func TestGBK2UTF8(t *testing.T) {
 	type args struct {
 		s []byte
 	}
@@ -25,14 +25,14 @@ func TestGBKToUTF8(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := GBKToUTF8(tt.args.s)
+			got, err := GBK2UTF8(tt.args.s)
 			require.Equal(t, tt.wantErr, err != nil, err)
 			require.Equal(t, tt.want, got)
 		})
 	}
 }
 
-func TestUtf8ToGbk(t *testing.T) {
+func TestUTF82GBK(t *testing.T) {
 	type args struct {
 		s []byte
 	}
@@ -56,7 +56,7 @@ func TestUtf8ToGbk(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := UTF8ToGBK(tt.args.s)
+			got, err := UTF82GBK(tt.args.s)
 			require.Equal(t, tt.wantErr, err != nil, err)
 			require.Equal(t, tt.want, got)
 		})

@@ -34,7 +34,6 @@ func (serv *TCPServer) Listen(addr string) error {
 	if err == nil {
 		serv.listener = l
 		log.Debug().Msgf("Listening on %v", addr)
-		return nil
 	}
 
 	return err
@@ -46,7 +45,9 @@ func (serv *TCPServer) Start() {
 	for {
 		conn, err := serv.listener.Accept()
 		if err != nil {
-			log.Error().Err(err).Msg("Fail to accept ")
+			log.Error().
+				Err(err).
+				Msg("Fail to do listener accept")
 		} else {
 			session := serv.accept(conn)
 			routines.GoSafe(func() { serv.serve(session) })
@@ -132,7 +133,7 @@ func (serv *TCPServer) serve(session *model.Session) {
 }
 
 // 发送消息到终端设备, 外部调用
-func (serv *TCPServer) Send(id string, cmd model.JT808Cmd) {
+func (serv *TCPServer) Send(id string, msg model.JT808Msg) {
 	session := serv.sessions[id]
 	if session == nil {
 		log.Warn().
@@ -144,7 +145,7 @@ func (serv *TCPServer) Send(id string, cmd model.JT808Cmd) {
 	pg := protocol.NewPipeline(session.Conn)
 
 	// 记录value ctx
-	ctx := context.WithValue(context.Background(), model.CmdCtxKey{}, cmd)
+	ctx := context.WithValue(context.Background(), model.ProcessDataCtxKey{}, &model.ProcessData{Outgoing: msg})
 
 	err := pg.ProcessConnWrite(ctx)
 
@@ -152,13 +153,12 @@ func (serv *TCPServer) Send(id string, cmd model.JT808Cmd) {
 		return
 	}
 
-	if errors.Is(err, io.ErrClosedPipe) {
+	if errors.Is(err, io.ErrClosedPipe) || errors.Is(err, net.ErrClosed) {
 		serv.remove(session)
 	}
 
-	errMsg := "Failed to send jtcmd to device"
 	log.Error().
 		Err(err).
 		Str("device", id).
-		Msg(errMsg)
+		Msg("Failed to send jtmsg to device")
 }

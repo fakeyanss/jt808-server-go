@@ -20,9 +20,9 @@ type (
 
 	ProcessDataCtxKey struct{}
 
-	MsgCtxKey struct{}
+	IncomingMsgCtxKey struct{}
 
-	CmdCtxKey struct{}
+	OutgoingMsgCtxKey struct{}
 
 	PacketEncodeCtxKey struct{}
 )
@@ -39,7 +39,7 @@ func (s *Session) GetTransProto() TransportProtocol {
 	return UDPProto
 }
 
-// 定义PacketData Data
+// 定义Packet Data结构
 type PacketData struct {
 	Header     *MsgHeader // 消息头
 	Body       []byte     // 消息体
@@ -48,6 +48,6 @@ type PacketData struct {
 
 // 定义消息处理结果数据
 type ProcessData struct {
-	Msg JT808Msg
-	Cmd JT808Cmd
+	Incoming JT808Msg // 收到的消息
+	Outgoing JT808Msg // 发出的消息, 无需回复时可为nil
 }
