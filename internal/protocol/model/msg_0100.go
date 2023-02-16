@@ -1,10 +1,9 @@
 package model
 
 import (
-	"bytes"
-	"encoding/binary"
+	"strings"
 
-	"github.com/fakeYanss/jt808-server-go/internal/codec/gbk"
+	"github.com/fakeYanss/jt808-server-go/internal/codec/hex"
 )
 
 // 终端注册
@@ -21,15 +20,9 @@ type Msg0100 struct {
 
 func (m *Msg0100) Decode(packet *PacketData) error {
 	m.Header = packet.Header
-
-	pkt := packet.Body
-	idx := 0
-
-	m.ProvinceID = binary.BigEndian.Uint16(pkt[idx : idx+2])
-	idx += 2
-
-	m.CityID = binary.BigEndian.Uint16(pkt[idx : idx+2])
-	idx += 2
+	pkt, idx := packet.Body, 0
+	m.ProvinceID = hex.ReadWord(pkt, &idx)
+	m.CityID = hex.ReadWord(pkt, &idx)
 
 	ver := &m.Header.Attr.VersionDesc
 	var manuLen, modeLen, idLen int
@@ -42,42 +35,25 @@ func (m *Msg0100) Decode(packet *PacketData) error {
 			modeLen = 20
 		} else {
 			modeLen = 8
-			// ver = func(val VersionType) *VersionType { return &val }(Version2011)
 			ver = &[]VersionType{Version2011}[0]
 		}
 	} else {
 		return ErrDecodeMsg
 	}
-	trimStr := "\x00"
-	m.ManufacturerID = string(bytes.TrimRight(pkt[idx:idx+manuLen], trimStr))
-	idx += manuLen
-	m.DeviceMode = string(bytes.TrimRight(pkt[idx:idx+modeLen], trimStr))
-	idx += modeLen
-	m.DeviceID = string(bytes.TrimRight(pkt[idx:idx+idLen], trimStr))
-	idx += idLen
+	cutset := "\x00"
+	m.ManufacturerID = strings.TrimRight(hex.ReadString(pkt, &idx, manuLen), cutset)
+	m.DeviceMode = strings.TrimRight(hex.ReadString(pkt, &idx, modeLen), cutset)
+	m.DeviceID = strings.TrimRight(hex.ReadString(pkt, &idx, idLen), cutset)
 
-	m.PlateColor = pkt[idx]
-	idx++
-
-	plateRegion, err := gbk.GBK2UTF8(pkt[idx : idx+2])
-	if err != nil {
-		// 解析车牌region失败, 留空
-		plateRegion = []byte{}
-	}
-	idx += 2
-	m.PlateNumber = string(append(plateRegion, pkt[idx:]...))
+	m.PlateColor = hex.ReadByte(pkt, &idx)
+	m.PlateNumber = hex.ReadGBK(pkt, &idx, int(m.Header.Attr.BodyLength)-idx)
 
 	return nil
 }
 
 func (m *Msg0100) Encode() (pkt []byte, err error) {
-	prov := make([]byte, 2)
-	binary.BigEndian.PutUint16(prov, m.ProvinceID)
-	pkt = append(pkt, prov...)
-
-	city := make([]byte, 2)
-	binary.BigEndian.PutUint16(city, m.CityID)
-	pkt = append(pkt, city...)
+	pkt = hex.WriteWord(pkt, m.ProvinceID)
+	pkt = hex.WriteWord(pkt, m.CityID)
 
 	msgVer := m.Header.Attr.VersionDesc
 	var manuLen, modeLen, idLen int // 设备厂商、型号、id长度
@@ -112,22 +88,11 @@ func (m *Msg0100) Encode() (pkt []byte, err error) {
 	}
 	pkt = append(pkt, id...)
 
-	pkt = append(pkt, m.PlateColor)
+	pkt = hex.WriteByte(pkt, m.PlateColor)
+	pkt = hex.WriteGBK(pkt, m.PlateNumber)
 
-	plateRegion, err := gbk.UTF82GBK([]byte(m.PlateNumber)[:3])
-	if err != nil {
-		plateRegion = []byte{}
-	}
-	pkt = append(pkt, plateRegion...)
-	pkt = append(pkt, []byte(m.PlateNumber)[3:]...)
-
-	m.Header.Attr.BodyLength = uint16(len(pkt))
-	headerPkt, err := m.Header.Encode()
-	if err != nil {
-		return nil, err
-	}
-	pkt = append(headerPkt, pkt...)
-	return pkt, nil
+	pkt, err = writeHeader(m, pkt)
+	return pkt, err
 }
 
 func (m *Msg0100) GetHeader() *MsgHeader {

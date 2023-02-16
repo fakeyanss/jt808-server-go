@@ -58,6 +58,8 @@ func (pc *JT808PacketCodec) Decode(payload []byte) (*model.PacketData, error) {
 
 	pd.Body = pkt[pd.Header.Idx:]
 
+	pd.Header.Idx = 0 // reset idx
+
 	return pd, nil
 }
 
@@ -65,16 +67,16 @@ func (pc *JT808PacketCodec) Decode(payload []byte) (*model.PacketData, error) {
 //
 // 序列化 -> 生成校验码 -> 转义
 func (pc *JT808PacketCodec) Encode(data any) (pkt []byte, err error) {
-	if msg, ok := data.(model.JT808Msg); ok {
-		pkt, err = msg.Encode()
-	} else if cmd, ok := data.(model.JT808Msg); ok {
-		pkt, err = cmd.Encode()
+	if in, ok := data.(model.JT808Msg); ok {
+		pkt, err = in.Encode()
+	} else if out, ok := data.(model.JT808Msg); ok {
+		pkt, err = out.Encode()
 	} else {
 		return nil, ErrEncodeType
 	}
 
 	if err != nil {
-		return nil, errors.Wrap(err, "Fail to encode jtcmd")
+		return nil, errors.Wrap(err, "Fail to encode jtmsg")
 	}
 
 	pkt = pc.genVerifier(pkt)

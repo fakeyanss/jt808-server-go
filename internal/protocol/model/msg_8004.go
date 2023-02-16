@@ -4,13 +4,27 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/fakeYanss/jt808-server-go/internal/codec/bcd"
+	"github.com/pkg/errors"
+
+	"github.com/fakeYanss/jt808-server-go/internal/codec/hex"
 )
 
 // 查询服务器时间应答
 type Msg8004 struct {
 	Header     *MsgHeader `json:"header"`
 	ServerTime *time.Time `json:"serverTime"`
+}
+
+func (m *Msg8004) Decode(packet *PacketData) error {
+	m.Header = packet.Header
+	pkt, idx := packet.Body, 0
+	servTimeStr := hex.ReadBCD(pkt, &idx, 6)
+	servTime, err := time.Parse("20060102150405", servTimeStr)
+	if err != nil {
+		return errors.Wrap(ErrDecodeMsg, "Fail to parse time")
+	}
+	m.ServerTime = &servTime
+	return nil
 }
 
 func (m *Msg8004) Encode() (pkt []byte, err error) {
@@ -22,20 +36,10 @@ func (m *Msg8004) Encode() (pkt []byte, err error) {
 	minute := now.Minute() // 分钟
 	second := now.Second() // 秒
 	fmtTime := fmt.Sprintf("%02d%02d%02d%02d%02d%02d", year, month, day, hour, minute, second)
-	pkt = append(pkt, bcd.NumberStr2BCD(fmtTime)...)
+	pkt = hex.WriteBCD(pkt, fmtTime)
 
-	headerPkt, err := m.Header.Encode()
-	if err != nil {
-		return nil, err
-	}
-
-	pkt = append(headerPkt, pkt...)
-
-	return pkt, nil
-}
-
-func (m *Msg8004) Decode(packet *PacketData) error {
-	return nil
+	pkt, err = writeHeader(m, pkt)
+	return pkt, err
 }
 
 func (m *Msg8004) GetHeader() *MsgHeader {

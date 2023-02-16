@@ -1,17 +1,21 @@
 package client
 
 import (
-	"bufio"
+	"context"
+	"errors"
 	"io"
 	"net"
+	"time"
 
 	"github.com/rs/zerolog/log"
+
+	"github.com/fakeYanss/jt808-server-go/internal/protocol"
+	"github.com/fakeYanss/jt808-server-go/internal/protocol/model"
+	"github.com/fakeYanss/jt808-server-go/internal/storage"
 )
 
 type TCPClient struct {
-	conn   net.Conn
-	reader *bufio.Reader
-	writer io.Writer
+	Session *model.Session
 }
 
 func NewTCPClient() *TCPClient {
@@ -22,38 +26,67 @@ func (cli *TCPClient) Dial(addr string) error {
 	conn, err := net.Dial("tcp", addr)
 
 	if err == nil {
-		cli.conn = conn
-		cli.reader = bufio.NewReader(conn)
-		cli.writer = conn
-		log.Debug().Msgf("Dial to %v", addr)
+		remoteAddr := conn.RemoteAddr().String()
+		cli.Session = &model.Session{
+			Conn: conn,
+			ID:   remoteAddr, // using remote addr default
+		}
+		log.Debug().
+			Str("addr", addr).
+			Msg("Dialed to server")
 	}
 
 	return err
 }
 
 func (cli *TCPClient) Start() {
-	// frameHandler := protocol.NewJT808FrameHandler(cli.conn)
-	// packetCodec := protocol.NewJT808PacketCodec()
+	pg := protocol.NewPipeline(cli.Session.Conn)
 
 	for {
-		// frame, err := frameHandler.Recv(context.Background())
+		// 记录value ctx
+		ctx := context.WithValue(context.Background(), model.SessionCtxKey{}, cli.Session)
 
-		// if err != nil {
-		// 	c.error <- err
-		// 	break // TODO: find a way to recover from this
-		// }
+		err := pg.ProcessConnRead(ctx)
 
-		// if cmd != nil {
-		// 	switch v := cmd.(type) {
-		// 	case protocol.MessageCommand:
-		// 		c.incoming <- v
-		// 	default:
-		// 		log.Printf("Unknown command: %v", v)
-		// 	}
-		// }
+		if err == nil {
+			continue
+		}
+
+		log.Error().
+			Err(err).
+			Str("id", cli.Session.ID).
+			Msg("Failed to serve session")
+
+		switch {
+		case errors.Is(err, io.EOF), errors.Is(err, io.ErrClosedPipe), errors.Is(err, net.ErrClosed), errors.Is(err, storage.ErrDeviceNotFound):
+			return // close connection when EOF or closed
+		default:
+			time.Sleep(1 * time.Second)
+		}
 	}
 }
 
 func (cli *TCPClient) Stop() {
-	cli.conn.Close()
+	cli.Session.Conn.Close()
+}
+
+func (cli *TCPClient) Send(msg model.JT808Msg) {
+	pg := protocol.NewPipeline(cli.Session.Conn)
+
+	// 记录value ctx
+	ctx := context.WithValue(context.Background(), model.ProcessDataCtxKey{}, &model.ProcessData{Outgoing: msg})
+
+	err := pg.ProcessConnWrite(ctx)
+
+	if err == nil {
+		return
+	}
+
+	if errors.Is(err, io.ErrClosedPipe) || errors.Is(err, net.ErrClosed) {
+		cli.Stop()
+	}
+
+	log.Error().
+		Err(err).
+		Msg("Failed to send jtmsg to server")
 }

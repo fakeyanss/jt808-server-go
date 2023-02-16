@@ -133,7 +133,7 @@ func (serv *TCPServer) serve(session *model.Session) {
 }
 
 // 发送消息到终端设备, 外部调用
-func (serv *TCPServer) Send(id string, cmd model.JT808Msg) {
+func (serv *TCPServer) Send(id string, msg model.JT808Msg) {
 	session := serv.sessions[id]
 	if session == nil {
 		log.Warn().
@@ -145,7 +145,7 @@ func (serv *TCPServer) Send(id string, cmd model.JT808Msg) {
 	pg := protocol.NewPipeline(session.Conn)
 
 	// 记录value ctx
-	ctx := context.WithValue(context.Background(), model.ProcessDataCtxKey{}, &model.ProcessData{Cmd: cmd})
+	ctx := context.WithValue(context.Background(), model.ProcessDataCtxKey{}, &model.ProcessData{Outgoing: msg})
 
 	err := pg.ProcessConnWrite(ctx)
 
@@ -157,9 +157,8 @@ func (serv *TCPServer) Send(id string, cmd model.JT808Msg) {
 		serv.remove(session)
 	}
 
-	errMsg := "Failed to send jtcmd to device"
 	log.Error().
 		Err(err).
 		Str("device", id).
-		Msg(errMsg)
+		Msg("Failed to send jtmsg to device")
 }

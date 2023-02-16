@@ -1,9 +1,7 @@
 package model
 
 import (
-	"encoding/binary"
-
-	"github.com/fakeYanss/jt808-server-go/internal/codec/bcd"
+	"github.com/fakeYanss/jt808-server-go/internal/codec/hex"
 )
 
 // 位置信息汇报
@@ -21,45 +19,30 @@ type Msg0200 struct {
 
 func (m *Msg0200) Decode(packet *PacketData) error {
 	m.Header = packet.Header
-
-	pkt := packet.Body
-	idx := 0
-
-	m.AlarmSign = binary.BigEndian.Uint32(pkt[idx : idx+4])
-	idx += 4
-
-	m.StatusSign = binary.BigEndian.Uint32(pkt[idx : idx+4])
-	idx += 4
-
-	m.Latitude = binary.BigEndian.Uint32(pkt[idx : idx+4])
-	idx += 4
-
-	m.Longitude = binary.BigEndian.Uint32(pkt[idx : idx+4])
-	idx += 4
-
-	m.Altitude = binary.BigEndian.Uint16(pkt[idx : idx+2])
-	idx += 2
-
-	m.Speed = binary.BigEndian.Uint16(pkt[idx : idx+2])
-	idx += 2
-
-	m.Direction = binary.BigEndian.Uint16(pkt[idx : idx+2])
-	idx += 2
-
-	m.Time = bcd.BCD2NumberStr(pkt[idx : idx+6])
-
+	pkt, idx := packet.Body, 0
+	m.AlarmSign = hex.ReadDoubleWord(pkt, &idx)
+	m.StatusSign = hex.ReadDoubleWord(pkt, &idx)
+	m.Latitude = hex.ReadDoubleWord(pkt, &idx)
+	m.Longitude = hex.ReadDoubleWord(pkt, &idx)
+	m.Altitude = hex.ReadWord(pkt, &idx)
+	m.Speed = hex.ReadWord(pkt, &idx)
+	m.Direction = hex.ReadWord(pkt, &idx)
+	m.Time = hex.ReadBCD(pkt, &idx, 6)
 	return nil
 }
 
 func (m *Msg0200) Encode() (pkt []byte, err error) {
-	// TODO
-	m.Header.Attr.BodyLength = uint16(len(pkt))
-	headerPkt, err := m.Header.Encode()
-	if err != nil {
-		return nil, err
-	}
-	pkt = append(headerPkt, pkt...)
-	return pkt, nil
+	pkt = hex.WriteDoubleWord(pkt, m.AlarmSign)
+	pkt = hex.WriteDoubleWord(pkt, m.StatusSign)
+	pkt = hex.WriteDoubleWord(pkt, m.Latitude)
+	pkt = hex.WriteDoubleWord(pkt, m.Longitude)
+	pkt = hex.WriteWord(pkt, m.Altitude)
+	pkt = hex.WriteWord(pkt, m.Speed)
+	pkt = hex.WriteWord(pkt, m.Direction)
+	pkt = hex.WriteBCD(pkt, m.Time)
+
+	pkt, err = writeHeader(m, pkt)
+	return pkt, err
 }
 
 func (m *Msg0200) GetHeader() *MsgHeader {

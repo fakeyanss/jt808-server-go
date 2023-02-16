@@ -14,6 +14,8 @@ const (
 )
 
 type Device struct {
+	// 连接信息
+
 	ID             string            `json:"id"` // ID是否可重复？
 	PlateNumber    string            `json:"plateNumber"`
 	PhoneNumber    string            `json:"phoneNumber"` // 默认通过PhoneNumber来索引设备
@@ -23,6 +25,13 @@ type Device struct {
 	Keepalive      time.Duration     `json:"keepalive"`   // 保活时长
 	LastestComTime *time.Time        `json:"lastComTime"` // 最近一次交互时间
 	Status         DeviceStatus      `json:"status"`
+
+	// 设备信息
+
+	ProtocalVersion VersionType `json:"protocalVersion"`
+	AuthCode        string      `json:"authcode"`
+	IMEI            string      `json:"imei"`
+	SoftwareVersion string      `json:"softwareVersion"`
 }
 
 func (d *Device) ShouleTurnOffline() bool {

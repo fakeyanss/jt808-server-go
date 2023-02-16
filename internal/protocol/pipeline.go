@@ -86,10 +86,10 @@ func process() delegateFunc {
 func encode() delegateFunc {
 	return delegateFunc(func(ctx context.Context, p *Pipeline) (context.Context, error) {
 		pd := ctx.Value(model.ProcessDataCtxKey{}).(*model.ProcessData)
-		if pd == nil || pd.Cmd == nil { // 不需要回复cmd，不用后续处理
+		if pd == nil || pd.Outgoing == nil { // 不需要回复，不用后续处理
 			return nil, nil
 		}
-		pkt, err := p.pc.Encode(pd.Cmd)
+		pkt, err := p.pc.Encode(pd.Outgoing)
 		nxtCtx := context.WithValue(ctx, model.PacketEncodeCtxKey{}, pkt)
 		return nxtCtx, err
 	})

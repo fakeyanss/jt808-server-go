@@ -34,6 +34,176 @@
 
 ![2023-02-07_20230207140003](https://ghproxy.com/https://raw.githubusercontent.com/fakeYanss/imgplace/master/2023/2023-02-07_20230207140003.png)
 
+### 平台与终端的交互流程
+
+#### 终端管理类协议
+
+```plantuml
+@startuml
+
+skinparam sequenceMessageAlign left
+participant "终端" as c #ADD1B2
+participant "平台" as s #EB937F
+
+group 注册
+  autonumber 1
+  c -> s: 注册 0x0100
+  activate c
+  activate s
+  s -> c: 注册应答 0x8100
+  c -> s: 鉴权 0x0102
+  s -> c: 通用应答 0x8001
+  deactivate s
+  deactivate c
+end
+
+group 保活
+  autonumber 1
+  loop 定时
+    c -> s: 心跳 0x0002
+    activate c
+    activate s
+    s -> c: 通用应答 0x8001
+    deactivate c
+    deactivate s
+  end
+end
+
+group 终端参数
+  autonumber 1
+  loop 定时
+    s -> c: 设置终端参数 0x8103
+    activate s
+    activate c
+    c -> s: 通用应答 0x0001
+    deactivate s
+    deactivate c
+
+    s -> c: 设置终端参数 0x8103
+    activate s
+    activate c
+    c -> s: 查询终端参数应答 0x0104
+    deactivate s
+    deactivate c
+  end
+end
+
+@enduml
+```
+#### 位置/报警类协议
+
+```plantuml
+@startuml
+
+skinparam sequenceMessageAlign left
+participant "终端" as c #ADD1B2
+participant "平台" as s #EB937F
+
+group 主动上报
+  autonumber 1
+  c -> s: 位置信息汇报（报警） 0x0200
+  activate c
+  activate s
+  s -> c: 通用应答 0x8001
+  deactivate s
+  deactivate c
+end
+
+group 平台下发
+  autonumber 1
+  s -> c: 位置信息查询 0x8201
+  activate s
+  activate c
+  c -> s: 位置信息查询应答 0x0201
+  deactivate c
+  deactivate s
+
+  s -> c: 临时位置跟踪控制 0x8202
+  activate s
+  activate c
+  c -> s: 通用应答 0x0001
+  deactivate c
+  deactivate s
+
+  s -> c: 终端控制 0x8105
+  activate s
+  activate c
+  c -> s: 通用应答 0x0001
+  deactivate c
+  deactivate s
+end
+
+@enduml
+```
+
+#### 信息类协议
+todo
+
+#### 电话类协议
+todo
+
+#### 车辆相关协议
+todo
+
+#### 多媒体协议
+```plantuml
+@startuml
+
+skinparam sequenceMessageAlign left
+participant "终端" as c #ADD1B2
+participant "平台" as s #EB937F
+
+group 主动上报
+  autonumber 1
+  c -> s: 多媒体事件信息上报 0x0800
+  activate c
+  activate s
+  s -> c: 通用应答 0x8001
+  deactivate s
+  deactivate c
+
+  c -> s: 多媒体数据上传 0x0801
+  activate c
+  activate s
+  s -> c: 多媒体数据上传应答 0x8800
+  deactivate s
+  deactivate c
+end
+
+group 平台下发
+  autonumber 1
+  s -> c: 摄像头立即拍摄命令 0x8801
+  activate s
+  activate c
+  c -> s: 摄像头立即拍摄命令应答 0x0805
+  deactivate c
+  deactivate s
+
+  s -> c: 录音开始命令 0x8804
+  activate s
+  activate c
+  c -> s: 通用应答 0x0001
+  deactivate c
+  deactivate s
+
+  s -> c: 存储多媒体数据检索 0x8802
+  activate s
+  activate c
+  c -> s: 存储多媒体数据检索应答 0x0802
+  deactivate c
+  deactivate s
+
+  s -> c: 存储多媒体数据上传命令 0x8803
+  activate s
+  activate c
+  c -> s: 通用应答 0x0001
+  deactivate c
+  deactivate s
+end
+
+@enduml
+```
+
 ## 支持的功能
 
   - 兼容 2019/2013 版本差异
@@ -60,40 +230,37 @@
     - 缓存参考 gcache，对每个 session 定时过期
   - 预留持久化接口，支持 mysql 存储、http api 调用
 
-
 定义版本类型分为 Version2019 和 Version2013.
 
-由于无法区分2011和2013版本，所以这部分存在硬编码，通过消息长度和字段长度来判断。
+由于无法区分 2011 和 2013 版本，所以这部分存在硬编码，通过消息长度和字段长度来判断。
 
-目前已知2011/2013/2019版本的区别：
+目前已知 2011/2013/2019 版本的区别：
 
 制造商 ID
-- 2013版本 5 个字节，终端制造商编码
-- 2019版本 11 个字节，终端制造商编码
+- 2013 版本 5 个字节，终端制造商编码
+- 2019 版本 11 个字节，终端制造商编码
 
 终端型号
-- 2011版本   8个字节  ，此终端型号由制造商自行定义，位数不足时，后补“0X00”
-- 2013版本   20 个字节，此终端型号由制造商自行定义，位数不足时，后补“0X00”。
-- 2019版本   30 个字节，此终端型号由制造商自行定义，位数不足时，后补“0X00”。
+- 2011 版本   8 个字节  ，此终端型号由制造商自行定义，位数不足时，后补“0X00”
+- 2013 版本   20 个字节，此终端型号由制造商自行定义，位数不足时，后补“0X00”。
+- 2019 版本   30 个字节，此终端型号由制造商自行定义，位数不足时，后补“0X00”。
 
 终端 ID
-- 2013版本  7个字节，由大写字母和数字组成，此终端 ID 由制造商自行定义，位数不足时，后补“0X00”。
-- 2019版本  30个字节，由大写字母和数字组成，此终端 ID 由制造商自行定义，位数不足时，后补“0X00”。
+- 2013 版本  7 个字节，由大写字母和数字组成，此终端 ID 由制造商自行定义，位数不足时，后补“0X00”。
+- 2019 版本  30 个字节，由大写字母和数字组成，此终端 ID 由制造商自行定义，位数不足时，后补“0X00”。
 
 从业资格证编码 
-- 2011 长度40 位 ，不足补 '\0'；
+- 2011 长度 40 位 ，不足补 '\0'；
 - 2013 长度 20 位，不足补 '\0'。
 
 重传包总数
 - 2013 byte
 - 2019 ushort
 
-2019版本已作删除消息
+2019 版本已作删除消息
 - 事件报告 0x0301
 - 提问应答 0x0302
 - 信息点播/取消 0x0303
 - 事件设置 0x8301
 - 提问下发 0x8302
 - 信息服务 0x8304
-
-

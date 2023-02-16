@@ -1,6 +1,8 @@
 package model
 
-import "encoding/binary"
+import (
+	"github.com/fakeYanss/jt808-server-go/internal/codec/hex"
+)
 
 // 终端通用应答
 type Msg0001 struct {
@@ -12,39 +14,21 @@ type Msg0001 struct {
 
 func (m *Msg0001) Decode(packet *PacketData) error {
 	m.Header = packet.Header
+	pkt, idx := packet.Body, 0
 
-	pkt := packet.Body
-	idx := 0
-
-	m.AnswerSerialNumber = binary.BigEndian.Uint16(pkt[idx : idx+2])
-	idx += 2
-
-	m.AnswerMessageID = binary.BigEndian.Uint16(pkt[idx : idx+2])
-	idx += 2
-
-	m.Result = pkt[idx]
-	idx++
-
+	m.AnswerSerialNumber = hex.ReadWord(pkt, &idx)
+	m.AnswerMessageID = hex.ReadWord(pkt, &idx)
+	m.Result = hex.ReadByte(pkt, &idx)
 	return nil
 }
 
 func (m *Msg0001) Encode() (pkt []byte, err error) {
-	asn := make([]byte, 2)
-	binary.BigEndian.PutUint16(asn, m.AnswerSerialNumber)
-	pkt = append(pkt, asn...)
+	pkt = hex.WriteWord(pkt, m.AnswerSerialNumber)
+	pkt = hex.WriteWord(pkt, m.AnswerMessageID)
+	pkt = hex.WriteByte(pkt, m.Result)
 
-	amid := make([]byte, 2)
-	binary.BigEndian.PutUint16(amid, m.AnswerMessageID)
-	pkt = append(pkt, amid...)
-
-	pkt = append(pkt, byte(m.Result))
-
-	headerPkt, err := m.Header.Encode()
-	if err != nil {
-		return nil, err
-	}
-	pkt = append(headerPkt, pkt...)
-	return pkt, nil
+	pkt, err = writeHeader(m, pkt)
+	return pkt, err
 }
 
 func (m *Msg0001) GetHeader() *MsgHeader {

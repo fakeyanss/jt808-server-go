@@ -1,6 +1,24 @@
 package datagen
 
-import "github.com/fakeYanss/jt808-server-go/internal/protocol/model"
+import (
+	"time"
+
+	"github.com/fakeYanss/jt808-server-go/internal/protocol/model"
+)
+
+func GenDevice() *model.Device {
+	return &model.Device{
+		ID:          "1234ABCD",
+		PlateNumber: "京A12345",
+		PhoneNumber: "12345678901234567890",
+		Keepalive:   60 * time.Second,
+
+		ProtocalVersion: model.Version2019,
+		AuthCode:        "test",
+		IMEI:            "qwerasdf",
+		SoftwareVersion: "v1",
+	}
+}
 
 func GenMsgHeader(msgID uint16) *model.MsgHeader {
 	msgHeader := &model.MsgHeader{

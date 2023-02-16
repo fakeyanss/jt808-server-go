@@ -1,6 +1,10 @@
 package model
 
-import "encoding/binary"
+import (
+	"encoding/binary"
+
+	"github.com/fakeYanss/jt808-server-go/internal/codec/hex"
+)
 
 type ResultCodeType byte
 
@@ -20,29 +24,30 @@ type Msg8100 struct {
 	AuthCode           string         `json:"authCode"`           // 鉴权码
 }
 
-func (m *Msg8100) Encode() (pkt []byte, err error) {
-	asn := make([]byte, 2)
-	binary.BigEndian.PutUint16(asn, m.AnswerSerialNumber)
-	pkt = append(pkt, asn...)
+func (m *Msg8100) Decode(packet *PacketData) error {
+	m.Header = packet.Header
 
-	pkt = append(pkt, byte(m.Result))
+	pkt := packet.Body
+	idx := 0
 
-	pkt = append(pkt, []byte(m.AuthCode)...)
+	m.AnswerSerialNumber = binary.BigEndian.Uint16(pkt[idx : idx+2])
+	idx += 2
 
-	m.Header.Attr.BodyLength = uint16(len(pkt))
+	m.Result = ResultCodeType(pkt[idx])
+	idx++
 
-	headerPkt, err := m.Header.Encode()
-	if err != nil {
-		return nil, err
-	}
+	m.AuthCode = string(pkt[idx : int(m.Header.Attr.BodyLength)-idx])
 
-	pkt = append(headerPkt, pkt...)
-
-	return pkt, nil
+	return nil
 }
 
-func (m *Msg8100) Decode(packet *PacketData) error {
-	return nil
+func (m *Msg8100) Encode() (pkt []byte, err error) {
+	pkt = hex.WriteWord(pkt, m.AnswerSerialNumber)
+	pkt = hex.WriteByte(pkt, uint8(m.Result))
+	pkt = hex.WriteString(pkt, m.AuthCode)
+
+	pkt, err = writeHeader(m, pkt)
+	return pkt, err
 }
 
 func (m *Msg8100) GetHeader() *MsgHeader {
@@ -50,7 +55,10 @@ func (m *Msg8100) GetHeader() *MsgHeader {
 }
 
 func (m *Msg8100) GenOutgoing(incoming JT808Msg) error {
-	in := incoming.(*Msg0100)
+	in, ok := incoming.(*Msg0100)
+	if !ok {
+		return ErrGenOutgoingMsg
+	}
 	m.AnswerSerialNumber = in.Header.SerialNumber
 	m.Result = 0
 	m.AuthCode = "AuthCode" // 初始值，在后续处理中根据id重写

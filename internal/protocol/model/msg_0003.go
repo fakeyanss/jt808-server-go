@@ -12,12 +12,8 @@ func (m *Msg0003) Decode(packet *PacketData) error {
 }
 
 func (m *Msg0003) Encode() (pkt []byte, err error) {
-	headerPkt, err := m.Header.Encode()
-	if err != nil {
-		return nil, err
-	}
-	pkt = append(headerPkt, pkt...)
-	return pkt, nil
+	pkt, err = writeHeader(m, pkt)
+	return pkt, err
 }
 
 func (m *Msg0003) GetHeader() *MsgHeader {

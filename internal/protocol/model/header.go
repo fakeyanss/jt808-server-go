@@ -1,11 +1,9 @@
 package model
 
 import (
-	"encoding/binary"
-
 	"github.com/pkg/errors"
 
-	"github.com/fakeYanss/jt808-server-go/internal/codec/bcd"
+	"github.com/fakeYanss/jt808-server-go/internal/codec/hex"
 )
 
 var (
@@ -22,49 +20,42 @@ type MsgHeader struct {
 	SerialNumber    uint16            `json:"serialNumber"`    // 消息流水号
 	Frag            *MsgFragmentation `json:"frag"`            // 消息包封装项
 
-	Idx int32 `json:"-"` // 读取的packet header下标ID
+	Idx int `json:"-"` // 读取的packet header下标ID
 }
 
 // 将[]byte解码成消息头结构体
 func (h *MsgHeader) Decode(pkt []byte) error {
-	var idx int32
+	var idx int
 
-	h.MsgID = binary.BigEndian.Uint16(pkt[:idx+2]) // 消息id [0,2)位
-	idx += 2
+	h.MsgID = hex.ReadWord(pkt, &idx) // 消息id [0,2)位
 
 	h.Attr = &MsgBodyAttr{}
-	err := h.Attr.Decode(pkt[idx : idx+2]) // 消息体属性 [2,4)位
+	err := h.Attr.Decode(hex.ReadWord(pkt, &idx)) // 消息体属性 [2,4)位
 	if err != nil {
 		return ErrDecodeHeader
 	}
-	idx += 2
 
 	if h.Attr.VersionDesc == Version2019 {
-		h.ProtocolVersion = pkt[idx] // 2019版本，协议版本号 第4位
-		idx++
+		h.ProtocolVersion = hex.ReadByte(pkt, &idx) // 2019版本，协议版本号 第4位
 	}
 
 	// 2013版本，phoneNumber [5,11)位 长度6位；2019版本，phoneNumber [5,15)位 长度10位。
 	if h.Attr.VersionDesc == Version2019 {
-		h.PhoneNumber = bcd.BCD2NumberStr(pkt[idx : idx+10])
-		idx += 10
+		h.PhoneNumber = hex.ReadBCD(pkt, &idx, 10)
 	} else if h.Attr.VersionDesc == Version2013 {
-		h.PhoneNumber = bcd.BCD2NumberStr(pkt[idx : idx+6])
-		idx += 6
+		h.PhoneNumber = hex.ReadBCD(pkt, &idx, 6)
 	} else {
 		return ErrDecodeHeader
 	}
 
-	h.SerialNumber = binary.BigEndian.Uint16(pkt[idx : idx+2])
-	idx += 2
+	h.SerialNumber = hex.ReadWord(pkt, &idx)
 
 	if h.Attr.PacketFragmentedDesc {
 		h.Frag = &MsgFragmentation{}
-		err = h.Frag.Decode(pkt[idx : idx+2]) // 消息包封装项，两位
+		err = h.Frag.Decode(pkt, &idx) // 消息包封装项
 		if err != nil {
 			return ErrDecodeHeader
 		}
-		idx += 2
 	}
 
 	h.Idx = idx
@@ -73,33 +64,14 @@ func (h *MsgHeader) Decode(pkt []byte) error {
 }
 
 // 将消息头结构体编码成[]byte
-func (h *MsgHeader) Encode() ([]byte, error) {
-	pkt := make([]byte, 0)
-
-	id := make([]byte, 2)
-	binary.BigEndian.PutUint16(id, h.MsgID) // 消息id
-	pkt = append(pkt, id...)
-
-	bodyAttrPkt, err := h.Attr.Encode() // 消息体属性
-	if err != nil {
-		return nil, err
-	}
-	pkt = append(pkt, bodyAttrPkt...)
-
-	pkt = append(pkt, h.ProtocolVersion) // 协议版本号
-
-	pkt = append(pkt, bcd.NumberStr2BCD(h.PhoneNumber)...) // 手机号
-
-	sn := make([]byte, 2)
-	binary.BigEndian.PutUint16(sn, h.SerialNumber) // 消息流水号
-	pkt = append(pkt, sn...)
-
+func (h *MsgHeader) Encode() (pkt []byte, err error) {
+	pkt = hex.WriteWord(pkt, h.MsgID)           // 消息id
+	pkt = hex.WriteWord(pkt, h.Attr.Encode())   // 消息体属性
+	pkt = hex.WriteByte(pkt, h.ProtocolVersion) // 协议版本号
+	pkt = hex.WriteBCD(pkt, h.PhoneNumber)      // 手机号
+	pkt = hex.WriteWord(pkt, h.SerialNumber)    // 消息流水号
 	if h.Frag != nil {
-		fragPkt, err := h.Frag.Encode() // 消息包封装项
-		if err != nil {
-			return nil, err
-		}
-		pkt = append(pkt, fragPkt...)
+		pkt = append(pkt, h.Frag.Encode()...) // 消息包封装项
 	}
 
 	return pkt, nil
@@ -151,10 +123,7 @@ type MsgBodyAttr struct {
 	VersionDesc          VersionType          `json:"versionDesc"`          // 版本类型描述
 }
 
-func (attr *MsgBodyAttr) Decode(sub []byte) error {
-	// 2-3位字节转为二进制数字
-	bitNum := binary.BigEndian.Uint16(sub)
-
+func (attr *MsgBodyAttr) Decode(bitNum uint16) error {
 	attr.BodyLength = bitNum & bodyLengthBit // 消息体长度 低10位
 
 	// 加密方式 10-12位
@@ -186,18 +155,14 @@ func (attr *MsgBodyAttr) Decode(sub []byte) error {
 	return nil
 }
 
-func (attr *MsgBodyAttr) Encode() ([]byte, error) {
+func (attr *MsgBodyAttr) Encode() uint16 {
 	var bitNum uint16
-
 	bitNum += attr.BodyLength                     // 消息体长度
 	bitNum += uint16(attr.Encryption) << 10       // 加密方式
 	bitNum += uint16(attr.PacketFragmented) << 13 // 分包
 	bitNum += uint16(attr.VersionSign) << 14      // 版本标识
 	bitNum += uint16(attr.Extra) << 15            // 保留位
-
-	pkt := make([]byte, 2)
-	binary.BigEndian.PutUint16(pkt, bitNum)
-	return pkt, nil
+	return bitNum
 }
 
 // 定义分包的封装项
@@ -206,22 +171,15 @@ type MsgFragmentation struct {
 	Index uint16 `json:"index"` // 包序号，从1开始
 }
 
-func (frag *MsgFragmentation) Decode(sub []byte) error {
-	frag.Total = binary.BigEndian.Uint16(sub[:2])
-	frag.Index = binary.BigEndian.Uint16(sub[2:])
+func (frag *MsgFragmentation) Decode(pkt []byte, idx *int) error {
+	frag.Total = hex.ReadWord(pkt, idx)
+	frag.Index = hex.ReadWord(pkt, idx)
 	return nil
 }
 
-func (frag *MsgFragmentation) Encode() ([]byte, error) {
+func (frag *MsgFragmentation) Encode() []byte {
 	pkt := make([]byte, 0)
-
-	tot := make([]byte, 2)
-	binary.BigEndian.PutUint16(tot, frag.Total)
-	pkt = append(pkt, tot...)
-
-	idx := make([]byte, 2)
-	binary.BigEndian.PutUint16(idx, frag.Index)
-	pkt = append(pkt, idx...)
-
-	return pkt, nil
+	pkt = hex.WriteWord(pkt, frag.Total)
+	pkt = hex.WriteWord(pkt, frag.Index)
+	return pkt
 }
