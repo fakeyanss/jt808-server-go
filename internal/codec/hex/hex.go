@@ -9,7 +9,7 @@ import (
 
 	"github.com/rs/zerolog/log"
 
-	"github.com/fakeYanss/jt808-server-go/internal/codec/gbk"
+	"github.com/fakeyanss/jt808-server-go/internal/codec/gbk"
 )
 
 func Str2Byte(src string) []byte {

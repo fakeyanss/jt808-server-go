@@ -3,11 +3,10 @@ package storage
 import (
 	"errors"
 	"sync"
-	"time"
 
 	"golang.org/x/exp/maps"
 
-	"github.com/fakeYanss/jt808-server-go/internal/protocol/model"
+	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
 )
 
 var ErrDeviceNotFound = errors.New("device not found")
@@ -72,8 +71,6 @@ func (cache *DeviceCache) cacheDevice(d *model.Device) {
 func (cache *DeviceCache) CacheDevice(d *model.Device) {
 	cache.mutex.Lock()
 	defer cache.mutex.Unlock()
-	now := time.Now()
-	d.LastestComTime = &now
 	cache.cacheDevice(d)
 }
 

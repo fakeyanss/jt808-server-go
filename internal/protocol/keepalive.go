@@ -3,16 +3,16 @@ package protocol
 import (
 	"sync"
 
+	"github.com/fakeyanss/gron"
 	"github.com/pkg/errors"
 	"github.com/rs/zerolog/log"
 
-	"github.com/fakeYanss/jt808-server-go/internal/protocol/model"
-	"github.com/fakeYanss/jt808-server-go/internal/storage"
-	"github.com/fakeYanss/jt808-server-go/pkg/cron"
+	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
+	"github.com/fakeyanss/jt808-server-go/internal/storage"
 )
 
 type KeepaliveTimer struct {
-	cron *cron.Cron
+	cron *gron.Cron
 }
 
 var timerSingleton *KeepaliveTimer
@@ -21,7 +21,7 @@ var timerInitOnce sync.Once
 func NewKeepaliveTimer() *KeepaliveTimer {
 	timerInitOnce.Do(func() {
 		timerSingleton = &KeepaliveTimer{
-			cron: cron.New(),
+			cron: gron.New(),
 		}
 		timerSingleton.cron.Start()
 	})
@@ -35,7 +35,7 @@ func (t *KeepaliveTimer) Register(devicePhone string) {
 		return
 	}
 	job := &CheckDeviceJob{phone: devicePhone}
-	t.cron.Add(cron.Every(device.Keepalive), job)
+	t.cron.Add(gron.Every(device.Keepalive), job)
 	log.Debug().
 		Str("device", devicePhone).
 		Msg("Register device keepalive check job")
@@ -45,7 +45,7 @@ func (t *KeepaliveTimer) Cancel(devicePhone string) {
 	t.cron.Cancel(devicePhone)
 }
 
-func (t *KeepaliveTimer) Jobs() []*cron.Entry {
+func (t *KeepaliveTimer) Jobs() []*gron.Entry {
 	return t.cron.Entries()
 }
 
@@ -65,6 +65,9 @@ func (j *CheckDeviceJob) Run() {
 // 1. 当前在线，保活失效，改为离线，断开tcp连接
 // 2. 当前离线，缓存保留3倍保活时间
 func checkDeviceKeepalive(t *KeepaliveTimer, devicePhone string) {
+	log.Debug().
+		Str("device", devicePhone).
+		Msg("Check device keepalive status")
 	cache := storage.GetDeviceCache()
 	gisCache := storage.GetGisCache()
 	d, err := cache.GetDeviceByPhone(devicePhone)
@@ -79,12 +82,12 @@ func checkDeviceKeepalive(t *KeepaliveTimer, devicePhone string) {
 		d.Status = model.DeviceStatusOffline
 		cache.CacheDevice(d)
 		log.Debug().
-			Str("device", d.PhoneNumber).
+			Str("device", devicePhone).
 			Msg("Turn offline for device keepalive expired")
 	} else if d.ShouldClear() {
 		d.Conn.Close()
-		cache.DelDeviceByPhone(d.PhoneNumber)
-		gisCache.DelGisByPhone(d.PhoneNumber)
+		cache.DelDeviceByPhone(devicePhone)
+		gisCache.DelGisByPhone(devicePhone)
 		log.Debug().
 			Str("device", d.PhoneNumber).
 			Msg("Clear cache and close connection after device being offline for a long time")

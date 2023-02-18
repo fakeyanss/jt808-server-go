@@ -23,7 +23,7 @@ type Device struct {
 	TransProto     TransportProtocol `json:"transProto"`
 	Conn           net.Conn          `json:"conn"`
 	Keepalive      time.Duration     `json:"keepalive"`   // 保活时长
-	LastestComTime *time.Time        `json:"lastComTime"` // 最近一次交互时间
+	LastestComTime time.Time         `json:"lastComTime"` // 最近一次交互时间
 	Status         DeviceStatus      `json:"status"`
 
 	// 设备信息

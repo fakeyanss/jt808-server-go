@@ -1,6 +1,6 @@
 package client
 
-import "github.com/fakeYanss/jt808-server-go/internal/protocol/model"
+import "github.com/fakeyanss/jt808-server-go/internal/protocol/model"
 
 type Server interface {
 	Dial(addr string) error

@@ -3,6 +3,7 @@ package protocol
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strconv"
 	"strings"
 	"sync"
@@ -12,9 +13,9 @@ import (
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 
-	"github.com/fakeYanss/jt808-server-go/internal/codec/hash"
-	"github.com/fakeYanss/jt808-server-go/internal/protocol/model"
-	"github.com/fakeYanss/jt808-server-go/internal/storage"
+	"github.com/fakeyanss/jt808-server-go/internal/codec/hash"
+	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
+	"github.com/fakeyanss/jt808-server-go/internal/storage"
 )
 
 var (
@@ -130,6 +131,7 @@ func (mp *JT808MsgProcessor) Process(ctx context.Context, pkt *model.PacketData)
 		}
 		log.Debug().
 			Str("id", session.ID).
+			Str("RawMsgID", fmt.Sprintf("0x%04x", in.GetHeader().MsgID)).
 			RawJSON("incoming", inJSON). // for debug
 			Msg("Received jt808 msg.")
 	}
@@ -153,6 +155,7 @@ func (mp *JT808MsgProcessor) Process(ctx context.Context, pkt *model.PacketData)
 		session := ctx.Value(model.SessionCtxKey{}).(*model.Session)
 		log.Debug().
 			Str("id", session.ID).
+			Str("RawMsgID", fmt.Sprintf("0x%04x", out.GetHeader().MsgID)).
 			RawJSON("outgoing", outJSON). // for debug
 			Msg("Generating jt808 outgoing msg.")
 	}()
@@ -175,6 +178,7 @@ func processMsg0002(ctx context.Context, data *model.ProcessData) error {
 		return errors.Wrapf(err, "Fail to find device cache, phoneNumber=%s", data.Incoming.GetHeader().PhoneNumber)
 	}
 
+	device.LastestComTime = time.Now()
 	cache.CacheDevice(device)
 
 	return nil
@@ -217,16 +221,18 @@ func processMsg0100(ctx context.Context, data *model.ProcessData) error {
 
 	session := ctx.Value(model.SessionCtxKey{}).(*model.Session)
 	device := &model.Device{
-		ID:          in.DeviceID,
-		PlateNumber: in.PlateNumber,
-		PhoneNumber: in.Header.PhoneNumber,
-		SessionID:   session.ID,
-		TransProto:  session.GetTransProto(),
-		Conn:        session.Conn,
-		Keepalive:   time.Minute * 1,
-		Status:      model.DeviceStatusOffline,
+		ID:             in.DeviceID,
+		PlateNumber:    in.PlateNumber,
+		PhoneNumber:    in.Header.PhoneNumber,
+		SessionID:      session.ID,
+		TransProto:     session.GetTransProto(),
+		Conn:           session.Conn,
+		Keepalive:      time.Minute * 1,
+		Status:         model.DeviceStatusOffline,
+		LastestComTime: time.Now(),
 	}
 	out.AuthCode = genAuthCode(device) // 设置鉴权码
+
 	cache.CacheDevice(device)
 
 	timer := NewKeepaliveTimer()
@@ -257,6 +263,7 @@ func processMsg0102(ctx context.Context, data *model.ProcessData) error {
 	} else {
 		// 鉴权通过
 		device.Status = model.DeviceStatusOnline
+		device.LastestComTime = time.Now()
 		cache.CacheDevice(device)
 	}
 
@@ -291,6 +298,7 @@ func handleMsg0200(ctx context.Context, data *model.ProcessData) error {
 
 	if gis.ACCStatus == 0 { // ACC关闭，设备休眠
 		device.Status = model.DeviceStatusSleeping
+		device.LastestComTime = time.Now()
 		cache.CacheDevice(device)
 	}
 

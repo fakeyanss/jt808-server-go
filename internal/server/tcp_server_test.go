@@ -5,7 +5,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/fakeYanss/jt808-server-go/internal/protocol/model"
+	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
 )
 
 func TestTCPServer_serve(t *testing.T) {

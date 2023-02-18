@@ -4,7 +4,7 @@ import (
 	"context"
 	"net"
 
-	"github.com/fakeYanss/jt808-server-go/internal/protocol/model"
+	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
 )
 
 // tcp/udp 消息处理组

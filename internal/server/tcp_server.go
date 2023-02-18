@@ -10,10 +10,10 @@ import (
 	"github.com/pkg/errors"
 	"github.com/rs/zerolog/log"
 
-	"github.com/fakeYanss/jt808-server-go/internal/protocol"
-	"github.com/fakeYanss/jt808-server-go/internal/protocol/model"
-	"github.com/fakeYanss/jt808-server-go/internal/storage"
-	"github.com/fakeYanss/jt808-server-go/pkg/routines"
+	"github.com/fakeyanss/jt808-server-go/internal/protocol"
+	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
+	"github.com/fakeyanss/jt808-server-go/internal/storage"
+	"github.com/fakeyanss/jt808-server-go/pkg/routines"
 )
 
 type TCPServer struct {

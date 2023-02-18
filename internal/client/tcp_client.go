@@ -9,9 +9,9 @@ import (
 
 	"github.com/rs/zerolog/log"
 
-	"github.com/fakeYanss/jt808-server-go/internal/protocol"
-	"github.com/fakeYanss/jt808-server-go/internal/protocol/model"
-	"github.com/fakeYanss/jt808-server-go/internal/storage"
+	"github.com/fakeyanss/jt808-server-go/internal/protocol"
+	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
+	"github.com/fakeyanss/jt808-server-go/internal/storage"
 )
 
 type TCPClient struct {

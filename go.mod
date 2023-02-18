@@ -1,10 +1,10 @@
-module github.com/fakeYanss/jt808-server-go
+module github.com/fakeyanss/jt808-server-go
 
 go 1.19
 
 require (
+	github.com/fakeyanss/gron v0.0.0-20230218065849-95fc0f17a375
 	github.com/gin-gonic/gin v1.8.2
-	github.com/google/uuid v1.3.0
 	github.com/mitchellh/mapstructure v1.5.0
 	github.com/pkg/errors v0.9.1
 	github.com/rs/zerolog v1.28.0
