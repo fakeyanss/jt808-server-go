@@ -11,7 +11,7 @@ import (
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 
-	"github.com/fakeYanss/jt808-server-go/internal/protocol/model"
+	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
 )
 
 const (
@@ -91,5 +91,9 @@ func (fh *JT808FrameHandler) Send(payload FramePayload) error {
 			p = p[n:] // 没写完所有数据，再写一次
 		}
 	}
+	log.Debug().
+		Int("frame_len", len(payload)).
+		Hex("frame_payload", payload). // for debug
+		Msg("Sent frame.")
 	return nil
 }

@@ -1,7 +1,7 @@
 package model
 
 import (
-	"github.com/fakeYanss/jt808-server-go/internal/codec/hex"
+	"github.com/fakeyanss/jt808-server-go/internal/codec/hex"
 )
 
 // 位置信息汇报

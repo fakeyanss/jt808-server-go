@@ -3,7 +3,7 @@ package datagen
 import (
 	"time"
 
-	"github.com/fakeYanss/jt808-server-go/internal/protocol/model"
+	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
 )
 
 func GenDevice() *model.Device {
@@ -20,7 +20,7 @@ func GenDevice() *model.Device {
 	}
 }
 
-func GenMsgHeader(msgID uint16) *model.MsgHeader {
+func genMsgHeader(msgID uint16) *model.MsgHeader {
 	msgHeader := &model.MsgHeader{
 		MsgID: msgID,
 		Attr: &model.MsgBodyAttr{
@@ -40,9 +40,15 @@ func GenMsgHeader(msgID uint16) *model.MsgHeader {
 	return msgHeader
 }
 
+func GenMsg0002() *model.Msg0002 {
+	return &model.Msg0002{
+		Header: genMsgHeader(0x0002),
+	}
+}
+
 func GenMsg0100() *model.Msg0100 {
 	return &model.Msg0100{
-		Header:         GenMsgHeader(0x0100),
+		Header:         genMsgHeader(0x0100),
 		ProvinceID:     31,
 		CityID:         115,
 		ManufacturerID: "fakeyanss",
@@ -50,5 +56,19 @@ func GenMsg0100() *model.Msg0100 {
 		DeviceID:       "1234ABCD",
 		PlateColor:     1,
 		PlateNumber:    "京A12345",
+	}
+}
+
+func GenMsg0200() *model.Msg0200 {
+	return &model.Msg0200{
+		Header:     genMsgHeader(0x0200),
+		AlarmSign:  1024,
+		StatusSign: 2048,
+		Latitude:   116307629,
+		Longitude:  40058359,
+		Altitude:   312,
+		Speed:      3,
+		Direction:  99,
+		Time:       "200707192359",
 	}
 }

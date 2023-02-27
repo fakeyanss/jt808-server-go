@@ -6,8 +6,8 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/fakeYanss/jt808-server-go/internal/codec/hex"
-	"github.com/fakeYanss/jt808-server-go/internal/protocol/model"
+	"github.com/fakeyanss/jt808-server-go/internal/codec/hex"
+	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
 )
 
 func TestJT808PacketCodec_Decode(t *testing.T) {

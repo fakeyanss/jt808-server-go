@@ -8,10 +8,10 @@ import (
 	"github.com/mitchellh/mapstructure"
 	"github.com/rs/zerolog/log"
 
-	"github.com/fakeYanss/jt808-server-go/internal/server"
-	"github.com/fakeYanss/jt808-server-go/internal/storage"
-	"github.com/fakeYanss/jt808-server-go/pkg/logger"
-	"github.com/fakeYanss/jt808-server-go/pkg/routines"
+	"github.com/fakeyanss/jt808-server-go/internal/server"
+	"github.com/fakeyanss/jt808-server-go/internal/storage"
+	"github.com/fakeyanss/jt808-server-go/pkg/logger"
+	"github.com/fakeyanss/jt808-server-go/pkg/routines"
 )
 
 const (
@@ -53,7 +53,8 @@ func main() {
 	}
 	routines.GoSafe(func() { serv.Start() })
 
-	// todo: web server structure
+	// web server structure
+	gin.SetMode(gin.ReleaseMode)
 	router := gin.Default()
 	cache := storage.GetDeviceCache()
 	gisCache := storage.GetGisCache()
