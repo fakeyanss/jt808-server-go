@@ -1,0 +1,7 @@
+{
+    "provinceId": "[0-9]{2}",
+    "cityId": "[0-9]{4}",
+    "manufacturerId": "fakeyanss",
+    "deviceMode": "fakeyanss.github.io",
+    "plateColor": "[0123459]{1}"
+}

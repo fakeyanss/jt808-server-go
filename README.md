@@ -306,3 +306,4 @@ end
 
 - 单测覆盖率提升
 - 封装统一处理结果，包含 result 和 error 定义，再有连接控制层进行处理
+- 调研 go struct tag，用以简化 msg decode&encode 代码

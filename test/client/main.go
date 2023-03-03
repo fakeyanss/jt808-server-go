@@ -1,13 +1,16 @@
 package main
 
 import (
+	"context"
 	"flag"
+	"fmt"
 	"os"
 	"time"
 
 	"github.com/rs/zerolog/log"
 
 	"github.com/fakeyanss/jt808-server-go/internal/client"
+	"github.com/fakeyanss/jt808-server-go/internal/config"
 	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
 	"github.com/fakeyanss/jt808-server-go/internal/storage"
 	"github.com/fakeyanss/jt808-server-go/pkg/logger"
@@ -21,23 +24,17 @@ const (
 )
 
 func main() {
-	logConfig := &logger.Config{
-		ConsoleLoggingEnabled: true,
-		EncodeLogsAsJSON:      false,
-		FileLoggingEnabled:    true,
-		LogLevel:              0,
-		Directory:             logDir,
-		Filename:              logFile,
-		MaxSize:               5,
-		MaxBackups:            128,
-		MaxAge:                3,
-	}
-	log.Logger = *logger.Configure(logConfig).Logger
-
-	var addr string
-	flag.StringVar(&addr, "addr", "localhost:8080", "set server addr")
+	var cfgPath string
+	flag.StringVar(&cfgPath, "c", "configs/default.toml", "config file path")
 	flag.Parse()
+	fmt.Printf("Start with configuration %v\n", cfgPath)
+	cfg := config.Load(cfgPath)
+	fmt.Printf("Load configuration: %+v\n", cfg)
 
+	logCfg := cfg.ParseLogConf()
+	log.Logger = *logger.Configure(logCfg).Logger
+
+	addr := cfg.Client.Conn.RemoteAddr
 	cli := client.NewTCPClient()
 	err := cli.Dial(addr)
 	if err != nil {
@@ -55,11 +52,21 @@ func main() {
 		done <- struct{}{}
 	})
 
-	buildDevice(cli)
-	register(cli)
+	for i := 0; i < cfg.Client.Concurrency; i++ {
+		routines.GoSafe(func() {
+			d := buildDevice(cli)
+			ctx := context.WithValue(context.Background(), model.DeviceCtxKey{}, d.PhoneNumber)
 
-	go keepalive(cli)
-	go reportLocation(cli)
+			register(ctx, cli)
+
+			time.Sleep(10 * time.Second)
+
+			// todo should wait for register success
+			routines.GoSafe(func() { keepalive(ctx, cli) })
+			// todo should wait for register success
+			routines.GoSafe(func() { reportLocation(ctx, cli, cfg.Client.Device.LocationReportInteval) })
+		})
+	}
 
 	for {
 		select {
@@ -70,32 +77,46 @@ func main() {
 	}
 }
 
-func buildDevice(cli *client.TCPClient) {
+func buildDevice(cli *client.TCPClient) *model.Device {
 	cache := storage.GetDeviceCache()
 	device := datagen.GenDevice()
 	device.SessionID = cli.Session.ID
 	device.TransProto = model.TCPProto
 	device.Conn = cli.Session.Conn
 	cache.CacheDevice(device)
+	return device
 }
 
-func register(cli *client.TCPClient) {
-	msg := datagen.GenMsg0100()
+func getDevice(ctx context.Context) *model.Device {
+	phone := ctx.Value(model.DeviceCtxKey{}).(string)
+	cache := storage.GetDeviceCache()
+	device, err := cache.GetDeviceByPhone(phone)
+	if err != nil {
+		log.Fatal().Err(err).Str("phone", phone).Msg("Fail to find device cache")
+	}
+	return device
+}
+
+func register(ctx context.Context, cli *client.TCPClient) {
+	device := getDevice(ctx)
+	msg := datagen.GenMsg0100(device)
 	cli.Send(msg)
 }
 
-func keepalive(cli *client.TCPClient) {
-	msg := datagen.GenMsg0002()
+func keepalive(ctx context.Context, cli *client.TCPClient) {
+	device := getDevice(ctx)
+	msg := datagen.GenMsg0002(device)
 	for {
 		cli.Send(msg)
-		time.Sleep(10 * time.Second)
+		time.Sleep(device.Keepalive)
 	}
 }
 
-func reportLocation(cli *client.TCPClient) {
+func reportLocation(ctx context.Context, cli *client.TCPClient, interval int) {
 	for {
-		msg := datagen.GenMsg0200()
+		device := getDevice(ctx)
+		msg := datagen.GenMsg0200(device)
 		cli.Send(msg)
-		time.Sleep(30 * time.Second)
+		time.Sleep(time.Duration(interval) * time.Second)
 	}
 }

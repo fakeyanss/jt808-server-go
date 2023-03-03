@@ -4,18 +4,18 @@ file_enable = true
 print_as_json = false
 log_level = "DEBUG"
 log_directory = "./logs/"
-log_file = "jt808-server-go.log"
+log_file = "demo.log"
 max_size_of_rolling = 50
 max_backups_of_rolling = 128
 max_age_of_rolling = 7
 
 [server]
-name = "jt808-server-go"
+name = "demo"
 
 [server.port]
-tcp_port = "8080"
-udp_port = "8081"
-http_port = "8008"
+tcp_port = "1"
+udp_port = "2"
+http_port = "3"
 
 [server.banner]
 enable = true

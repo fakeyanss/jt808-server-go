@@ -1,48 +1,52 @@
 package main
 
 import (
+	"flag"
+	"fmt"
 	"net/http"
 	"os"
 
-	"github.com/gin-gonic/gin"
-	"github.com/mitchellh/mapstructure"
-	"github.com/rs/zerolog/log"
-
+	"github.com/fakeyanss/jt808-server-go/internal/config"
 	"github.com/fakeyanss/jt808-server-go/internal/server"
 	"github.com/fakeyanss/jt808-server-go/internal/storage"
 	"github.com/fakeyanss/jt808-server-go/pkg/logger"
 	"github.com/fakeyanss/jt808-server-go/pkg/routines"
+	"github.com/gin-gonic/gin"
+	"github.com/mitchellh/mapstructure"
+	"github.com/rs/zerolog/log"
 )
 
 const (
-	TCPPort  = "8080"
-	UDPPort  = "8081"
-	HTTPPort = "8008"
-)
-
-const (
-	LogDir  = "./logs/" // todo: read from configuration
-	LogFile = "jt808-server-go.log"
+	serverName = "jt808-server-go"
+	bannerFile = "configs/banner.txt"
 )
 
 func main() {
 	routines.Recover()
 
-	logConfig := &logger.Config{
-		ConsoleLoggingEnabled: true,
-		EncodeLogsAsJSON:      false,
-		FileLoggingEnabled:    true,
-		LogLevel:              0,
-		Directory:             LogDir,
-		Filename:              LogFile,
-		MaxSize:               5,
-		MaxBackups:            128,
-		MaxAge:                3,
-	}
+	var cfgPath string
+	flag.StringVar(&cfgPath, "c", "configs/default.toml", "config file path")
+	flag.Parse()
+	fmt.Printf("Start with configuration %v\n", cfgPath)
+	cfg := config.Load(cfgPath)
+	fmt.Printf("Load configuration: %+v\n", cfg)
+
+	logConfig := cfg.ParseLogConf()
 	log.Logger = *logger.Configure(logConfig).Logger
 
+	if cfg.Server.Banner.Enable {
+		bannerBytes, err := os.ReadFile(cfg.Server.Banner.BannerPath)
+		var banner string
+		if err != nil {
+			banner = config.BannerText
+		} else {
+			banner = string(bannerBytes)
+		}
+		fmt.Println(banner)
+	}
+
 	serv := server.NewTCPServer()
-	addr := ":" + TCPPort
+	addr := ":" + cfg.Server.Port.TCPPort
 	err := serv.Listen(addr)
 	if err != nil {
 		log.Error().
@@ -87,13 +91,18 @@ func main() {
 		c.JSON(http.StatusOK, res)
 	})
 
-	httpAddr := ":" + HTTPPort
-	err = router.Run(httpAddr)
-	if err != nil {
-		log.Error().
-			Err(err).
-			Str("addr", httpAddr).
-			Msg("Fail to run gin router")
-		os.Exit(1)
-	}
+	httpAddr := ":" + cfg.Server.Port.HTTPPort
+	routines.GoSafe(func() {
+		log.Debug().Msgf("Listening and serving HTTP on :%s", cfg.Server.Port.HTTPPort)
+		err = router.Run(httpAddr)
+		if err != nil {
+			log.Error().
+				Err(err).
+				Str("addr", httpAddr).
+				Msg("Fail to run gin router")
+			os.Exit(1)
+		}
+	})
+
+	select {} // block here
 }

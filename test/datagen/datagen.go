@@ -1,26 +1,69 @@
 package datagen
 
 import (
+	"encoding/json"
+	"math"
+	"os"
+	"strconv"
 	"time"
+
+	regen "github.com/AnatolyRugalev/goregen"
+	"github.com/rs/zerolog/log"
 
 	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
 )
 
-func GenDevice() *model.Device {
-	return &model.Device{
-		ID:          "1234ABCD",
-		PlateNumber: "京A12345",
-		PhoneNumber: "12345678901234567890",
-		Keepalive:   60 * time.Second,
-
-		ProtocalVersion: model.Version2019,
-		AuthCode:        "test",
-		IMEI:            "qwerasdf",
-		SoftwareVersion: "v1",
-	}
+func matchTokenAndGen(input string) string {
+	output, _ := regen.Generate(input)
+	return output
 }
 
-func genMsgHeader(msgID uint16) *model.MsgHeader {
+func atoi(input string) int64 {
+	output, err := strconv.Atoi(input)
+	if err != nil {
+		return 0
+	}
+	return int64(output)
+}
+
+// 可以定义设备模板为json，包含变量字段为随机值，支持num/str, 标记为{{rand:num:len}}, {{rand:str:len}}
+type deviceTpl struct {
+	ID              string        `json:"id"`
+	PlateNumber     string        `json:"plateNumber"`
+	PhoneNumber     string        `json:"phoneNumber"`
+	IMEI            string        `json:"imei"`
+	TransProto      string        `json:"transProto"`      // 传输协议，TCP/UDP
+	Keepalive       time.Duration `json:"keepalive"`       // 保活时间，单位：s
+	ProtocalVersion string        `json:"protocalVersion"` // 协议版本，2019/2013/2011
+	SoftwareVersion string        `json:"softwareVersion"` // 软件版本
+}
+
+func GenDevice() *model.Device {
+	tpl, _ := os.ReadFile("./configs/device.tpl.json")
+	deviceTpl := deviceTpl{}
+	_ = json.Unmarshal(tpl, &deviceTpl)
+	device := &model.Device{
+		ID:              matchTokenAndGen(deviceTpl.ID),
+		PlateNumber:     matchTokenAndGen(deviceTpl.PlateNumber),
+		PhoneNumber:     matchTokenAndGen(deviceTpl.PhoneNumber),
+		Keepalive:       deviceTpl.Keepalive * 1000 * 1000 * 1000, // s -> ns
+		ProtocalVersion: model.Version2019,
+		IMEI:            matchTokenAndGen(deviceTpl.IMEI),
+		SoftwareVersion: matchTokenAndGen(deviceTpl.SoftwareVersion),
+	}
+	switch deviceTpl.ProtocalVersion {
+	case "2019":
+		device.ProtocalVersion = model.Version2019
+	case "2013":
+		device.ProtocalVersion = model.Version2013
+	case "2011":
+		device.ProtocalVersion = model.Version2011
+	}
+	log.Debug().Str("device", device.PhoneNumber).Msgf("Generate random device=%+v", device)
+	return device
+}
+
+func genMsgHeader(msgID uint16, device *model.Device) *model.MsgHeader {
 	msgHeader := &model.MsgHeader{
 		MsgID: msgID,
 		Attr: &model.MsgBodyAttr{
@@ -33,42 +76,84 @@ func genMsgHeader(msgID uint16) *model.MsgHeader {
 			VersionDesc:          model.Version2019,
 		},
 		ProtocolVersion: 1,
-		PhoneNumber:     "12345678901234567890",
+		PhoneNumber:     device.PhoneNumber,
 		SerialNumber:    1,
 		Frag:            nil,
+	}
+	if device.ProtocalVersion == model.Version2019 {
+		msgHeader.Attr.VersionSign = 1
+		msgHeader.Attr.VersionDesc = model.Version2019
+		msgHeader.ProtocolVersion = 1
+	} else {
+		msgHeader.Attr.VersionSign = 0
+		msgHeader.Attr.VersionDesc = model.Version2013
+		msgHeader.ProtocolVersion = 0
 	}
 	return msgHeader
 }
 
-func GenMsg0002() *model.Msg0002 {
+func GenMsg0002(device *model.Device) *model.Msg0002 {
 	return &model.Msg0002{
-		Header: genMsgHeader(0x0002),
+		Header: genMsgHeader(model.MsgID0002, device),
 	}
 }
 
-func GenMsg0100() *model.Msg0100 {
+type msg0100Tpl struct {
+	ProvinceID     string `json:"provinceId"`
+	CityID         string `json:"cityId"`
+	ManufacturerID string `json:"manufacturerId"`
+	DeviceMode     string `json:"deviceMode"`
+	PlateColor     string `json:"plateColor"`
+}
+
+func GenMsg0100(device *model.Device) *model.Msg0100 {
+	tpl, _ := os.ReadFile("./configs/msg0100.tpl.json")
+	msg0100Tpl := msg0100Tpl{}
+	_ = json.Unmarshal(tpl, &msg0100Tpl)
 	return &model.Msg0100{
-		Header:         genMsgHeader(0x0100),
-		ProvinceID:     31,
-		CityID:         115,
-		ManufacturerID: "fakeyanss",
-		DeviceMode:     "fakeyanss.github.io",
-		DeviceID:       "1234ABCD",
-		PlateColor:     1,
-		PlateNumber:    "京A12345",
+		Header:         genMsgHeader(model.MsgID0100, device),
+		ProvinceID:     uint16(atoi(matchTokenAndGen(msg0100Tpl.ProvinceID))),
+		CityID:         uint16(atoi(matchTokenAndGen(msg0100Tpl.CityID))),
+		ManufacturerID: msg0100Tpl.ManufacturerID,
+		DeviceMode:     msg0100Tpl.DeviceMode,
+		DeviceID:       device.ID,
+		PlateColor:     byte(atoi(matchTokenAndGen(msg0100Tpl.PlateColor))),
+		PlateNumber:    device.PlateNumber,
 	}
 }
 
-func GenMsg0200() *model.Msg0200 {
-	return &model.Msg0200{
-		Header:     genMsgHeader(0x0200),
-		AlarmSign:  1024,
-		StatusSign: 2048,
-		Latitude:   116307629,
-		Longitude:  40058359,
-		Altitude:   312,
-		Speed:      3,
-		Direction:  99,
-		Time:       "200707192359",
+type msg0200Tpl struct {
+	AlarmSign  string `json:"alarmSign"`  // 不大于uint32
+	StatusSign string `json:"statusSign"` // 不大于uint32
+	Latitude   string `json:"latitude"`
+	Longitude  string `json:"longitude"`
+	Altitude   string `json:"altitude"`
+	Speed      string `json:"speed"`
+	Direction  string `json:"direction"`
+}
+
+func GenMsg0200(device *model.Device) *model.Msg0200 {
+	tpl, _ := os.ReadFile("./configs/msg0200.tpl.json")
+	msg0200Tpl := msg0200Tpl{}
+	_ = json.Unmarshal(tpl, &msg0200Tpl)
+	msg := &model.Msg0200{
+		Header:    genMsgHeader(model.MsgID0200, device),
+		Latitude:  116307629,
+		Longitude: 40058359,
+		Altitude:  312,
+		Speed:     3,
+		Direction: 99,
+		Time:      "200707192359",
 	}
+	alarmSign := atoi(matchTokenAndGen(msg0200Tpl.AlarmSign))
+	if alarmSign > math.MaxUint32 {
+		alarmSign = math.MaxUint32
+	}
+	msg.AlarmSign = uint32(alarmSign)
+	statusSign := atoi(matchTokenAndGen(msg0200Tpl.StatusSign))
+	if statusSign > math.MaxUint32 {
+		statusSign = math.MaxUint32
+	}
+	msg.StatusSign = uint32(statusSign)
+	return msg
 }

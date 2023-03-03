@@ -1,9 +1,11 @@
 package model
 
 import (
+	"fmt"
 	"strings"
 
 	"github.com/fakeyanss/jt808-server-go/internal/codec/hex"
+	"github.com/fakeyanss/jt808-server-go/internal/codec/region"
 )
 
 // 终端注册
@@ -14,8 +16,14 @@ type Msg0100 struct {
 	ManufacturerID string     `json:"manufacturerId"` // 制造商ID
 	DeviceMode     string     `json:"deviceMode"`     // 终端型号，2011版本8位，2013版本20位
 	DeviceID       string     `json:"deviceId"`       // 终端ID，大写字母和数字
-	PlateColor     byte       `json:"plateColor"`     // 车牌颜色，JTT415-2006定义，未上牌填0
-	PlateNumber    string     `json:"plateNumber"`    // 车牌号
+
+	// 车牌颜色
+	//   2013版本按照JTT415-2006定义，5.4.12节，0=未上牌，1=蓝，2=黄，3=黑，4=白，9=其他
+	//   2019版本按照JTT697.7-2014定义，5.6节，0=为上牌，1=蓝，2=黄，3=黑，4=白，5=绿，9=其他
+	PlateColor byte `json:"plateColor"`
+
+	PlateNumber  string `json:"plateNumber"`  // 车牌号
+	LocationDesc string `json:"locationDesc"` // 省市地域中文名称，通过GBT2260解析
 }
 
 func (m *Msg0100) Decode(packet *PacketData) error {
@@ -47,6 +55,7 @@ func (m *Msg0100) Decode(packet *PacketData) error {
 
 	m.PlateColor = hex.ReadByte(pkt, &idx)
 	m.PlateNumber = hex.ReadGBK(pkt, &idx, int(m.Header.Attr.BodyLength)-idx)
+	m.LocationDesc = region.Parse(fmt.Sprintf("%02d%04d", m.ProvinceID, m.CityID)).Name
 
 	return nil
 }

@@ -9,7 +9,11 @@ import (
 
 	"github.com/rs/zerolog/log"
 
-	"github.com/fakeyanss/jt808-server-go/internal/codec/gbk"
+	GBK "github.com/fakeyanss/jt808-server-go/internal/codec/gbk"
+)
+
+const (
+	doubeWordLen = 4
 )
 
 func Str2Byte(src string) []byte {
@@ -102,12 +106,12 @@ func WriteWord(pkt []byte, num uint16) []byte {
 
 func ReadDoubleWord(pkt []byte, idx *int) uint32 {
 	ans := binary.BigEndian.Uint32(pkt[*idx : *idx+4])
-	*idx += 4
+	*idx += doubeWordLen
 	return ans
 }
 
 func WriteDoubleWord(pkt []byte, num uint32) []byte {
-	numPkt := make([]byte, 4)
+	numPkt := make([]byte, doubeWordLen)
 	binary.BigEndian.PutUint32(numPkt, num)
 	return append(pkt, numPkt...)
 }
@@ -133,7 +137,7 @@ func WriteBCD(pkt []byte, bcd string) []byte {
 }
 
 func ReadGBK(pkt []byte, idx *int, n int) string {
-	gbk, err := gbk.GBK2UTF8(pkt[*idx : *idx+n])
+	gbk, err := GBK.GBK2UTF8(pkt[*idx : *idx+n])
 	*idx += n
 	if err != nil {
 		return ""
@@ -142,7 +146,7 @@ func ReadGBK(pkt []byte, idx *int, n int) string {
 }
 
 func WriteGBK(pkt []byte, str string) []byte {
-	gbk, err := gbk.UTF82GBK([]byte(str))
+	gbk, err := GBK.UTF82GBK([]byte(str))
 	if err != nil {
 		return []byte{}
 	}

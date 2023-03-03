@@ -320,7 +320,7 @@ func processMsg8100(ctx context.Context, data *model.ProcessData) error {
 		return ErrActiveClose
 	}
 
-	out.AuthCode = genAuthCode(device)
+	out.AuthCode = in.AuthCode
 	out.IMEI = device.IMEI
 	out.SoftwareVersion = device.SoftwareVersion
 	err = out.GenOutgoing(in)

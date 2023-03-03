@@ -5,13 +5,13 @@ ARG GOPROXY=https://goproxy.cn,direct
 WORKDIR /app
 
 RUN apk add \
-    bash \
-    git \
-    make
+  bash \
+  git \
+  make
 
 COPY . .
 
-RUN make prepare build-tag package
+RUN make prepare compile
 
 # Deploy
 

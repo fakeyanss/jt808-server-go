@@ -1,0 +1,38 @@
+output:
+  #format: json
+  print-issued-lines: true
+linters:
+  # enable-all: true
+  # disable:
+  #   - deadcode
+  disable-all: true
+  enable:
+    - stylecheck
+    - revive
+    - gosimple
+    - gofmt
+    - lll
+    - errcheck
+    - errorlint
+    - govet
+    - gocyclo
+    - goimports
+linters-settings:
+  lll:
+    # max line length, lines longer will be reported. Default is 120.
+    # '\t' is counted as 1 character by default, and can be changed with the tab-width option
+    line-length: 160
+    # tab width in spaces. Default to 1.
+    tab-width: 1
+  errcheck:
+    # report about not checking of errors in type assertions: `a := b.(MyStruct)`;
+    # default is false: such cases aren't reported by default.
+    check-type-assertions: false
+
+    # report about assignment of errors to blank identifier: `num, _ := strconv.Atoi(numStr)`;
+    # default is false: such cases aren't reported by default.
+    check-blank: false
+  gocyclo:
+    # Minimal code complexity to report.
+    # Default: 30 (but we recommend 10-20)
+    min-complexity: 30

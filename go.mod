@@ -3,6 +3,9 @@ module github.com/fakeyanss/jt808-server-go
 go 1.19
 
 require (
+	github.com/AnatolyRugalev/goregen v0.1.0
+	github.com/BurntSushi/toml v1.2.1
+	github.com/cn/GB2260.go v0.0.0-20211206060038-8cfec107462a
 	github.com/fakeyanss/gron v0.0.0-20230218065849-95fc0f17a375
 	github.com/gin-gonic/gin v1.8.2
 	github.com/mitchellh/mapstructure v1.5.0
@@ -15,7 +18,6 @@ require (
 )
 
 require (
-	github.com/BurntSushi/toml v1.2.1 // indirect
 	github.com/davecgh/go-spew v1.1.1 // indirect
 	github.com/gin-contrib/sse v0.1.0 // indirect
 	github.com/go-playground/locales v0.14.0 // indirect

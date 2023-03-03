@@ -4,6 +4,12 @@ import (
 	"github.com/pkg/errors"
 )
 
+const (
+	MsgID0002 = 0x0002
+	MsgID0100 = 0x0100
+	MsgID0200 = 0x0200
+)
+
 var (
 	ErrDecodeMsg      = errors.New("Fail to decode msg")
 	ErrGenOutgoingMsg = errors.New("Fail to generate outgoing msg")
