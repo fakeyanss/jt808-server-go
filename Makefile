@@ -8,6 +8,7 @@ BUILD_TIME   := $(shell date +'%Y-%m-%dT%H:%M:%S')
 BUILD_COMMIT := $(shell git rev-parse --short HEAD)
 $(info BUILD_TIME: $(BUILD_TIME))
 $(info BUILD_COMMIT: $(BUILD_COMMIT))
+$(info ========================================)
 
 # 执行编译，可使用命令 make 或 make all 执行
 all: prepare lint test compile
@@ -46,6 +47,11 @@ clean:
 # 构建镜像
 dockerbuild:
 	docker build -f build/Dockerfile -t fakeyanss/jt808-server-go:$(BUILD_COMMIT) .
+
+# 统计代码行数
+statline:
+	@total=`find . | grep "\.go$$" | xargs -I f cat f | wc -l`; \
+	echo "TOTAL_CODE_LINE: $$total"
 
 # avoid filename conflict and speed up build
 .PHONY: all prepare test compile release lint clean

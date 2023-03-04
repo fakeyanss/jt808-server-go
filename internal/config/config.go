@@ -3,8 +3,9 @@ package config
 import (
 	"sync"
 
-	"github.com/BurntSushi/toml"
+	"github.com/pkg/errors"
 	"github.com/rs/zerolog"
+	"github.com/spf13/viper"
 
 	"github.com/fakeyanss/jt808-server-go/pkg/logger"
 )
@@ -20,55 +21,104 @@ const (
 )
 
 type logConf struct {
-	ConsoleEnable       bool         `toml:"console_enable"`
-	FileEnable          bool         `toml:"file_enable"`
-	PrintAsJSON         bool         `toml:"print_as_json"`
-	LogLevel            LogLevelType `toml:"log_level"`
-	LogDirectory        string       `toml:"log_directory"`
-	LogFile             string       `toml:"log_file"`
-	MaxSizeOfRolling    int          `toml:"max_size_of_rolling"`
-	MaxBackupsOfRolling int          `toml:"max_backups_of_rolling"`
-	MaxAgeOfRolling     int          `toml:"max_age_of_rolling"`
+	ConsoleEnable       bool         `yaml:"consoleEnable"`
+	FileEnable          bool         `yaml:"fileEnable"`
+	PrintAsJSON         bool         `yaml:"printAsJson"`
+	LogLevel            LogLevelType `yaml:"logLevel"`
+	LogDirectory        string       `yaml:"logDirectory"`
+	LogFile             string       `yaml:"logFile"`
+	MaxSizeOfRolling    int          `yaml:"maxSizeOfRolling"`
+	MaxBackupsOfRolling int          `yaml:"maxBackupsOfRolling"`
+	MaxAgeOfRolling     int          `yaml:"maxAgeOfRolling"`
 }
 
 type serverConf struct {
-	name   string     `toml:"name"`
-	Port   servPort   `toml:"port"`
-	Banner servBanner `toml:"banner"`
+	name   string      `yaml:"name"`
+	Port   *servPort   `yaml:"port"`
+	Banner *servBanner `yaml:"banner"`
 }
 
 type servPort struct {
-	TCPPort  string `toml:"tcp_port"`
-	UDPPort  string `toml:"udp_port"`
-	HTTPPort string `toml:"http_port"`
+	TCPPort  string `yaml:"tcpPort"`
+	UDPPort  string `yaml:"udpPort"`
+	HTTPPort string `yaml:"httpPort"`
 }
 
 type servBanner struct {
-	Enable     bool   `toml:"enable"`
-	BannerPath string `toml:"banner_path"`
+	Enable     bool   `yaml:"enable"`
+	BannerPath string `yaml:"bannerPath"`
 }
 
 type clientConf struct {
-	Name        string       `toml:"name"`
-	Conn        connection   `toml:"conn"`
-	Concurrency int          `toml:"concurrency"`
-	Device      clientDevice `toml:"device"`
+	Name        string         `yaml:"name"`
+	Conn        *connection    `yaml:"conn"`
+	Concurrency int            `yaml:"concurrency"`
+	Device      *DeviceConf    `yaml:"device"`
+	DeviceGeo   *DeviceGeoConf `yaml:"deviceGeo"`
 }
 
 type connection struct {
-	RemoteAddr string `toml:"remote_addr"`
+	RemoteAddr string `yaml:"remoteAddr"`
 }
 
-type clientDevice struct {
-	LocationReportInteval int    `toml:"localtion_report_inteval"`
-	DeviceTpl             string `toml:"device_tpl"`
-	Msg0100Tpl            string `toml:"msg_0100_tpl"`
+type DeviceConf struct {
+	IDReg           string `yaml:"idReg"`
+	IMEIReg         string `yaml:"imeiReg"`
+	PhoneReg        string `yaml:"phoneReg"`
+	PlateReg        string `yaml:"plateReg"`
+	ProtocolVersion string `yaml:"protocolVersion"`
+	TransProto      string `yaml:"transProto"`
+	Keepalive       int    `yaml:"keepalive"`
+	ProvinceIDReg   string `yaml:"provinceIdReg"`
+	CityIDReg       string `yaml:"cityIdReg"`
+	PlateColorReg   string `yaml:"plateColorReg"`
+}
+
+type DeviceGeoConf struct {
+	LocationReportInterval int           `yaml:"locationReportInterval"`
+	Geo                    *geoConf      `yaml:"geo"`
+	Location               *locationConf `yaml:"location"`
+	Drive                  *driveConf    `yaml:"drive"`
+}
+
+type geoConf struct {
+	ACCStatusReg              string `yaml:"accStatusReg"`
+	LocationStatusReg         string `yaml:"locationStatusReg"`
+	LatitudeTypeReg           string `yaml:"latitudeTypeReg"`
+	LongitudeTypeReg          string `yaml:"longitudeTypeReg"`
+	OperatingStatusReg        string `yaml:"operatingStatusReg"`
+	GeoEncryptionStatusReg    string `yaml:"geoEncryptionStatusReg"`
+	LoadStatusReg             string `yaml:"loadStatusReg"`
+	FuelSystemStatusReg       string `yaml:"fuelSystemStatusReg"`
+	AlternatorSystemStatusReg string `yaml:"alternatorSystemStatusReg"`
+	DoorLockedStatusReg       string `yaml:"doorLockedStatusReg"`
+	FrontDoorStatusReg        string `yaml:"frontDoorStatusReg"`
+	MidDoorStatusReg          string `yaml:"midDoorStatusReg"`
+	BackDoorStatusReg         string `yaml:"backDoorStatusReg"`
+	DriverDoorStatusReg       string `yaml:"driverDoorStatusReg"`
+	CustomDoorStatusReg       string `yaml:"customDoorStatusReg"`
+	GPSLocationStatusReg      string `yaml:"gpsLocationStatusReg"`
+	BeidouLocationStatusReg   string `yaml:"beidouLocationStatusReg"`
+	GLONASSLocationStatusReg  string `yaml:"glonassLocationStatusReg"`
+	GalileoLocationStatusReg  string `yaml:"galileoLocationStatusReg"`
+	DrivingStatusReg          string `yaml:"drivingStatusReg"`
+}
+
+type locationConf struct {
+	LatitudeReg  string `yaml:"latitudeReg"`
+	LongitudeReg string `yaml:"longitudeReg"`
+	AltitudeReg  string `yaml:"altitudeReg"`
+}
+
+type driveConf struct {
+	SpeedReg     string `yaml:"speedReg"`
+	DirectionReg string `yaml:"directionReg"`
 }
 
 type Config struct {
-	Log    logConf    `toml:"log"`
-	Server serverConf `toml:"server"`
-	Client clientConf `toml:"client"`
+	Log    *logConf    `yaml:"log"`
+	Server *serverConf `yaml:"server"`
+	Client *clientConf `yaml:"client"`
 }
 
 var (
@@ -79,8 +129,16 @@ var (
 func Load(confFilePath string) *Config {
 	configOnce.Do(func() {
 		config = &Config{}
-		if _, err := toml.DecodeFile(confFilePath, config); err != nil {
-			panic(err)
+		viper.SetConfigFile(confFilePath)
+		viper.SetConfigType("yaml")
+		// Find and read the config file
+		if err := viper.ReadInConfig(); err != nil {
+			panic(errors.Wrap(err, "Fail to find and read config file"))
+		}
+
+		err := viper.Unmarshal(config)
+		if err != nil {
+			panic(errors.Wrap(err, "Fail to unmarshal config"))
 		}
 	})
 	return config

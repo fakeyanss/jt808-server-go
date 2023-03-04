@@ -109,10 +109,6 @@ Rel_Left(admin, jt808serv, "Uses", "HTTP")
 
 ### 协议层消息处理主体逻辑
 
-<!--
-![2023-02-05_jt808-server-go_msgflow](https://ghproxy.com/https://raw.githubusercontent.com/fakeyanss/imgplace/master/2023/2023-02-05_jt808-server-go_msgflow.png)
--->
-
 在建立 TCP 连接后，需要按顺序进行以下处理：
 1. FrameHandler 调用 socket read，读取终端送达的字节流，在这里称作 FramePayload
 2. PacketCodec 将 FramePayload 解码成 PacketData
@@ -120,6 +116,8 @@ Rel_Left(admin, jt808serv, "Uses", "HTTP")
 4. MsgProcessor 处理 incoming msg，生成 outgoing msg，转为待回复的 PacketData
 5. PacketCodec 将 PacketData 编码成 FramePayload
 6. FrameHandler 调用 socket write，将 FramePayload 发送给终端
+
+![2023-02-05_jt808-server-go_msgflow](https://ghproxy.com/https://raw.githubusercontent.com/fakeyanss/imgplace/master/2023/2023-02-05_jt808-server-go_msgflow.png)
 
 为了尽可能避免 golang 中臭名昭著的 `if err != nil` 处理，将这些处理过程封装为了一个 pipeline，将每个子过程声明为一个函数类型，通过延迟调用和 breakOnErr 减少错误判断代码。具体实现可看 [`pipeline.go`](internal/protocol/pipeline.go)
 
@@ -307,3 +305,4 @@ end
 - 单测覆盖率提升
 - 封装统一处理结果，包含 result 和 error 定义，再有连接控制层进行处理
 - 调研 go struct tag，用以简化 msg decode&encode 代码
+- 当前设计的 Pipeline 同步处理逻辑耦合性还是比较高，想一想，利用 channel 传输数据，每一层只关注 channel 的数据接收、处理和写入。

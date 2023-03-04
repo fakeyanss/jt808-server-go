@@ -73,12 +73,13 @@ func initProcessOption() processOptions {
 		genData: func() *model.ProcessData {
 			return &model.ProcessData{Incoming: &model.Msg0200{}, Outgoing: &model.Msg8001{}}
 		},
-		process: handleMsg0200,
+		process: processMsg0200,
 	}
 	options[0x8001] = &action{ // 通用应答
 		genData: func() *model.ProcessData {
 			return &model.ProcessData{Incoming: &model.Msg8001{}}
 		},
+		process: processMsg8001,
 	}
 	options[0x8100] = &action{ // 注册应答
 		genData: func() *model.ProcessData {
@@ -136,34 +137,38 @@ func (mp *JT808MsgProcessor) Process(ctx context.Context, pkt *model.PacketData)
 			Msg("Received jt808 msg.")
 	}
 
-	if data.Outgoing == nil {
-		return nil, nil // 此类型msg不需要回复
-	}
-	out := data.Outgoing
-	err = out.GenOutgoing(in)
-	if err != nil {
-		return data, errors.Wrap(err, "Fail to generate outgoing msg")
-	}
-
-	// print log of outgoing content
-	defer func() {
-		if out == nil || log.Logger.GetLevel() != zerolog.DebugLevel {
-			return
+	// 生成待回复的消息
+	if data.Outgoing != nil {
+		out := data.Outgoing
+		err = out.GenOutgoing(in)
+		if err != nil {
+			return data, errors.Wrap(err, "Fail to generate outgoing msg")
 		}
 
-		outJSON, _ := json.Marshal(out)
-		session := ctx.Value(model.SessionCtxKey{}).(*model.Session)
-		log.Debug().
-			Str("id", session.ID).
-			Str("RawMsgID", fmt.Sprintf("0x%04x", out.GetHeader().MsgID)).
-			RawJSON("outgoing", outJSON). // for debug
-			Msg("Generating jt808 outgoing msg.")
-	}()
+		// print log of outgoing content
+		defer func() {
+			if out == nil || log.Logger.GetLevel() != zerolog.DebugLevel {
+				return
+			}
 
+			outJSON, _ := json.Marshal(out)
+			session := ctx.Value(model.SessionCtxKey{}).(*model.Session)
+			log.Debug().
+				Str("id", session.ID).
+				Str("RawMsgID", fmt.Sprintf("0x%04x", out.GetHeader().MsgID)).
+				RawJSON("outgoing", outJSON). // for debug
+				Msg("Generating jt808 outgoing msg.")
+		}()
+	}
+
+	// 对消息按类别做特殊处理
 	processFunc := mp.options[msgID].process
 	err = processFunc(ctx, data)
 	if err != nil {
 		return data, errors.Wrap(err, "Fail to process data")
+	}
+	if data.Outgoing == nil {
+		return nil, nil // 此类型msg不需要回复
 	}
 	return data, nil
 }
@@ -194,9 +199,9 @@ func processMsg0003(ctx context.Context, data *model.ProcessData) error {
 	}
 	// 取消定时任务
 	timer := NewKeepaliveTimer()
-	timer.Cancel(device.PhoneNumber)
+	timer.Cancel(device.Phone)
 	// 清楚缓存
-	cache.DelDeviceByPhone(device.PhoneNumber)
+	cache.DelDeviceByPhone(device.Phone)
 	// 为避免连接TIMEWAIT，应等待对方主动关闭
 	return nil
 }
@@ -220,23 +225,13 @@ func processMsg0100(ctx context.Context, data *model.ProcessData) error {
 	}
 
 	session := ctx.Value(model.SessionCtxKey{}).(*model.Session)
-	device := &model.Device{
-		ID:             in.DeviceID,
-		PlateNumber:    in.PlateNumber,
-		PhoneNumber:    in.Header.PhoneNumber,
-		SessionID:      session.ID,
-		TransProto:     session.GetTransProto(),
-		Conn:           session.Conn,
-		Keepalive:      time.Minute * 1,
-		Status:         model.DeviceStatusOffline,
-		LastestComTime: time.Now(),
-	}
+	device := model.NewDevice(in, session)
 	out.AuthCode = genAuthCode(device) // 设置鉴权码
 
 	cache.CacheDevice(device)
 
 	timer := NewKeepaliveTimer()
-	timer.Register(device.PhoneNumber)
+	timer.Register(device.Phone)
 	return nil
 }
 
@@ -257,13 +252,16 @@ func processMsg0102(ctx context.Context, data *model.ProcessData) error {
 		out.Result = model.ResultFail
 		// 取消定时任务
 		timer := NewKeepaliveTimer()
-		timer.Cancel(device.PhoneNumber)
+		timer.Cancel(device.Phone)
 		// 删除设备缓存
-		cache.DelDeviceByPhone(device.PhoneNumber)
+		cache.DelDeviceByPhone(device.Phone)
 	} else {
 		// 鉴权通过
 		device.Status = model.DeviceStatusOnline
 		device.LastestComTime = time.Now()
+		device.AuthCode = in.AuthCode
+		device.IMEI = in.IMEI
+		device.SoftwareVersion = in.SoftwareVersion
 		cache.CacheDevice(device)
 	}
 
@@ -275,14 +273,14 @@ func genAuthCode(d *model.Device) string {
 	codeBuilder := new(strings.Builder)
 	codeBuilder.WriteString(string(d.ID))
 	codeBuilder.WriteByte(splitByte)
-	codeBuilder.Write([]byte(d.PlateNumber))
+	codeBuilder.Write([]byte(d.Plate))
 	codeBuilder.WriteByte(splitByte)
-	codeBuilder.Write([]byte(d.PhoneNumber))
+	codeBuilder.Write([]byte(d.Phone))
 	return strconv.Itoa(int(hash.FNV32(codeBuilder.String())))
 }
 
 // 收到位置信息汇报，回复通用应答
-func handleMsg0200(ctx context.Context, data *model.ProcessData) error {
+func processMsg0200(ctx context.Context, data *model.ProcessData) error {
 	in := data.Incoming.(*model.Msg0200)
 
 	cache := storage.GetDeviceCache()
@@ -293,18 +291,41 @@ func handleMsg0200(ctx context.Context, data *model.ProcessData) error {
 	}
 
 	// 解析状态位编码
-	gis := model.NewGISMeta()
-	gis.Decode(in.StatusSign)
+	dg := &model.DeviceGeo{}
+	dg.Decode(device.Phone, in)
 
-	if gis.ACCStatus == 0 { // ACC关闭，设备休眠
+	if dg.Geo.ACCStatus == 0 { // ACC关闭，设备休眠
 		device.Status = model.DeviceStatusSleeping
 		device.LastestComTime = time.Now()
 		cache.CacheDevice(device)
 	}
 
-	gisCache := storage.GetGisCache()
-	rb := gisCache.GetGisRingByPhone(device.ID)
-	rb.Write(gis)
+	geoCache := storage.GetGeoCache()
+	rb := geoCache.GetGeoRingByPhone(device.Phone)
+	rb.Write(dg)
+
+	return nil
+}
+
+func processMsg8001(ctx context.Context, data *model.ProcessData) error {
+	in := data.Incoming.(*model.Msg8001)
+	// 收到8001消息，说明此时是作为终端设备
+	if in.Result == model.ResultSuccess {
+		// 回复成功，说明之前注册成功，为方便后续处理，将设备状态改为Online并缓存
+		cache := storage.GetDeviceCache()
+		device, err := cache.GetDeviceByPhone(in.Header.PhoneNumber)
+		if errors.Is(err, storage.ErrDeviceNotFound) {
+			return ErrActiveClose
+		}
+		if device.Status != model.DeviceStatusOffline {
+			return nil
+		}
+
+		// 仅在未注册成功时执行一次
+		device.Status = model.DeviceStatusOnline
+		device.LastestComTime = time.Now()
+		cache.CacheDevice(device)
+	}
 
 	return nil
 }

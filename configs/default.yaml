@@ -1,0 +1,20 @@
+log:
+  consoleEnable: true
+  fileEnable: true
+  printAsJson: false
+  logLevel: "DEBUG"
+  logDirectory: "./logs/"
+  logFile: "jt808-server-go.log"
+  maxSizeOfRolling: 50
+  maxBackupsOfRolling: 128
+  maxAgeOfRolling: 7
+
+server:
+  name: "jt808-server-go"
+  port:
+    tcpPort: "8080"
+    udpPort: "8081"
+    httpPort: "8008"
+  banner:
+    enable: true
+    bannerPath: "./configs/banner.txt"

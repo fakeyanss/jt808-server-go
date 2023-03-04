@@ -40,8 +40,20 @@ func (m *Msg0102) Encode() (pkt []byte, err error) {
 		}
 		pkt = hex.WriteByte(pkt, m.AuthCodeLen)
 		pkt = hex.WriteString(pkt, m.AuthCode)
-		pkt = hex.WriteString(pkt, m.IMEI)
-		pkt = hex.WriteString(pkt, m.SoftwareVersion)
+
+		var fillByte byte // '\x00'
+		im := []byte(m.IMEI)
+		toFillLen := 15 - len(m.IMEI)
+		for i := 0; i < toFillLen; i++ {
+			im = append(im, fillByte)
+		}
+		pkt = append(pkt, im...)
+		sv := []byte(m.SoftwareVersion)
+		toFillLen = 20 - len(m.SoftwareVersion)
+		for i := 0; i < toFillLen; i++ {
+			sv = append(sv, fillByte)
+		}
+		pkt = append(pkt, sv...)
 	}
 
 	pkt, err = writeHeader(m, pkt)

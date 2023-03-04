@@ -64,8 +64,8 @@ func (cache *DeviceCache) HasPhone(phone string) bool {
 }
 
 func (cache *DeviceCache) cacheDevice(d *model.Device) {
-	cache.cacheByPlate[d.PlateNumber] = d
-	cache.cacheByPhone[d.PhoneNumber] = d
+	cache.cacheByPlate[d.Plate] = d
+	cache.cacheByPhone[d.Phone] = d
 }
 
 func (cache *DeviceCache) CacheDevice(d *model.Device) {
@@ -86,8 +86,8 @@ func (cache *DeviceCache) delDevice(carPlate *string, phone *string) {
 	if !ok {
 		return // find none device, skip
 	}
-	delete(cache.cacheByPlate, d.PlateNumber)
-	delete(cache.cacheByPhone, d.PhoneNumber)
+	delete(cache.cacheByPlate, d.Plate)
+	delete(cache.cacheByPhone, d.Phone)
 }
 
 func (cache *DeviceCache) DelDeviceByCarPlate(carPlate string) {

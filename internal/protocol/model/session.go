@@ -25,8 +25,6 @@ type (
 	OutgoingMsgCtxKey struct{}
 
 	PacketEncodeCtxKey struct{}
-
-	DeviceCtxKey struct{}
 )
 
 type Session struct {

@@ -6,14 +6,15 @@ import (
 	"net/http"
 	"os"
 
+	"github.com/gin-gonic/gin"
+	"github.com/mitchellh/mapstructure"
+	"github.com/rs/zerolog/log"
+
 	"github.com/fakeyanss/jt808-server-go/internal/config"
 	"github.com/fakeyanss/jt808-server-go/internal/server"
 	"github.com/fakeyanss/jt808-server-go/internal/storage"
 	"github.com/fakeyanss/jt808-server-go/pkg/logger"
 	"github.com/fakeyanss/jt808-server-go/pkg/routines"
-	"github.com/gin-gonic/gin"
-	"github.com/mitchellh/mapstructure"
-	"github.com/rs/zerolog/log"
 )
 
 const (
@@ -25,7 +26,7 @@ func main() {
 	routines.Recover()
 
 	var cfgPath string
-	flag.StringVar(&cfgPath, "c", "configs/default.toml", "config file path")
+	flag.StringVar(&cfgPath, "c", "configs/default.yaml", "config file path")
 	flag.Parse()
 	fmt.Printf("Start with configuration %v\n", cfgPath)
 	cfg := config.Load(cfgPath)
@@ -61,7 +62,7 @@ func main() {
 	gin.SetMode(gin.ReleaseMode)
 	router := gin.Default()
 	cache := storage.GetDeviceCache()
-	gisCache := storage.GetGisCache()
+	gisCache := storage.GetGeoCache()
 
 	router.GET("/device", func(c *gin.Context) {
 		c.JSON(http.StatusOK, cache.ListDevice())
@@ -82,11 +83,11 @@ func main() {
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
 		}
-		gis, err := gisCache.GetGisLatestByPhone(device.ID)
+		gis, err := gisCache.GetGeoLatestByPhone(device.ID)
 		if err != nil {
 			return
 		}
-		res["gisStatus"] = gis
+		res["gis"] = gis
 
 		c.JSON(http.StatusOK, res)
 	})

@@ -69,7 +69,7 @@ func checkDeviceKeepalive(t *KeepaliveTimer, devicePhone string) {
 		Str("device", devicePhone).
 		Msg("Check device keepalive status")
 	cache := storage.GetDeviceCache()
-	gisCache := storage.GetGisCache()
+	gisCache := storage.GetGeoCache()
 	d, err := cache.GetDeviceByPhone(devicePhone)
 	if errors.Is(err, storage.ErrDeviceNotFound) {
 		log.Debug().
@@ -87,9 +87,9 @@ func checkDeviceKeepalive(t *KeepaliveTimer, devicePhone string) {
 	} else if d.ShouldClear() {
 		d.Conn.Close()
 		cache.DelDeviceByPhone(devicePhone)
-		gisCache.DelGisByPhone(devicePhone)
+		gisCache.DelGeoByPhone(devicePhone)
 		log.Debug().
-			Str("device", d.PhoneNumber).
+			Str("device", d.Phone).
 			Msg("Clear cache and close connection after device being offline for a long time")
 		t.Cancel(devicePhone)
 	}

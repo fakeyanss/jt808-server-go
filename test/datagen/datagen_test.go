@@ -4,15 +4,15 @@ import (
 	"testing"
 )
 
-func Test_matchToken(t *testing.T) {
+func Test_matchTokenAndGen(t *testing.T) {
 	type args struct {
 		input string
 	}
 	tests := []struct {
-		name      string
-		args      args
-		execTimes int
-		repeated  bool
+		name        string
+		args        args
+		execTimes   int
+		repeatNoErr bool
 	}{
 		{
 			name: "case1: gen rand num",
@@ -33,22 +33,16 @@ func Test_matchToken(t *testing.T) {
 			args: args{
 				input: "abcd",
 			},
-			execTimes: 10,
-			repeated:  true,
+			execTimes:   10,
+			repeatNoErr: true,
 		},
 		{
-			name: "case4: nums less than uint32",
+			name: "case4: 0 or 1",
 			args: args{
-				input: "[1-9][0-9]{0,8}|[1-3][0-9]{0,9}|4[0-2][0-9]{0,8}|43[0-1][0-9]{0,7}|32[0-9]{0,8}|31[0-9]{0,8}|30[0-9]{0,7}|2[0-9]{0,8}|1[0-9]{0,8}|0}",
+				input: "0|1",
 			},
-			execTimes: 1,
-		},
-		{
-			name: "case5: nums between -90000000 and 90000000",
-			args: args{
-				input: "-?[1-8][0-9]{0,6}|-?9000000",
-			},
-			execTimes: 1,
+			execTimes:   4,
+			repeatNoErr: true,
 		},
 	}
 	for _, tt := range tests {
@@ -57,7 +51,7 @@ func Test_matchToken(t *testing.T) {
 			for i := 0; i < tt.execTimes; i++ {
 				got := matchTokenAndGen(tt.args.input)
 				t.Logf("gen rand result, got=%s", got)
-				if _, ok := ansCollect[got]; ok && !tt.repeated {
+				if _, ok := ansCollect[got]; ok && !tt.repeatNoErr {
 					t.Errorf("gen rand result got repeated")
 					t.FailNow()
 				} else {

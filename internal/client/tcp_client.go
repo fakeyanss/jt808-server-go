@@ -11,7 +11,6 @@ import (
 
 	"github.com/fakeyanss/jt808-server-go/internal/protocol"
 	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
-	"github.com/fakeyanss/jt808-server-go/internal/storage"
 )
 
 type TCPClient struct {
@@ -58,7 +57,7 @@ func (cli *TCPClient) Start() {
 			Msg("Failed to serve session")
 
 		switch {
-		case errors.Is(err, io.EOF), errors.Is(err, io.ErrClosedPipe), errors.Is(err, net.ErrClosed), errors.Is(err, storage.ErrDeviceNotFound):
+		case errors.Is(err, io.EOF), errors.Is(err, io.ErrClosedPipe), errors.Is(err, net.ErrClosed), errors.Is(err, protocol.ErrActiveClose):
 			return // close connection when EOF or closed
 		default:
 			time.Sleep(1 * time.Second)
