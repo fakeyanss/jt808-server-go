@@ -62,7 +62,7 @@ func main() {
 	gin.SetMode(gin.ReleaseMode)
 	router := gin.Default()
 	cache := storage.GetDeviceCache()
-	gisCache := storage.GetGeoCache()
+	geoCache := storage.GetGeoCache()
 
 	router.GET("/device", func(c *gin.Context) {
 		c.JSON(http.StatusOK, cache.ListDevice())
@@ -83,7 +83,7 @@ func main() {
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
 		}
-		gis, err := gisCache.GetGeoLatestByPhone(device.ID)
+		gis, err := geoCache.GetGeoLatestByPhone(phone)
 		if err != nil {
 			return
 		}

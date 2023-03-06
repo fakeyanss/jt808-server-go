@@ -42,16 +42,16 @@ func (cache *GeoCache) GetGeoRingByPhone(phone string) *container.RingBuffer {
 	return cache.cacheByPhone[phone]
 }
 
-func (cache *GeoCache) GetGeoLatestByPhone(id string) (*model.DeviceGeo, error) {
-	rb := cache.GetGeoRingByPhone(id)
+func (cache *GeoCache) GetGeoLatestByPhone(phone string) (*model.DeviceGeo, error) {
+	rb := cache.GetGeoRingByPhone(phone)
 	if latest, ok := rb.Latest().(*model.DeviceGeo); ok {
 		return latest, nil
 	}
 	return nil, ErrGisNotFound
 }
 
-func (cache *GeoCache) DelGeoByPhone(id string) {
+func (cache *GeoCache) DelGeoByPhone(phone string) {
 	cache.mutex.Lock()
 	defer cache.mutex.Unlock()
-	delete(cache.cacheByPhone, id)
+	delete(cache.cacheByPhone, phone)
 }

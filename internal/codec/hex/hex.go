@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/rs/zerolog/log"
 
@@ -13,7 +14,10 @@ import (
 )
 
 const (
-	doubeWordLen = 4
+	doubeWordLen  = 4
+	timeBCDLen    = 6
+	timeBCDLayout = "060102150405"
+	timeBCDFormat = "%02d%02d%02d%02d%02d%02d"
 )
 
 func Str2Byte(src string) []byte {
@@ -151,4 +155,35 @@ func WriteGBK(pkt []byte, str string) []byte {
 		return []byte{}
 	}
 	return append(pkt, gbk...)
+}
+
+// 输入JT808协议定义的时间format, 转换为time.Time
+func ReadTime(pkt []byte, idx *int) *time.Time {
+	timeStr := ReadBCD(pkt, idx, timeBCDLen)
+	timeIns := ParseTime(timeStr)
+	return &timeIns
+}
+
+func WriteTime(pkt []byte, timeIns time.Time) []byte {
+	return WriteBCD(pkt, FormatTime(timeIns))
+}
+
+func ParseTime(timeStr string) time.Time {
+	timeIns, err := time.Parse(timeBCDLayout, timeStr)
+	if err != nil {
+		log.Warn().Msg("Fail to parse time str")
+		timeIns = time.Now()
+	}
+	return timeIns
+}
+
+func FormatTime(timeIns time.Time) string {
+	year := timeIns.Year()     // 年
+	month := timeIns.Month()   // 月
+	day := timeIns.Day()       // 日
+	hour := timeIns.Hour()     // 小时
+	minute := timeIns.Minute() // 分钟
+	second := timeIns.Second() // 秒
+	yearDivision := 100        // 年取后两位
+	return fmt.Sprintf(timeBCDFormat, year%yearDivision, month, day, hour, minute, second)
 }

@@ -8,6 +8,7 @@ const (
 	MsgID0002 = 0x0002
 	MsgID0100 = 0x0100
 	MsgID0200 = 0x0200
+	MsgID8004 = 0x8004
 )
 
 var (

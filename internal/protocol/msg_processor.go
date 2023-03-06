@@ -271,11 +271,11 @@ func processMsg0102(ctx context.Context, data *model.ProcessData) error {
 func genAuthCode(d *model.Device) string {
 	var splitByte byte = '_'
 	codeBuilder := new(strings.Builder)
-	codeBuilder.WriteString(string(d.ID))
+	codeBuilder.WriteString(d.ID)
 	codeBuilder.WriteByte(splitByte)
-	codeBuilder.Write([]byte(d.Plate))
+	codeBuilder.WriteString(d.Plate)
 	codeBuilder.WriteByte(splitByte)
-	codeBuilder.Write([]byte(d.Phone))
+	codeBuilder.WriteString(d.Phone)
 	return strconv.Itoa(int(hash.FNV32(codeBuilder.String())))
 }
 
@@ -292,7 +292,10 @@ func processMsg0200(ctx context.Context, data *model.ProcessData) error {
 
 	// 解析状态位编码
 	dg := &model.DeviceGeo{}
-	dg.Decode(device.Phone, in)
+	err = dg.Decode(device.Phone, in)
+	if err != nil {
+		return errors.Wrapf(err, "Fail to decode device geo, phoneNumber=%s", device.Phone)
+	}
 
 	if dg.Geo.ACCStatus == 0 { // ACC关闭，设备休眠
 		device.Status = model.DeviceStatusSleeping

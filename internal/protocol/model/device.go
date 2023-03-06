@@ -4,7 +4,7 @@ import (
 	"net"
 	"time"
 
-	"github.com/pkg/errors"
+	"github.com/fakeyanss/jt808-server-go/internal/codec/hex"
 )
 
 type DeviceStatus int8
@@ -72,7 +72,7 @@ type DeviceGeo struct {
 	Time     time.Time `json:"time"`
 }
 
-func (dg *DeviceGeo) Decode(phone string, m *Msg0200) (*DeviceGeo, error) {
+func (dg *DeviceGeo) Decode(phone string, m *Msg0200) error {
 	dg.Phone = phone
 	geoMetaInstance := &GeoMeta{}
 	geoMetaInstance.Decode(m.StatusSign)
@@ -83,13 +83,8 @@ func (dg *DeviceGeo) Decode(phone string, m *Msg0200) (*DeviceGeo, error) {
 	driveInstance := &Drive{}
 	driveInstance.Decode(m)
 	dg.Drive = driveInstance
-	t, err := time.Parse("20060102150405", m.Time)
-	if err != nil {
-		return nil, errors.Wrap(ErrDecodeMsg, "Fail to parse time")
-	}
-	dg.Time = t
-
-	return dg, nil
+	dg.Time = hex.ParseTime(m.Time)
+	return nil
 }
 
 const (

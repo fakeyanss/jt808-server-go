@@ -1,7 +1,6 @@
 package datagen
 
 import (
-	"fmt"
 	"math/rand"
 	"strconv"
 	"time"
@@ -9,6 +8,7 @@ import (
 	regen "github.com/AnatolyRugalev/goregen"
 	"github.com/rs/zerolog/log"
 
+	"github.com/fakeyanss/jt808-server-go/internal/codec/hex"
 	"github.com/fakeyanss/jt808-server-go/internal/config"
 	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
 )
@@ -158,15 +158,7 @@ func GenMsg0200(conf *config.DeviceGeoConf, device *model.Device, deviceGeo *mod
 		Speed:      uint16((deviceGeo.Drive.Speed + speedOffset) * model.SpeedAccuracy),
 		Direction:  uint16(nextDirection),
 	}
-	now := time.Now()
-	year := now.Year()     // 年
-	month := now.Month()   // 月
-	day := now.Day()       // 日
-	hour := now.Hour()     // 小时
-	minute := now.Minute() // 分钟
-	second := now.Second() // 秒
-	fmtTime := fmt.Sprintf("%02d%02d%02d%02d%02d%02d", year, month, day, hour, minute, second)
-	m.Time = fmtTime
+	m.Time = hex.FormatTime(time.Now())
 
 	// uint降至0后，再-1变为uint最大值。这里直接重设一个速度。
 	if m.Latitude > 90*model.LocationAccuracy {
