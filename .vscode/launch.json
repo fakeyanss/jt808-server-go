@@ -12,6 +12,13 @@
             "program": "main.go"
         },
         {
+            "name": "Launch Client",
+            "type": "go",
+            "request": "launch",
+            "mode": "debug",
+            "program": "test/client/main.go"
+        },
+        {
             "name": "Launch Package",
             "type": "go",
             "request": "launch",

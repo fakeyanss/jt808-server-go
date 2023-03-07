@@ -9,6 +9,13 @@ import (
 	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
 )
 
+const (
+	boundaryMark = 0x7e
+	escapeMark   = 0x7d
+	escapeOne    = 0x01
+	escapeTwo    = 0x02
+)
+
 var (
 	ErrEmptyPacket  = errors.New("Empty packet")
 	ErrVerifyFailed = errors.New("Verify failed")
@@ -97,10 +104,10 @@ func (pc *JT808PacketCodec) unescape(src []byte) []byte {
 	i, n := 1, len(src)
 	for i < n-1 {
 		if i < n-2 && src[i] == 0x7d && src[i+1] == 0x02 {
-			dst = append(dst, 0x7e)
+			dst = append(dst, boundaryMark)
 			i += 2
 		} else if i < n-2 && src[i] == 0x7d && src[i+1] == 0x01 {
-			dst = append(dst, 0x7d)
+			dst = append(dst, escapeMark)
 			i += 2
 		} else {
 			dst = append(dst, src[i])
@@ -120,17 +127,17 @@ func (pc *JT808PacketCodec) unescape(src []byte) []byte {
 // 并加上前后标识符0x7e
 func (pc *JT808PacketCodec) escape(src []byte) []byte {
 	dst := make([]byte, 0)
-	dst = append(dst, 0x7e)
+	dst = append(dst, boundaryMark)
 	for _, v := range src {
-		if v == 0x7e {
-			dst = append(dst, 0x7d, 0x02)
-		} else if v == 0x7d {
-			dst = append(dst, 0x7d, 0x01)
+		if v == boundaryMark {
+			dst = append(dst, escapeMark, escapeTwo)
+		} else if v == escapeMark {
+			dst = append(dst, escapeMark, escapeOne)
 		} else {
 			dst = append(dst, v)
 		}
 	}
-	dst = append(dst, 0x7e)
+	dst = append(dst, boundaryMark)
 	return dst
 }
 

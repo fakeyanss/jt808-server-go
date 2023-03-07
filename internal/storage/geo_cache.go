@@ -13,25 +13,25 @@ const RingCapacity int32 = 100
 
 var ErrGisNotFound = errors.New("gis not found")
 
-type GisCache struct {
+type GeoCache struct {
 	cacheByPhone map[string]*container.RingBuffer
 	mutex        *sync.Mutex
 }
 
-var gisCacheSingleton *GisCache
-var gisCacheInitOnce sync.Once
+var geoCacheSingleton *GeoCache
+var geoCacheInitOnce sync.Once
 
-func GetGisCache() *GisCache {
-	gisCacheInitOnce.Do(func() {
-		gisCacheSingleton = &GisCache{
+func GetGeoCache() *GeoCache {
+	geoCacheInitOnce.Do(func() {
+		geoCacheSingleton = &GeoCache{
 			cacheByPhone: make(map[string]*container.RingBuffer),
 			mutex:        &sync.Mutex{},
 		}
 	})
-	return gisCacheSingleton
+	return geoCacheSingleton
 }
 
-func (cache *GisCache) GetGisRingByPhone(phone string) *container.RingBuffer {
+func (cache *GeoCache) GetGeoRingByPhone(phone string) *container.RingBuffer {
 	cache.mutex.Lock()
 	defer cache.mutex.Unlock()
 	if rb, ok := cache.cacheByPhone[phone]; ok {
@@ -42,16 +42,16 @@ func (cache *GisCache) GetGisRingByPhone(phone string) *container.RingBuffer {
 	return cache.cacheByPhone[phone]
 }
 
-func (cache *GisCache) GetGisLatestByPhone(id string) (*model.GISMeta, error) {
-	rb := cache.GetGisRingByPhone(id)
-	if latest, ok := rb.Latest().(*model.GISMeta); ok {
+func (cache *GeoCache) GetGeoLatestByPhone(phone string) (*model.DeviceGeo, error) {
+	rb := cache.GetGeoRingByPhone(phone)
+	if latest, ok := rb.Latest().(*model.DeviceGeo); ok {
 		return latest, nil
 	}
 	return nil, ErrGisNotFound
 }
 
-func (cache *GisCache) DelGisByPhone(id string) {
+func (cache *GeoCache) DelGeoByPhone(phone string) {
 	cache.mutex.Lock()
 	defer cache.mutex.Unlock()
-	delete(cache.cacheByPhone, id)
+	delete(cache.cacheByPhone, phone)
 }

@@ -16,7 +16,7 @@ type MsgHeader struct {
 	MsgID           uint16            `json:"msgID"`           // 消息ID
 	Attr            *MsgBodyAttr      `json:"attr"`            // 消息体属性
 	ProtocolVersion uint8             `json:"protocolVersion"` // 协议版本号，默认0表示2011/2013版本，其他为2019后续版本，每次修订递增，初始为1
-	PhoneNumber     string            `json:"phoneNumber"`     // 终端手机号
+	PhoneNumber     string            `json:"phoneNumber"`     // 终端手机号,
 	SerialNumber    uint16            `json:"serialNumber"`    // 消息流水号
 	Frag            *MsgFragmentation `json:"frag"`            // 消息包封装项
 
@@ -40,6 +40,7 @@ func (h *MsgHeader) Decode(pkt []byte) error {
 	}
 
 	// 2013版本，phoneNumber [5,11)位 长度6位；2019版本，phoneNumber [5,15)位 长度10位。
+	// todo: phoneNumber长度不足时左侧补0
 	if h.Attr.VersionDesc == Version2019 {
 		h.PhoneNumber = hex.ReadBCD(pkt, &idx, 10)
 	} else if h.Attr.VersionDesc == Version2013 {

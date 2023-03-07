@@ -1,0 +1,61 @@
+log:
+  consoleEnable: true
+  fileEnable: true
+  printAsJson: false
+  logLevel: "DEBUG"
+  logDirectory: "./logs/"
+  logFile: "jt808-client-go.log"
+  maxSizeOfRolling: 50
+  maxBackupsOfRolling: 128
+  maxAgeOfRolling: 7
+
+client:
+  name: "jt808-client-go"
+  concurrency: 10
+  conn:
+    remoteAddr: "localhost:8080"
+  device:
+    idReg: "[0-9]{20}"
+    imeiReg: "[0-9]{15}"
+    phoneReg: "[0-9]{20}"
+    plateReg: "京A[A-Z0-9]{5}"
+    protocolVersion: "2019"
+    transProto: "TCP"
+    keepalive: 20 # 保活周期，单位s
+    provinceIdReg: "[0-9]{2}"
+    cityIdReg: "[0-9]{4}"
+    plateColorReg: "[0123459]{1}"
+  deviceGeo:
+    locationReportInterval: 10
+    geo:
+      accStatusReg: "0|1"
+      locationStatusReg: "0|1"
+      latitudeTypeReg: "0|1"
+      longitudeTypeReg: "0|1"
+      operatingStatusReg: "0|1"
+      geoEncryptionStatusReg: "0|1"
+      loadStatusReg: "0|1"
+      FuelSystemStatusReg: "0|1"
+      AlternatorSystemStatusReg: "0|1"
+      DoorLockedStatusReg: "0|1"
+      frontDoorStatusReg: "0|1"
+      midDoorStatusReg: "0|1"
+      backDoorStatusReg: "0|1"
+      driverDoorStatusReg: "0|1"
+      customDoorStatusReg: "0|1"
+      gpsLocationStatusReg: "0|1"
+      beidouLocationStatusReg: "0|1"
+      glonassLocationStatusReg: "0|1"
+      galileoLocationStatusReg: "0|1"
+      drivingStatusReg: "0|1"
+    location:
+      latitudeReg: "[0-8][0-9]|90"
+      longitudeReg: "[0-9]{2}|1[0-7][0-9]|180"
+      altitudeReg: "[0-9]{4}"
+    drive:
+      speedReg: "[0-9]{2}"
+      directionReg: "[0-9]{2}|[1-2][0-9]{2}|3[0-5][0-9]"
+
+
+      
+

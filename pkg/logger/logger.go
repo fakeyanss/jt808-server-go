@@ -5,10 +5,8 @@ import (
 	"io"
 	"os"
 	"path"
-	"runtime"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/rs/zerolog"
@@ -33,7 +31,7 @@ type Config struct {
 	FileLoggingEnabled bool
 
 	// LogLevel uses the zerolog.Level definition
-	LogLevel int
+	LogLevel int8
 
 	// Directory to log to to when filelogging is enabled
 	Directory string
@@ -163,28 +161,4 @@ func zerologGlobalConfiguration() {
 	zerolog.MessageFieldName = "m"
 	zerolog.CallerFieldName = "c"
 	zerolog.ErrorStackMarshaler = pkgerrors.MarshalStack
-}
-
-func rewriteStderrFile(filename string) error {
-	if runtime.GOOS == "windows" {
-		return nil
-	}
-
-	file, err := os.OpenFile(filename, os.O_RDWR|os.O_CREATE|os.O_APPEND, 0666)
-	if err != nil {
-		fmt.Println(err)
-		return err
-	}
-	stdErrFileHandler = file // 把文件句柄保存到全局变量，避免被GC回收
-
-	if err = syscall.Dup2(int(file.Fd()), int(os.Stderr.Fd())); err != nil {
-		fmt.Println(err)
-		return err
-	}
-	// 内存回收前关闭文件描述符
-	runtime.SetFinalizer(stdErrFileHandler, func(fd *os.File) {
-		fd.Close()
-	})
-
-	return nil
 }

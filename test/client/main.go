@@ -1,13 +1,17 @@
 package main
 
 import (
+	"context"
 	"flag"
+	"fmt"
 	"os"
+	"sync"
 	"time"
 
 	"github.com/rs/zerolog/log"
 
 	"github.com/fakeyanss/jt808-server-go/internal/client"
+	"github.com/fakeyanss/jt808-server-go/internal/config"
 	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
 	"github.com/fakeyanss/jt808-server-go/internal/storage"
 	"github.com/fakeyanss/jt808-server-go/pkg/logger"
@@ -15,30 +19,88 @@ import (
 	"github.com/fakeyanss/jt808-server-go/test/datagen"
 )
 
-const (
-	logDir  = "./logs/" // todo: read from configuration
-	logFile = "jt808-client-go.log"
+type (
+	DeviceConfCtxKey struct{}
+
+	DeviceGeoConfCtxKey struct{}
+
+	DevicePhoneCtxKey struct{}
 )
 
-func main() {
-	logConfig := &logger.Config{
-		ConsoleLoggingEnabled: true,
-		EncodeLogsAsJSON:      false,
-		FileLoggingEnabled:    true,
-		LogLevel:              0,
-		Directory:             logDir,
-		Filename:              logFile,
-		MaxSize:               5,
-		MaxBackups:            128,
-		MaxAge:                3,
+func buildDevice(ctx context.Context, cli *client.TCPClient) *model.Device {
+	deviceConf := ctx.Value(DeviceConfCtxKey{}).(*config.DeviceConf)
+	cache := storage.GetDeviceCache()
+	device := datagen.GenDevice(deviceConf)
+	device.SessionID = cli.Session.ID
+	device.TransProto = model.TCPProto
+	device.Conn = cli.Session.Conn
+	cache.CacheDevice(device)
+	return device
+}
+
+func getDevice(ctx context.Context) *model.Device {
+	phone := ctx.Value(DevicePhoneCtxKey{}).(string)
+	cache := storage.GetDeviceCache()
+	device, err := cache.GetDeviceByPhone(phone)
+	if err != nil {
+		log.Fatal().Err(err).Str("phone", phone).Msg("Fail to find device cache")
 	}
-	log.Logger = *logger.Configure(logConfig).Logger
+	return device
+}
 
-	var addr string
-	flag.StringVar(&addr, "addr", "localhost:8080", "set server addr")
-	flag.Parse()
+func register(ctx context.Context, cli *client.TCPClient) {
+	device := getDevice(ctx)
+	deviceConf := ctx.Value(DeviceConfCtxKey{}).(*config.DeviceConf)
+	msg := datagen.GenMsg0100(deviceConf, device)
+	cli.Send(msg)
+}
 
+func keepalive(ctx context.Context, cli *client.TCPClient) {
+	device := getDevice(ctx)
+	deviceConf := ctx.Value(DeviceConfCtxKey{}).(*config.DeviceConf)
+	msg := datagen.GenMsg0002(device)
+
+	for {
+		cli.Send(msg)
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(time.Duration(deviceConf.Keepalive) * time.Second):
+		}
+	}
+}
+
+func buildDeviceGeo(ctx context.Context) {
+	device := getDevice(ctx)
+	deviceGeoConf := ctx.Value(DeviceGeoConfCtxKey{}).(*config.DeviceGeoConf)
+	deivceGeo := datagen.GenDeviceGeo(deviceGeoConf, device)
+	geoCache := storage.GetGeoCache()
+	rb := geoCache.GetGeoRingByPhone(device.Phone)
+	rb.Write(deivceGeo)
+}
+
+func reportLocation(ctx context.Context, cli *client.TCPClient) {
+	deviceGeoConf := ctx.Value(DeviceGeoConfCtxKey{}).(*config.DeviceGeoConf)
+	geoCache := storage.GetGeoCache()
+
+	for {
+		device := getDevice(ctx)
+		deviceGeo, err := geoCache.GetGeoLatestByPhone(device.Phone)
+		if err == nil {
+			msg := datagen.GenMsg0200(deviceGeoConf, device, deviceGeo)
+			cli.Send(msg)
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(time.Duration(deviceGeoConf.LocationReportInterval) * time.Second):
+		}
+	}
+}
+
+func dialAndSend(cfg *config.Config, cliWg *sync.WaitGroup) {
 	cli := client.NewTCPClient()
+	addr := cfg.Client.Conn.RemoteAddr
 	err := cli.Dial(addr)
 	if err != nil {
 		log.Error().
@@ -47,55 +109,64 @@ func main() {
 			Msg("Fail to dial tcp addr")
 		os.Exit(1)
 	}
-	defer cli.Stop()
-
-	done := make(chan struct{})
 	routines.GoSafe(func() {
+		defer cliWg.Done()
 		cli.Start()
-		done <- struct{}{}
 	})
 
-	buildDevice(cli)
-	register(cli)
+	routines.GoSafe(func() {
+		ctx := context.WithValue(context.Background(), DeviceConfCtxKey{}, cfg.Client.Device)
+		d := buildDevice(ctx, cli)
+		ctx = context.WithValue(ctx, DevicePhoneCtxKey{}, d.Phone)
+		ctx = context.WithValue(ctx, DeviceGeoConfCtxKey{}, cfg.Client.DeviceGeo)
+		buildDeviceGeo(ctx)
 
-	go keepalive(cli)
-	go reportLocation(cli)
+		var wg sync.WaitGroup
+		wg.Add(1)
+		register(ctx, cli)
 
-	for {
-		select {
-		case <-done:
-			return
-		case <-time.After(5 * time.Second):
-		}
+		routines.GoSafe(func() {
+			// device status checker
+			for {
+				cache := storage.GetDeviceCache()
+				renewDevice, _ := cache.GetDeviceByPhone(d.Phone)
+				if renewDevice.Status == model.DeviceStatusOnline {
+					wg.Done()
+					return
+				}
+				time.Sleep(time.Second)
+			}
+		})
+
+		// should wait for register success, and stop after register failed for a while
+		routines.GoSafe(func() {
+			wg.Wait()
+			keepalive(ctx, cli)
+		})
+		routines.GoSafe(func() {
+			wg.Wait()
+			reportLocation(ctx, cli)
+		})
+	})
+}
+
+func main() {
+	var cfgPath string
+	flag.StringVar(&cfgPath, "c", "configs/default.yaml", "config file path")
+	flag.Parse()
+	fmt.Printf("Start with configuration %v\n", cfgPath)
+	cfg := config.Load(cfgPath)
+	fmt.Printf("Load configuration: %+v\n", cfg)
+
+	logCfg := cfg.ParseLogConf()
+	log.Logger = *logger.Configure(logCfg).Logger
+
+	var cliWg sync.WaitGroup
+	cliWg.Add(cfg.Client.Concurrency)
+
+	for i := 0; i < cfg.Client.Concurrency; i++ {
+		dialAndSend(cfg, &cliWg)
 	}
-}
 
-func buildDevice(cli *client.TCPClient) {
-	cache := storage.GetDeviceCache()
-	device := datagen.GenDevice()
-	device.SessionID = cli.Session.ID
-	device.TransProto = model.TCPProto
-	device.Conn = cli.Session.Conn
-	cache.CacheDevice(device)
-}
-
-func register(cli *client.TCPClient) {
-	msg := datagen.GenMsg0100()
-	cli.Send(msg)
-}
-
-func keepalive(cli *client.TCPClient) {
-	msg := datagen.GenMsg0002()
-	for {
-		cli.Send(msg)
-		time.Sleep(10 * time.Second)
-	}
-}
-
-func reportLocation(cli *client.TCPClient) {
-	for {
-		msg := datagen.GenMsg0200()
-		cli.Send(msg)
-		time.Sleep(30 * time.Second)
-	}
+	cliWg.Wait()
 }
