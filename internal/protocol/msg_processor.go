@@ -87,6 +87,12 @@ func initProcessOption() processOptions {
 		},
 		process: processMsg8100,
 	}
+	options[0x8104] = &action{ // 查询终端参数
+		genData: func() *model.ProcessData {
+			return &model.ProcessData{Incoming: &model.Msg8104{}, Outgoing: &model.Msg0104{}}
+		},
+		process: processMsg8104,
+	}
 
 	return options
 }
@@ -352,5 +358,10 @@ func processMsg8100(ctx context.Context, data *model.ProcessData) error {
 		return errors.Wrap(err, "Fail to generate msg 8100")
 	}
 
+	return nil
+}
+
+// 收到查询终端参数请求，回复终端参数
+func processMsg8104(ctx context.Context, data *model.ProcessData) error {
 	return nil
 }

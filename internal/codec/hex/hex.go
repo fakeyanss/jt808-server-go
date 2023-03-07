@@ -120,14 +120,23 @@ func WriteDoubleWord(pkt []byte, num uint32) []byte {
 	return append(pkt, numPkt...)
 }
 
-func ReadString(pkt []byte, idx *int, n int) string {
-	ans := string(pkt[*idx : *idx+n])
+func ReadBytes(pkt []byte, idx *int, n int) []byte {
+	ans := pkt[*idx : *idx+n]
 	*idx += n
 	return ans
 }
 
+func WriteBytes(pkt []byte, arr []byte) []byte {
+	return append(pkt, arr...)
+}
+
+func ReadString(pkt []byte, idx *int, n int) string {
+	return string(ReadBytes(pkt, idx, n))
+}
+
 func WriteString(pkt []byte, str string) []byte {
-	return append(pkt, []byte(str)...)
+	arr := []byte(str)
+	return WriteBytes(pkt, arr)
 }
 
 func ReadBCD(pkt []byte, idx *int, n int) string {
