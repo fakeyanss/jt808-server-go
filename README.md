@@ -306,3 +306,130 @@ end
 - 封装统一处理结果，包含 result 和 error 定义，再有连接控制层进行处理
 - 调研 go struct tag，用以简化 msg decode&encode 代码
 - 当前设计的 Pipeline 同步处理逻辑耦合性还是比较高，想一想，利用 channel 传输数据，每一层只关注 channel 的数据接收、处理和写入。
+
+## 编译和运行
+
+需要本地有 go 1.19+环境。
+
+### 构建 jt808-server-go
+
+编译本地版本：
+```sh
+make compile 
+
+# 产出在 target/debug:
+# jt808-server-go
+```
+
+交叉编译：
+
+```sh
+make release
+
+# 产出在 target/releases：
+# jt808-server-go_darwin_amd64
+# jt808-server-go_darwin_arm64
+# jt808-server-go_linux_amd64
+# jt808-server-go_linux_arm64
+```
+
+### 运行 jt808-server-go
+
+编译可执行文件运行：
+```sh
+./jt808-server-go -c "your config file"
+```
+默认读取 `jt808-server-go` 同级目录的 `configs/default.yaml` 。
+
+源码运行：
+```sh
+make run
+```
+**支持自定义 banner, 修改 configs/banner.txt 即可。**
+
+### 构建 jt808-client-go
+
+编译本地版本：
+```sh
+make compile-client
+
+# 产出在 target/debug:
+# jt808-client-go
+```
+
+交叉编译：
+
+```sh
+make release-client
+
+# 产出在 target/releases：
+# jt808-client-go_darwin_amd64
+# jt808-client-go_darwin_arm64
+# jt808-client-go_linux_amd64
+# jt808-client-go_linux_arm64
+```
+
+### 运行 jt808-client-go
+编译可执行文件运行：
+```sh
+./jt808-client-go -c "your config file"
+```
+默认读取 `jt808-client-go` 同级目录的 `configs/default.yaml` ，可自定义终端的配置：
+
+```yaml
+......
+
+client:
+  name: "jt808-client-go"
+  concurrency: 10 # client 并行模拟的终端个数
+  conn:
+    remoteAddr: "localhost:8080" # server addr
+  device:
+    idReg: "[0-9]{20}" # 设备 ID 正则生成规则，下列 xxxReg 配置同理
+    imeiReg: "[0-9]{15}"
+    phoneReg: "[0-9]{20}"
+    plateReg: "京 A[A-Z0-9]{5}"
+    protocolVersion: "2019" # 协议版本
+    transProto: "TCP" # 协议类型，现仅支持 TCP
+    keepalive: 20 # 保活周期，单位 s
+    provinceIdReg: "[0-9]{2}"
+    cityIdReg: "[0-9]{4}"
+    plateColorReg: "[0123459]{1}"
+  deviceGeo:
+    locationReportInterval: 10 # 0200 消息上报间隔，单位 s
+    geo:
+      accStatusReg: "0|1"
+      locationStatusReg: "0|1"
+      latitudeTypeReg: "0|1"
+      longitudeTypeReg: "0|1"
+      operatingStatusReg: "0|1"
+      geoEncryptionStatusReg: "0|1"
+      loadStatusReg: "0|1"
+      FuelSystemStatusReg: "0|1"
+      AlternatorSystemStatusReg: "0|1"
+      DoorLockedStatusReg: "0|1"
+      frontDoorStatusReg: "0|1"
+      midDoorStatusReg: "0|1"
+      backDoorStatusReg: "0|1"
+      driverDoorStatusReg: "0|1"
+      customDoorStatusReg: "0|1"
+      gpsLocationStatusReg: "0|1"
+      beidouLocationStatusReg: "0|1"
+      glonassLocationStatusReg: "0|1"
+      galileoLocationStatusReg: "0|1"
+      drivingStatusReg: "0|1"
+    location:
+      latitudeReg: "[0-8][0-9]|90"
+      longitudeReg: "[0-9]{2}|1[0-7][0-9]|180"
+      altitudeReg: "[0-9]{4}"
+    drive:
+      speedReg: "[0-9]{2}"
+      directionReg: "[0-9]{2}|[1-2][0-9]{2}|3[0-5][0-9]"
+
+......
+```
+
+源码运行：
+```sh
+make run-client
+```
