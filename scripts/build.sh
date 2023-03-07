@@ -18,11 +18,11 @@ function test() {
 }
 
 function compile() {
-	output=$target_dir/debug
+	output=$target_dir/debug/$target
 	mkdir -p $output
 	go build -o $output/$target \
 		-ldflags "-X main.buildTime=$time -X main.buildCommit=$version" \
-		main.go
+		$build_file	
 	copy_conf $output/configs
 }
 
@@ -39,14 +39,14 @@ function release() {
 		go build -tags $target \
 		-o $output/$target \
 		-ldflags "-X main.buildTime=$time -X main.buildCommit=$version" \
-		main.go
+		$build_file	
 	copy_conf $output/configs
 }
 
 function copy_conf() {
 	conf_dir=$1
 	mkdir -p $conf_dir
-	cp -r $project_dir/configs/ $conf_dir
+	cp -r $build_conf $conf_dir
 }
 
 # target: jt808-server-go / jt808-client-go
@@ -55,6 +55,12 @@ project_dir=$(git rev-parse --show-toplevel)
 target_dir="${project_dir}/target"
 time=$(date +'%Y-%m-%dT%H:%M:%S')
 version=$(git rev-parse --short HEAD)
+build_file="main.go"
+build_conf="$project_dir/configs/"
+if [[ $target == "jt808-client-go" ]]; then
+	build_file="test/client/main.go"
+	build_conf="$project_dir/test/client/configs/"
+fi
 
 ret=0
 case "$1" in

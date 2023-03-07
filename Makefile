@@ -3,8 +3,9 @@ CURDIR := $(shell pwd)
 # 设置编译时所需要的 Go 环境
 export GOENV = $(CURDIR)/go.env
 # 程序编译产出信息
-PROG_NAME    := jt808-server-go
-BUILD_TIME   := $(shell date +'%Y-%m-%dT%H:%M:%S')
+PROG_NAME := jt808-server-go
+TEST_CLIENT_NAME := jt808-client-go
+BUILD_TIME := $(shell date +'%Y-%m-%dT%H:%M:%S')
 BUILD_COMMIT := $(shell git rev-parse --short HEAD)
 $(info BUILD_TIME: $(BUILD_TIME))
 $(info BUILD_COMMIT: $(BUILD_COMMIT))
@@ -29,13 +30,19 @@ test: set-env
 # complile 阶段，执行编译命令并打包，可单独执行命令: make compile
 compile: set-env
 	bash $(CURDIR)/scripts/build.sh compile $(PROG_NAME)
+compile-client: set-env
+	bash $(CURDIR)/scripts/build.sh compile $(TEST_CLIENT_NAME)
 
 run: set-env
-	go run $(CURDIR)/main.go
+	go run $(CURDIR)/main.go -c configs/default.yaml
+run-client: set-env
+	go run $(CURDIR)/test/client/main.go -c $(CURDIR)/test/client/configs/default.yaml
 
 # release 阶段，单独执行交叉编译命令并打包
 release: set-env
 	bash $(CURDIR)/scripts/build.sh release $(PROG_NAME)
+release-client: set-env
+	bash $(CURDIR)/scripts/build.sh release $(TEST_CLIENT_NAME)
 
 lint: set-env
 	golangci-lint run ./...

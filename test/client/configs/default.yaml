@@ -11,7 +11,7 @@ log:
 
 client:
   name: "jt808-client-go"
-  concurrency: 1
+  concurrency: 10
   conn:
     remoteAddr: "localhost:8080"
   device:
@@ -26,7 +26,7 @@ client:
     cityIdReg: "[0-9]{4}"
     plateColorReg: "[0123459]{1}"
   deviceGeo:
-    locationReportInterval: 30
+    locationReportInterval: 10
     geo:
       accStatusReg: "0|1"
       locationStatusReg: "0|1"
