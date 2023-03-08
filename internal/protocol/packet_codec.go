@@ -155,8 +155,7 @@ func (pc *JT808PacketCodec) verify(pkt []byte) ([]byte, error) {
 	if expected == actual {
 		return pkt[:n-1], nil
 	}
-	log.Debug().
-		Msgf("verify expect=%v, but actual=%v", expected, actual)
+	log.Debug().Msgf("verify expect=%v, but actual=%v", expected, actual)
 	return nil, ErrVerifyFailed
 }
 

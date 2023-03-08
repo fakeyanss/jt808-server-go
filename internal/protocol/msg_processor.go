@@ -69,6 +69,11 @@ func initProcessOption() processOptions {
 		},
 		process: processMsg0102,
 	}
+	options[0x0104] = &action{ // 查询终端参数应答
+		genData: func() *model.ProcessData {
+			return &model.ProcessData{Incoming: &model.Msg0104{}} // 无需回复
+		},
+	}
 	options[0x0200] = &action{ // 位置信息上报
 		genData: func() *model.ProcessData {
 			return &model.ProcessData{Incoming: &model.Msg0200{}, Outgoing: &model.Msg8001{}}
@@ -117,7 +122,12 @@ func NewJT808MsgProcessor() *JT808MsgProcessor {
 
 func (mp *JT808MsgProcessor) Process(ctx context.Context, pkt *model.PacketData) (*model.ProcessData, error) {
 	msgID := pkt.Header.MsgID
-	genDataFn := mp.options[msgID].genData
+	if _, ok := mp.options[msgID]; !ok {
+		return nil, ErrMsgIDNotSupportted
+	}
+
+	act := mp.options[msgID]
+	genDataFn := act.genData
 	if genDataFn == nil {
 		return nil, ErrMsgIDNotSupportted
 	}
@@ -136,11 +146,8 @@ func (mp *JT808MsgProcessor) Process(ctx context.Context, pkt *model.PacketData)
 		if err != nil {
 			return nil, errors.Wrap(err, "Fail to serialize incoming msg to json")
 		}
-		log.Debug().
-			Str("id", session.ID).
-			Str("RawMsgID", fmt.Sprintf("0x%04x", in.GetHeader().MsgID)).
-			RawJSON("incoming", inJSON). // for debug
-			Msg("Received jt808 msg.")
+		// for debug
+		log.Debug().Str("id", session.ID).Str("RawMsgID", fmt.Sprintf("0x%04x", in.GetHeader().MsgID)).RawJSON("incoming", inJSON).Msg("Received jt808 msg.")
 	}
 
 	// 生成待回复的消息
@@ -159,16 +166,17 @@ func (mp *JT808MsgProcessor) Process(ctx context.Context, pkt *model.PacketData)
 
 			outJSON, _ := json.Marshal(out)
 			session := ctx.Value(model.SessionCtxKey{}).(*model.Session)
-			log.Debug().
-				Str("id", session.ID).
-				Str("RawMsgID", fmt.Sprintf("0x%04x", out.GetHeader().MsgID)).
-				RawJSON("outgoing", outJSON). // for debug
+			// for debug
+			log.Debug().Str("id", session.ID).Str("RawMsgID", fmt.Sprintf("0x%04x", out.GetHeader().MsgID)).RawJSON("outgoing", outJSON).
 				Msg("Generating jt808 outgoing msg.")
 		}()
 	}
 
 	// 对消息按类别做特殊处理
-	processFunc := mp.options[msgID].process
+	processFunc := act.process
+	if processFunc == nil {
+		return data, nil
+	}
 	err = processFunc(ctx, data)
 	if err != nil {
 		return data, errors.Wrap(err, "Fail to process data")
@@ -363,5 +371,11 @@ func processMsg8100(ctx context.Context, data *model.ProcessData) error {
 
 // 收到查询终端参数请求，回复终端参数
 func processMsg8104(ctx context.Context, data *model.ProcessData) error {
+	// todo
+	return nil
+}
+
+func processMsg0104(ctx context.Context, data *model.ProcessData) error {
+	// todo: write channel
 	return nil
 }

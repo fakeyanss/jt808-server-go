@@ -77,12 +77,7 @@ func Configure(config *Config) *Logger {
 	}
 	mw := io.MultiWriter(writers...)
 
-	logger := zerolog.New(mw).
-		Level(zerolog.Level(config.LogLevel)).
-		With().
-		Caller().
-		Timestamp().
-		Logger()
+	logger := zerolog.New(mw).Level(zerolog.Level(config.LogLevel)).With().Caller().Timestamp().Logger()
 
 	zerologGlobalConfiguration()
 

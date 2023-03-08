@@ -78,6 +78,14 @@ func (h *MsgHeader) Encode() (pkt []byte, err error) {
 	return pkt, nil
 }
 
+func (h *MsgHeader) GetVersionDesc() VersionType {
+	return h.Attr.VersionDesc
+}
+
+func (h *MsgHeader) GetRawJt808Version() uint8 {
+	return h.Attr.VersionSign
+}
+
 // 消息体属性字段的bit位
 const (
 	bodyLengthBit    uint16 = 0b0000001111111111
@@ -183,4 +191,26 @@ func (frag *MsgFragmentation) Encode() []byte {
 	pkt = hex.WriteWord(pkt, frag.Total)
 	pkt = hex.WriteWord(pkt, frag.Index)
 	return pkt
+}
+
+func versionDecode(ver VersionType) uint8 {
+	if ver == Version2019 {
+		return 1
+	}
+	return 0
+}
+
+func GenMsgHeader(d *Device, msgID uint16, serialNumber uint16) *MsgHeader {
+	return &MsgHeader{
+		MsgID: msgID,
+		Attr: &MsgBodyAttr{
+			Encryption:       uint8(EncryptionNone),
+			PacketFragmented: 0,
+			VersionSign:      versionDecode(d.VersionDesc),
+			Extra:            0,
+		},
+		ProtocolVersion: d.ProtocolVersion,
+		PhoneNumber:     d.Phone,
+		SerialNumber:    serialNumber,
+	}
 }

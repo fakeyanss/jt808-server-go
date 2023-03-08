@@ -1,11 +1,15 @@
 package model
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/stretchr/testify/require"
+)
 
 func TestDeviceArgs_Decode(t *testing.T) {
 	type fields struct {
 		ArgCnt uint8
-		Args   []*ArgData
+		Args   []*ParamData
 	}
 	type args struct {
 		cnt uint8
@@ -23,13 +27,14 @@ func TestDeviceArgs_Decode(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			a := &DeviceArgs{
-				ArgCnt: tt.fields.ArgCnt,
-				Args:   tt.fields.Args,
+			want := &DeviceParams{
+				ParamCnt: tt.fields.ArgCnt,
+				Params:   tt.fields.Args,
 			}
-			if err := a.Decode(tt.args.cnt, tt.args.pkt); (err != nil) != tt.wantErr {
-				t.Errorf("DeviceArgs.Decode() error = %v, wantErr %v", err, tt.wantErr)
-			}
+			got := &DeviceParams{}
+			err := got.Decode("", tt.args.cnt, tt.args.pkt)
+			require.Equal(t, tt.wantErr, err != nil, err)
+			require.Equal(t, want, got)
 		})
 	}
 }

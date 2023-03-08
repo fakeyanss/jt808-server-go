@@ -11,6 +11,7 @@ import (
 	"github.com/rs/zerolog/log"
 
 	"github.com/fakeyanss/jt808-server-go/internal/config"
+	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
 	"github.com/fakeyanss/jt808-server-go/internal/server"
 	"github.com/fakeyanss/jt808-server-go/internal/storage"
 	"github.com/fakeyanss/jt808-server-go/pkg/logger"
@@ -50,10 +51,7 @@ func main() {
 	addr := ":" + cfg.Server.Port.TCPPort
 	err := serv.Listen(addr)
 	if err != nil {
-		log.Error().
-			Err(err).
-			Str("addr", addr).
-			Msg("Fail to listen tcp addr")
+		log.Error().Err(err).Str("addr", addr).Msg("Fail to listen tcp addr")
 		os.Exit(1)
 	}
 	routines.GoSafe(func() { serv.Start() })
@@ -68,7 +66,7 @@ func main() {
 		c.JSON(http.StatusOK, cache.ListDevice())
 	})
 
-	router.GET("/device/:phone", func(c *gin.Context) {
+	router.GET("/device/:phone/geo", func(c *gin.Context) {
 		phone := c.Param("phone")
 
 		device, err := cache.GetDeviceByPhone(phone)
@@ -92,15 +90,31 @@ func main() {
 		c.JSON(http.StatusOK, res)
 	})
 
+	router.GET("/device/:phone/params", func(c *gin.Context) {
+		phone := c.Param("phone")
+		device, err := cache.GetDeviceByPhone(phone)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
+			return
+		}
+		session, err := storage.GetSession(device.SessionID)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
+		}
+		header := model.GenMsgHeader(device, 0x8104, session.GetNextSerialNum())
+		msg := model.Msg8104{
+			Header: header,
+		}
+		serv.Send(session.ID, &msg)
+		// todo: read channel from process 0104 msg
+	})
+
 	httpAddr := ":" + cfg.Server.Port.HTTPPort
 	routines.GoSafe(func() {
 		log.Debug().Msgf("Listening and serving HTTP on :%s", cfg.Server.Port.HTTPPort)
 		err = router.Run(httpAddr)
 		if err != nil {
-			log.Error().
-				Err(err).
-				Str("addr", httpAddr).
-				Msg("Fail to run gin router")
+			log.Error().Err(err).Str("addr", httpAddr).Msg("Fail to run gin router")
 			os.Exit(1)
 		}
 	})

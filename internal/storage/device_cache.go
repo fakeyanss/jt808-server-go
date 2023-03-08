@@ -74,7 +74,7 @@ func (cache *DeviceCache) CacheDevice(d *model.Device) {
 	cache.cacheDevice(d)
 }
 
-func (cache *DeviceCache) delDevice(carPlate *string, phone *string) {
+func (cache *DeviceCache) delDevice(carPlate, phone *string) {
 	var d *model.Device
 	var ok bool
 	if carPlate != nil {

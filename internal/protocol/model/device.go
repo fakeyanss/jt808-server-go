@@ -32,10 +32,11 @@ type Device struct {
 
 	// 设备信息
 
-	ProtocalVersion VersionType `json:"protocalVersion"`
+	VersionDesc     VersionType `json:"versionDesc"`     // jt808协议版本描述, 区分 2011 / 2013 / 2019
+	ProtocolVersion uint8       `json:"protocolVersion"` // jt808协议版本定义, 区分 (2011&2013) / 2019后续版本修订
 	AuthCode        string      `json:"authcode"`
 	IMEI            string      `json:"imei"`
-	SoftwareVersion string      `json:"softwareVersion"`
+	SoftwareVersion string      `json:"softwareVersion"` // 终端软件版本号(非jt808协议版本)
 }
 
 func NewDevice(in *Msg0100, session *Session) *Device {
@@ -49,7 +50,8 @@ func NewDevice(in *Msg0100, session *Session) *Device {
 		Keepalive:       time.Minute * 1,
 		LastestComTime:  time.Now(),
 		Status:          DeviceStatusOffline,
-		ProtocalVersion: in.Header.Attr.VersionDesc,
+		VersionDesc:     in.Header.Attr.VersionDesc,
+		ProtocolVersion: in.Header.ProtocolVersion,
 	}
 }
 

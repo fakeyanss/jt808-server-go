@@ -86,7 +86,7 @@ func TestBCD2NumberStr(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := BCD2NumberStr(tt.args.bcd)
+			got := bcd2NumberStr(tt.args.bcd)
 			require.Equal(t, tt.want, got)
 		})
 	}
@@ -114,7 +114,7 @@ func TestNumberStr2BCD(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := NumberStr2BCD(tt.args.number)
+			got := numberStr2BCD(tt.args.number)
 			require.Equal(t, tt.want, got)
 		})
 	}

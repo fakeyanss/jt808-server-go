@@ -56,7 +56,7 @@
 
 jt808-server-go 可以作为设备接入网关 (Gateway 模式），解析和回复协议消息，并在特定的消息处理中，回调第三方业务平台，满足业务平台的车辆运营监管功能需求。
 
-![system context 1](.doc/../docs/.asset/system-context-1.png)
+<img src=".doc/../docs/.asset/system-context-1.png" alt="system context 1" width="800">
 
 <!--
 ```plantuml
@@ -81,7 +81,8 @@ Rel_Neighbor(jt808serv, webapp, "Msg Hook", "HTTP")
 
 jt808-server-go 也可以作为设备接入和管理系统进行一体化部署（Standalone 模式），提供基础的设备接入和管理能力。
 
-![system context 2](.doc/../docs/.asset/system-context-2.png)
+<img src=".doc/../docs/.asset/system-context-2.png" alt="system context 2" width="800">
+
 <!--
 ```plantuml
 @startuml
@@ -105,7 +106,7 @@ Rel_Left(admin, jt808serv, "Uses", "HTTP")
 
 依据 2019 版协议文档，需要对设备鉴权标记状态，并根据心跳消息进行设备保活处理。
 
-![2023-02-07_20230207140003](https://ghproxy.com/https://raw.githubusercontent.com/fakeyanss/imgplace/master/2023/2023-02-07_20230207140003.png)
+<img src="https://ghproxy.com/https://raw.githubusercontent.com/fakeyanss/imgplace/master/2023/2023-02-07_20230207140003.png" alt="connection process" width="600">
 
 ### 协议层消息处理主体逻辑
 
@@ -117,14 +118,15 @@ Rel_Left(admin, jt808serv, "Uses", "HTTP")
 5. PacketCodec 将 PacketData 编码成 FramePayload
 6. FrameHandler 调用 socket write，将 FramePayload 发送给终端
 
-![2023-02-05_jt808-server-go_msgflow](https://ghproxy.com/https://raw.githubusercontent.com/fakeyanss/imgplace/master/2023/2023-02-05_jt808-server-go_msgflow.png)
+<img src="https://ghproxy.com/https://raw.githubusercontent.com/fakeyanss/imgplace/master/2023/2023-02-05_jt808-server-go_msgflow.png" alt="process pipeline" width="400">
 
 为了尽可能避免 golang 中臭名昭著的 `if err != nil` 处理，将这些处理过程封装为了一个 pipeline，将每个子过程声明为一个函数类型，通过延迟调用和 breakOnErr 减少错误判断代码。具体实现可看 [`pipeline.go`](internal/protocol/pipeline.go)
 
 ## 平台与终端的消息时序
 
 ### 终端管理类协议
-![2023-02-18_20230218210700](https://ghproxy.com/https://raw.githubusercontent.com/fakeYanss/imgplace/master/2023/2023-02-18_20230218210700.png)
+<img src="https://ghproxy.com/https://raw.githubusercontent.com/fakeYanss/imgplace/master/2023/2023-02-18_20230218210700.png" alt="device manage" width="300">
+
 <!--
 ```plantuml
 @startuml
@@ -182,7 +184,8 @@ end
 
 ### 位置/报警类协议
 
-![2023-02-18_20230218211118](https://ghproxy.com/https://raw.githubusercontent.com/fakeYanss/imgplace/master/2023/2023-02-18_20230218211118.png)
+<img src="https://ghproxy.com/https://raw.githubusercontent.com/fakeYanss/imgplace/master/2023/2023-02-18_20230218211118.png" alt="device alarm" width="300">
+
 <!--
 ```plantuml
 @startuml
@@ -239,7 +242,8 @@ todo
 todo
 
 ### 多媒体协议
-![2023-02-18_20230218211153](https://ghproxy.com/https://raw.githubusercontent.com/fakeYanss/imgplace/master/2023/2023-02-18_20230218211153.png)
+<img src="https://ghproxy.com/https://raw.githubusercontent.com/fakeYanss/imgplace/master/2023/2023-02-18_20230218211153.png" alt="device manage" width="300">
+
 <!--
 ```plantuml
 @startuml
@@ -299,13 +303,6 @@ end
 @enduml
 ```
 -->
-
-## 其他 Todo
-
-- 单测覆盖率提升
-- 封装统一处理结果，包含 result 和 error 定义，再有连接控制层进行处理
-- 调研 go struct tag，用以简化 msg decode&encode 代码
-- 当前设计的 Pipeline 同步处理逻辑耦合性还是比较高，想一想，利用 channel 传输数据，每一层只关注 channel 的数据接收、处理和写入。
 
 ## 编译和运行
 
@@ -433,3 +430,12 @@ client:
 ```sh
 make run-client
 ```
+
+## WIP
+
+- msg header 中描述版本信息的字段有好几个，可以精简使用
+- 存在一些没必要的 oo 的设计，比如获取缓存，直接通过 id 查询就可以，不需要先获取一个缓存对象，再从里查询缓存。另外为方便管理 session，需要将其抽出到缓存层
+- 调研 go struct tag，用以简化 msg decode&encode 代码
+- 单测覆盖率提升
+- 封装统一处理结果，包含 result 和 error 定义，再有连接控制层进行处理
+- 当前设计的 Pipeline 同步处理逻辑耦合性还是比较高，想一想，利用 channel 传输数据，每一层只关注 channel 的数据接收、处理和写入

@@ -37,11 +37,11 @@ func GenDevice(deviceConf *config.DeviceConf) *model.Device {
 	}
 	switch deviceConf.ProtocolVersion {
 	case "2019":
-		device.ProtocalVersion = model.Version2019
+		device.VersionDesc = model.Version2019
 	case "2013":
-		device.ProtocalVersion = model.Version2013
+		device.VersionDesc = model.Version2013
 	case "2011":
-		device.ProtocalVersion = model.Version2011
+		device.VersionDesc = model.Version2011
 	}
 	log.Debug().Str("device", device.Phone).Msgf("Generate random device=%+v", device)
 	return device
@@ -64,7 +64,7 @@ func genMsgHeader(msgID uint16, device *model.Device) *model.MsgHeader {
 		SerialNumber:    1,
 		Frag:            nil,
 	}
-	if device.ProtocalVersion == model.Version2019 {
+	if device.VersionDesc == model.Version2019 {
 		msgHeader.Attr.VersionSign = 1
 		msgHeader.Attr.VersionDesc = model.Version2019
 		msgHeader.ProtocolVersion = 1

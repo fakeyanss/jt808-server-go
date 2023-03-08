@@ -11,7 +11,7 @@ log:
 
 client:
   name: "jt808-client-go"
-  concurrency: 10
+  concurrency: 1
   conn:
     remoteAddr: "localhost:8080"
   device:

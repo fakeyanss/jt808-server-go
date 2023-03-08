@@ -30,9 +30,7 @@ func (cli *TCPClient) Dial(addr string) error {
 			Conn: conn,
 			ID:   remoteAddr, // using remote addr default
 		}
-		log.Debug().
-			Str("addr", addr).
-			Msg("Dialed to server")
+		log.Debug().Str("addr", addr).Msg("Dialed to server")
 	}
 
 	return err
@@ -51,10 +49,7 @@ func (cli *TCPClient) Start() {
 			continue
 		}
 
-		log.Error().
-			Err(err).
-			Str("id", cli.Session.ID).
-			Msg("Failed to serve session")
+		log.Error().Err(err).Str("id", cli.Session.ID).Msg("Failed to serve session")
 
 		switch {
 		case errors.Is(err, io.EOF), errors.Is(err, io.ErrClosedPipe), errors.Is(err, net.ErrClosed), errors.Is(err, protocol.ErrActiveClose):
@@ -85,7 +80,5 @@ func (cli *TCPClient) Send(msg model.JT808Msg) {
 		cli.Stop()
 	}
 
-	log.Error().
-		Err(err).
-		Msg("Failed to send jtmsg to server")
+	log.Error().Err(err).Msg("Failed to send jtmsg to server")
 }

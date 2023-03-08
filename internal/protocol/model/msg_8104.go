@@ -1,5 +1,6 @@
 package model
 
+// 查询终端参数
 type Msg8104 struct {
 	Header *MsgHeader `json:"header"`
 }
@@ -19,6 +20,5 @@ func (m *Msg8104) GetHeader() *MsgHeader {
 }
 
 func (m *Msg8104) GenOutgoing(incoming JT808Msg) error {
-	// todo: client, gen Msg0104
 	return nil
 }
