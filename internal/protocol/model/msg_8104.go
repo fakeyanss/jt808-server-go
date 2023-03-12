@@ -20,5 +20,6 @@ func (m *Msg8104) GetHeader() *MsgHeader {
 }
 
 func (m *Msg8104) GenOutgoing(incoming JT808Msg) error {
+	// will not use
 	return nil
 }

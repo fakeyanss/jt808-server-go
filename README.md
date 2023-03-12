@@ -56,7 +56,7 @@
 
 jt808-server-go 可以作为设备接入网关 (Gateway 模式），解析和回复协议消息，并在特定的消息处理中，回调第三方业务平台，满足业务平台的车辆运营监管功能需求。
 
-<img src=".doc/../docs/.asset/system-context-1.png" alt="system context 1" width="800">
+<img src="docs/.asset/system-context-1.png" alt="system context 1" width="800">
 
 <!--
 ```plantuml
@@ -81,7 +81,7 @@ Rel_Neighbor(jt808serv, webapp, "Msg Hook", "HTTP")
 
 jt808-server-go 也可以作为设备接入和管理系统进行一体化部署（Standalone 模式），提供基础的设备接入和管理能力。
 
-<img src=".doc/../docs/.asset/system-context-2.png" alt="system context 2" width="800">
+<img src="docs/.asset/system-context-2.png" alt="system context 2" width="800">
 
 <!--
 ```plantuml
@@ -104,31 +104,84 @@ Rel_Left(admin, jt808serv, "Uses", "HTTP")
 
 ### 平台与终端的连接处理
 
-依据 2019 版协议文档，需要对设备鉴权标记状态，并根据心跳消息进行设备保活处理。
+依据 2019 版协议文档，需要对设备鉴权标记状态，并根据心跳消息进行设备保活处理。jt808-server-go在这里引入了 gron 库，将每个终端连接的保活检查抽象为一个 KeepaliveCheckJob，依赖一个协程来处理所有的 Job，判断终端的状态，如果心跳未续期，则断开连接并清理相关数据。
 
-<img src="https://ghproxy.com/https://raw.githubusercontent.com/fakeyanss/imgplace/master/2023/2023-02-07_20230207140003.png" alt="connection process" width="600">
+> **连接的建立:**   
+> 终端与平台的数据日常连接可采用TCP或UDP方式，终端复位后应尽快与平台建立连 接，连接建立后立即向平台发送终端鉴权消息进行鉴权。  
+> **连接的维持:**   
+> 连接建立和终端鉴权成功后，在没有正常数据包传输的情况下，终端应周期性向平台发 送终端心跳消息，平台收到后向终端发送平台通用应答消息，发送周期由终端参数指定。  
+> **连接的断开:**  
+> 平台和终端均可根据 TCP 协议主动断开连接，双方都应主动判断 TCP 连接是否断开。  
+> 平台判断 TCP 连接断开的方法:
+> - 根据 TCP 协议判断出终端主动断开; 
+> - 相同身份的终端建立新连接，表明原连接已断开;
+> - 在一定的时间内未收到终端发出的消息，如终端心跳。  
+>
+> 终端判断 TCP 连接断开的方法:
+> - 根据 TCP 协议判断出平台主动断开;
+> - 数据通信链路断开;
+> - 数据通信链路正常，达到重传次数后仍未收到应答。
 
 ### 协议层消息处理主体逻辑
 
-在建立 TCP 连接后，需要按顺序进行以下处理：
+jt808-server-go 在消息处理过程中，做了层次化的设计。我们主要关注下面 3 个关键的结构体。
+| 结构体       | 定义                                                                                                           | 示例                                                                                                                                                                   |
+| ------------ | -------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| FramePayload | 设备建立连接后，接收和发送的消息内容，也就是一串字节数组                                                       | `7E 02 00 00 26 12 34 56 78 90 12 00 7D 02 00 00 00 01 00 00 00 02 00 BA 7F 0E 07 E4 F1 1C 00 28 00 3C 00 00 18 10 15 10 10 10 01 04 00 00 00 64 02 02 00 7D 01 13 7E` |
+| PacketData   | 在 read frame 之后，或 write frame 之前，会得到一个关联的 Packet 数据                                          | <img src="docs/.asset/packet_data_example.png" alt="packet data example" width="600">                                                                                  |
+| JT808Msg     | 在 decode packet 之后，或 encode packet 之前，会得到一个关联的 JT808Msg 数据，数据流向分为incoming 和 outgoing | <img src="docs/.asset/jt808msg_example.png" alt="jt808msg example" width="200">                                                                                        |
+
+因为这一段数据的编解码中，可能出错的环节特别多，为了尽可能避免 golang 中臭名昭著的 `if err != nil` 处理，jt808-ser-go 中将这些处理过程封装为了一个 pipeline，将每个子过程声明为一个函数类型，通过延迟调用和 breakOnErr 减少错误判断代码。具体实现可看 [`pipeline.go`](internal/protocol/pipeline.go)。
+
+<img src="docs/.asset/pipeline_component.png" alt="process pipeline" width="600">
+
+<!-- ```plantuml
+@startuml
+!include https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/C4_Component.puml
+LAYOUT_TOP_DOWN()
+HIDE_STEREOTYPE()
+title Component Diagram for processing jt808 message
+
+Container(conn, "Connection", "", "device session")
+Container_Boundary(ProcessData, "ProcessData") {
+  Component(in, "IncomingMsg", "", "")
+  Component(out, "OutgoingMsg", "", "")
+  Component(hook, "HookFn", "", "")
+}
+
+Container_Boundary(Pipeline, "Pipeline") {
+  Component(fh, "FrameHandler", "", "处理 socket 字节流")
+  Component(pc, "PacketCodec", "", "编解码 packet data")
+  Component(mp, "MsgProcessor", "", "处理 jt808 消息")
+}
+
+Rel_Down(conn, fh, "Use", "read frame")
+Rel_Down(fh, pc, "Use","decode to PacketData")
+Rel_Down(pc, mp, "use", "choose a action from msg rules table")
+Rel_Down(mp, in, "Use", "decode to incoming msg")
+Rel_Right(in, out, "Use", "generate outgoing msg")
+Rel_Right(out, hook, "Use", "do some operation")
+Rel_Up(hook, pc, "Use", "process and encode to PacketData")
+Rel_Up(pc, fh, "Use", "encode to FramePayload")
+Rel_Up(fh, conn, "Use", "write frame")
+@enduml
+``` -->
+参照上图，在建立 TCP 连接后，一个完整的接收消息和回复消息的过程如下：
 1. FrameHandler 调用 socket read，读取终端送达的字节流，在这里称作 FramePayload
 2. PacketCodec 将 FramePayload 解码成 PacketData
 3. MsgProcessor 处理 PacketData，转换为 incoming msg 
-4. MsgProcessor 处理 incoming msg，生成 outgoing msg，转为待回复的 PacketData
+4. MsgProcessor 处理 incoming msg，生成 outgoing msg，调用特定的处理方法，并转为待回复的 PacketData
 5. PacketCodec 将 PacketData 编码成 FramePayload
 6. FrameHandler 调用 socket write，将 FramePayload 发送给终端
-
-<img src="https://ghproxy.com/https://raw.githubusercontent.com/fakeyanss/imgplace/master/2023/2023-02-05_jt808-server-go_msgflow.png" alt="process pipeline" width="400">
-
-为了尽可能避免 golang 中臭名昭著的 `if err != nil` 处理，将这些处理过程封装为了一个 pipeline，将每个子过程声明为一个函数类型，通过延迟调用和 breakOnErr 减少错误判断代码。具体实现可看 [`pipeline.go`](internal/protocol/pipeline.go)
 
 ## 平台与终端的消息时序
 
 ### 终端管理类协议
-<img src="https://ghproxy.com/https://raw.githubusercontent.com/fakeYanss/imgplace/master/2023/2023-02-18_20230218210700.png" alt="device manage" width="300">
 
-<!--
-```plantuml
+
+<img src="docs/.asset/sequence_device_manage.png" alt="device manage" width="300">
+
+<!-- ```plantuml
 @startuml
 
 skinparam sequenceMessageAlign left
@@ -162,32 +215,30 @@ end
 group 终端参数
   autonumber 1
   loop 定时
-    s -> c: 设置终端参数 0x8103
-    activate s
-    activate c
-    c -> s: 通用应答 0x0001
-    deactivate s
-    deactivate c
-
-    s -> c: 设置终端参数 0x8103
+    s -> c: 查询终端参数 0x8104
     activate s
     activate c
     c -> s: 查询终端参数应答 0x0104
     deactivate s
     deactivate c
   end
+
+    s -> c: 设置终端参数 0x8103
+    activate s
+    activate c
+    c -> s: 通用应答 0x0001
+    deactivate s
+    deactivate c
 end
 
 @enduml
-```
--->
+``` -->
 
 ### 位置/报警类协议
 
-<img src="https://ghproxy.com/https://raw.githubusercontent.com/fakeYanss/imgplace/master/2023/2023-02-18_20230218211118.png" alt="device alarm" width="300">
+<img src="docs/.asset/sequence_location_alarm.png" alt="device alarm" width="300">
 
-<!--
-```plantuml
+<!-- ```plantuml
 @startuml
 
 skinparam sequenceMessageAlign left
@@ -196,12 +247,14 @@ participant "平台" as s #EB937F
 
 group 主动上报
   autonumber 1
-  c -> s: 位置信息汇报（报警） 0x0200
-  activate c
-  activate s
-  s -> c: 通用应答 0x8001
-  deactivate s
-  deactivate c
+  loop 定时
+    c -> s: 位置信息汇报（报警） 0x0200
+    activate c
+    activate s
+    s -> c: 通用应答 0x8001
+    deactivate s
+    deactivate c
+    end
 end
 
 group 平台下发
@@ -229,8 +282,7 @@ group 平台下发
 end
 
 @enduml
-```
--->
+``` -->
 
 ### 信息类协议
 todo
@@ -242,6 +294,7 @@ todo
 todo
 
 ### 多媒体协议
+
 <img src="https://ghproxy.com/https://raw.githubusercontent.com/fakeYanss/imgplace/master/2023/2023-02-18_20230218211153.png" alt="device manage" width="300">
 
 <!--
