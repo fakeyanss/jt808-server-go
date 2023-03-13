@@ -152,11 +152,10 @@ func dialAndSend(cfg *config.Config, cliWg *sync.WaitGroup) {
 
 func main() {
 	var cfgPath string
-	flag.StringVar(&cfgPath, "c", "configs/default.yaml", "config file path")
+	flag.StringVar(&cfgPath, "c", config.DefaultCliConfKey, "config file path")
 	flag.Parse()
 	fmt.Printf("Start with configuration %v\n", cfgPath)
 	cfg := config.Load(cfgPath)
-	fmt.Printf("Load configuration: %+v\n", cfg)
 
 	logCfg := cfg.ParseLogConf()
 	log.Logger = *logger.Configure(logCfg).Logger

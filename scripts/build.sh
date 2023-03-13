@@ -20,10 +20,11 @@ function test() {
 function compile() {
 	output=$target_dir/debug/$target
 	mkdir -p $output
+	copy_conf $output/configs
+
 	go build -o $output/$target \
 		-ldflags "-X main.buildTime=$time -X main.buildCommit=$version" \
 		$build_file	
-	copy_conf $output/configs
 }
 
 function release() {
@@ -34,19 +35,23 @@ function release() {
 
 	echo "build $package..."
 	mkdir -p $output
+	copy_conf $output/configs
+
 	# 编译静态链接，Linux alpine 发行版要求可执行文件是静态链接
 	CGO_ENABLED=0 GOOS=$os GOARCH=$arch \
 		go build -tags $target \
 		-o $output/$target \
 		-ldflags "-X main.buildTime=$time -X main.buildCommit=$version" \
 		$build_file	
-	copy_conf $output/configs
 }
 
 function copy_conf() {
 	conf_dir=$1
 	mkdir -p $conf_dir
-	cp -r $build_conf $conf_dir
+	cp -r $conf_src $conf_dir
+
+	echo "compiling default conf to embed asset.go"
+	go-bindata -o internal/config/asset.go -pkg config $conf_asset
 }
 
 # target: jt808-server-go / jt808-client-go
@@ -56,10 +61,11 @@ target_dir="${project_dir}/target"
 time=$(date +'%Y-%m-%dT%H:%M:%S')
 version=$(git rev-parse --short HEAD)
 build_file="main.go"
-build_conf="$project_dir/configs/"
+conf_src="$project_dir/configs/"
+conf_asset="configs test/client/configs"
 if [[ $target == "jt808-client-go" ]]; then
 	build_file="test/client/main.go"
-	build_conf="$project_dir/test/client/configs/"
+	conf_src="$project_dir/test/client/configs/"
 fi
 
 ret=0

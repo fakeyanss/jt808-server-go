@@ -16,7 +16,8 @@ all: prepare lint test compile
 
 # prepare阶段，下载非 Go 依赖，可单独执行命令: make prepare
 prepare:
-	bash $(CURDIR)/scripts/install.sh golangcilint # 下载非 Go 依赖
+	bash $(CURDIR)/scripts/install.sh golangcilint # 下载非go pkg依赖
+	bash $(CURDIR)/scripts/install.sh gobindata
 	git version # 低于 2.17.1 可能不能正常工作
 	go env # 打印出 go 环境信息，可用于排查问题
 
