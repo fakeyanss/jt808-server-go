@@ -1,8 +1,11 @@
 package config
 
 import (
+	"bytes"
+	"fmt"
 	"sync"
 
+	"github.com/mix-go/xfmt"
 	"github.com/pkg/errors"
 	"github.com/rs/zerolog"
 	"github.com/spf13/viper"
@@ -20,6 +23,13 @@ const (
 	LogLevelDebug LogLevelType = "DEBUG"
 )
 
+const (
+	DefaultServConfKey  string = "embed-default-server-config"
+	DefaultServConfPath string = "configs/default.yaml"
+	DefaultCliConfKey   string = "embed-default-client-config"
+	DefaultCliConfPath  string = "test/client/configs/default.yaml"
+)
+
 type logConf struct {
 	ConsoleEnable       bool         `yaml:"consoleEnable"`
 	FileEnable          bool         `yaml:"fileEnable"`
@@ -33,7 +43,7 @@ type logConf struct {
 }
 
 type serverConf struct {
-	name   string      `yaml:"name"`
+	Name   string      `yaml:"name"`
 	Port   *servPort   `yaml:"port"`
 	Banner *servBanner `yaml:"banner"`
 }
@@ -129,17 +139,30 @@ var (
 func Load(confFilePath string) *Config {
 	configOnce.Do(func() {
 		config = &Config{}
-		viper.SetConfigFile(confFilePath)
 		viper.SetConfigType("yaml")
-		// Find and read the config file
-		if err := viper.ReadInConfig(); err != nil {
-			panic(errors.Wrap(err, "Fail to find and read config file"))
+
+		// replace default embed conf path
+		if confFilePath == DefaultServConfKey {
+			confFilePath = DefaultServConfPath
+		} else if confFilePath == DefaultCliConfKey {
+			confFilePath = DefaultCliConfPath
 		}
 
-		err := viper.Unmarshal(config)
+		defaultConf, err := Asset(confFilePath)
+		if err != nil {
+			panic(errors.Wrap(err, "Fail to read default config with bindata"))
+		}
+		err = viper.ReadConfig(bytes.NewBuffer(defaultConf))
+		if err != nil {
+			// Asset was not found.
+			panic(errors.Wrap(err, "Fail to read default config with viper"))
+		}
+
+		err = viper.Unmarshal(config)
 		if err != nil {
 			panic(errors.Wrap(err, "Fail to unmarshal config"))
 		}
+		fmt.Printf("Load configuration: %s\n", xfmt.Sprintf("%+v", config))
 	})
 	return config
 }

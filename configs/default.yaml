@@ -17,4 +17,4 @@ server:
     httpPort: "8008"
   banner:
     enable: true
-    bannerPath: "./configs/banner.txt"
+    bannerPath: "configs/banner.txt"

@@ -8,6 +8,7 @@ require (
 	github.com/fakeyanss/gron v0.0.0-20230218065849-95fc0f17a375
 	github.com/gin-gonic/gin v1.8.2
 	github.com/mitchellh/mapstructure v1.5.0
+	github.com/mix-go/xfmt v1.1.15
 	github.com/pkg/errors v0.9.1
 	github.com/rs/zerolog v1.28.0
 	github.com/spf13/viper v1.15.0

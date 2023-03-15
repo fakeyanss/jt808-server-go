@@ -17,20 +17,14 @@ import (
 	"github.com/fakeyanss/jt808-server-go/pkg/routines"
 )
 
-const (
-	serverName = "jt808-server-go"
-	bannerFile = "configs/banner.txt"
-)
-
 func main() {
 	routines.Recover()
 
 	var cfgPath string
-	flag.StringVar(&cfgPath, "c", "configs/default.yaml", "config file path")
+	flag.StringVar(&cfgPath, "c", config.DefaultServConfKey, "config file path")
 	flag.Parse()
 	fmt.Printf("Start with configuration %v\n", cfgPath)
 	cfg := config.Load(cfgPath)
-	fmt.Printf("Load configuration: %+v\n", cfg)
 
 	logConfig := cfg.ParseLogConf()
 	log.Logger = *logger.Configure(logConfig).Logger
