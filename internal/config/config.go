@@ -24,9 +24,9 @@ const (
 )
 
 const (
-	DefaultServConfKey  string = "embed-default-server-config"
+	DefaultServConfKey  string = "embedded-default-server-config"
 	DefaultServConfPath string = "configs/default.yaml"
-	DefaultCliConfKey   string = "embed-default-client-config"
+	DefaultCliConfKey   string = "embedded-default-client-config"
 	DefaultCliConfPath  string = "test/client/configs/default.yaml"
 )
 
@@ -145,7 +145,7 @@ func Load(confFilePath string) *Config {
 		config = &Config{}
 		viper.SetConfigType("yaml")
 
-		// replace default embed conf path
+		// replace default embedded conf path
 		if confFilePath == DefaultServConfKey {
 			confFilePath = DefaultServConfPath
 		} else if confFilePath == DefaultCliConfKey {

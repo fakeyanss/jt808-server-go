@@ -50,7 +50,7 @@ function copy_conf() {
 	mkdir -p $conf_dir
 	cp -r $conf_src $conf_dir
 
-	echo "compiling default conf to embed asset.go"
+	echo "compiling default conf to embedded asset.go"
 	go-bindata -o internal/config/asset.go -pkg config $conf_asset
 }
 
