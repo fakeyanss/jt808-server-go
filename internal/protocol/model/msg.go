@@ -13,6 +13,7 @@ const (
 
 var (
 	ErrDecodeMsg      = errors.New("Fail to decode msg")
+	ErrEncodeMsg      = errors.New("Fail to encode msg")
 	ErrGenOutgoingMsg = errors.New("Fail to generate outgoing msg")
 )
 

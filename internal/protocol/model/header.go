@@ -40,7 +40,6 @@ func (h *MsgHeader) Decode(pkt []byte) error {
 	}
 
 	// 2013版本，phoneNumber [5,11)位 长度6位；2019版本，phoneNumber [5,15)位 长度10位。
-	// todo: phoneNumber长度不足时左侧补0
 	if h.Attr.VersionDesc == Version2019 {
 		h.PhoneNumber = hex.ReadBCD(pkt, &idx, 10)
 	} else if h.Attr.VersionDesc == Version2013 {
@@ -76,6 +75,14 @@ func (h *MsgHeader) Encode() (pkt []byte, err error) {
 	}
 
 	return pkt, nil
+}
+
+func (h *MsgHeader) GetVersionDesc() VersionType {
+	return h.Attr.VersionDesc
+}
+
+func (h *MsgHeader) GetRawJt808Version() uint8 {
+	return h.Attr.VersionSign
 }
 
 // 消息体属性字段的bit位
@@ -183,4 +190,26 @@ func (frag *MsgFragmentation) Encode() []byte {
 	pkt = hex.WriteWord(pkt, frag.Total)
 	pkt = hex.WriteWord(pkt, frag.Index)
 	return pkt
+}
+
+func versionDecode(ver VersionType) uint8 {
+	if ver == Version2019 {
+		return 1
+	}
+	return 0
+}
+
+func GenMsgHeader(d *Device, msgID uint16, serialNumber uint16) *MsgHeader {
+	return &MsgHeader{
+		MsgID: msgID,
+		Attr: &MsgBodyAttr{
+			Encryption:       uint8(EncryptionNone),
+			PacketFragmented: 0,
+			VersionSign:      versionDecode(d.VersionDesc),
+			Extra:            0,
+		},
+		ProtocolVersion: d.ProtocolVersion,
+		PhoneNumber:     d.Phone,
+		SerialNumber:    serialNumber,
+	}
 }

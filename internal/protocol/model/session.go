@@ -1,7 +1,9 @@
 package model
 
 import (
+	"math"
 	"net"
+	"sync/atomic"
 )
 
 const (
@@ -28,8 +30,9 @@ type (
 )
 
 type Session struct {
-	ID   string
-	Conn net.Conn
+	ID           string // remote addr
+	Conn         net.Conn
+	serialNumber uint32
 }
 
 func (s *Session) GetTransProto() TransportProtocol {
@@ -37,6 +40,15 @@ func (s *Session) GetTransProto() TransportProtocol {
 		return TCPProto
 	}
 	return UDPProto
+}
+
+func (s *Session) GetNextSerialNum() uint16 {
+	next := atomic.AddUint32(&s.serialNumber, 1)
+	if next <= math.MaxUint16 {
+		return uint16(next)
+	}
+	atomic.StoreUint32(&s.serialNumber, 0)
+	return uint16(s.serialNumber)
 }
 
 // 定义Packet Data结构

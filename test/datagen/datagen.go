@@ -1,6 +1,7 @@
 package datagen
 
 import (
+	"bytes"
 	"math/rand"
 	"strconv"
 	"time"
@@ -37,14 +38,26 @@ func GenDevice(deviceConf *config.DeviceConf) *model.Device {
 	}
 	switch deviceConf.ProtocolVersion {
 	case "2019":
-		device.ProtocalVersion = model.Version2019
+		device.VersionDesc = model.Version2019
+		device.Phone = fillDevicePhone(device.Phone, 20)
 	case "2013":
-		device.ProtocalVersion = model.Version2013
+		device.VersionDesc = model.Version2013
+		device.Phone = fillDevicePhone(device.Phone, 12)
 	case "2011":
-		device.ProtocalVersion = model.Version2011
+		device.VersionDesc = model.Version2011
+		device.Phone = fillDevicePhone(device.Phone, 12)
 	}
 	log.Debug().Str("device", device.Phone).Msgf("Generate random device=%+v", device)
 	return device
+}
+
+func fillDevicePhone(phone string, dstLen int) string {
+	var b bytes.Buffer
+	for i := len(phone); i < dstLen; i++ {
+		b.WriteString("0")
+	}
+	b.WriteString(phone)
+	return b.String()
 }
 
 func genMsgHeader(msgID uint16, device *model.Device) *model.MsgHeader {
@@ -64,7 +77,7 @@ func genMsgHeader(msgID uint16, device *model.Device) *model.MsgHeader {
 		SerialNumber:    1,
 		Frag:            nil,
 	}
-	if device.ProtocalVersion == model.Version2019 {
+	if device.VersionDesc == model.Version2019 {
 		msgHeader.Attr.VersionSign = 1
 		msgHeader.Attr.VersionDesc = model.Version2019
 		msgHeader.ProtocolVersion = 1

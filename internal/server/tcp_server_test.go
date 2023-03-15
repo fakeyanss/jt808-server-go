@@ -11,7 +11,6 @@ import (
 func TestTCPServer_serve(t *testing.T) {
 	type fields struct {
 		listener net.Listener
-		sessions map[string]*model.Session
 		mutex    *sync.Mutex
 	}
 	type args struct {
@@ -28,7 +27,6 @@ func TestTCPServer_serve(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			serv := &TCPServer{
 				listener: tt.fields.listener,
-				sessions: tt.fields.sessions,
 				mutex:    tt.fields.mutex,
 			}
 			serv.serve(tt.args.session)

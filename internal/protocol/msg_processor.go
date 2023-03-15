@@ -69,6 +69,11 @@ func initProcessOption() processOptions {
 		},
 		process: processMsg0102,
 	}
+	options[0x0104] = &action{ // 查询终端参数应答
+		genData: func() *model.ProcessData {
+			return &model.ProcessData{Incoming: &model.Msg0104{}} // 无需回复
+		},
+	}
 	options[0x0200] = &action{ // 位置信息上报
 		genData: func() *model.ProcessData {
 			return &model.ProcessData{Incoming: &model.Msg0200{}, Outgoing: &model.Msg8001{}}
@@ -86,6 +91,12 @@ func initProcessOption() processOptions {
 			return &model.ProcessData{Incoming: &model.Msg8100{}, Outgoing: &model.Msg0102{}}
 		},
 		process: processMsg8100,
+	}
+	options[0x8104] = &action{ // 查询终端参数
+		genData: func() *model.ProcessData {
+			return &model.ProcessData{Incoming: &model.Msg8104{}, Outgoing: &model.Msg0104{}}
+		},
+		process: processMsg8104,
 	}
 
 	return options
@@ -111,7 +122,12 @@ func NewJT808MsgProcessor() *JT808MsgProcessor {
 
 func (mp *JT808MsgProcessor) Process(ctx context.Context, pkt *model.PacketData) (*model.ProcessData, error) {
 	msgID := pkt.Header.MsgID
-	genDataFn := mp.options[msgID].genData
+	if _, ok := mp.options[msgID]; !ok {
+		return nil, ErrMsgIDNotSupportted
+	}
+
+	act := mp.options[msgID]
+	genDataFn := act.genData
 	if genDataFn == nil {
 		return nil, ErrMsgIDNotSupportted
 	}
@@ -130,11 +146,8 @@ func (mp *JT808MsgProcessor) Process(ctx context.Context, pkt *model.PacketData)
 		if err != nil {
 			return nil, errors.Wrap(err, "Fail to serialize incoming msg to json")
 		}
-		log.Debug().
-			Str("id", session.ID).
-			Str("RawMsgID", fmt.Sprintf("0x%04x", in.GetHeader().MsgID)).
-			RawJSON("incoming", inJSON). // for debug
-			Msg("Received jt808 msg.")
+		// for debug
+		log.Debug().Str("id", session.ID).Str("RawMsgID", fmt.Sprintf("0x%04x", in.GetHeader().MsgID)).RawJSON("incoming", inJSON).Msg("Received jt808 msg.")
 	}
 
 	// 生成待回复的消息
@@ -153,16 +166,17 @@ func (mp *JT808MsgProcessor) Process(ctx context.Context, pkt *model.PacketData)
 
 			outJSON, _ := json.Marshal(out)
 			session := ctx.Value(model.SessionCtxKey{}).(*model.Session)
-			log.Debug().
-				Str("id", session.ID).
-				Str("RawMsgID", fmt.Sprintf("0x%04x", out.GetHeader().MsgID)).
-				RawJSON("outgoing", outJSON). // for debug
+			// for debug
+			log.Debug().Str("id", session.ID).Str("RawMsgID", fmt.Sprintf("0x%04x", out.GetHeader().MsgID)).RawJSON("outgoing", outJSON).
 				Msg("Generating jt808 outgoing msg.")
 		}()
 	}
 
 	// 对消息按类别做特殊处理
-	processFunc := mp.options[msgID].process
+	processFunc := act.process
+	if processFunc == nil {
+		return data, nil
+	}
 	err = processFunc(ctx, data)
 	if err != nil {
 		return data, errors.Wrap(err, "Fail to process data")
@@ -344,13 +358,35 @@ func processMsg8100(ctx context.Context, data *model.ProcessData) error {
 		return ErrActiveClose
 	}
 
-	out.AuthCode = in.AuthCode
 	out.IMEI = device.IMEI
 	out.SoftwareVersion = device.SoftwareVersion
-	err = out.GenOutgoing(in)
-	if err != nil {
-		return errors.Wrap(err, "Fail to generate msg 8100")
-	}
 
+	return nil
+}
+
+// 收到查询终端参数请求，回复终端参数(此时是作为client进程)
+func processMsg8104(ctx context.Context, data *model.ProcessData) error {
+	out := data.Outgoing.(*model.Msg0104)
+	// 模拟一个固定的参数
+	// todo: generate by config
+	params := []*model.ParamData{
+		{
+			ParamID:    0x0001,
+			ParamLen:   4,
+			ParamValue: uint32(0x49454252),
+		},
+	}
+	out.Parameters = &model.DeviceParams{
+		DevicePhone: out.Header.PhoneNumber,
+		ParamCnt:    uint8(len(params)),
+		Params:      params,
+	}
+	out.AnswerParamCnt = out.Parameters.ParamCnt
+	return nil
+}
+
+// 收到查询终端参数应答，无需回复，可以在这里做一个一个channel write，由其他地方阻塞式read来完成hook功能。
+func processMsg0104(ctx context.Context, data *model.ProcessData) error {
+	// todo: write channel
 	return nil
 }

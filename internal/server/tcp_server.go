@@ -18,14 +18,15 @@ import (
 
 type TCPServer struct {
 	listener net.Listener
-	sessions map[string]*model.Session
-	mutex    *sync.Mutex
+
+	// sessions map[string]*model.Session
+	mutex *sync.Mutex
 }
 
 func NewTCPServer() *TCPServer {
 	return &TCPServer{
-		mutex:    &sync.Mutex{},
-		sessions: make(map[string]*model.Session),
+		mutex: &sync.Mutex{},
+		// sessions: make(map[string]*model.Session),
 	}
 }
 
@@ -40,14 +41,10 @@ func (serv *TCPServer) Listen(addr string) error {
 }
 
 func (serv *TCPServer) Start() {
-	serv.monitorSessionCnt()
-
 	for {
 		conn, err := serv.listener.Accept()
 		if err != nil {
-			log.Error().
-				Err(err).
-				Msg("Fail to do listener accept")
+			log.Error().Err(err).Msg("Fail to do listener accept")
 		} else {
 			session := serv.accept(conn)
 			routines.GoSafe(func() { serv.serve(session) })
@@ -59,18 +56,6 @@ func (serv *TCPServer) Stop() {
 	serv.listener.Close()
 }
 
-func (serv *TCPServer) monitorSessionCnt() {
-	routines.GoSafe(func() {
-		for {
-			log.Debug().
-				Int("total_conn_cnt", len(serv.sessions)).
-				Msg("Monitoring total conn count")
-
-			time.Sleep(10 * time.Second)
-		}
-	})
-}
-
 // 将conn封装为逻辑session
 func (serv *TCPServer) accept(conn net.Conn) *model.Session {
 	remoteAddr := conn.RemoteAddr().String()
@@ -79,13 +64,9 @@ func (serv *TCPServer) accept(conn net.Conn) *model.Session {
 		Conn: conn,
 		ID:   remoteAddr, // using remote addr default
 	}
-	serv.sessions[remoteAddr] = session
+	// serv.sessions[remoteAddr] = session
+	storage.StoreSession(session)
 	serv.mutex.Unlock()
-
-	log.Debug().
-		Str("remote_addr", remoteAddr).
-		Int("total_conn_cnt", len(serv.sessions)).
-		Msg("Accepting connection from remtote.")
 
 	return session
 }
@@ -95,12 +76,10 @@ func (serv *TCPServer) remove(session *model.Session) {
 	defer serv.mutex.Unlock()
 
 	session.Conn.Close()
-	delete(serv.sessions, session.ID)
+	storage.ClearSession(session.ID)
+	// delete(serv.sessions, session.ID)
 
-	log.Debug().
-		Str("id", session.ID).
-		Int("total_conn_cnt", len(serv.sessions)).
-		Msg("Closing connection from remote.")
+	log.Debug().Str("id", session.ID).Msg("Closing connection from remote.")
 }
 
 // 处理每个session的消息
@@ -118,10 +97,7 @@ func (serv *TCPServer) serve(session *model.Session) {
 			continue
 		}
 
-		log.Error().
-			Err(err).
-			Str("id", session.ID).
-			Msg("Failed to serve session")
+		log.Error().Err(err).Str("id", session.ID).Msg("Failed to serve session")
 
 		switch {
 		case errors.Is(err, io.EOF), errors.Is(err, io.ErrClosedPipe), errors.Is(err, net.ErrClosed), errors.Is(err, storage.ErrDeviceNotFound):
@@ -134,11 +110,10 @@ func (serv *TCPServer) serve(session *model.Session) {
 
 // 发送消息到终端设备, 外部调用
 func (serv *TCPServer) Send(id string, msg model.JT808Msg) {
-	session := serv.sessions[id]
-	if session == nil {
-		log.Warn().
-			Str("id", id).
-			Msg("Fail to get session from cache, maybe conn was closed.")
+	// session := serv.sessions[id]
+	session, err := storage.GetSession(id)
+	if err != nil && errors.Is(err, storage.ErrSessionClosed) {
+		log.Warn().Str("id", id).Msg("Fail to get session from cache, maybe conn was closed.")
 		return
 	}
 
@@ -147,7 +122,7 @@ func (serv *TCPServer) Send(id string, msg model.JT808Msg) {
 	// 记录value ctx
 	ctx := context.WithValue(context.Background(), model.ProcessDataCtxKey{}, &model.ProcessData{Outgoing: msg})
 
-	err := pg.ProcessConnWrite(ctx)
+	err = pg.ProcessConnWrite(ctx)
 
 	if err == nil {
 		return
@@ -157,8 +132,5 @@ func (serv *TCPServer) Send(id string, msg model.JT808Msg) {
 		serv.remove(session)
 	}
 
-	log.Error().
-		Err(err).
-		Str("device", id).
-		Msg("Failed to send jtmsg to device")
+	log.Error().Err(err).Str("device", id).Msg("Failed to send jtmsg to device")
 }

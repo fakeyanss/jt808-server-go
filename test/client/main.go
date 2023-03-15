@@ -103,10 +103,7 @@ func dialAndSend(cfg *config.Config, cliWg *sync.WaitGroup) {
 	addr := cfg.Client.Conn.RemoteAddr
 	err := cli.Dial(addr)
 	if err != nil {
-		log.Error().
-			Err(err).
-			Str("addr", addr).
-			Msg("Fail to dial tcp addr")
+		log.Error().Err(err).Str("addr", addr).Msg("Fail to dial tcp addr")
 		os.Exit(1)
 	}
 	routines.GoSafe(func() {

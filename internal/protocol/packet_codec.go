@@ -74,9 +74,7 @@ func (pc *JT808PacketCodec) Decode(payload []byte) (*model.PacketData, error) {
 //
 // 序列化 -> 生成校验码 -> 转义
 func (pc *JT808PacketCodec) Encode(data any) (pkt []byte, err error) {
-	if in, ok := data.(model.JT808Msg); ok {
-		pkt, err = in.Encode()
-	} else if out, ok := data.(model.JT808Msg); ok {
+	if out, ok := data.(model.JT808Msg); ok {
 		pkt, err = out.Encode()
 	} else {
 		return nil, ErrEncodeType
@@ -155,8 +153,7 @@ func (pc *JT808PacketCodec) verify(pkt []byte) ([]byte, error) {
 	if expected == actual {
 		return pkt[:n-1], nil
 	}
-	log.Debug().
-		Msgf("verify expect=%v, but actual=%v", expected, actual)
+	log.Debug().Msgf("verify expect=%v, but actual=%v", expected, actual)
 	return nil, ErrVerifyFailed
 }
 

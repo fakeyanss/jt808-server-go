@@ -13,9 +13,7 @@ import (
 func GBK2UTF8(src []byte) ([]byte, error) {
 	dst, err := io.ReadAll(transform.NewReader(bytes.NewBuffer(src), simplifiedchinese.GBK.NewDecoder()))
 	if err != nil {
-		log.Error().
-			Bytes("src", src).
-			Msg("Fail to transform gbk to utf8")
+		log.Error().Bytes("src", src).Msg("Fail to transform gbk to utf8")
 		return nil, err
 	}
 	return dst, nil
@@ -25,10 +23,7 @@ func GBK2UTF8(src []byte) ([]byte, error) {
 func UTF82GBK(src []byte) ([]byte, error) {
 	dst, err := io.ReadAll(transform.NewReader(bytes.NewBuffer(src), simplifiedchinese.GBK.NewEncoder()))
 	if err != nil {
-		log.Error().
-			Err(err).
-			Bytes("src", src).
-			Msg("Fail to transform utf8 to gbk")
+		log.Error().Err(err).Bytes("src", src).Msg("Fail to transform utf8 to gbk")
 		return nil, err
 	}
 	return dst, nil

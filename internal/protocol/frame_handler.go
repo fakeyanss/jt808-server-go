@@ -63,11 +63,8 @@ func (fh *JT808FrameHandler) Recv(ctx context.Context) (FramePayload, error) {
 		if session != nil {
 			sessionID = session.ID // client端不设置session
 		}
-		log.Debug().
-			Str("id", sessionID).
-			Int("frame_len", len(buf)).
-			Hex("frame_payload", buf). // for debug
-			Msg("Received frame.")
+		// for debug
+		log.Debug().Str("id", sessionID).Int("frame_len", len(buf)).Hex("frame_payload", buf).Msg("Received frame.")
 	}
 
 	return FramePayload(buf), nil
@@ -91,9 +88,7 @@ func (fh *JT808FrameHandler) Send(payload FramePayload) error {
 			p = p[n:] // 没写完所有数据，再写一次
 		}
 	}
-	log.Debug().
-		Int("frame_len", len(payload)).
-		Hex("frame_payload", payload). // for debug
-		Msg("Sent frame.")
+	// for debug
+	log.Debug().Int("frame_len", len(payload)).Hex("frame_payload", payload).Msg("Sent frame.")
 	return nil
 }

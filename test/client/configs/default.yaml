@@ -11,13 +11,13 @@ log:
 
 client:
   name: "jt808-client-go"
-  concurrency: 10
+  concurrency: 1
   conn:
     remoteAddr: "localhost:8080"
   device:
     idReg: "[0-9]{20}"
     imeiReg: "[0-9]{15}"
-    phoneReg: "[0-9]{20}"
+    phoneReg: "130[0-9]{8}"
     plateReg: "京A[A-Z0-9]{5}"
     protocolVersion: "2019"
     transProto: "TCP"
