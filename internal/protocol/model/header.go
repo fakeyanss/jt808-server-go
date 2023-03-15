@@ -40,7 +40,6 @@ func (h *MsgHeader) Decode(pkt []byte) error {
 	}
 
 	// 2013版本，phoneNumber [5,11)位 长度6位；2019版本，phoneNumber [5,15)位 长度10位。
-	// todo: phoneNumber长度不足时左侧补0
 	if h.Attr.VersionDesc == Version2019 {
 		h.PhoneNumber = hex.ReadBCD(pkt, &idx, 10)
 	} else if h.Attr.VersionDesc == Version2013 {

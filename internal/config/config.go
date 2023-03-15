@@ -50,11 +50,12 @@ type servBanner struct {
 }
 
 type clientConf struct {
-	Name        string         `yaml:"name"`
-	Conn        *connection    `yaml:"conn"`
-	Concurrency int            `yaml:"concurrency"`
-	Device      *DeviceConf    `yaml:"device"`
-	DeviceGeo   *DeviceGeoConf `yaml:"deviceGeo"`
+	Name         string            `yaml:"name"`
+	Conn         *connection       `yaml:"conn"`
+	Concurrency  int               `yaml:"concurrency"`
+	Device       *DeviceConf       `yaml:"device"`
+	DeviceGeo    *DeviceGeoConf    `yaml:"deviceGeo"`
+	DeviceParams *DeviceParamsConf `yaml:"deviceParams"`
 }
 
 type connection struct {
@@ -113,6 +114,9 @@ type locationConf struct {
 type driveConf struct {
 	SpeedReg     string `yaml:"speedReg"`
 	DirectionReg string `yaml:"directionReg"`
+}
+
+type DeviceParamsConf struct {
 }
 
 type Config struct {

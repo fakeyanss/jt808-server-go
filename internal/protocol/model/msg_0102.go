@@ -69,9 +69,10 @@ func (m *Msg0102) GenOutgoing(incoming JT808Msg) error {
 	if !ok {
 		return ErrGenOutgoingMsg
 	}
-	// 后置设置鉴权参数
 	m.Header = in.Header
 	m.Header.MsgID = 0x0102
+	m.AuthCode = in.AuthCode // 鉴权码就是8100返回的鉴权码
+	m.AuthCodeLen = uint8(len(m.AuthCode))
 
 	return nil
 }

@@ -358,23 +358,34 @@ func processMsg8100(ctx context.Context, data *model.ProcessData) error {
 		return ErrActiveClose
 	}
 
-	out.AuthCode = in.AuthCode
 	out.IMEI = device.IMEI
 	out.SoftwareVersion = device.SoftwareVersion
-	err = out.GenOutgoing(in)
-	if err != nil {
-		return errors.Wrap(err, "Fail to generate msg 8100")
-	}
 
 	return nil
 }
 
-// 收到查询终端参数请求，回复终端参数
+// 收到查询终端参数请求，回复终端参数(此时是作为client进程)
 func processMsg8104(ctx context.Context, data *model.ProcessData) error {
-	// todo
+	out := data.Outgoing.(*model.Msg0104)
+	// 模拟一个固定的参数
+	// todo: generate by config
+	params := []*model.ParamData{
+		{
+			ParamID:    0x0001,
+			ParamLen:   4,
+			ParamValue: uint32(0x49454252),
+		},
+	}
+	out.Parameters = &model.DeviceParams{
+		DevicePhone: out.Header.PhoneNumber,
+		ParamCnt:    uint8(len(params)),
+		Params:      params,
+	}
+	out.AnswerParamCnt = out.Parameters.ParamCnt
 	return nil
 }
 
+// 收到查询终端参数应答，无需回复，可以在这里做一个一个channel write，由其他地方阻塞式read来完成hook功能。
 func processMsg0104(ctx context.Context, data *model.ProcessData) error {
 	// todo: write channel
 	return nil

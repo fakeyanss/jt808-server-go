@@ -20,7 +20,7 @@ func (m *Msg0104) Decode(packet *PacketData) error {
 	m.AnswerSerialNumber = hex.ReadWord(pkt, &idx)
 	m.AnswerParamCnt = hex.ReadByte(pkt, &idx)
 	m.Parameters = &DeviceParams{}
-	err := m.Parameters.Decode(m.Header.PhoneNumber, m.AnswerParamCnt, pkt)
+	err := m.Parameters.Decode(m.Header.PhoneNumber, m.AnswerParamCnt, pkt[idx:])
 	if err != nil {
 		log.Error().Err(err).Str("device", m.Header.PhoneNumber).Msg("Fail to decode device params")
 		return ErrDecodeMsg
@@ -30,7 +30,7 @@ func (m *Msg0104) Decode(packet *PacketData) error {
 
 func (m *Msg0104) Encode() (pkt []byte, err error) {
 	pkt = hex.WriteWord(pkt, m.AnswerSerialNumber)
-	pkt = hex.WriteByte(pkt, m.AnswerParamCnt)
+	// AnswerParamCnt will be encode in DeviceParams
 	paramBytes, err := m.Parameters.Encode()
 	if err != nil {
 		log.Error().Err(err).Str("device", m.Header.PhoneNumber).Msg("Fail to encode device params")
