@@ -145,21 +145,27 @@ func Load(confFilePath string) *Config {
 		config = &Config{}
 		viper.SetConfigType("yaml")
 
-		// replace default embedded conf path
-		if confFilePath == DefaultServConfKey {
-			confFilePath = DefaultServConfPath
-		} else if confFilePath == DefaultCliConfKey {
-			confFilePath = DefaultCliConfPath
+		var err error
+		if confFilePath == DefaultServConfKey || confFilePath == DefaultCliConfKey {
+			// replace default embedded conf path
+			if confFilePath == DefaultServConfKey {
+				confFilePath = DefaultServConfPath
+			} else if confFilePath == DefaultCliConfKey {
+				confFilePath = DefaultCliConfPath
+			}
+			var confContent []byte
+			confContent, err = Asset(confFilePath)
+			if err != nil {
+				panic(errors.Wrap(err, "Fail to read default config with bindata"))
+			}
+			err = viper.ReadConfig(bytes.NewBuffer(confContent))
+		} else {
+			viper.SetConfigFile(confFilePath)
+			err = viper.ReadInConfig()
 		}
 
-		defaultConf, err := Asset(confFilePath)
 		if err != nil {
-			panic(errors.Wrap(err, "Fail to read default config with bindata"))
-		}
-		err = viper.ReadConfig(bytes.NewBuffer(defaultConf))
-		if err != nil {
-			// Asset was not found.
-			panic(errors.Wrap(err, "Fail to read default config with viper"))
+			panic(errors.Wrap(err, "Fail to read config with viper"))
 		}
 
 		err = viper.Unmarshal(config)

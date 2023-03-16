@@ -36,5 +36,12 @@ func (m *Msg0001) GetHeader() *MsgHeader {
 }
 
 func (m *Msg0001) GenOutgoing(incoming JT808Msg) error {
+	header := incoming.GetHeader()
+	m.AnswerSerialNumber = header.SerialNumber
+	m.AnswerMessageID = header.MsgID
+	m.Result = 0
+
+	m.Header = header
+	m.Header.MsgID = 0x0001
 	return nil
 }
