@@ -103,6 +103,29 @@ func main() {
 		// todo: read channel from process 0104 msg
 	})
 
+	router.PUT("/device/:phone/params", func(c *gin.Context) {
+		phone := c.Param("phone")
+		params := model.DeviceParams{}
+		if err := c.ShouldBind(&params); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
+		}
+		device, err := cache.GetDeviceByPhone(phone)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
+			return
+		}
+		session, err := storage.GetSession(device.SessionID)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
+		}
+		header := model.GenMsgHeader(device, 0x8103, session.GetNextSerialNum())
+		msg := model.Msg8103{
+			Header:     header,
+			Parameters: &params,
+		}
+		serv.Send(session.ID, &msg)
+	})
+
 	httpAddr := ":" + cfg.Server.Port.HTTPPort
 	routines.GoSafe(func() {
 		log.Debug().Msgf("Listening and serving HTTP on :%s", cfg.Server.Port.HTTPPort)

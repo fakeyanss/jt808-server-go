@@ -54,7 +54,6 @@ func (m *Msg0104) GenOutgoing(incoming JT808Msg) error {
 	m.AnswerSerialNumber = in.Header.SerialNumber
 	m.Header = in.Header
 	m.Header.MsgID = 0x0104
-	m.Parameters = &DeviceParams{}
 
 	return nil
 }

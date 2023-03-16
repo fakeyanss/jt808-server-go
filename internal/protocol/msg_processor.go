@@ -14,6 +14,7 @@ import (
 	"github.com/rs/zerolog/log"
 
 	"github.com/fakeyanss/jt808-server-go/internal/codec/hash"
+	"github.com/fakeyanss/jt808-server-go/internal/codec/hex"
 	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
 	"github.com/fakeyanss/jt808-server-go/internal/storage"
 )
@@ -91,6 +92,12 @@ func initProcessOption() processOptions {
 			return &model.ProcessData{Incoming: &model.Msg8100{}, Outgoing: &model.Msg0102{}}
 		},
 		process: processMsg8100,
+	}
+	options[0x8103] = &action{ // 查询终端参数
+		genData: func() *model.ProcessData {
+			return &model.ProcessData{Incoming: &model.Msg8103{}, Outgoing: &model.Msg0001{}}
+		},
+		process: processMsg8103,
 	}
 	options[0x8104] = &action{ // 查询终端参数
 		genData: func() *model.ProcessData {
@@ -293,6 +300,12 @@ func genAuthCode(d *model.Device) string {
 	return strconv.Itoa(int(hash.FNV32(codeBuilder.String())))
 }
 
+// 收到查询终端参数应答，无需回复，可以在这里做一个一个channel write，由其他地方阻塞式read来完成hook功能。
+func processMsg0104(ctx context.Context, data *model.ProcessData) error {
+	// todo: write channel
+	return nil
+}
+
 // 收到位置信息汇报，回复通用应答
 func processMsg0200(ctx context.Context, data *model.ProcessData) error {
 	in := data.Incoming.(*model.Msg0200)
@@ -364,29 +377,44 @@ func processMsg8100(ctx context.Context, data *model.ProcessData) error {
 	return nil
 }
 
-// 收到查询终端参数请求，回复终端参数(此时是作为client进程)
-func processMsg8104(ctx context.Context, data *model.ProcessData) error {
-	out := data.Outgoing.(*model.Msg0104)
-	// 模拟一个固定的参数
-	// todo: generate by config
-	params := []*model.ParamData{
-		{
-			ParamID:    0x0001,
-			ParamLen:   4,
-			ParamValue: uint32(0x49454252),
-		},
+// 收到设置终端参数请求，回复通用应答
+func processMsg8103(ctx context.Context, data *model.ProcessData) error {
+	in := data.Incoming.(*model.Msg8103)
+	paramCache := storage.GetDeviceParamsCache()
+	params, err := paramCache.GetDeviceParamsByPhone(in.GetHeader().PhoneNumber)
+	if err == storage.ErrDeviceParamsNotFound {
+		params = in.Parameters
+	} else {
+		params.Update(in.Parameters)
 	}
-	out.Parameters = &model.DeviceParams{
-		DevicePhone: out.Header.PhoneNumber,
-		ParamCnt:    uint8(len(params)),
-		Params:      params,
-	}
-	out.AnswerParamCnt = out.Parameters.ParamCnt
+	paramCache.CacheDeviceParams(params)
+
 	return nil
 }
 
-// 收到查询终端参数应答，无需回复，可以在这里做一个一个channel write，由其他地方阻塞式read来完成hook功能。
-func processMsg0104(ctx context.Context, data *model.ProcessData) error {
-	// todo: write channel
+// 收到查询终端参数请求，回复终端参数(此时是作为client进程)
+func processMsg8104(ctx context.Context, data *model.ProcessData) error {
+	// todo: generate by config
+	out := data.Outgoing.(*model.Msg0104)
+	paramCache := storage.GetDeviceParamsCache()
+	params, err := paramCache.GetDeviceParamsByPhone(out.GetHeader().PhoneNumber)
+	if err == storage.ErrDeviceParamsNotFound {
+		out.Parameters = &model.DeviceParams{}
+		// 模拟一个固定的参数
+		paramCnt := 38
+		paramByteStr := "00000001044B68767300000002046E764E65000000030449716B57000000040452704A360000000504524D6D5200000006043535774E0000000704" +
+			"4743525A000000101058676767375A3558584B44376E625661000000111035625067564C37537A4C616672774E36000000121048684E7669576777494D6E493555624D" +
+			"000000131064527432655967746479316A464857450000001410676554657949565F7A537362694A6E540000001510556F686858517153356577357538556200000016" +
+			"1068336D7550796A6E584D387933587173000000171075397A57597452444C4863614E6A527800000018044E586A4F000000190438646C690000001A104E3077563578" +
+			"6D4A664D6F63386166500000001B04626C36760000001C04383665370000001D104F344C42704B737445687A4F4C5646350000002004386C525500000021045041666E" +
+			"000000220457456B3900000023106138334C43765737546D5051736E31520000002410427559785F4937584E694F63364E4D490000002510653756707A595579763576" +
+			"596433346C0000002610544E376C476643386A4B4D496E4C396700000027045057586E0000002804674C636C0000002904474F6A640000002C04454931570000002D04" +
+			"634E507A0000002E04534454420000002F04525F647A00000030045A4A683000000031026C64000000320409302130"
+		_ = out.Parameters.Decode(out.Header.PhoneNumber, uint8(paramCnt), hex.Str2Byte(paramByteStr))
+		paramCache.CacheDeviceParams(out.Parameters)
+	} else {
+		out.Parameters = params
+	}
+
 	return nil
 }
