@@ -199,7 +199,7 @@ func versionDecode(ver VersionType) uint8 {
 	return 0
 }
 
-func GenMsgHeader(d *Device, msgID uint16, serialNumber uint16) *MsgHeader {
+func GenMsgHeader(d *Device, msgID, serialNumber uint16) *MsgHeader {
 	return &MsgHeader{
 		MsgID: msgID,
 		Attr: &MsgBodyAttr{

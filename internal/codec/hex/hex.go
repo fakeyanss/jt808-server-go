@@ -166,6 +166,21 @@ func WriteBytes(pkt, arr []byte) []byte {
 	return append(pkt, arr...)
 }
 
+func any2bytes(a any) []byte {
+	if b, ok := a.([]any); ok {
+		ans := make([]byte, len(b))
+		for i, v := range b {
+			ans[i] = v.(byte)
+		}
+		return ans
+	}
+	return a.([]byte)
+}
+
+func WriteBytesAny(pkt []byte, arr any) []byte {
+	return WriteBytes(pkt, any2bytes(arr))
+}
+
 // 对应JT808类型BYTE[n]
 func ReadString(pkt []byte, idx *int, n int) string {
 	return string(ReadBytes(pkt, idx, n))

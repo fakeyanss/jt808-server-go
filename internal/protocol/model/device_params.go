@@ -1,6 +1,7 @@
 package model
 
 import (
+	"fmt"
 	"sort"
 
 	"github.com/pkg/errors"
@@ -10,8 +11,9 @@ import (
 )
 
 var (
-	ErrDecodeDeviceParams = errors.New("Fail to decode device params")
-	ErrEncodeDeviceParams = errors.New("Fail to encode device params")
+	ErrDecodeDeviceParams   = errors.New("Fail to decode device params")
+	ErrEncodeDeviceParams   = errors.New("Fail to encode device params")
+	ErrParamIDNotSupportted = errors.New("Param id is not supportted")
 )
 
 type DeviceParams struct {
@@ -81,9 +83,11 @@ type ParamData struct {
 func (p *ParamData) Decode(pkt []byte, idx *int) error {
 	p.ParamID = hex.ReadDoubleWord(pkt, idx)
 	p.ParamLen = hex.ReadByte(pkt, idx)
-	if fn, ok := argTable[p.ParamID]; ok {
-		p.ParamValue = fn.decode(pkt, idx, int(p.ParamLen))
+	fn, ok := argTable[p.ParamID]
+	if !ok {
+		log.Warn().Str("ParamID", fmt.Sprintf("0x%04x", p.ParamID)).Err(ErrParamIDNotSupportted).Msg("skip it")
 	}
+	p.ParamValue = fn.decode(pkt, idx, int(p.ParamLen))
 	return nil
 }
 
@@ -95,7 +99,8 @@ func (p *ParamData) Encode() (pkt []byte, err error) {
 		pkt = hex.WriteBytes(pkt, value)
 		return pkt, nil
 	}
-	return nil, ErrEncodeDeviceParams
+	log.Warn().Str("ParamID", fmt.Sprintf("0x%04x", p.ParamID)).Err(ErrParamIDNotSupportted).Msg("skip it")
+	return nil, ErrParamIDNotSupportted
 }
 
 type paramFn struct {
@@ -121,8 +126,8 @@ var (
 	encodeWord       = func(a any) (pkt []byte) { return hex.WriteWordAny(pkt, a) }
 	decodeDoubleWord = func(b []byte, idx *int, paramLen int) any { return hex.ReadDoubleWord(b, idx) }
 	encodeDoubleWord = func(a any) (pkt []byte) { return hex.WriteDoubleWordAny(pkt, a) }
-	decodeBCD        = func(b []byte, idx *int, paramLen int) any { return hex.ReadBCD(b, idx, paramLen) }
-	encodeBCD        = func(a any) (pkt []byte) { return hex.WriteBCD(pkt, a.(string)) }
+	decodeBytes      = func(b []byte, idx *int, paramLen int) any { return hex.ReadBCD(b, idx, paramLen) } // transform bytes to string
+	encodeBytes      = func(a any) (pkt []byte) { return hex.WriteBCD(pkt, a.(string)) }                   // transform string to bytes
 	decodeString     = func(b []byte, idx *int, paramLen int) any { return hex.ReadString(b, idx, paramLen) }
 	encodeString     = func(a any) (pkt []byte) { return hex.WriteString(pkt, a.(string)) }
 	decodeGBK        = func(b []byte, idx *int, paramLen int) any { return hex.ReadGBK(b, idx, paramLen) }
@@ -130,6 +135,8 @@ var (
 )
 
 var argTable = map[uint32]*paramFn{
+	// JT808 param
+
 	// 终端心跳发送间隔,单位为秒(s)
 	0x0001: {decode: decodeDoubleWord, encode: encodeDoubleWord},
 	// TCP消息应答超时时间,单位为秒(s)
@@ -209,7 +216,7 @@ var argTable = map[uint32]*paramFn{
 	//   byte2：违规行驶开始的分钟部分；
 	//   byte3：违规行驶结束时间的小时部分；
 	//   byte4：违规行驶结束时间的分钟部分。
-	0x0032: {decode: decodeBCD, encode: encodeBCD},
+	0x0032: {decode: decodeBytes, encode: encodeBytes},
 	// 监控平台电话号码
 	0x0040: {decode: decodeGBK, encode: encodeGBK},
 	// 复位电话号码,可采用此电话号码拨打终端电话让终端复位
@@ -337,4 +344,20 @@ var argTable = map[uint32]*paramFn{
 	//   bit29 表示数据采集方式，0:原始数据，1:采集区间的计算值;
 	//   bit28-bit0 表示 CAN 总线 ID。
 	0x0110: {decode: decodeString, encode: encodeString},
+
+	// JT1078 param
+	// 音视频参数设置
+	0x0075: {decode: decodeBytes, encode: encodeBytes},
+	// 音视频通道列表设置
+	0x0076: {decode: decodeBytes, encode: encodeBytes},
+	// 单独通道视频参数设置
+	0x0077: {decode: decodeBytes, encode: encodeBytes},
+	// 特殊报警录像参数设置
+	0x0079: {decode: decodeBytes, encode: encodeBytes},
+	// 视频相关报警屏蔽字
+	0x007A: {decode: decodeBytes, encode: encodeBytes},
+	// 图像分析报警参数设置
+	0x007B: {decode: decodeBytes, encode: encodeBytes},
+	// 终端休眠唤醒模式设置
+	0x007C: {decode: decodeBytes, encode: encodeBytes},
 }

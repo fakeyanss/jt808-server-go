@@ -351,6 +351,8 @@ group 平台下发
   c -> s: 通用应答 0x0001
   deactivate c
   deactivate s
+
+  s -> c: 
 end
 
 @enduml

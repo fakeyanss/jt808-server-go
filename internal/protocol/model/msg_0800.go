@@ -1,6 +1,6 @@
 package model
 
-// 多媒体事件消息上传
+// todo: 多媒体事件消息上传
 type Msg0800 struct {
 	Header *MsgHeader `json:"header"`
 }
