@@ -81,6 +81,11 @@ func initProcessOption() processOptions {
 		},
 		process: processMsg0200,
 	}
+	options[0x1205] = &action{ // 终端上传音视频资源列表
+		genData: func() *model.ProcessData {
+			return &model.ProcessData{Incoming: &model.Msg1205{}} // 无需回复
+		},
+	}
 	options[0x8001] = &action{ // 通用应答
 		genData: func() *model.ProcessData {
 			return &model.ProcessData{Incoming: &model.Msg8001{}}
@@ -104,6 +109,12 @@ func initProcessOption() processOptions {
 			return &model.ProcessData{Incoming: &model.Msg8104{}, Outgoing: &model.Msg0104{}}
 		},
 		process: processMsg8104,
+	}
+	options[0x9205] = &action{ // 查询终端音视频资源列表
+		genData: func() *model.ProcessData {
+			return &model.ProcessData{Incoming: &model.Msg9205{}, Outgoing: &model.Msg1205{}}
+		},
+		process: processMsg9205,
 	}
 
 	return options
@@ -444,6 +455,23 @@ func processMsg8104(ctx context.Context, data *model.ProcessData) error {
 	} else {
 		out.Parameters = params
 	}
+
+	return nil
+}
+
+func processMsg9205(ctx context.Context, data *model.ProcessData) error {
+	in := data.Incoming.(*model.Msg9205)
+	out := data.Outgoing.(*model.Msg1205)
+	out.MediaCount = 1
+	out.LogicChannelID = in.LogicChannelID
+	// todo, generate several start-end time pair by input time range
+	out.StartTime = in.StartTime
+	out.EndTime = in.EndTime
+	out.AlarmSign = 0
+	out.AlarmSignExt = 0
+	out.MediaType = 0
+	out.StreamType = 0
+	out.StorageType = 0
 
 	return nil
 }

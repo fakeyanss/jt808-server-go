@@ -93,17 +93,6 @@ func WriteByte(pkt []byte, num uint8) []byte {
 	return append(pkt, num)
 }
 
-func any2uint8(a any) uint8 {
-	if b, ok := a.(float64); ok {
-		return uint8(b)
-	}
-	return a.(uint8)
-}
-
-func WriteByteAny(pkt []byte, num any) []byte {
-	return WriteByte(pkt, any2uint8(num))
-}
-
 // 对应JT808类型WORD
 func ReadWord(pkt []byte, idx *int) uint16 {
 	ans := binary.BigEndian.Uint16(pkt[*idx : *idx+2])
@@ -116,17 +105,6 @@ func WriteWord(pkt []byte, num uint16) []byte {
 	numPkt := make([]byte, 2)
 	binary.BigEndian.PutUint16(numPkt, num)
 	return append(pkt, numPkt...)
-}
-
-func any2uint16(a any) uint16 {
-	if b, ok := a.(float64); ok {
-		return uint16(b)
-	}
-	return a.(uint16)
-}
-
-func WriteWordAny(pkt []byte, num any) []byte {
-	return WriteWord(pkt, any2uint16(num))
 }
 
 // 对应JT808类型DWORD
@@ -143,17 +121,6 @@ func WriteDoubleWord(pkt []byte, num uint32) []byte {
 	return append(pkt, numPkt...)
 }
 
-func any2uint32(a any) uint32 {
-	if b, ok := a.(float64); ok {
-		return uint32(b)
-	}
-	return a.(uint32)
-}
-
-func WriteDoubleWordAny(pkt []byte, num any) []byte {
-	return WriteDoubleWord(pkt, any2uint32(num))
-}
-
 // 对应JT808类型BYTE[n]
 func ReadBytes(pkt []byte, idx *int, n int) []byte {
 	ans := pkt[*idx : *idx+n]
@@ -164,21 +131,6 @@ func ReadBytes(pkt []byte, idx *int, n int) []byte {
 // 对应JT808类型BYTE[n]
 func WriteBytes(pkt, arr []byte) []byte {
 	return append(pkt, arr...)
-}
-
-func any2bytes(a any) []byte {
-	if b, ok := a.([]any); ok {
-		ans := make([]byte, len(b))
-		for i, v := range b {
-			ans[i] = v.(byte)
-		}
-		return ans
-	}
-	return a.([]byte)
-}
-
-func WriteBytesAny(pkt []byte, arr any) []byte {
-	return WriteBytes(pkt, any2bytes(arr))
 }
 
 // 对应JT808类型BYTE[n]

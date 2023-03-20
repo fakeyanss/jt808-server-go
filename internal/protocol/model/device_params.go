@@ -119,13 +119,46 @@ type paramFn struct {
 //
 // 所以需要再encode时，将其按照json默认类型推断，再进行强转
 
+func any2uint8(a any) uint8 {
+	if b, ok := a.(float64); ok {
+		return uint8(b)
+	}
+	return a.(uint8)
+}
+
+func writeByteAny(pkt []byte, num any) []byte {
+	return hex.WriteByte(pkt, any2uint8(num))
+}
+
+func any2uint16(a any) uint16 {
+	if b, ok := a.(float64); ok {
+		return uint16(b)
+	}
+	return a.(uint16)
+}
+
+func writeWordAny(pkt []byte, num any) []byte {
+	return hex.WriteWord(pkt, any2uint16(num))
+}
+
+func any2uint32(a any) uint32 {
+	if b, ok := a.(float64); ok {
+		return uint32(b)
+	}
+	return a.(uint32)
+}
+
+func writeDoubleWordAny(pkt []byte, num any) []byte {
+	return hex.WriteDoubleWord(pkt, any2uint32(num))
+}
+
 var (
 	decodeByte       = func(b []byte, idx *int, paramLen int) any { return hex.ReadByte(b, idx) }
-	encodeByte       = func(a any) (pkt []byte) { return hex.WriteByteAny(pkt, a) }
+	encodeByte       = func(a any) (pkt []byte) { return writeByteAny(pkt, a) }
 	decodeWord       = func(b []byte, idx *int, paramLen int) any { return hex.ReadWord(b, idx) }
-	encodeWord       = func(a any) (pkt []byte) { return hex.WriteWordAny(pkt, a) }
+	encodeWord       = func(a any) (pkt []byte) { return writeWordAny(pkt, a) }
 	decodeDoubleWord = func(b []byte, idx *int, paramLen int) any { return hex.ReadDoubleWord(b, idx) }
-	encodeDoubleWord = func(a any) (pkt []byte) { return hex.WriteDoubleWordAny(pkt, a) }
+	encodeDoubleWord = func(a any) (pkt []byte) { return writeDoubleWordAny(pkt, a) }
 	decodeBytes      = func(b []byte, idx *int, paramLen int) any { return hex.ReadBCD(b, idx, paramLen) } // transform bytes to string
 	encodeBytes      = func(a any) (pkt []byte) { return hex.WriteBCD(pkt, a.(string)) }                   // transform string to bytes
 	decodeString     = func(b []byte, idx *int, paramLen int) any { return hex.ReadString(b, idx, paramLen) }
