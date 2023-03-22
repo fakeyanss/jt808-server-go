@@ -77,6 +77,9 @@ func decode() delegateFunc {
 func process() delegateFunc {
 	return delegateFunc(func(ctx context.Context, p *Pipeline) (context.Context, error) {
 		packet := ctx.Value(model.PacketDecodeCtxKey{}).(*model.PacketData)
+		if packet == nil { // 不需要处理, 可能是消息分包
+			return nil, nil
+		}
 		pd, err := p.mp.Process(ctx, packet)
 		nxtCtx := context.WithValue(ctx, model.ProcessDataCtxKey{}, pd)
 		return nxtCtx, err

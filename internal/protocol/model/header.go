@@ -65,11 +65,13 @@ func (h *MsgHeader) Decode(pkt []byte) error {
 
 // 将消息头结构体编码成[]byte
 func (h *MsgHeader) Encode() (pkt []byte, err error) {
-	pkt = hex.WriteWord(pkt, h.MsgID)           // 消息id
-	pkt = hex.WriteWord(pkt, h.Attr.Encode())   // 消息体属性
-	pkt = hex.WriteByte(pkt, h.ProtocolVersion) // 协议版本号
-	pkt = hex.WriteBCD(pkt, h.PhoneNumber)      // 手机号
-	pkt = hex.WriteWord(pkt, h.SerialNumber)    // 消息流水号
+	pkt = hex.WriteWord(pkt, h.MsgID)         // 消息id
+	pkt = hex.WriteWord(pkt, h.Attr.Encode()) // 消息体属性
+	if h.Attr.VersionDesc == Version2019 {
+		pkt = hex.WriteByte(pkt, h.ProtocolVersion) // 协议版本号
+	}
+	pkt = hex.WriteBCD(pkt, h.PhoneNumber)   // 手机号
+	pkt = hex.WriteWord(pkt, h.SerialNumber) // 消息流水号
 	if h.Frag != nil {
 		pkt = append(pkt, h.Frag.Encode()...) // 消息包封装项
 	}
@@ -83,6 +85,10 @@ func (h *MsgHeader) GetVersionDesc() VersionType {
 
 func (h *MsgHeader) GetRawJt808Version() uint8 {
 	return h.Attr.VersionSign
+}
+
+func (h *MsgHeader) IsFragmented() bool {
+	return h.Attr.PacketFragmented == 1
 }
 
 // 消息体属性字段的bit位

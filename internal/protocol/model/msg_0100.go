@@ -78,22 +78,34 @@ func (m *Msg0100) Encode() (pkt []byte, err error) {
 	var fillByte byte // '\x00'
 	manu := []byte(m.ManufacturerID)
 	toFillLen := manuLen - len(manu)
-	for i := 0; i < toFillLen; i++ {
-		manu = append(manu, fillByte)
+	if toFillLen < 0 {
+		manu = manu[:manuLen]
+	} else {
+		for i := 0; i < toFillLen; i++ {
+			manu = append(manu, fillByte)
+		}
 	}
 	pkt = append(pkt, manu...)
 
 	mode := []byte(m.DeviceMode)
 	toFillLen = modeLen - len(mode)
-	for i := 0; i < toFillLen; i++ {
-		mode = append(mode, fillByte)
+	if toFillLen < 0 {
+		mode = manu[:modeLen]
+	} else {
+		for i := 0; i < toFillLen; i++ {
+			mode = append(mode, fillByte)
+		}
 	}
 	pkt = append(pkt, mode...)
 
 	id := []byte(m.DeviceID)
 	toFillLen = idLen - len(id)
-	for i := 0; i < toFillLen; i++ {
-		id = append(id, fillByte)
+	if toFillLen < 0 {
+		id = id[:idLen]
+	} else {
+		for i := 0; i < toFillLen; i++ {
+			id = append(id, fillByte)
+		}
 	}
 	pkt = append(pkt, id...)
 
