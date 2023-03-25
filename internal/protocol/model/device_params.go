@@ -200,9 +200,9 @@ var argTable = map[uint32]*paramFn{
 	0x0016: {decode: decodeGBK, encode: encodeGBK},
 	// 备份服务器地址,IP或域名(2019版以冒号分割主机和端口,多个服务器使用分号分隔)
 	0x0017: {decode: decodeGBK, encode: encodeGBK},
-	// (JTT2013)服务器TCP端口
+	// (JT808 2013)服务器TCP端口
 	0x0018: {decode: decodeDoubleWord, encode: encodeDoubleWord},
-	// (JTT2013)服务器UDP端口
+	// (JT808 2013)服务器UDP端口
 	0x0019: {decode: decodeDoubleWord, encode: encodeDoubleWord},
 	// 道路运输证IC卡认证主服务器IP地址或域名
 	0x001A: {decode: decodeGBK, encode: encodeGBK},
@@ -218,13 +218,13 @@ var argTable = map[uint32]*paramFn{
 	0x0021: {decode: decodeDoubleWord, encode: encodeDoubleWord},
 	// 驾驶员未登录汇报时间间隔,单位为秒(s),>0
 	0x0022: {decode: decodeDoubleWord, encode: encodeDoubleWord},
-	// (JTT2019)从服务器APN.该值为空时,终端应使用主服务器相同配置
+	// (JT808 2019)从服务器APN.该值为空时,终端应使用主服务器相同配置
 	0x0023: {decode: decodeGBK, encode: encodeGBK},
-	// (JTT2019)从服务器无线通信拨号用户名.该值为空时,终端应使用主服务器相同配置
+	// (JT808 2019)从服务器无线通信拨号用户名.该值为空时,终端应使用主服务器相同配置
 	0x0024: {decode: decodeGBK, encode: encodeGBK},
-	// (JTT2019)从服务器无线通信拨号密码.该值为空时,终端应使用主服务器相同配置
+	// (JT808 2019)从服务器无线通信拨号密码.该值为空时,终端应使用主服务器相同配置
 	0x0025: {decode: decodeGBK, encode: encodeGBK},
-	// (JTT2019)从服务器备份地址、IP或域名.主服务器IP地址或域名,端口同主服务器
+	// (JT808 2019)从服务器备份地址、IP或域名.主服务器IP地址或域名,端口同主服务器
 	0x0026: {decode: decodeGBK, encode: encodeGBK},
 	// 休眠时汇报时间间隔,单位为秒(s),>0
 	0x0027: {decode: decodeDoubleWord, encode: encodeDoubleWord},
@@ -244,7 +244,7 @@ var argTable = map[uint32]*paramFn{
 	0x0030: {decode: decodeDoubleWord, encode: encodeDoubleWord},
 	// 电子围栏半径,单位为米
 	0x0031: {decode: decodeWord, encode: encodeWord},
-	// (JTT2019)违规行驶时段范围,精确到分。
+	// (JT808 2019)违规行驶时段范围,精确到分。
 	//   byte1：违规行驶开始时间的小时部分；
 	//   byte2：违规行驶开始的分钟部分；
 	//   byte3：违规行驶结束时间的小时部分；
@@ -322,7 +322,7 @@ var argTable = map[uint32]*paramFn{
 	0x0082: {decode: decodeWord, encode: encodeWord},
 	// 公安交通管理部门颁发的机动车号牌
 	0x0083: {decode: decodeGBK, encode: encodeGBK},
-	// 车牌颜色，按照JT/T415-2006的5.4.12
+	// 车牌颜色，按照JT415-2006的5.4.12
 	0x0084: {decode: decodeByte, encode: encodeByte},
 	// GNSS定位模式，定义如下：
 	//   bit0，0:禁用GPS定位，1:启用 GPS 定位;

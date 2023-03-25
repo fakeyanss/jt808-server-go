@@ -1,7 +1,7 @@
 package model
 
 // 多媒体数据上传
-// 与JTT1078合用时，此消息只上传图片数据
+// 与JT1078合用时，此消息只上传图片数据
 type Msg0801 struct {
 	Header              *MsgHeader `json:"header"`
 	MultiMediaID        uint32     `json:"multiMediaId"`

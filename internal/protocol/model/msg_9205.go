@@ -1,6 +1,6 @@
 package model
 
-// JTT1078 查询资源列表
+// JT1078 查询资源列表
 type Msg9205 struct {
 	Header *MsgHeader `json:"header"`
 	DeviceMediaQuery

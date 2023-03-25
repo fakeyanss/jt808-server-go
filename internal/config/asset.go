@@ -94,7 +94,7 @@ func configsBannerTxt() (*asset, error) {
 		return nil, err
 	}
 
-	info := bindataFileInfo{name: "configs/banner.txt", size: 509, mode: os.FileMode(420), modTime: time.Unix(1678162039, 0)}
+	info := bindataFileInfo{name: "configs/banner.txt", size: 509, mode: os.FileMode(420), modTime: time.Unix(1678892343, 0)}
 	a := &asset{bytes: bytes, info: info}
 	return a, nil
 }
@@ -114,7 +114,7 @@ func configsDefaultYaml() (*asset, error) {
 		return nil, err
 	}
 
-	info := bindataFileInfo{name: "configs/default.yaml", size: 385, mode: os.FileMode(420), modTime: time.Unix(1678936086, 0)}
+	info := bindataFileInfo{name: "configs/default.yaml", size: 385, mode: os.FileMode(420), modTime: time.Unix(1678892343, 0)}
 	a := &asset{bytes: bytes, info: info}
 	return a, nil
 }
@@ -134,7 +134,7 @@ func testClientConfigsDefaultYaml() (*asset, error) {
 		return nil, err
 	}
 
-	info := bindataFileInfo{name: "test/client/configs/default.yaml", size: 1644, mode: os.FileMode(420), modTime: time.Unix(1679488008, 0)}
+	info := bindataFileInfo{name: "test/client/configs/default.yaml", size: 1644, mode: os.FileMode(420), modTime: time.Unix(1679711868, 0)}
 	a := &asset{bytes: bytes, info: info}
 	return a, nil
 }
