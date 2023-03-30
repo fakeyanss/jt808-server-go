@@ -90,7 +90,7 @@ func (m *Msg0100) Encode() (pkt []byte, err error) {
 	mode := []byte(m.DeviceMode)
 	toFillLen = modeLen - len(mode)
 	if toFillLen < 0 {
-		mode = manu[:modeLen]
+		mode = mode[:modeLen]
 	} else {
 		for i := 0; i < toFillLen; i++ {
 			mode = append(mode, fillByte)
