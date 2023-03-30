@@ -12,8 +12,9 @@ client:
   name: "jt808-client-go"
   concurrency: 1
   conn:
-    remoteAddr: "localhost:8080"
+    # remoteAddr: "localhost:8080"
     # remoteAddr: "119.249.49.110:5080"
+    remoteAddr: "119.249.51.166:5080"
   device:
     idReg: "[0-9]{7}"
     imeiReg: "[0-9]{15}"
@@ -21,7 +22,7 @@ client:
     phoneReg: "13012345678"
     # plateReg: "京A[A-Z0-9]{5}"
     plateReg: "京A12345"
-    protocolVersion: "2011"
+    protocolVersion: "2019"
     transProto: "TCP"
     keepalive: 20 # 保活周期，单位s
     provinceIdReg: "[0-9]{2}"

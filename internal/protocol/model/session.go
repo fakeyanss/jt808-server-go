@@ -53,9 +53,10 @@ func (s *Session) GetNextSerialNum() uint16 {
 
 // 定义Packet Data结构
 type PacketData struct {
-	Header     *MsgHeader // 消息头
-	Body       []byte     // 消息体
-	VerifyCode byte       // 校验码
+	Header       *MsgHeader // 消息头
+	Body         []byte     // 消息体
+	VerifyCode   byte       // 校验码
+	SegCompleted bool       // 是否分包传输结束
 }
 
 // 定义消息处理结果数据

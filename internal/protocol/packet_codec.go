@@ -68,10 +68,7 @@ func (pc *JT808PacketCodec) Decode(payload []byte) (*model.PacketData, error) {
 
 	if pd.Header.IsFragmented() {
 		seg := model.NewSegment(pd)
-		segComplete := storage.CacheSegment(seg)
-		if !segComplete {
-			return nil, nil
-		}
+		pd.SegCompleted = storage.CacheSegment(seg)
 		// 分包接收完成
 		pd.Body = seg.Data
 	}

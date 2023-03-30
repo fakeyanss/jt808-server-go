@@ -144,6 +144,10 @@ func (mp *JT808MsgProcessor) Process(ctx context.Context, pkt *model.PacketData)
 		return nil, ErrMsgIDNotSupportted
 	}
 
+	// process segment packet
+	if !pkt.SegCompleted {
+	}
+
 	act := mp.options[msgID]
 	genDataFn := act.genData
 	if genDataFn == nil {
@@ -204,6 +208,8 @@ func (mp *JT808MsgProcessor) Process(ctx context.Context, pkt *model.PacketData)
 	}
 	return data, nil
 }
+
+func processSegmentPacket() {}
 
 // 收到心跳，应刷新终端缓存有效期
 func processMsg0002(ctx context.Context, data *model.ProcessData) error {
@@ -449,7 +455,7 @@ func processMsg8104(ctx context.Context, data *model.ProcessData) error {
 			"00000030045A4A6830" +
 			"00000031026C64" +
 			"000000320409302130" +
-			"00000076230200000101000102020001"
+			"0000007623030000010100010202000103030001"
 		_ = out.Parameters.Decode(out.Header.PhoneNumber, uint8(paramCnt), hex.Str2Byte(paramByteStr))
 		paramCache.CacheDeviceParams(out.Parameters)
 	} else {
