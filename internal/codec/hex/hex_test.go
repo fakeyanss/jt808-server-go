@@ -76,7 +76,7 @@ func TestBCD2NumberStr(t *testing.T) {
 		{
 			name: "case1: long number",
 			args: args{bcd: []byte{0x12, 0x34, 0x56, 0x78, 0x90, 0x12}},
-			want: "12345678",
+			want: "123456789012",
 		},
 		{
 			name: "case1: short number",

@@ -52,7 +52,7 @@ type ArgData struct {
 	ArgValue any    `json:"argValue"` // 参数值
 }
 
-func (a *ArgData) Decode(pkt []byte) error {
+func (a *ArgData) Decode(_ []byte) error {
 	return nil
 }
 

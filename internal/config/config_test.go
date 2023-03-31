@@ -33,7 +33,7 @@ func TestLoad(t *testing.T) {
 					MaxAgeOfRolling:     7,
 				},
 				Server: &serverConf{
-					Name: "",
+					Name: "jt808-server-go",
 					Port: &servPort{
 						TCPPort:  "8080",
 						UDPPort:  "8081",

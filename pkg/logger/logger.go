@@ -65,14 +65,14 @@ func Configure(config *Config) *Logger {
 	var writers []io.Writer
 
 	if config.ConsoleLoggingEnabled {
-		writers = append(writers, newConsoleWriter(config, os.Stderr))
+		writers = append(writers, newConsoleWriter(os.Stderr))
 	}
 	if config.FileLoggingEnabled {
 		fw := newRollingFile(config)
 		if config.EncodeLogsAsJSON {
 			writers = append(writers, fw)
 		} else {
-			writers = append(writers, newConsoleWriter(config, fw))
+			writers = append(writers, newConsoleWriter(fw))
 		}
 	}
 	mw := io.MultiWriter(writers...)
@@ -101,7 +101,7 @@ func Configure(config *Config) *Logger {
 	}
 }
 
-func newConsoleWriter(config *Config, writer io.Writer) *zerolog.ConsoleWriter {
+func newConsoleWriter(writer io.Writer) *zerolog.ConsoleWriter {
 	// log output should be stderr, and stdout should be program output
 	consoleWriter := zerolog.ConsoleWriter{
 		Out:        writer,
