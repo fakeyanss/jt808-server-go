@@ -20,6 +20,6 @@ func (m *Msg0002) GetHeader() *MsgHeader {
 	return m.Header
 }
 
-func (m *Msg0002) GenOutgoing(incoming JT808Msg) error {
+func (m *Msg0002) GenOutgoing(_ JT808Msg) error {
 	return nil
 }

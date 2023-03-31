@@ -10,7 +10,7 @@ log:
   maxAgeOfRolling: 7
 
 server:
-  name: "jt808-server_go"
+  name: "jt808-server-go"
   port:
     tcpPort: "8080"
     udpPort: "8081"
@@ -18,30 +18,3 @@ server:
   banner:
     enable: true
     bannerPath: "./configs/banner.txt"
-
-client:
-  name: "jt808-client-go"
-  concurrency: 1
-  conn:
-    remoteAddr: "localhost:8080"
-  device:
-    idReg: "[0-9]{20}"
-    imeiReg: "[0-9]{15}"
-    phoneReg: "[0-9]{20}"
-    plateReg: "京A[A-Z0-9]{5}"
-    protocolVersion: "2019"
-    transProto: "TCP"
-    keepalive: 60 # 保活周期，单位s
-    provinceIdReg: "[0-9]{2}"
-    cityIdReg: "[0-9]{4}"
-    plateColorReg: "[0123459]{1}"
-  deviceGeo:
-    locationReportInteval: 30 # 位置上报间隔，单位s
-    geo:
-      accStatusReg: "0|1"
-    location:
-      latitudeReg: ""
-    drive:
-      speedReg: ""
-
-

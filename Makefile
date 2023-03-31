@@ -46,7 +46,7 @@ release-client: set-env
 	bash $(CURDIR)/scripts/build.sh release $(TEST_CLIENT_NAME)
 
 lint: set-env
-	golangci-lint run ./...
+	bash $(CURDIR)/scripts/lint.sh
 
 # clean 阶段，清除过程中的输出， 可单独执行命令: make clean
 clean:
