@@ -90,7 +90,7 @@ func (m *Msg0100) Encode() (pkt []byte, err error) {
 	mode := []byte(m.DeviceMode)
 	toFillLen = modeLen - len(mode)
 	if toFillLen < 0 {
-		mode = manu[:modeLen]
+		mode = mode[:modeLen]
 	} else {
 		for i := 0; i < toFillLen; i++ {
 			mode = append(mode, fillByte)
@@ -120,6 +120,6 @@ func (m *Msg0100) GetHeader() *MsgHeader {
 	return m.Header
 }
 
-func (m *Msg0100) GenOutgoing(incoming JT808Msg) error {
+func (m *Msg0100) GenOutgoing(_ JT808Msg) error {
 	return nil
 }

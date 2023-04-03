@@ -1,0 +1,17 @@
+name: release
+
+on:
+  release:
+    types: [created, published]
+
+jobs:
+  release-package:
+    name: release
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v3
+    - uses: wangyoucao577/go-release-action@v1
+      with:
+        github_token: ${{ secrets.GITHUB_TOKEN }}
+        goversion: 1.19.4
+        build_command: make release && make release-client

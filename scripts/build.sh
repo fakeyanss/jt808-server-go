@@ -51,7 +51,7 @@ function copy_conf() {
 	cp -r $conf_src $conf_dir
 
 	echo "compiling default conf to embedded asset.go"
-	go-bindata -o internal/config/asset.go -pkg config $conf_asset
+	$(go env GOPATH)/bin/go-bindata -o internal/config/asset.go -pkg config $conf_asset
 }
 
 # target: jt808-server-go / jt808-client-go

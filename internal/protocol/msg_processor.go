@@ -212,7 +212,7 @@ func (mp *JT808MsgProcessor) Process(ctx context.Context, pkt *model.PacketData)
 func processSegmentPacket() {}
 
 // 收到心跳，应刷新终端缓存有效期
-func processMsg0002(ctx context.Context, data *model.ProcessData) error {
+func processMsg0002(_ context.Context, data *model.ProcessData) error {
 	cache := storage.GetDeviceCache()
 	device, err := cache.GetDeviceByPhone(data.Incoming.GetHeader().PhoneNumber)
 
@@ -228,7 +228,7 @@ func processMsg0002(ctx context.Context, data *model.ProcessData) error {
 }
 
 // 收到注销，应清除缓存，断开连接。
-func processMsg0003(ctx context.Context, data *model.ProcessData) error {
+func processMsg0003(_ context.Context, data *model.ProcessData) error {
 	cache := storage.GetDeviceCache()
 	device, err := cache.GetDeviceByPhone(data.Incoming.GetHeader().PhoneNumber)
 	// 缓存不存在，说明设备不合法，需要返回错误，让服务层处理关闭
@@ -274,7 +274,7 @@ func processMsg0100(ctx context.Context, data *model.ProcessData) error {
 }
 
 // 收到鉴权，应校验鉴权token
-func processMsg0102(ctx context.Context, data *model.ProcessData) error {
+func processMsg0102(_ context.Context, data *model.ProcessData) error {
 	in := data.Incoming.(*model.Msg0102)
 
 	cache := storage.GetDeviceCache()
@@ -318,13 +318,13 @@ func genAuthCode(d *model.Device) string {
 }
 
 // 收到查询终端参数应答，无需回复，可以在这里做一个一个channel write，由其他地方阻塞式read来完成hook功能。
-func processMsg0104(ctx context.Context, data *model.ProcessData) error {
+func processMsg0104(_ context.Context, _ *model.ProcessData) error {
 	// todo: write channel
 	return nil
 }
 
 // 收到位置信息汇报，回复通用应答
-func processMsg0200(ctx context.Context, data *model.ProcessData) error {
+func processMsg0200(_ context.Context, data *model.ProcessData) error {
 	in := data.Incoming.(*model.Msg0200)
 
 	cache := storage.GetDeviceCache()
@@ -354,7 +354,7 @@ func processMsg0200(ctx context.Context, data *model.ProcessData) error {
 	return nil
 }
 
-func processMsg8001(ctx context.Context, data *model.ProcessData) error {
+func processMsg8001(_ context.Context, data *model.ProcessData) error {
 	in := data.Incoming.(*model.Msg8001)
 	// 收到8001消息，说明此时是作为终端设备
 	if in.Result == model.ResultSuccess {
@@ -378,7 +378,7 @@ func processMsg8001(ctx context.Context, data *model.ProcessData) error {
 }
 
 // 收到注册应答，回复鉴权
-func processMsg8100(ctx context.Context, data *model.ProcessData) error {
+func processMsg8100(_ context.Context, data *model.ProcessData) error {
 	in := data.Incoming.(*model.Msg8100)
 	out := data.Outgoing.(*model.Msg0102)
 
@@ -395,11 +395,11 @@ func processMsg8100(ctx context.Context, data *model.ProcessData) error {
 }
 
 // 收到设置终端参数请求，回复通用应答
-func processMsg8103(ctx context.Context, data *model.ProcessData) error {
+func processMsg8103(_ context.Context, data *model.ProcessData) error {
 	in := data.Incoming.(*model.Msg8103)
 	paramCache := storage.GetDeviceParamsCache()
 	params, err := paramCache.GetDeviceParamsByPhone(in.GetHeader().PhoneNumber)
-	if err == storage.ErrDeviceParamsNotFound {
+	if errors.Is(err, storage.ErrDeviceParamsNotFound) {
 		params = in.Parameters
 	} else {
 		params.Update(in.Parameters)
@@ -410,12 +410,12 @@ func processMsg8103(ctx context.Context, data *model.ProcessData) error {
 }
 
 // 收到查询终端参数请求，回复终端参数(此时是作为client进程)
-func processMsg8104(ctx context.Context, data *model.ProcessData) error {
+func processMsg8104(_ context.Context, data *model.ProcessData) error {
 	// todo: generate by config
 	out := data.Outgoing.(*model.Msg0104)
 	paramCache := storage.GetDeviceParamsCache()
 	params, err := paramCache.GetDeviceParamsByPhone(out.GetHeader().PhoneNumber)
-	if err == storage.ErrDeviceParamsNotFound {
+	if errors.Is(err, storage.ErrDeviceParamsNotFound) {
 		out.Parameters = &model.DeviceParams{}
 		// 模拟一个固定的参数
 		paramCnt := 39
