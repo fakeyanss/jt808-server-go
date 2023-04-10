@@ -146,6 +146,7 @@ func (mp *JT808MsgProcessor) Process(ctx context.Context, pkt *model.PacketData)
 
 	// process segment packet
 	if !pkt.SegCompleted {
+		return processSegmentPacket(ctx, pkt)
 	}
 
 	act := mp.options[msgID]
@@ -209,7 +210,25 @@ func (mp *JT808MsgProcessor) Process(ctx context.Context, pkt *model.PacketData)
 	return data, nil
 }
 
-func processSegmentPacket() {}
+func processSegmentPacket(_ context.Context, pkt *model.PacketData) (*model.ProcessData, error) {
+	// JT1078 4.1节定义，对每个分包回复8001
+	cache := storage.GetDeviceCache()
+	phone := pkt.Header.PhoneNumber
+	device, err := cache.GetDeviceByPhone(phone)
+	// 缓存不存在，说明设备不合法，需要返回错误，让服务层处理关闭
+	if errors.Is(err, storage.ErrDeviceNotFound) {
+		return nil, errors.Wrapf(err, "Fail to find device cache, phoneNumber=%s", phone)
+	}
+	session, err := storage.GetSession(device.SessionID)
+	header := model.GenMsgHeader(device, 0x8001, session.GetNextSerialNum())
+	outgoingMsg := &model.Msg8001{
+		Header:             header,
+		AnswerSerialNumber: pkt.Header.SerialNumber,
+		AnswerMessageID:    pkt.Header.MsgID,
+		Result:             model.ResultSuccess,
+	}
+	return &model.ProcessData{Outgoing: outgoingMsg}, nil
+}
 
 // 收到心跳，应刷新终端缓存有效期
 func processMsg0002(_ context.Context, data *model.ProcessData) error {
@@ -465,7 +484,7 @@ func processMsg8104(_ context.Context, data *model.ProcessData) error {
 	return nil
 }
 
-func processMsg9205(ctx context.Context, data *model.ProcessData) error {
+func processMsg9205(_ context.Context, data *model.ProcessData) error {
 	in := data.Incoming.(*model.Msg9205)
 	out := data.Outgoing.(*model.Msg1205)
 	out.MediaCount = 1
