@@ -101,7 +101,7 @@ func (pc *JT808PacketCodec) Encode(data any) (pkt []byte, err error) {
 
 // Unescape JT808 packet.
 //
-// 去除前后标识符0x7e, 并将转义的数据包反转义:
+// 去除前后标识符0x7e, 并将转义的数据包还原:
 //
 //	0x7d0x02 -> 0x7e
 //	0x7d0x01 -> 0x7d
