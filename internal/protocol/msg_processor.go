@@ -81,6 +81,11 @@ func initProcessOption() processOptions {
 		},
 		process: processMsg0200,
 	}
+	options[0x1205] = &action{ // 终端上传音视频资源列表
+		genData: func() *model.ProcessData {
+			return &model.ProcessData{Incoming: &model.Msg1205{}} // 无需回复
+		},
+	}
 	options[0x8001] = &action{ // 通用应答
 		genData: func() *model.ProcessData {
 			return &model.ProcessData{Incoming: &model.Msg8001{}}
@@ -104,6 +109,12 @@ func initProcessOption() processOptions {
 			return &model.ProcessData{Incoming: &model.Msg8104{}, Outgoing: &model.Msg0104{}}
 		},
 		process: processMsg8104,
+	}
+	options[0x9205] = &action{ // 查询终端音视频资源列表
+		genData: func() *model.ProcessData {
+			return &model.ProcessData{Incoming: &model.Msg9205{}, Outgoing: &model.Msg1205{}}
+		},
+		process: processMsg9205,
 	}
 
 	return options
@@ -131,6 +142,11 @@ func (mp *JT808MsgProcessor) Process(ctx context.Context, pkt *model.PacketData)
 	msgID := pkt.Header.MsgID
 	if _, ok := mp.options[msgID]; !ok {
 		return nil, ErrMsgIDNotSupportted
+	}
+
+	// process segment packet
+	if !pkt.SegCompleted {
+		return processSegmentPacket(ctx, pkt)
 	}
 
 	act := mp.options[msgID]
@@ -192,6 +208,26 @@ func (mp *JT808MsgProcessor) Process(ctx context.Context, pkt *model.PacketData)
 		return nil, nil // 此类型msg不需要回复
 	}
 	return data, nil
+}
+
+func processSegmentPacket(_ context.Context, pkt *model.PacketData) (*model.ProcessData, error) {
+	// JT1078 4.1节定义，对每个分包回复8001
+	cache := storage.GetDeviceCache()
+	phone := pkt.Header.PhoneNumber
+	device, err := cache.GetDeviceByPhone(phone)
+	// 缓存不存在，说明设备不合法，需要返回错误，让服务层处理关闭
+	if errors.Is(err, storage.ErrDeviceNotFound) {
+		return nil, errors.Wrapf(err, "Fail to find device cache, phoneNumber=%s", phone)
+	}
+	session, err := storage.GetSession(device.SessionID)
+	header := model.GenMsgHeader(device, 0x8001, session.GetNextSerialNum())
+	outgoingMsg := &model.Msg8001{
+		Header:             header,
+		AnswerSerialNumber: pkt.Header.SerialNumber,
+		AnswerMessageID:    pkt.Header.MsgID,
+		Result:             model.ResultSuccess,
+	}
+	return &model.ProcessData{Outgoing: outgoingMsg}, nil
 }
 
 // 收到心跳，应刷新终端缓存有效期
@@ -401,20 +437,66 @@ func processMsg8104(_ context.Context, data *model.ProcessData) error {
 	if errors.Is(err, storage.ErrDeviceParamsNotFound) {
 		out.Parameters = &model.DeviceParams{}
 		// 模拟一个固定的参数
-		paramCnt := 38
-		paramByteStr := "00000001044B68767300000002046E764E65000000030449716B57000000040452704A360000000504524D6D5200000006043535774E0000000704" +
-			"4743525A000000101058676767375A3558584B44376E625661000000111035625067564C37537A4C616672774E36000000121048684E7669576777494D6E493555624D" +
-			"000000131064527432655967746479316A464857450000001410676554657949565F7A537362694A6E540000001510556F686858517153356577357538556200000016" +
-			"1068336D7550796A6E584D387933587173000000171075397A57597452444C4863614E6A527800000018044E586A4F000000190438646C690000001A104E3077563578" +
-			"6D4A664D6F63386166500000001B04626C36760000001C04383665370000001D104F344C42704B737445687A4F4C5646350000002004386C525500000021045041666E" +
-			"000000220457456B3900000023106138334C43765737546D5051736E31520000002410427559785F4937584E694F63364E4D490000002510653756707A595579763576" +
-			"596433346C0000002610544E376C476643386A4B4D496E4C396700000027045057586E0000002804674C636C0000002904474F6A640000002C04454931570000002D04" +
-			"634E507A0000002E04534454420000002F04525F647A00000030045A4A683000000031026C64000000320409302130"
+		paramCnt := 39
+		paramByteStr := "00000001044B687673" +
+			"00000002046E764E65" +
+			"000000030449716B57" +
+			"000000040452704A36" +
+			"0000000504524D6D52" +
+			"00000006043535774E" +
+			"00000007044743525A" +
+			"000000101058676767375A3558584B44376E625661" +
+			"000000111035625067564C37537A4C616672774E36" +
+			"000000121048684E7669576777494D6E493555624D" +
+			"000000131064527432655967746479316A46485745" +
+			"0000001410676554657949565F7A537362694A6E54" +
+			"0000001510556F6868585171533565773575385562" +
+			"000000161068336D7550796A6E584D387933587173" +
+			"000000171075397A57597452444C4863614E6A5278" +
+			"00000018044E586A4F000000190438646C69" +
+			"0000001A104E30775635786D4A664D6F6338616650" +
+			"0000001B04626C3676" +
+			"0000001C0438366537" +
+			"0000001D104F344C42704B737445687A4F4C564635" +
+			"0000002004386C5255" +
+			"00000021045041666E" +
+			"000000220457456B39" +
+			"00000023106138334C43765737546D5051736E3152" +
+			"0000002410427559785F4937584E694F63364E4D49" +
+			"0000002510653756707A595579763576596433346C" +
+			"0000002610544E376C476643386A4B4D496E4C3967" +
+			"00000027045057586E0000002804674C636C" +
+			"0000002904474F6A64" +
+			"0000002C0445493157" +
+			"0000002D04634E507A" +
+			"0000002E0453445442" +
+			"0000002F04525F647A" +
+			"00000030045A4A6830" +
+			"00000031026C64" +
+			"000000320409302130" +
+			"0000007623030000010100010202000103030001"
 		_ = out.Parameters.Decode(out.Header.PhoneNumber, uint8(paramCnt), hex.Str2Byte(paramByteStr))
 		paramCache.CacheDeviceParams(out.Parameters)
 	} else {
 		out.Parameters = params
 	}
+
+	return nil
+}
+
+func processMsg9205(_ context.Context, data *model.ProcessData) error {
+	in := data.Incoming.(*model.Msg9205)
+	out := data.Outgoing.(*model.Msg1205)
+	out.MediaCount = 1
+	out.LogicChannelID = in.LogicChannelID
+	// todo, generate several start-end time pair by input time range
+	out.StartTime = in.StartTime
+	out.EndTime = in.EndTime
+	out.AlarmSign = 0
+	out.AlarmSignExt = 0
+	out.MediaType = 0
+	out.StreamType = 0
+	out.StorageType = 0
 
 	return nil
 }

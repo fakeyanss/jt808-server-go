@@ -1,6 +1,7 @@
 package model
 
 import (
+	"fmt"
 	"sort"
 
 	"github.com/pkg/errors"
@@ -10,8 +11,9 @@ import (
 )
 
 var (
-	ErrDecodeDeviceParams = errors.New("Fail to decode device params")
-	ErrEncodeDeviceParams = errors.New("Fail to encode device params")
+	ErrDecodeDeviceParams   = errors.New("Fail to decode device params")
+	ErrEncodeDeviceParams   = errors.New("Fail to encode device params")
+	ErrParamIDNotSupportted = errors.New("Param id is not supportted")
 )
 
 type DeviceParams struct {
@@ -81,9 +83,11 @@ type ParamData struct {
 func (p *ParamData) Decode(pkt []byte, idx *int) error {
 	p.ParamID = hex.ReadDoubleWord(pkt, idx)
 	p.ParamLen = hex.ReadByte(pkt, idx)
-	if fn, ok := argTable[p.ParamID]; ok {
-		p.ParamValue = fn.decode(pkt, idx, int(p.ParamLen))
+	fn, ok := argTable[p.ParamID]
+	if !ok {
+		log.Warn().Str("ParamID", fmt.Sprintf("0x%04x", p.ParamID)).Err(ErrParamIDNotSupportted).Msg("skip it")
 	}
+	p.ParamValue = fn.decode(pkt, idx, int(p.ParamLen))
 	return nil
 }
 
@@ -95,7 +99,8 @@ func (p *ParamData) Encode() (pkt []byte, err error) {
 		pkt = hex.WriteBytes(pkt, value)
 		return pkt, nil
 	}
-	return nil, ErrEncodeDeviceParams
+	log.Warn().Str("ParamID", fmt.Sprintf("0x%04x", p.ParamID)).Err(ErrParamIDNotSupportted).Msg("skip it")
+	return nil, ErrParamIDNotSupportted
 }
 
 type paramFn struct {
@@ -114,15 +119,48 @@ type paramFn struct {
 //
 // 所以需要再encode时，将其按照json默认类型推断，再进行强转
 
+func any2uint8(a any) uint8 {
+	if b, ok := a.(float64); ok {
+		return uint8(b)
+	}
+	return a.(uint8)
+}
+
+func writeByteAny(pkt []byte, num any) []byte {
+	return hex.WriteByte(pkt, any2uint8(num))
+}
+
+func any2uint16(a any) uint16 {
+	if b, ok := a.(float64); ok {
+		return uint16(b)
+	}
+	return a.(uint16)
+}
+
+func writeWordAny(pkt []byte, num any) []byte {
+	return hex.WriteWord(pkt, any2uint16(num))
+}
+
+func any2uint32(a any) uint32 {
+	if b, ok := a.(float64); ok {
+		return uint32(b)
+	}
+	return a.(uint32)
+}
+
+func writeDoubleWordAny(pkt []byte, num any) []byte {
+	return hex.WriteDoubleWord(pkt, any2uint32(num))
+}
+
 var (
 	decodeByte       = func(b []byte, idx *int, paramLen int) any { return hex.ReadByte(b, idx) }
-	encodeByte       = func(a any) (pkt []byte) { return hex.WriteByteAny(pkt, a) }
+	encodeByte       = func(a any) (pkt []byte) { return writeByteAny(pkt, a) }
 	decodeWord       = func(b []byte, idx *int, paramLen int) any { return hex.ReadWord(b, idx) }
-	encodeWord       = func(a any) (pkt []byte) { return hex.WriteWordAny(pkt, a) }
+	encodeWord       = func(a any) (pkt []byte) { return writeWordAny(pkt, a) }
 	decodeDoubleWord = func(b []byte, idx *int, paramLen int) any { return hex.ReadDoubleWord(b, idx) }
-	encodeDoubleWord = func(a any) (pkt []byte) { return hex.WriteDoubleWordAny(pkt, a) }
-	decodeBCD        = func(b []byte, idx *int, paramLen int) any { return hex.ReadBCD(b, idx, paramLen) }
-	encodeBCD        = func(a any) (pkt []byte) { return hex.WriteBCD(pkt, a.(string)) }
+	encodeDoubleWord = func(a any) (pkt []byte) { return writeDoubleWordAny(pkt, a) }
+	decodeBytes      = func(b []byte, idx *int, paramLen int) any { return hex.ReadBCD(b, idx, paramLen) } // transform bytes to string
+	encodeBytes      = func(a any) (pkt []byte) { return hex.WriteBCD(pkt, a.(string)) }                   // transform string to bytes
 	decodeString     = func(b []byte, idx *int, paramLen int) any { return hex.ReadString(b, idx, paramLen) }
 	encodeString     = func(a any) (pkt []byte) { return hex.WriteString(pkt, a.(string)) }
 	decodeGBK        = func(b []byte, idx *int, paramLen int) any { return hex.ReadGBK(b, idx, paramLen) }
@@ -130,6 +168,8 @@ var (
 )
 
 var argTable = map[uint32]*paramFn{
+	// JT808 param
+
 	// 终端心跳发送间隔,单位为秒(s)
 	0x0001: {decode: decodeDoubleWord, encode: encodeDoubleWord},
 	// TCP消息应答超时时间,单位为秒(s)
@@ -160,9 +200,9 @@ var argTable = map[uint32]*paramFn{
 	0x0016: {decode: decodeGBK, encode: encodeGBK},
 	// 备份服务器地址,IP或域名(2019版以冒号分割主机和端口,多个服务器使用分号分隔)
 	0x0017: {decode: decodeGBK, encode: encodeGBK},
-	// (JTT2013)服务器TCP端口
+	// (JT808 2013)服务器TCP端口
 	0x0018: {decode: decodeDoubleWord, encode: encodeDoubleWord},
-	// (JTT2013)服务器UDP端口
+	// (JT808 2013)服务器UDP端口
 	0x0019: {decode: decodeDoubleWord, encode: encodeDoubleWord},
 	// 道路运输证IC卡认证主服务器IP地址或域名
 	0x001A: {decode: decodeGBK, encode: encodeGBK},
@@ -178,13 +218,13 @@ var argTable = map[uint32]*paramFn{
 	0x0021: {decode: decodeDoubleWord, encode: encodeDoubleWord},
 	// 驾驶员未登录汇报时间间隔,单位为秒(s),>0
 	0x0022: {decode: decodeDoubleWord, encode: encodeDoubleWord},
-	// (JTT2019)从服务器APN.该值为空时,终端应使用主服务器相同配置
+	// (JT808 2019)从服务器APN.该值为空时,终端应使用主服务器相同配置
 	0x0023: {decode: decodeGBK, encode: encodeGBK},
-	// (JTT2019)从服务器无线通信拨号用户名.该值为空时,终端应使用主服务器相同配置
+	// (JT808 2019)从服务器无线通信拨号用户名.该值为空时,终端应使用主服务器相同配置
 	0x0024: {decode: decodeGBK, encode: encodeGBK},
-	// (JTT2019)从服务器无线通信拨号密码.该值为空时,终端应使用主服务器相同配置
+	// (JT808 2019)从服务器无线通信拨号密码.该值为空时,终端应使用主服务器相同配置
 	0x0025: {decode: decodeGBK, encode: encodeGBK},
-	// (JTT2019)从服务器备份地址、IP或域名.主服务器IP地址或域名,端口同主服务器
+	// (JT808 2019)从服务器备份地址、IP或域名.主服务器IP地址或域名,端口同主服务器
 	0x0026: {decode: decodeGBK, encode: encodeGBK},
 	// 休眠时汇报时间间隔,单位为秒(s),>0
 	0x0027: {decode: decodeDoubleWord, encode: encodeDoubleWord},
@@ -204,12 +244,12 @@ var argTable = map[uint32]*paramFn{
 	0x0030: {decode: decodeDoubleWord, encode: encodeDoubleWord},
 	// 电子围栏半径,单位为米
 	0x0031: {decode: decodeWord, encode: encodeWord},
-	// (JTT2019)违规行驶时段范围,精确到分。
+	// (JT808 2019)违规行驶时段范围,精确到分。
 	//   byte1：违规行驶开始时间的小时部分；
 	//   byte2：违规行驶开始的分钟部分；
 	//   byte3：违规行驶结束时间的小时部分；
 	//   byte4：违规行驶结束时间的分钟部分。
-	0x0032: {decode: decodeBCD, encode: encodeBCD},
+	0x0032: {decode: decodeBytes, encode: encodeBytes},
 	// 监控平台电话号码
 	0x0040: {decode: decodeGBK, encode: encodeGBK},
 	// 复位电话号码,可采用此电话号码拨打终端电话让终端复位
@@ -282,7 +322,7 @@ var argTable = map[uint32]*paramFn{
 	0x0082: {decode: decodeWord, encode: encodeWord},
 	// 公安交通管理部门颁发的机动车号牌
 	0x0083: {decode: decodeGBK, encode: encodeGBK},
-	// 车牌颜色，按照JT/T415-2006的5.4.12
+	// 车牌颜色，按照JT415-2006的5.4.12
 	0x0084: {decode: decodeByte, encode: encodeByte},
 	// GNSS定位模式，定义如下：
 	//   bit0，0:禁用GPS定位，1:启用 GPS 定位;
@@ -337,4 +377,20 @@ var argTable = map[uint32]*paramFn{
 	//   bit29 表示数据采集方式，0:原始数据，1:采集区间的计算值;
 	//   bit28-bit0 表示 CAN 总线 ID。
 	0x0110: {decode: decodeString, encode: encodeString},
+
+	// JT1078 param
+	// 音视频参数设置
+	0x0075: {decode: decodeBytes, encode: encodeBytes},
+	// 音视频通道列表设置
+	0x0076: {decode: decodeBytes, encode: encodeBytes},
+	// 单独通道视频参数设置
+	0x0077: {decode: decodeBytes, encode: encodeBytes},
+	// 特殊报警录像参数设置
+	0x0079: {decode: decodeBytes, encode: encodeBytes},
+	// 视频相关报警屏蔽字
+	0x007A: {decode: decodeBytes, encode: encodeBytes},
+	// 图像分析报警参数设置
+	0x007B: {decode: decodeBytes, encode: encodeBytes},
+	// 终端休眠唤醒模式设置
+	0x007C: {decode: decodeBytes, encode: encodeBytes},
 }

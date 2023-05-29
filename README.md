@@ -15,7 +15,7 @@
 
 ## 项目特点
 
-### 兼容 2019/2013/2011 版本差异
+### 兼容 JT808 2019/2013/2011 版本差异
 
 定义版本类型分为 `Version2019 / Version2013 / Version2011`。
 
@@ -28,6 +28,8 @@
 | 终端型号编码长度   | 8 字节  | 20 字节 | 30 字节 |
 | 终端 ID 编码长度   | 7 字节  | 7 字节  | 30 字节 |
 | 从业资格证编码长度 | 40 字节 | 20 字节 | 20 字节 |
+
+### 支持 JT1078 协议的音视频传输控制
 
 ### 支持常见消息列表 (WIP)
 
@@ -297,7 +299,10 @@ todo
 
 <img src="https://ghproxy.com/https://raw.githubusercontent.com/fakeYanss/imgplace/master/2023/2023-02-18_20230218211153.png" alt="device manage" width="300">
 
-<!--
+在早些时候，查询多媒体资源列表会通过 JT808 协议的信令交互。后来在实际应用中发现，视频和音频的传输会长时间占用连接通道，这期间其他的操作啥也干不了，只能等着音视频数据传输完。这样不太好，所以推出了 JT1078 协议，此后在 JT808 协议交互中最多进行图片资源的传输，而音视频的传输则通过 JT1078 中的信令消息。
+
+详细来说，就是在 JT1078 中特别指定了 0x0800/0x0801/0x8802/0x0802/0x8803 这 5 条信令消息中多媒体字段只应包含图片类型。
+
 ```plantuml
 @startuml
 
@@ -351,11 +356,25 @@ group 平台下发
   c -> s: 通用应答 0x0001
   deactivate c
   deactivate s
+
+  s -> c: 平台查询终端音视频资源列表 0x9205
+  activate s
+  activate c
+  c -> s: 终端上传音视频资源列表 0x1205
+  deactivate c
+  deactivate s
+
+  s -> c: 平台查询终端音视频资源列表 0x9205
+  activate s
+  activate c
+  c -> s: 终端上传音视频资源列表 0x1205
+  deactivate c
+  deactivate s
+
 end
 
 @enduml
 ```
--->
 
 ## 编译和运行
 

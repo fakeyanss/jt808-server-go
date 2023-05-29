@@ -16,7 +16,11 @@
             "type": "go",
             "request": "launch",
             "mode": "debug",
-            "program": "test/client/main.go"
+            "program": "test/client/main.go",
+            // "args": [
+            //     "-c",
+            //     "test/client/configs/default.yaml"
+            // ]
         },
         {
             "name": "Launch Package",

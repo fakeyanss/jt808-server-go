@@ -19,6 +19,11 @@ import (
 	"github.com/fakeyanss/jt808-server-go/test/datagen"
 )
 
+const (
+	retryMaxCnt           = 6
+	retryIntervalInSecond = 10
+)
+
 type (
 	DeviceConfCtxKey struct{}
 
@@ -101,10 +106,18 @@ func reportLocation(ctx context.Context, cli *client.TCPClient) {
 func dialAndSend(cfg *config.Config, cliWg *sync.WaitGroup) {
 	cli := client.NewTCPClient()
 	addr := cfg.Client.Conn.RemoteAddr
-	err := cli.Dial(addr)
-	if err != nil {
-		log.Error().Err(err).Str("addr", addr).Msg("Fail to dial tcp addr")
-		os.Exit(1)
+	for retry := 1; ; retry++ {
+		err := cli.Dial(addr)
+		if err == nil {
+			break
+		}
+		errDialMsg := "Fail to dial to the tcp addr"
+		if retry > retryMaxCnt {
+			log.Error().Err(err).Str("addr", addr).Msgf("%s, exit", errDialMsg)
+			os.Exit(1)
+		}
+		log.Error().Err(err).Str("addr", addr).Msgf("%s, retry", errDialMsg)
+		time.Sleep(retryIntervalInSecond * time.Second)
 	}
 	routines.GoSafe(func() {
 		defer cliWg.Done()

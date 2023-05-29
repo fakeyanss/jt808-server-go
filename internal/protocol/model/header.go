@@ -87,6 +87,10 @@ func (h *MsgHeader) GetRawJt808Version() uint8 {
 	return h.Attr.VersionSign
 }
 
+func (h *MsgHeader) IsFragmented() bool {
+	return h.Attr.PacketFragmented == 1
+}
+
 // 消息体属性字段的bit位
 const (
 	bodyLengthBit    uint16 = 0b0000001111111111
@@ -201,7 +205,7 @@ func versionDecode(ver VersionType) uint8 {
 	return 0
 }
 
-func GenMsgHeader(d *Device, msgID uint16, serialNumber uint16) *MsgHeader {
+func GenMsgHeader(d *Device, msgID, serialNumber uint16) *MsgHeader {
 	return &MsgHeader{
 		MsgID: msgID,
 		Attr: &MsgBodyAttr{

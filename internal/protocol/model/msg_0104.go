@@ -7,6 +7,8 @@ import (
 )
 
 // 查询终端参数应答
+//
+// 列表过大时需要分包
 type Msg0104 struct {
 	Header             *MsgHeader    `json:"header"`
 	AnswerSerialNumber uint16        `json:"answerSerialNumber"` // 应答流水号，对应平台消息的流水号
