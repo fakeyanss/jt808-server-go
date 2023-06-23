@@ -145,7 +145,7 @@ func (mp *JT808MsgProcessor) Process(ctx context.Context, pkt *model.PacketData)
 	}
 
 	// process segment packet
-	if !pkt.SegCompleted {
+	if pkt.Header.IsFragmented() && !pkt.SegCompleted {
 		return processSegmentPacket(ctx, pkt)
 	}
 
