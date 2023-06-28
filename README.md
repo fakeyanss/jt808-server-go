@@ -297,13 +297,13 @@ todo
 
 ### 多媒体协议
 
-<img src="https://ghproxy.com/https://raw.githubusercontent.com/fakeYanss/imgplace/master/2023/2023-02-18_20230218211153.png" alt="device manage" width="300">
-
 在早些时候，查询多媒体资源列表会通过 JT808 协议的信令交互。后来在实际应用中发现，视频和音频的传输会长时间占用连接通道，这期间其他的操作啥也干不了，只能等着音视频数据传输完。这样不太好，所以推出了 JT1078 协议，此后在 JT808 协议交互中最多进行图片资源的传输，而音视频的传输则通过 JT1078 中的信令消息。
 
 详细来说，就是在 JT1078 中特别指定了 0x0800/0x0801/0x8802/0x0802/0x8803 这 5 条信令消息中多媒体字段只应包含图片类型。
 
-```plantuml
+<img src="https://ghproxy.com/https://raw.githubusercontent.com/fakeYanss/imgplace/master/2023/2023-06-27_20230627000551.png" alt="multimedia" width="400">
+
+<!--```plantuml
 @startuml
 
 skinparam sequenceMessageAlign left
@@ -375,6 +375,7 @@ end
 
 @enduml
 ```
+-->
 
 ## 编译和运行
 
