@@ -134,7 +134,7 @@ func testClientConfigsDefaultYaml() (*asset, error) {
 		return nil, err
 	}
 
-	info := bindataFileInfo{name: "test/client/configs/default.yaml", size: 1673, mode: os.FileMode(420), modTime: time.Unix(1687527729, 0)}
+	info := bindataFileInfo{name: "test/client/configs/default.yaml", size: 1673, mode: os.FileMode(420), modTime: time.Unix(1688644570, 0)}
 	a := &asset{bytes: bytes, info: info}
 	return a, nil
 }
