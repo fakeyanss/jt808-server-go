@@ -2,7 +2,6 @@ package protocol
 
 import (
 	"bufio"
-	"bytes"
 	"context"
 	"io"
 	"net"
@@ -45,13 +44,29 @@ func NewJT808FrameHandler(conn net.Conn) *JT808FrameHandler {
 }
 
 func (fh *JT808FrameHandler) Recv(ctx context.Context) (FramePayload, error) {
-	buf := make([]byte, MaxFrameLen)
-	_, err := fh.rbuf.Read(buf)
-	if err != nil {
-		return nil, errors.Wrap(err, "Fail to read stream to framePayload")
+	var inMessage bool
+	buf := make([]byte, 0, MaxFrameLen)
+	readBuf := make([]byte, 1)
+	for {
+		// Read one byte from the connection
+		_, err := fh.rbuf.Read(readBuf)
+		if err != nil {
+			return nil, errors.Wrap(err, "Fail to read stream to framePayload")
+		}
+		if readBuf[0] == 0x7e {
+			buf = append(buf, readBuf[0])
+			if inMessage {
+				// end bit
+				break
+			}
+			// start bit
+			inMessage = !inMessage
+		} else {
+			if inMessage {
+				buf = append(buf, readBuf[0])
+			}
+		}
 	}
-	// 移除末尾多余的0
-	buf = bytes.TrimRight(buf, "\x00")
 
 	if len(buf) == 0 {
 		return nil, ErrFrameReadEmpty
