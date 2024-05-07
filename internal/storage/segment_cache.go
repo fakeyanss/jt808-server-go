@@ -16,7 +16,7 @@ var segmentCacheSingleton *SegmentCache
 var segmentCacheInitOnce sync.Once
 
 func getSegmentCache() *SegmentCache {
-	sessionCacheInitOnce.Do(func() {
+	segmentCacheInitOnce.Do(func() {
 		segmentCacheSingleton = &SegmentCache{
 			cacheByKey: make(map[string]*model.Segment),
 			mutex:      &sync.Mutex{},
