@@ -175,6 +175,43 @@ func Run(serv *server.TCPServer, cfg *config.Config) {
 		}
 	})
 
+	router.POST("/device/:phone/control", func(c *gin.Context) {
+		var request struct {
+			CommandWord  uint8  `json:"commandWord" binding:"required"`
+			CommandParam string `json:"commandParam"`
+		}
+		if err := c.ShouldBindJSON(&request); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
+			return
+		}
+		if request.CommandWord != 2 && request.CommandWord != 4 && request.CommandWord != 5 {
+			c.JSON(http.StatusBadRequest, gin.H{"err": "supported commandWord values are 2 (connect server), 4 (reset), and 5 (factory reset)"})
+			return
+		}
+		if request.CommandWord != 2 && request.CommandParam != "" {
+			c.JSON(http.StatusBadRequest, gin.H{"err": "commandParam is only valid for commandWord 2"})
+			return
+		}
+		phone := c.Param("phone")
+		device, err := cache.GetDeviceByPhone(phone)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
+			return
+		}
+		session, err := storage.GetSession(device.SessionID)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
+			return
+		}
+		if len(request.CommandParam) > 256 {
+			c.JSON(http.StatusBadRequest, gin.H{"err": "commandParam exceeds 256 UTF-8 bytes"})
+			return
+		}
+		msg := &model.Msg8105{Header: model.GenMsgHeader(device, 0x8105, session.GetNextSerialNum()), CommandWord: request.CommandWord, CommandParam: request.CommandParam}
+		serv.Send(session.ID, msg)
+		c.JSON(http.StatusAccepted, gin.H{"messageId": "0x8105", "commandWord": request.CommandWord})
+	})
+
 	router.POST("/device/:phone/alarms/confirm", func(c *gin.Context) {
 		var request struct {
 			AlarmSerial uint16 `json:"alarmSerial"`

@@ -134,6 +134,11 @@ func initProcessOption() processOptions {
 		},
 		process: processMsg8104,
 	}
+	options[0x8105] = &action{ // 终端控制，由终端模拟器自动确认
+		genData: func() *model.ProcessData {
+			return &model.ProcessData{Incoming: &model.Msg8105{}, Outgoing: &model.Msg0001{}}
+		},
+	}
 	options[0x8106] = &action{genData: func() *model.ProcessData {
 		return &model.ProcessData{Incoming: &model.Msg8106{}, Outgoing: &model.Msg0104{}}
 	}, process: processMsg8106}

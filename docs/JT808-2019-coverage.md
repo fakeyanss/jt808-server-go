@@ -39,7 +39,7 @@ amendment text has been reviewed.
 | `0x8103` | Set terminal parameters | Implemented | Decodes and caches provided parameter values. |
 | `0x8104` | Query terminal parameters | Implemented | HTTP query sends a serial-correlated request and returns the terminal response; timeout is 10 seconds. |
 | `0x0104` | Terminal parameters response | Implemented | Validates through normal decoding, caches parameters, and delivers to a waiter keyed by phone and answered platform serial. |
-| `0x8105` | Terminal control | Missing | No model or processor path. |
+| `0x8105` | Terminal control | Partial | Model, GBK command parameters, HTTP downlink endpoint, and simulator-side generic acknowledgement are implemented. Command-specific effects remain terminal responsibilities. |
 | `0x8106` | Query specified terminal parameters | Implemented | HTTP `/device/:phone/params?ids=...` sends selected IDs; the response is correlated by phone and platform serial. |
 | `0x8107` | Query terminal properties | Implemented | HTTP `/device/:phone/properties` sends a query and waits up to 10 seconds for the terminal response. |
 | `0x0107` | Terminal properties response | Implemented | Decodes 2011/2013/2019 field widths and delivers the response to the pending phone query. |
