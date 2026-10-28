@@ -45,6 +45,7 @@ func initProcessOption() processOptions {
 		genData: func() *model.ProcessData {
 			return &model.ProcessData{Incoming: &model.Msg0001{}} // 无需回复
 		},
+		process: processMsg0001,
 	}
 	options[0x0002] = &action{ // 心跳
 		genData: func() *model.ProcessData {
@@ -140,6 +141,9 @@ func NewJT808MsgProcessor() *JT808MsgProcessor {
 
 func (mp *JT808MsgProcessor) Process(ctx context.Context, pkt *model.PacketData) (*model.ProcessData, error) {
 	msgID := pkt.Header.MsgID
+	if session, ok := ctx.Value(model.SessionCtxKey{}).(*model.Session); ok && session != nil {
+		log.Debug().Str("session", session.ID).Uint16("msg_id", msgID).Msg("Processing JT808 message")
+	}
 	if _, ok := mp.options[msgID]; !ok {
 		return nil, ErrMsgIDNotSupportted
 	}
@@ -157,9 +161,12 @@ func (mp *JT808MsgProcessor) Process(ctx context.Context, pkt *model.PacketData)
 	data := genDataFn()
 
 	in := data.Incoming
-	err := in.Decode(pkt)
+	err := decodeMessageSafely(in, pkt)
 	if err != nil {
 		return nil, errors.Wrap(err, "Fail to decode packet to jtmsg")
+	}
+	if session, ok := ctx.Value(model.SessionCtxKey{}).(*model.Session); ok && session != nil {
+		session.AcknowledgeResponse(in.GetHeader().MsgID, in.GetHeader().PhoneNumber)
 	}
 
 	if log.Logger.GetLevel() == zerolog.DebugLevel {
@@ -210,19 +217,26 @@ func (mp *JT808MsgProcessor) Process(ctx context.Context, pkt *model.PacketData)
 	return data, nil
 }
 
+func decodeMessageSafely(msg model.JT808Msg, pkt *model.PacketData) (err error) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			err = errors.Errorf("malformed message body: %v", recovered)
+		}
+	}()
+	return msg.Decode(pkt)
+}
+
 func processSegmentPacket(_ context.Context, pkt *model.PacketData) (*model.ProcessData, error) {
 	// JT1078 4.1节定义，对每个分包回复8001
-	cache := storage.GetDeviceCache()
-	phone := pkt.Header.PhoneNumber
-	device, err := cache.GetDeviceByPhone(phone)
-	// 缓存不存在，说明设备不合法，需要返回错误，让服务层处理关闭
-	if errors.Is(err, storage.ErrDeviceNotFound) {
-		return nil, errors.Wrapf(err, "Fail to find device cache, phoneNumber=%s", phone)
-	}
-	session, err := storage.GetSession(device.SessionID)
-	header := model.GenMsgHeader(device, 0x8001, session.GetNextSerialNum())
+	headerCopy := *pkt.Header
+	attrCopy := *pkt.Header.Attr
+	headerCopy.Attr = &attrCopy
+	headerCopy.MsgID = 0x8001
+	headerCopy.Attr.PacketFragmented = 0
+	headerCopy.Attr.PacketFragmentedDesc = model.PacketFragmentedFalse
+	headerCopy.Frag = nil
 	outgoingMsg := &model.Msg8001{
-		Header:             header,
+		Header:             &headerCopy,
 		AnswerSerialNumber: pkt.Header.SerialNumber,
 		AnswerMessageID:    pkt.Header.MsgID,
 		Result:             model.ResultSuccess,
@@ -373,15 +387,29 @@ func processMsg0200(_ context.Context, data *model.ProcessData) error {
 	return nil
 }
 
-func processMsg8001(_ context.Context, data *model.ProcessData) error {
+func processMsg0001(ctx context.Context, data *model.ProcessData) error {
+	in := data.Incoming.(*model.Msg0001)
+	if session, ok := ctx.Value(model.SessionCtxKey{}).(*model.Session); ok && session != nil {
+		session.Acknowledge(in.AnswerMessageID, in.AnswerSerialNumber)
+	}
+	return nil
+}
+
+func processMsg8001(ctx context.Context, data *model.ProcessData) error {
 	in := data.Incoming.(*model.Msg8001)
+	if session, ok := ctx.Value(model.SessionCtxKey{}).(*model.Session); ok && session != nil {
+		session.Acknowledge(in.AnswerMessageID, in.AnswerSerialNumber)
+	}
+	if in.AnswerMessageID != 0x0102 {
+		return nil
+	}
 	// 收到8001消息，说明此时是作为终端设备
 	if in.Result == model.ResultSuccess {
 		// 回复成功，说明之前注册成功，为方便后续处理，将设备状态改为Online并缓存
 		cache := storage.GetDeviceCache()
 		device, err := cache.GetDeviceByPhone(in.Header.PhoneNumber)
 		if errors.Is(err, storage.ErrDeviceNotFound) {
-			return ErrActiveClose
+			return nil
 		}
 		if device.Status != model.DeviceStatusOffline {
 			return nil
@@ -404,7 +432,10 @@ func processMsg8100(_ context.Context, data *model.ProcessData) error {
 	cache := storage.GetDeviceCache()
 	device, err := cache.GetDeviceByPhone(in.Header.PhoneNumber)
 	if errors.Is(err, storage.ErrDeviceNotFound) {
-		return ErrActiveClose
+		// JT808 2013 registration responses carry the auth code in the response.
+		// A simulator that does not keep a local device cache can still continue
+		// the authentication exchange; 2019-only identity fields remain empty.
+		return nil
 	}
 
 	out.IMEI = device.IMEI

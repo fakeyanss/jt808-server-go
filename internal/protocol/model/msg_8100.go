@@ -27,7 +27,7 @@ func (m *Msg8100) Decode(packet *PacketData) error {
 	pkt, idx := packet.Body, 0
 	m.AnswerSerialNumber = hex.ReadWord(pkt, &idx)
 	m.Result = ResultCodeType(hex.ReadByte(pkt, &idx))
-	m.AuthCode = hex.ReadString(pkt, &idx, int(m.Header.Attr.BodyLength)-idx)
+	m.AuthCode = hex.ReadString(pkt, &idx, len(pkt)-idx)
 	return nil
 }
 

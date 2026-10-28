@@ -11,10 +11,12 @@ log:
 client:
   name: "jt808-client-go"
   concurrency: 1
+  ackTimeoutMs: 5000
+  maxRetransmissions: 3
   conn:
-    # remoteAddr: "localhost:8080"
+    remoteAddr: "localhost:8080"
     # remoteAddr: "119.249.49.110:5080"
-    remoteAddr: "119.249.51.166:5080"
+    # remoteAddr: "119.249.51.166:5080"
   device:
     idReg: "[0-9]{7}"
     imeiReg: "[0-9]{15}"

@@ -3,6 +3,9 @@ package protocol
 import (
 	"context"
 	"net"
+	"time"
+
+	"github.com/rs/zerolog/log"
 
 	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
 )
@@ -30,6 +33,7 @@ func (p *Pipeline) ProcessConnRead(ctx context.Context) error {
 		recv(),
 		decode(),
 		process(),
+		assignSerialNumber(),
 		encode(),
 		send(),
 	}
@@ -38,10 +42,25 @@ func (p *Pipeline) ProcessConnRead(ctx context.Context) error {
 
 func (p *Pipeline) ProcessConnWrite(ctx context.Context) error {
 	actions := []delegateFunc{
+		assignSerialNumber(),
 		encode(),
 		send(),
 	}
 	return p.callWithBlocking(ctx, actions)
+}
+
+func assignSerialNumber() delegateFunc {
+	return delegateFunc(func(ctx context.Context, _ *Pipeline) (context.Context, error) {
+		pd, _ := ctx.Value(model.ProcessDataCtxKey{}).(*model.ProcessData)
+		if pd == nil || pd.Outgoing == nil {
+			return nil, nil
+		}
+		session, _ := ctx.Value(model.SessionCtxKey{}).(*model.Session)
+		if session != nil {
+			pd.Outgoing.GetHeader().SerialNumber = session.GetNextSerialNum()
+		}
+		return ctx, nil
+	})
 }
 
 func (p *Pipeline) callWithBlocking(ctx context.Context, funcs []delegateFunc) error {
@@ -101,7 +120,26 @@ func encode() delegateFunc {
 func send() delegateFunc {
 	return delegateFunc(func(ctx context.Context, p *Pipeline) (context.Context, error) {
 		packet := ctx.Value(model.PacketEncodeCtxKey{}).([]byte)
+		session, _ := ctx.Value(model.SessionCtxKey{}).(*model.Session)
+		if session != nil {
+			session.WriteMu.Lock()
+			defer session.WriteMu.Unlock()
+			_ = session.Conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
+			if data, ok := ctx.Value(model.ProcessDataCtxKey{}).(*model.ProcessData); ok && data != nil && data.Outgoing != nil {
+				header := data.Outgoing.GetHeader()
+				log.Debug().Str("session", session.ID).Uint16("msg_id", header.MsgID).Uint16("serial", header.SerialNumber).Msg("Sending JT808 message")
+			}
+		}
+		data, _ := ctx.Value(model.ProcessDataCtxKey{}).(*model.ProcessData)
+		var header *model.MsgHeader
+		if session != nil && data != nil && data.Outgoing != nil {
+			header = data.Outgoing.GetHeader()
+			session.TrackReliable(header.MsgID, header.SerialNumber, header.PhoneNumber, packet)
+		}
 		err := p.fh.Send(packet)
+		if err != nil && session != nil && header != nil {
+			session.CancelReliable(header.MsgID, header.SerialNumber)
+		}
 		return ctx, err
 	})
 }

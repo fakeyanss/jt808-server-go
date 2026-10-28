@@ -37,7 +37,7 @@ func buildDevice(ctx context.Context, cli *client.TCPClient) *model.Device {
 	cache := storage.GetDeviceCache()
 	device := datagen.GenDevice(deviceConf)
 	device.SessionID = cli.Session.ID
-	device.TransProto = model.TCPProto
+	device.TransProto = cli.Session.GetTransProto()
 	device.Conn = cli.Session.Conn
 	cache.CacheDevice(device)
 	return device
@@ -53,11 +53,21 @@ func getDevice(ctx context.Context) *model.Device {
 	return device
 }
 
-func register(ctx context.Context, cli *client.TCPClient) {
+func register(ctx context.Context, cli *client.TCPClient, fragmentSize int, reverseFragments bool, faultFrame string) error {
 	device := getDevice(ctx)
 	deviceConf := ctx.Value(DeviceConfCtxKey{}).(*config.DeviceConf)
 	msg := datagen.GenMsg0100(deviceConf, device)
+	if faultFrame != "" {
+		return cli.SendMalformedFrame(msg, faultFrame)
+	}
+	if fragmentSize > 0 {
+		if reverseFragments {
+			return cli.SendFragmentsOutOfOrder(msg, fragmentSize)
+		}
+		return cli.SendFragments(msg, fragmentSize)
+	}
 	cli.Send(msg)
+	return nil
 }
 
 func keepalive(ctx context.Context, cli *client.TCPClient) {
@@ -103,12 +113,18 @@ func reportLocation(ctx context.Context, cli *client.TCPClient) {
 	}
 }
 
-func dialAndSend(cfg *config.Config, cliWg *sync.WaitGroup) {
+func dialAndSend(cfg *config.Config, cliWg *sync.WaitGroup, fragmentSize int, reverseFragments bool, faultFrame string) {
 	cli := client.NewTCPClient()
 	addr := cfg.Client.Conn.RemoteAddr
 	for retry := 1; ; retry++ {
-		err := cli.Dial(addr)
+		transport := model.TransportProtocol(cfg.Client.Device.TransProto)
+		if transport == "" {
+			transport = model.TCPProto
+		}
+		err := cli.DialTransport(addr, transport)
 		if err == nil {
+			cli.Session.AckTimeout = time.Duration(cfg.Client.AckTimeoutMS) * time.Millisecond
+			cli.Session.MaxRetries = cfg.Client.MaxRetransmissions
 			break
 		}
 		errDialMsg := "Fail to dial to the tcp addr"
@@ -133,7 +149,11 @@ func dialAndSend(cfg *config.Config, cliWg *sync.WaitGroup) {
 
 		var wg sync.WaitGroup
 		wg.Add(1)
-		register(ctx, cli)
+		if err := register(ctx, cli, fragmentSize, reverseFragments, faultFrame); err != nil {
+			log.Error().Err(err).Msg("Failed to send registration message")
+			cli.Stop()
+			return
+		}
 
 		routines.GoSafe(func() {
 			// device status checker
@@ -162,7 +182,13 @@ func dialAndSend(cfg *config.Config, cliWg *sync.WaitGroup) {
 
 func main() {
 	var cfgPath string
+	var fragmentSize int
+	var reverseFragments bool
+	var faultFrame string
 	flag.StringVar(&cfgPath, "c", config.DefaultCliConfKey, "config file path")
+	flag.IntVar(&fragmentSize, "fragment-size", 0, "send registration as JT808 fragments with this body size (0 disables fragmentation)")
+	flag.BoolVar(&reverseFragments, "reverse-fragments", false, "send fragment indexes in reverse order")
+	flag.StringVar(&faultFrame, "fault-frame", "", "send a malformed frame before registration: bad-checksum, bad-escape, or oversize")
 	flag.Parse()
 	fmt.Printf("Start with configuration %v\n", cfgPath)
 	cfg := config.Load(cfgPath)
@@ -174,7 +200,7 @@ func main() {
 	cliWg.Add(cfg.Client.Concurrency)
 
 	for i := 0; i < cfg.Client.Concurrency; i++ {
-		dialAndSend(cfg, &cliWg)
+		dialAndSend(cfg, &cliWg, fragmentSize, reverseFragments, faultFrame)
 	}
 
 	cliWg.Wait()

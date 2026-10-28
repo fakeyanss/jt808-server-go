@@ -19,7 +19,9 @@ const (
 )
 
 var (
-	ErrFrameReadEmpty = errors.New("Read empty frame")
+	ErrFrameReadEmpty   = errors.New("Read empty frame")
+	ErrFrameTooLong     = errors.New("Frame exceeds maximum length")
+	ErrDatagramBoundary = errors.New("UDP datagram boundary")
 )
 
 type FramePayload []byte
@@ -44,37 +46,48 @@ func NewJT808FrameHandler(conn net.Conn) *JT808FrameHandler {
 }
 
 func (fh *JT808FrameHandler) Recv(ctx context.Context) (FramePayload, error) {
-	var inMessage bool
 	buf := make([]byte, 0, MaxFrameLen)
+	inMessage := false
+	tooLong := false
 	readBuf := make([]byte, 1)
 	for {
-		// Read one byte from the connection
-		_, err := fh.rbuf.Read(readBuf)
+		_, err := io.ReadFull(fh.rbuf, readBuf)
 		if err != nil {
+			if errors.Is(err, ErrDatagramBoundary) {
+				return nil, ErrFrameReadEmpty
+			}
 			return nil, errors.Wrap(err, "Fail to read stream to framePayload")
 		}
 		if readBuf[0] == 0x7e {
-			buf = append(buf, readBuf[0])
 			if inMessage {
-				// end bit
+				if tooLong {
+					return nil, ErrFrameTooLong
+				}
+				buf = append(buf, readBuf[0])
+				if len(buf) == 2 { // Empty boundary pair; keep scanning for a frame.
+					buf = buf[:0]
+					inMessage = false
+					continue
+				}
 				break
 			}
-			// start bit
-			inMessage = !inMessage
-		} else {
-			if inMessage {
+			buf = append(buf[:0], readBuf[0])
+			inMessage = true
+			tooLong = false
+			continue
+		}
+		if inMessage && !tooLong {
+			if len(buf) >= MaxFrameLen-1 {
+				tooLong = true // Discard through the closing boundary before resuming.
+			} else {
 				buf = append(buf, readBuf[0])
 			}
 		}
 	}
 
-	if len(buf) == 0 {
-		return nil, ErrFrameReadEmpty
-	}
-
 	if log.Logger.GetLevel() == zerolog.DebugLevel {
 		var sessionID string
-		session := ctx.Value(model.SessionCtxKey{}).(*model.Session)
+		session, _ := ctx.Value(model.SessionCtxKey{}).(*model.Session)
 		if session != nil {
 			sessionID = session.ID // client端不设置session
 		}

@@ -38,7 +38,7 @@ func (m *Msg0100) Decode(packet *PacketData) error {
 		manuLen, modeLen, idLen = 11, 30, 30
 	} else if *ver == Version2013 {
 		manuLen, idLen = 5, 7
-		remainLen := int(m.Header.Attr.BodyLength) - idx
+		remainLen := len(pkt) - idx
 		if remainLen > 5+20+7+1 { // 厂商+型号+ID+车牌颜色，2013版本至少33位
 			modeLen = 20
 		} else {
@@ -54,7 +54,7 @@ func (m *Msg0100) Decode(packet *PacketData) error {
 	m.DeviceID = strings.TrimRight(hex.ReadString(pkt, &idx, idLen), cutset)
 
 	m.PlateColor = hex.ReadByte(pkt, &idx)
-	m.PlateNumber = hex.ReadGBK(pkt, &idx, int(m.Header.Attr.BodyLength)-idx)
+	m.PlateNumber = hex.ReadGBK(pkt, &idx, len(pkt)-idx)
 	m.LocationDesc = region.Parse(fmt.Sprintf("%02d%04d", m.ProvinceID, m.CityID)).Name
 
 	return nil

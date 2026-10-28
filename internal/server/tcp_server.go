@@ -17,10 +17,17 @@ import (
 )
 
 type TCPServer struct {
-	listener net.Listener
+	listener           net.Listener
+	ackTimeout         time.Duration
+	maxRetransmissions int
 
 	// sessions map[string]*model.Session
 	mutex *sync.Mutex
+}
+
+func (serv *TCPServer) SetReliability(ackTimeout time.Duration, maxRetransmissions int) {
+	serv.ackTimeout = ackTimeout
+	serv.maxRetransmissions = maxRetransmissions
 }
 
 func NewTCPServer() *TCPServer {
@@ -44,6 +51,9 @@ func (serv *TCPServer) Start() {
 	for {
 		conn, err := serv.listener.Accept()
 		if err != nil {
+			if errors.Is(err, net.ErrClosed) {
+				return
+			}
 			log.Error().Err(err).Msg("Fail to do listener accept")
 		} else {
 			session := serv.accept(conn)
@@ -61,8 +71,10 @@ func (serv *TCPServer) accept(conn net.Conn) *model.Session {
 	remoteAddr := conn.RemoteAddr().String()
 	serv.mutex.Lock()
 	session := &model.Session{
-		Conn: conn,
-		ID:   remoteAddr, // using remote addr default
+		Conn:       conn,
+		ID:         remoteAddr, // using remote addr default
+		AckTimeout: serv.ackTimeout,
+		MaxRetries: serv.maxRetransmissions,
 	}
 	// serv.sessions[remoteAddr] = session
 	storage.StoreSession(session)
@@ -84,10 +96,20 @@ func (serv *TCPServer) remove(session *model.Session) {
 
 // 处理每个session的消息
 func (serv *TCPServer) serve(session *model.Session) {
-	defer serv.remove(session)
+	serveSession(session)
+}
+
+func serveSession(session *model.Session) {
+	defer func() {
+		session.ClosePending()
+		session.Conn.Close()
+		storage.ClearSession(session.ID)
+		log.Debug().Str("id", session.ID).Msg("Closing connection from remote.")
+	}()
 
 	pg := protocol.NewPipeline(session.Conn)
 	for {
+		_ = session.Conn.SetReadDeadline(time.Now().Add(2 * time.Minute))
 		// 记录value ctx
 		ctx := context.WithValue(context.Background(), model.SessionCtxKey{}, session)
 
@@ -96,16 +118,24 @@ func (serv *TCPServer) serve(session *model.Session) {
 		if err == nil {
 			continue
 		}
+		if errors.Is(err, protocol.ErrFrameReadEmpty) {
+			continue
+		}
 
 		log.Error().Err(err).Str("id", session.ID).Msg("Failed to serve session")
 
 		switch {
-		case errors.Is(err, io.EOF), errors.Is(err, io.ErrClosedPipe), errors.Is(err, net.ErrClosed), errors.Is(err, storage.ErrDeviceNotFound):
+		case errors.Is(err, io.EOF), errors.Is(err, io.ErrClosedPipe), errors.Is(err, net.ErrClosed), errors.Is(err, storage.ErrDeviceNotFound), isTimeout(err):
 			return // close connection when EOF or closed
 		default:
 			time.Sleep(1 * time.Second)
 		}
 	}
+}
+
+func isTimeout(err error) bool {
+	var netErr net.Error
+	return errors.As(err, &netErr) && netErr.Timeout()
 }
 
 // 发送消息到终端设备, 外部调用
@@ -120,7 +150,8 @@ func (serv *TCPServer) Send(id string, msg model.JT808Msg) {
 	pg := protocol.NewPipeline(session.Conn)
 
 	// 记录value ctx
-	ctx := context.WithValue(context.Background(), model.ProcessDataCtxKey{}, &model.ProcessData{Outgoing: msg})
+	ctx := context.WithValue(context.Background(), model.SessionCtxKey{}, session)
+	ctx = context.WithValue(ctx, model.ProcessDataCtxKey{}, &model.ProcessData{Outgoing: msg})
 
 	err = pg.ProcessConnWrite(ctx)
 

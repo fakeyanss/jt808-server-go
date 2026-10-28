@@ -43,9 +43,11 @@ type logConf struct {
 }
 
 type serverConf struct {
-	Name   string      `yaml:"name"`
-	Port   *servPort   `yaml:"port"`
-	Banner *servBanner `yaml:"banner"`
+	Name               string      `yaml:"name"`
+	Port               *servPort   `yaml:"port"`
+	Banner             *servBanner `yaml:"banner"`
+	AckTimeoutMS       int         `yaml:"ackTimeoutMs"`
+	MaxRetransmissions int         `yaml:"maxRetransmissions"`
 }
 
 type servPort struct {
@@ -60,12 +62,14 @@ type servBanner struct {
 }
 
 type clientConf struct {
-	Name         string            `yaml:"name"`
-	Conn         *connection       `yaml:"conn"`
-	Concurrency  int               `yaml:"concurrency"`
-	Device       *DeviceConf       `yaml:"device"`
-	DeviceGeo    *DeviceGeoConf    `yaml:"deviceGeo"`
-	DeviceParams *DeviceParamsConf `yaml:"deviceParams"`
+	Name               string            `yaml:"name"`
+	Conn               *connection       `yaml:"conn"`
+	Concurrency        int               `yaml:"concurrency"`
+	Device             *DeviceConf       `yaml:"device"`
+	DeviceGeo          *DeviceGeoConf    `yaml:"deviceGeo"`
+	DeviceParams       *DeviceParamsConf `yaml:"deviceParams"`
+	AckTimeoutMS       int               `yaml:"ackTimeoutMs"`
+	MaxRetransmissions int               `yaml:"maxRetransmissions"`
 }
 
 type connection struct {
