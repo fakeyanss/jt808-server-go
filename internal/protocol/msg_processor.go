@@ -75,6 +75,7 @@ func initProcessOption() processOptions {
 		genData: func() *model.ProcessData {
 			return &model.ProcessData{Incoming: &model.Msg0104{}} // 无需回复
 		},
+		process: processMsg0104,
 	}
 	options[0x0200] = &action{ // 位置信息上报
 		genData: func() *model.ProcessData {
@@ -350,9 +351,14 @@ func genAuthCode(d *model.Device) string {
 	return strconv.Itoa(int(hash.FNV32(codeBuilder.String())))
 }
 
-// 收到查询终端参数应答，无需回复，可以在这里做一个一个channel write，由其他地方阻塞式read来完成hook功能。
-func processMsg0104(_ context.Context, _ *model.ProcessData) error {
-	// todo: write channel
+// processMsg0104 routes a terminal parameter response to the API request that
+// issued the matching 0x8104 query.
+func processMsg0104(_ context.Context, data *model.ProcessData) error {
+	in := data.Incoming.(*model.Msg0104)
+	if in.Parameters != nil {
+		storage.GetDeviceParamsCache().CacheDeviceParams(in.Parameters)
+	}
+	storage.GetParamResponseBroker().Deliver(in)
 	return nil
 }
 

@@ -1,8 +1,10 @@
 package api
 
 import (
+	"context"
 	"net/http"
 	"os"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/mitchellh/mapstructure"
@@ -59,13 +61,33 @@ func Run(serv *server.TCPServer, cfg *config.Config) {
 		session, err := storage.GetSession(device.SessionID)
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
+			return
 		}
-		header := model.GenMsgHeader(device, 0x8104, session.GetNextSerialNum())
+		serial := session.GetNextSerialNum()
+		responses := storage.GetParamResponseBroker()
+		responseCh, cancel, err := responses.Register(phone, serial)
+		if err != nil {
+			c.JSON(http.StatusConflict, gin.H{"err": err.Error()})
+			return
+		}
+		defer cancel()
+
+		header := model.GenMsgHeader(device, 0x8104, serial)
 		msg := model.Msg8104{
 			Header: header,
 		}
 		serv.Send(session.ID, &msg)
-		// todo: read channel from process 0104 msg
+		ctx, cancelRequest := context.WithTimeout(c.Request.Context(), 10*time.Second)
+		defer cancelRequest()
+		select {
+		case response := <-responseCh:
+			c.JSON(http.StatusOK, response.Parameters)
+		case <-ctx.Done():
+			if c.Request.Context().Err() != nil {
+				return
+			}
+			c.JSON(http.StatusGatewayTimeout, gin.H{"err": "terminal parameter query timed out"})
+		}
 	})
 
 	router.PUT("/device/:phone/params", func(c *gin.Context) {
@@ -73,6 +95,7 @@ func Run(serv *server.TCPServer, cfg *config.Config) {
 		params := model.DeviceParams{}
 		if err := c.ShouldBind(&params); err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
+			return
 		}
 		device, err := cache.GetDeviceByPhone(phone)
 		if err != nil {
@@ -82,6 +105,7 @@ func Run(serv *server.TCPServer, cfg *config.Config) {
 		session, err := storage.GetSession(device.SessionID)
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
+			return
 		}
 		header := model.GenMsgHeader(device, 0x8103, session.GetNextSerialNum())
 		msg := model.Msg8103{

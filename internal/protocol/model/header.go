@@ -224,6 +224,7 @@ func GenMsgHeader(d *Device, msgID, serialNumber uint16) *MsgHeader {
 		Attr: &MsgBodyAttr{
 			Encryption:       uint8(EncryptionNone),
 			PacketFragmented: 0,
+			VersionDesc:      d.VersionDesc,
 			VersionSign:      versionDecode(d.VersionDesc),
 			Extra:            0,
 		},

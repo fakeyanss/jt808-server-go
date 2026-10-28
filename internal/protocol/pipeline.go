@@ -42,7 +42,6 @@ func (p *Pipeline) ProcessConnRead(ctx context.Context) error {
 
 func (p *Pipeline) ProcessConnWrite(ctx context.Context) error {
 	actions := []delegateFunc{
-		assignSerialNumber(),
 		encode(),
 		send(),
 	}

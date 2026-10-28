@@ -62,6 +62,16 @@ func TestMsgHeader_Encode(t *testing.T) {
 	}
 }
 
+func TestGenMsgHeaderPreserves2019VersionForOutgoingMessages(t *testing.T) {
+	device := &Device{Phone: "00000000013012345678", VersionDesc: Version2019, ProtocolVersion: 1}
+	header := GenMsgHeader(device, 0x8104, 7)
+	encoded, err := header.Encode()
+	require.NoError(t, err)
+	require.Len(t, encoded, 17)
+	require.Equal(t, byte(1), encoded[4])
+	require.Equal(t, Version2019, header.Attr.VersionDesc)
+}
+
 func TestMsgBodyAttr_Decode(t *testing.T) {
 	type fields struct {
 		BodyLength           uint16
