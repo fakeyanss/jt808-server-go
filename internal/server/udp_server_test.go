@@ -51,7 +51,10 @@ func TestUDPServerProcessesJT808Registration(t *testing.T) {
 		PlateColor:     1,
 		PlateNumber:    "京A12345",
 	}
-	require.NoError(t, cli.SendFragmentsWithFault(registration, 16, true, 2))
+	encoded, err := registration.Encode()
+	require.NoError(t, err)
+	total := uint16((len(encoded) - 12 + 15) / 16)
+	require.NoError(t, cli.SendFragmentsWithFault(registration, 16, false, total))
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
 		device, err := storage.GetDeviceCache().GetDeviceByPhone(phone)
@@ -94,7 +97,10 @@ func TestTCPServerProcessesJT808Registration(t *testing.T) {
 		PlateColor:     1,
 		PlateNumber:    "京A12346",
 	}
-	require.NoError(t, cli.SendFragmentsWithFault(registration, 16, true, 2))
+	encoded, err := registration.Encode()
+	require.NoError(t, err)
+	total := uint16((len(encoded) - 12 + 15) / 16)
+	require.NoError(t, cli.SendFragmentsWithFault(registration, 16, false, total))
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
 		device, err := storage.GetDeviceCache().GetDeviceByPhone(phone)
@@ -106,6 +112,31 @@ func TestTCPServerProcessesJT808Registration(t *testing.T) {
 	device, err := storage.GetDeviceCache().GetDeviceByPhone(phone)
 	require.NoError(t, err)
 	require.Equal(t, model.DeviceStatusOnline, device.Status)
+
+	session, err := storage.GetSession(device.SessionID)
+	require.NoError(t, err)
+	paramSerial := session.GetNextSerialNum()
+	paramResponse, cancelParam, err := storage.GetParamResponseBroker().Register(phone, paramSerial)
+	require.NoError(t, err)
+	defer cancelParam()
+	server.Send(session.ID, &model.Msg8106{Header: model.GenMsgHeader(device, 0x8106, paramSerial), ParamIDs: []uint32{1, 2}})
+	select {
+	case response := <-paramResponse:
+		require.Equal(t, paramSerial, response.AnswerSerialNumber)
+		require.Equal(t, uint8(2), response.AnswerParamCnt)
+	case <-time.After(2 * time.Second):
+		t.Fatal("client simulator did not answer 0x8106")
+	}
+	propertyResponse, cancelProperty, err := storage.GetPropertyResponseBroker().Register(phone)
+	require.NoError(t, err)
+	defer cancelProperty()
+	server.Send(session.ID, &model.Msg8107{Header: model.GenMsgHeader(device, 0x8107, session.GetNextSerialNum())})
+	select {
+	case response := <-propertyResponse:
+		require.Equal(t, "FAKEY", response.ManufacturerID)
+	case <-time.After(2 * time.Second):
+		t.Fatal("client simulator did not answer 0x8107")
+	}
 	storage.GetDeviceCache().DelDeviceByPhone(phone)
 	protocol.NewKeepaliveTimer().Cancel(phone)
 }

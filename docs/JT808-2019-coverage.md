@@ -29,7 +29,7 @@ amendment text has been reviewed.
 | `0x0001` | Terminal general acknowledgment | Implemented | Decodes acknowledgment fields and settles pending messages. |
 | `0x8001` | Platform general acknowledgment | Implemented | Encodes responses and settles pending messages. |
 | `0x0002` | Terminal heartbeat | Implemented | Refreshes device activity and receives `0x8001`. |
-| `0x8003` | Platform retransmission request | Partial | Requests missing fragments when the final indexed fragment arrives; the client simulator replays requested frames. A missing final fragment still requires idle-time detection. |
+| `0x8003` | Platform retransmission request | Implemented | Server requests missing fragments after an idle interval, retries at most three times, and clears state on completion; the client simulator replays requested frames. |
 | `0x0005` | Terminal retransmission request | Missing | Request/response and retransmitted packet selection are absent. |
 | `0x0100` | Terminal registration | Implemented | Validates duplicate plate/phone and returns `0x8100`. |
 | `0x8100` | Terminal registration response | Implemented | Returns authentication code; client simulator proceeds to authentication. |
@@ -40,9 +40,9 @@ amendment text has been reviewed.
 | `0x8104` | Query terminal parameters | Implemented | HTTP query sends a serial-correlated request and returns the terminal response; timeout is 10 seconds. |
 | `0x0104` | Terminal parameters response | Implemented | Validates through normal decoding, caches parameters, and delivers to a waiter keyed by phone and answered platform serial. |
 | `0x8105` | Terminal control | Missing | No model or processor path. |
-| `0x8106` | Query specified terminal parameters | Missing | No model or processor path. |
-| `0x8107` | Query terminal properties | Missing | No model or processor path. |
-| `0x0107` | Terminal properties response | Missing | No model or processor path. |
+| `0x8106` | Query specified terminal parameters | Implemented | HTTP `/device/:phone/params?ids=...` sends selected IDs; the response is correlated by phone and platform serial. |
+| `0x8107` | Query terminal properties | Implemented | HTTP `/device/:phone/properties` sends a query and waits up to 10 seconds for the terminal response. |
+| `0x0107` | Terminal properties response | Implemented | Decodes 2011/2013/2019 field widths and delivers the response to the pending phone query. |
 | `0x8108` | Terminal upgrade package | Missing | No model or processor path. |
 | `0x0108` | Terminal upgrade result notification | Missing | No model or processor path. |
 | `0x0200` | Location information report | Implemented | Decodes location, caches latest geo data and responds with `0x8001`. |

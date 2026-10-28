@@ -77,6 +77,7 @@ func initProcessOption() processOptions {
 		},
 		process: processMsg0104,
 	}
+	options[0x0107] = &action{genData: func() *model.ProcessData { return &model.ProcessData{Incoming: &model.Msg0107{}} }, process: processMsg0107}
 	options[0x0200] = &action{ // 位置信息上报
 		genData: func() *model.ProcessData {
 			return &model.ProcessData{Incoming: &model.Msg0200{}, Outgoing: &model.Msg8001{}}
@@ -118,6 +119,12 @@ func initProcessOption() processOptions {
 		},
 		process: processMsg8104,
 	}
+	options[0x8106] = &action{genData: func() *model.ProcessData {
+		return &model.ProcessData{Incoming: &model.Msg8106{}, Outgoing: &model.Msg0104{}}
+	}, process: processMsg8106}
+	options[0x8107] = &action{genData: func() *model.ProcessData {
+		return &model.ProcessData{Incoming: &model.Msg8107{}, Outgoing: &model.Msg0107{}}
+	}, process: processMsg8107}
 	options[0x9205] = &action{ // 查询终端音视频资源列表
 		genData: func() *model.ProcessData {
 			return &model.ProcessData{Incoming: &model.Msg9205{}, Outgoing: &model.Msg1205{}}
@@ -153,6 +160,11 @@ func (mp *JT808MsgProcessor) Process(ctx context.Context, pkt *model.PacketData)
 	}
 	if _, ok := mp.options[msgID]; !ok {
 		return nil, ErrMsgIDNotSupportted
+	}
+	if pkt.SegCompleted {
+		if session, ok := ctx.Value(model.SessionCtxKey{}).(*model.Session); ok && session != nil {
+			cancelSegmentRetransmission(session, pkt.Header.PhoneNumber, pkt.Header.MsgID, pkt.Header.SerialNumber)
+		}
 	}
 
 	// process segment packet
@@ -248,32 +260,8 @@ func processSegmentPacket(ctx context.Context, pkt *model.PacketData) (*model.Pr
 		AnswerMessageID:    pkt.Header.MsgID,
 		Result:             model.ResultSuccess,
 	}
-	// The final indexed fragment lets the platform identify gaps in the
-	// sequence. Ask the terminal to retransmit those packet IDs immediately.
-	if pkt.Header.Frag != nil && pkt.Header.Frag.Index == pkt.Header.Frag.Total {
-		missing := storage.MissingSegmentIndexes(model.NewSegment(pkt), pkt.Header.SerialNumber)
-		if len(missing) > 0 {
-			if session, ok := ctx.Value(model.SessionCtxKey{}).(*model.Session); ok && session != nil {
-				retransmitHeader := *pkt.Header
-				retransmitAttr := *pkt.Header.Attr
-				retransmitAttr.PacketFragmented = 0
-				retransmitAttr.PacketFragmentedDesc = model.PacketFragmentedFalse
-				retransmitHeader.Attr = &retransmitAttr
-				retransmitHeader.Frag = nil
-				retransmitHeader.MsgID = 0x8003
-				retransmitHeader.SerialNumber = session.GetNextSerialNum()
-				request := &model.Msg8003{
-					Header:               &retransmitHeader,
-					OriginalSerialNumber: storage.FirstFragmentSerial(pkt.Header.SerialNumber, pkt.Header.Frag.Index),
-					RetransmitCount:      uint16(len(missing)),
-					PacketIDs:            missing,
-				}
-				writeCtx := context.WithValue(ctx, model.ProcessDataCtxKey{}, &model.ProcessData{Outgoing: request})
-				if err := NewPipeline(session.Conn).ProcessConnWrite(writeCtx); err != nil {
-					log.Error().Err(err).Str("device", pkt.Header.PhoneNumber).Msg("Failed to send fragmented-message retransmission request")
-				}
-			}
-		}
+	if session, ok := ctx.Value(model.SessionCtxKey{}).(*model.Session); ok && session != nil {
+		scheduleSegmentRetransmission(session, pkt)
 	}
 	return &model.ProcessData{Outgoing: outgoingMsg}, nil
 }
@@ -392,6 +380,11 @@ func processMsg0104(_ context.Context, data *model.ProcessData) error {
 		storage.GetDeviceParamsCache().CacheDeviceParams(in.Parameters)
 	}
 	storage.GetParamResponseBroker().Deliver(in)
+	return nil
+}
+
+func processMsg0107(_ context.Context, data *model.ProcessData) error {
+	storage.GetPropertyResponseBroker().Deliver(data.Incoming.(*model.Msg0107))
 	return nil
 }
 
@@ -576,6 +569,40 @@ func processMsg8104(_ context.Context, data *model.ProcessData) error {
 		out.Parameters = params
 	}
 
+	return nil
+}
+
+func processMsg8106(ctx context.Context, data *model.ProcessData) error {
+	if err := processMsg8104(ctx, data); err != nil {
+		return err
+	}
+	in := data.Incoming.(*model.Msg8106)
+	out := data.Outgoing.(*model.Msg0104)
+	filtered := &model.DeviceParams{DevicePhone: out.Parameters.DevicePhone}
+	for _, id := range in.ParamIDs {
+		for _, p := range out.Parameters.Params {
+			if p.ParamID == id {
+				filtered.Params = append(filtered.Params, p)
+				break
+			}
+		}
+	}
+	filtered.ParamCnt = uint8(len(filtered.Params))
+	out.Parameters = filtered
+	return nil
+}
+
+func processMsg8107(_ context.Context, data *model.ProcessData) error {
+	in := data.Incoming.(*model.Msg8107)
+	id := in.Header.PhoneNumber
+	if in.Header.Attr.VersionDesc == model.Version2013 && len(id) > 7 {
+		id = id[len(id)-7:]
+	}
+	terminalModel := "JT808-SIMULATOR"
+	if in.Header.Attr.VersionDesc == model.Version2011 {
+		terminalModel = "JT808-SI"
+	}
+	data.Outgoing = &model.Msg0107{Header: in.Header, TerminalType: 1, ManufacturerID: "FAKEY", TerminalModel: terminalModel, TerminalID: id, ICCID: "89860000000000000000", HardwareVersion: "sim-hw-1", FirmwareVersion: "sim-fw-1", GNSSProperties: 1, CommunicationProperties: 1}
 	return nil
 }
 

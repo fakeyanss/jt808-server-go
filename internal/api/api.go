@@ -4,6 +4,8 @@ import (
 	"context"
 	"net/http"
 	"os"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -72,11 +74,27 @@ func Run(serv *server.TCPServer, cfg *config.Config) {
 		}
 		defer cancel()
 
-		header := model.GenMsgHeader(device, 0x8104, serial)
-		msg := model.Msg8104{
-			Header: header,
+		var msg model.JT808Msg
+		if rawIDs := c.Query("ids"); rawIDs != "" {
+			parts := strings.Split(rawIDs, ",")
+			if len(parts) > 255 {
+				c.JSON(http.StatusBadRequest, gin.H{"err": "at most 255 parameter IDs are allowed"})
+				return
+			}
+			ids := make([]uint32, 0, len(parts))
+			for _, raw := range parts {
+				id, parseErr := strconv.ParseUint(strings.TrimSpace(raw), 0, 32)
+				if parseErr != nil {
+					c.JSON(http.StatusBadRequest, gin.H{"err": "ids must be comma-separated decimal or 0x-prefixed uint32 values"})
+					return
+				}
+				ids = append(ids, uint32(id))
+			}
+			msg = &model.Msg8106{Header: model.GenMsgHeader(device, 0x8106, serial), ParamIDs: ids}
+		} else {
+			msg = &model.Msg8104{Header: model.GenMsgHeader(device, 0x8104, serial)}
 		}
-		serv.Send(session.ID, &msg)
+		serv.Send(session.ID, msg)
 		ctx, cancelRequest := context.WithTimeout(c.Request.Context(), 10*time.Second)
 		defer cancelRequest()
 		select {
@@ -87,6 +105,39 @@ func Run(serv *server.TCPServer, cfg *config.Config) {
 				return
 			}
 			c.JSON(http.StatusGatewayTimeout, gin.H{"err": "terminal parameter query timed out"})
+		}
+	})
+
+	router.GET("/device/:phone/properties", func(c *gin.Context) {
+		phone := c.Param("phone")
+		device, err := cache.GetDeviceByPhone(phone)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
+			return
+		}
+		session, err := storage.GetSession(device.SessionID)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
+			return
+		}
+		responses := storage.GetPropertyResponseBroker()
+		responseCh, cancel, err := responses.Register(phone)
+		if err != nil {
+			c.JSON(http.StatusConflict, gin.H{"err": err.Error()})
+			return
+		}
+		defer cancel()
+		serv.Send(session.ID, &model.Msg8107{Header: model.GenMsgHeader(device, 0x8107, session.GetNextSerialNum())})
+		ctx, cancelRequest := context.WithTimeout(c.Request.Context(), 10*time.Second)
+		defer cancelRequest()
+		select {
+		case response := <-responseCh:
+			c.JSON(http.StatusOK, response)
+		case <-ctx.Done():
+			if c.Request.Context().Err() != nil {
+				return
+			}
+			c.JSON(http.StatusGatewayTimeout, gin.H{"err": "terminal property query timed out"})
 		}
 	})
 
