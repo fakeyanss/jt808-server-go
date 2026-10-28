@@ -53,7 +53,7 @@ func getDevice(ctx context.Context) *model.Device {
 	return device
 }
 
-func register(ctx context.Context, cli *client.TCPClient, fragmentSize int, reverseFragments bool, faultFrame string) error {
+func register(ctx context.Context, cli *client.TCPClient, fragmentSize int, reverseFragments bool, dropFragment uint16, faultFrame string) error {
 	device := getDevice(ctx)
 	deviceConf := ctx.Value(DeviceConfCtxKey{}).(*config.DeviceConf)
 	msg := datagen.GenMsg0100(deviceConf, device)
@@ -61,10 +61,7 @@ func register(ctx context.Context, cli *client.TCPClient, fragmentSize int, reve
 		return cli.SendMalformedFrame(msg, faultFrame)
 	}
 	if fragmentSize > 0 {
-		if reverseFragments {
-			return cli.SendFragmentsOutOfOrder(msg, fragmentSize)
-		}
-		return cli.SendFragments(msg, fragmentSize)
+		return cli.SendFragmentsWithFault(msg, fragmentSize, reverseFragments, dropFragment)
 	}
 	cli.Send(msg)
 	return nil
@@ -113,7 +110,7 @@ func reportLocation(ctx context.Context, cli *client.TCPClient) {
 	}
 }
 
-func dialAndSend(cfg *config.Config, cliWg *sync.WaitGroup, fragmentSize int, reverseFragments bool, faultFrame string) {
+func dialAndSend(cfg *config.Config, cliWg *sync.WaitGroup, fragmentSize int, reverseFragments bool, dropFragment uint16, faultFrame string) {
 	cli := client.NewTCPClient()
 	addr := cfg.Client.Conn.RemoteAddr
 	for retry := 1; ; retry++ {
@@ -149,7 +146,7 @@ func dialAndSend(cfg *config.Config, cliWg *sync.WaitGroup, fragmentSize int, re
 
 		var wg sync.WaitGroup
 		wg.Add(1)
-		if err := register(ctx, cli, fragmentSize, reverseFragments, faultFrame); err != nil {
+		if err := register(ctx, cli, fragmentSize, reverseFragments, dropFragment, faultFrame); err != nil {
 			log.Error().Err(err).Msg("Failed to send registration message")
 			cli.Stop()
 			return
@@ -184,14 +181,24 @@ func main() {
 	var cfgPath string
 	var fragmentSize int
 	var reverseFragments bool
+	var dropFragment uint
 	var faultFrame string
 	flag.StringVar(&cfgPath, "c", config.DefaultCliConfKey, "config file path")
 	flag.IntVar(&fragmentSize, "fragment-size", 0, "send registration as JT808 fragments with this body size (0 disables fragmentation)")
 	flag.BoolVar(&reverseFragments, "reverse-fragments", false, "send fragment indexes in reverse order")
+	flag.UintVar(&dropFragment, "drop-fragment", 0, "omit this 1-based fragment index initially and wait for a 0x8003 retransmission request (0 disables dropping)")
 	flag.StringVar(&faultFrame, "fault-frame", "", "send a malformed frame before registration: bad-checksum, bad-escape, or oversize")
 	flag.Parse()
 	fmt.Printf("Start with configuration %v\n", cfgPath)
 	cfg := config.Load(cfgPath)
+	if dropFragment > 65535 {
+		fmt.Fprintln(os.Stderr, "drop-fragment must be between 0 and 65535")
+		os.Exit(2)
+	}
+	if dropFragment > 0 && fragmentSize == 0 {
+		fmt.Fprintln(os.Stderr, "drop-fragment requires a positive fragment-size")
+		os.Exit(2)
+	}
 
 	logCfg := cfg.ParseLogConf()
 	log.Logger = *logger.Configure(logCfg).Logger
@@ -200,7 +207,7 @@ func main() {
 	cliWg.Add(cfg.Client.Concurrency)
 
 	for i := 0; i < cfg.Client.Concurrency; i++ {
-		dialAndSend(cfg, &cliWg, fragmentSize, reverseFragments, faultFrame)
+		dialAndSend(cfg, &cliWg, fragmentSize, reverseFragments, uint16(dropFragment), faultFrame)
 	}
 
 	cliWg.Wait()

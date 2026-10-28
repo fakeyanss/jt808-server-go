@@ -12,6 +12,7 @@ import (
 
 	"github.com/fakeyanss/jt808-server-go/internal/protocol"
 	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
+	"github.com/fakeyanss/jt808-server-go/internal/storage"
 )
 
 type TCPClient struct {
@@ -117,6 +118,12 @@ func (cli *TCPClient) SendFragmentsOutOfOrder(msg model.JT808Msg, fragmentSize i
 }
 
 func (cli *TCPClient) SendFragmentsWithOrder(msg model.JT808Msg, fragmentSize int, reverse bool) error {
+	return cli.SendFragmentsWithFault(msg, fragmentSize, reverse, 0)
+}
+
+// SendFragmentsWithFault optionally omits one 1-based fragment index from the
+// initial transmission while retaining it for a later 0x8003 retransmission.
+func (cli *TCPClient) SendFragmentsWithFault(msg model.JT808Msg, fragmentSize int, reverse bool, dropIndex uint16) error {
 	if cli.Session == nil || msg == nil || fragmentSize <= 0 || fragmentSize > 1023 {
 		return errors.New("invalid fragmented message arguments")
 	}
@@ -140,6 +147,9 @@ func (cli *TCPClient) SendFragmentsWithOrder(msg model.JT808Msg, fragmentSize in
 	if total == 0 || total > 65535 {
 		return errors.New("fragment count is outside the JT808 range")
 	}
+	if dropIndex > uint16(total) {
+		return errors.New("dropped fragment index exceeds fragment count")
+	}
 	codec := protocol.NewJT808PacketCodec()
 	serials := cli.Session.GetNextSerialNums(total)
 	frames := make([][]byte, total)
@@ -161,11 +171,15 @@ func (cli *TCPClient) SendFragmentsWithOrder(msg model.JT808Msg, fragmentSize in
 			return err
 		}
 		frames[idx] = frame
+		storage.CacheSentSegmentFrame(header.PhoneNumber, serials[0], uint16(idx+1), uint16(total), frame)
 	}
 	for sent := 0; sent < total; sent++ {
 		idx := sent
 		if reverse {
 			idx = total - sent - 1
+		}
+		if uint16(idx+1) == dropIndex {
+			continue
 		}
 		serial := serials[idx]
 		cli.Session.TrackReliable(header.MsgID, serial, header.PhoneNumber, frames[idx])

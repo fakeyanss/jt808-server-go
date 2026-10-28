@@ -448,7 +448,7 @@ make release-client
 
 客户端支持 `TCP` 和 `UDP`。默认配置连接本机 `localhost:8080`；UDP 测试时将 `device.transProto` 设为 `UDP` 并连接 `localhost:8081`。确认超时和最多重发次数可通过 `client.ackTimeoutMs`、`client.maxRetransmissions` 配置。
 
-可用 `-fragment-size 16 -reverse-fragments` 将注册消息切成 16 字节消息体分包并倒序发送，验证服务端的乱序重组和逐包应答。
+可用 `-fragment-size 16 -reverse-fragments` 将注册消息切成 16 字节消息体分包并倒序发送，验证服务端的乱序重组和逐包应答。再加 `-drop-fragment 2` 可在首次发送时跳过第 2 包；服务端发现缺包后会发送 `0x8003`，模拟器按请求补发缓存的原始分包。
 
 可用 `-fault-frame bad-checksum`、`-fault-frame bad-escape` 或 `-fault-frame oversize` 在注册前发送一帧故障数据，再发送正常注册消息，检查服务端是否拒绝异常帧并继续处理后续有效消息。该选项可配合 TCP 或 UDP 配置使用。
 

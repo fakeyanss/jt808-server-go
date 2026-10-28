@@ -29,7 +29,7 @@ amendment text has been reviewed.
 | `0x0001` | Terminal general acknowledgment | Implemented | Decodes acknowledgment fields and settles pending messages. |
 | `0x8001` | Platform general acknowledgment | Implemented | Encodes responses and settles pending messages. |
 | `0x0002` | Terminal heartbeat | Implemented | Refreshes device activity and receives `0x8001`. |
-| `0x8003` | Platform retransmission request | Missing | Missing-fragment retransmission is not implemented. |
+| `0x8003` | Platform retransmission request | Partial | Requests missing fragments when the final indexed fragment arrives; the client simulator replays requested frames. A missing final fragment still requires idle-time detection. |
 | `0x0005` | Terminal retransmission request | Missing | Request/response and retransmitted packet selection are absent. |
 | `0x0100` | Terminal registration | Implemented | Validates duplicate plate/phone and returns `0x8100`. |
 | `0x8100` | Terminal registration response | Implemented | Returns authentication code; client simulator proceeds to authentication. |

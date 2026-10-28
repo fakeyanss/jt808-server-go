@@ -94,6 +94,12 @@ func initProcessOption() processOptions {
 		},
 		process: processMsg8001,
 	}
+	options[0x8003] = &action{ // 补传分包请求
+		genData: func() *model.ProcessData {
+			return &model.ProcessData{Incoming: &model.Msg8003{}, Outgoing: &model.Msg0001{}}
+		},
+		process: processMsg8003,
+	}
 	options[0x8100] = &action{ // 注册应答
 		genData: func() *model.ProcessData {
 			return &model.ProcessData{Incoming: &model.Msg8100{}, Outgoing: &model.Msg0102{}}
@@ -227,7 +233,7 @@ func decodeMessageSafely(msg model.JT808Msg, pkt *model.PacketData) (err error) 
 	return msg.Decode(pkt)
 }
 
-func processSegmentPacket(_ context.Context, pkt *model.PacketData) (*model.ProcessData, error) {
+func processSegmentPacket(ctx context.Context, pkt *model.PacketData) (*model.ProcessData, error) {
 	// JT1078 4.1节定义，对每个分包回复8001
 	headerCopy := *pkt.Header
 	attrCopy := *pkt.Header.Attr
@@ -241,6 +247,33 @@ func processSegmentPacket(_ context.Context, pkt *model.PacketData) (*model.Proc
 		AnswerSerialNumber: pkt.Header.SerialNumber,
 		AnswerMessageID:    pkt.Header.MsgID,
 		Result:             model.ResultSuccess,
+	}
+	// The final indexed fragment lets the platform identify gaps in the
+	// sequence. Ask the terminal to retransmit those packet IDs immediately.
+	if pkt.Header.Frag != nil && pkt.Header.Frag.Index == pkt.Header.Frag.Total {
+		missing := storage.MissingSegmentIndexes(model.NewSegment(pkt), pkt.Header.SerialNumber)
+		if len(missing) > 0 {
+			if session, ok := ctx.Value(model.SessionCtxKey{}).(*model.Session); ok && session != nil {
+				retransmitHeader := *pkt.Header
+				retransmitAttr := *pkt.Header.Attr
+				retransmitAttr.PacketFragmented = 0
+				retransmitAttr.PacketFragmentedDesc = model.PacketFragmentedFalse
+				retransmitHeader.Attr = &retransmitAttr
+				retransmitHeader.Frag = nil
+				retransmitHeader.MsgID = 0x8003
+				retransmitHeader.SerialNumber = session.GetNextSerialNum()
+				request := &model.Msg8003{
+					Header:               &retransmitHeader,
+					OriginalSerialNumber: storage.FirstFragmentSerial(pkt.Header.SerialNumber, pkt.Header.Frag.Index),
+					RetransmitCount:      uint16(len(missing)),
+					PacketIDs:            missing,
+				}
+				writeCtx := context.WithValue(ctx, model.ProcessDataCtxKey{}, &model.ProcessData{Outgoing: request})
+				if err := NewPipeline(session.Conn).ProcessConnWrite(writeCtx); err != nil {
+					log.Error().Err(err).Str("device", pkt.Header.PhoneNumber).Msg("Failed to send fragmented-message retransmission request")
+				}
+			}
+		}
 	}
 	return &model.ProcessData{Outgoing: outgoingMsg}, nil
 }
@@ -427,6 +460,31 @@ func processMsg8001(ctx context.Context, data *model.ProcessData) error {
 		cache.CacheDevice(device)
 	}
 
+	return nil
+}
+
+// processMsg8003 is used by the client simulator to replay requested fragment
+// frames. A production terminal handles the same downlink command itself.
+func processMsg8003(ctx context.Context, data *model.ProcessData) error {
+	request := data.Incoming.(*model.Msg8003)
+	session, ok := ctx.Value(model.SessionCtxKey{}).(*model.Session)
+	if !ok || session == nil {
+		return nil
+	}
+	frames := storage.GetSentSegmentFrames(request.Header.PhoneNumber, request.OriginalSerialNumber, request.PacketIDs)
+	if frames == nil {
+		log.Warn().Str("device", request.Header.PhoneNumber).Uint16("original_serial", request.OriginalSerialNumber).Msg("No cached simulator fragments for retransmission request")
+		return nil
+	}
+	for i, frame := range frames {
+		if frame == nil {
+			log.Warn().Str("device", request.Header.PhoneNumber).Uint16("packet_id", request.PacketIDs[i]).Msg("Requested simulator fragment is not cached")
+			continue
+		}
+		if err := session.WriteFrame(frame); err != nil {
+			return errors.Wrap(err, "failed to retransmit simulator fragment")
+		}
+	}
 	return nil
 }
 

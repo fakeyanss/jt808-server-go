@@ -51,7 +51,7 @@ func TestUDPServerProcessesJT808Registration(t *testing.T) {
 		PlateColor:     1,
 		PlateNumber:    "京A12345",
 	}
-	require.NoError(t, cli.SendFragmentsOutOfOrder(registration, 16))
+	require.NoError(t, cli.SendFragmentsWithFault(registration, 16, true, 2))
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
 		device, err := storage.GetDeviceCache().GetDeviceByPhone(phone)
@@ -94,7 +94,7 @@ func TestTCPServerProcessesJT808Registration(t *testing.T) {
 		PlateColor:     1,
 		PlateNumber:    "京A12346",
 	}
-	require.NoError(t, cli.SendFragmentsOutOfOrder(registration, 16))
+	require.NoError(t, cli.SendFragmentsWithFault(registration, 16, true, 2))
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
 		device, err := storage.GetDeviceCache().GetDeviceByPhone(phone)

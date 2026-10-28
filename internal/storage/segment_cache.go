@@ -50,7 +50,7 @@ func CacheSegment(seg *model.Segment, serialNumber uint16) bool {
 	cache := getSegmentCache()
 	// JT808 assigns consecutive serial numbers to fragments. Normalize each
 	// fragment to the first fragment's serial so out-of-order arrivals join.
-	firstSerial := serialNumber - (seg.SegNo - 1)
+	firstSerial := FirstFragmentSerial(serialNumber, seg.SegNo)
 	key := fmt.Sprintf("%s/%04x/%04x", seg.Phone, seg.MsgID, firstSerial)
 	cache.mutex.Lock()
 	defer cache.mutex.Unlock()
@@ -102,6 +102,43 @@ func CacheSegment(seg *model.Segment, serialNumber uint16) bool {
 	cache.cachedBytes -= state.bytes
 	delete(cache.cacheByKey, key)
 	return true
+}
+
+// FirstFragmentSerial converts a fragment's terminal serial to the original
+// message serial, accounting for JT808's 1..65535 serial-number wraparound.
+func FirstFragmentSerial(serialNumber, fragmentIndex uint16) uint16 {
+	for i := uint16(1); i < fragmentIndex; i++ {
+		if serialNumber <= 1 {
+			serialNumber = 65535
+		} else {
+			serialNumber--
+		}
+	}
+	return serialNumber
+}
+
+// MissingSegmentIndexes returns the 1-based fragment indexes still absent for
+// the segmented message containing seg. It is intended for 0x8003 requests.
+func MissingSegmentIndexes(seg *model.Segment, serialNumber uint16) []uint16 {
+	if seg == nil || seg.SegTotal == 0 || seg.SegNo == 0 || seg.SegNo > seg.SegTotal {
+		return nil
+	}
+	firstSerial := FirstFragmentSerial(serialNumber, seg.SegNo)
+	key := fmt.Sprintf("%s/%04x/%04x", seg.Phone, seg.MsgID, firstSerial)
+	cache := getSegmentCache()
+	cache.mutex.Lock()
+	defer cache.mutex.Unlock()
+	state := cache.cacheByKey[key]
+	if state == nil || state.total != seg.SegTotal || time.Since(state.updatedAt) > segmentCacheTTL {
+		return nil
+	}
+	missing := make([]uint16, 0, int(state.total)-state.received)
+	for idx, part := range state.parts {
+		if part == nil {
+			missing = append(missing, uint16(idx+1))
+		}
+	}
+	return missing
 }
 
 func (cache *SegmentCache) evictOldest(excludeKey string) bool {
