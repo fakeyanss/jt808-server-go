@@ -45,7 +45,7 @@ amendment text has been reviewed.
 | `0x0107` | Terminal properties response | Implemented | Decodes 2011/2013/2019 field widths and delivers the response to the pending phone query. |
 | `0x8108` | Terminal upgrade package | Missing | No model or processor path. |
 | `0x0108` | Terminal upgrade result notification | Missing | No model or processor path. |
-| `0x0200` | Location information report | Implemented | Decodes location, caches latest geo data and responds with `0x8001`. |
+| `0x0200` | Location information report | Partial | Decodes and caches latest geo data; alarm-bit events are kept in a bounded in-memory history and can be confirmed after terminal acknowledgment. Durable storage and extended location items remain open. |
 | `0x8201` | Location information query | Implemented | Sends a query to the terminal; HTTP `/device/:phone/location` waits for the serial-correlated response. |
 | `0x0201` | Location information query response | Implemented | Encodes/decodes the answer serial and base location report; delivers responses to pending HTTP queries. |
 | `0x8202` | Temporary location tracking control | Implemented | Client simulator changes its location report interval for the requested validity period and restores the configured interval on stop/expiry; replies with `0x0001`. |
@@ -72,7 +72,7 @@ amendment text has been reviewed.
 | `0x8700` | Driving recorder data collection command | Missing | No model or processor path. |
 | `0x0700` | Driving recorder data upload | Missing | No model or processor path. |
 | `0x8701` | Driving recorder parameter download | Missing | No model or processor path. |
-| `0x8203` | Manual alarm confirmation | Partial | HTTP command serializes alarm serial/type and the client simulator acknowledges it; alarm history and terminal-side confirmation state are not stored. |
+| `0x8203` | Manual alarm confirmation | Partial | HTTP command serializes alarm serial/type; matching in-memory alarm events are marked confirmed after terminal `0x0001`; durable storage remains open. |
 | `0x8204` | Server-initiated link detection request | Implemented | Empty-body request is decoded by the client simulator and receives `0x0001`. |
 | `0x8300` | Text information issue | Missing | No model or processor path. |
 | `0x0702` | Driver identity information report | Missing | No model or processor path. |

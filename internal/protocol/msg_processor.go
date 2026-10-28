@@ -458,6 +458,7 @@ func processMsg0200(_ context.Context, data *model.ProcessData) error {
 	if errors.Is(err, storage.ErrDeviceNotFound) {
 		return errors.Wrapf(err, "Fail to find device cache, phoneNumber=%s", in.Header.PhoneNumber)
 	}
+	storage.GetAlarmCache().Record(in.Header.PhoneNumber, in.Header.SerialNumber, in.AlarmSign, in.Latitude, in.Longitude, in.Time)
 
 	// 解析状态位编码
 	dg := &model.DeviceGeo{}
@@ -483,6 +484,9 @@ func processMsg0001(ctx context.Context, data *model.ProcessData) error {
 	in := data.Incoming.(*model.Msg0001)
 	if session, ok := ctx.Value(model.SessionCtxKey{}).(*model.Session); ok && session != nil {
 		session.Acknowledge(in.AnswerMessageID, in.AnswerSerialNumber)
+	}
+	if in.AnswerMessageID == 0x8203 {
+		storage.GetAlarmCache().ConfirmByCommand(in.Header.PhoneNumber, in.AnswerSerialNumber)
 	}
 	return nil
 }

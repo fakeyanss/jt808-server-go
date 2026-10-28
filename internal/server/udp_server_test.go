@@ -188,7 +188,7 @@ func TestTCPServerProcessesJT808Registration(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("client simulator did not answer 0x8107")
 	}
-	report := &model.Msg0200{Header: model.GenMsgHeader(device, 0x0200, session.GetNextSerialNum()), AlarmSign: 0x20, StatusSign: 0x03, Latitude: 31123456, Longitude: 121123456, Altitude: 12, Speed: 85, Direction: 90, Time: "261028204500"}
+	report := &model.Msg0200{Header: model.GenMsgHeader(device, 0x0200, session.GetNextSerialNum()), AlarmSign: 0x01, StatusSign: 0x03, Latitude: 31123456, Longitude: 121123456, Altitude: 12, Speed: 85, Direction: 90, Time: "261028204500"}
 	require.NoError(t, cli.SendWithError(report))
 	deadline = time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
@@ -211,6 +211,21 @@ func TestTCPServerProcessesJT808Registration(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("client simulator did not answer 0x8201")
 	}
+	alarms := storage.GetAlarmCache().List(phone)
+	require.NotEmpty(t, alarms)
+	require.Equal(t, report.Header.SerialNumber, alarms[len(alarms)-1].MessageSerial)
+	confirmSerial := session.GetNextSerialNum()
+	storage.GetAlarmCache().RegisterConfirmation(phone, confirmSerial, report.Header.SerialNumber, report.AlarmSign)
+	server.Send(session.ID, &model.Msg8203{Header: model.GenMsgHeader(device, 0x8203, confirmSerial), AlarmSerial: report.Header.SerialNumber, AlarmType: report.AlarmSign})
+	deadline = time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		alarms = storage.GetAlarmCache().List(phone)
+		if len(alarms) > 0 && alarms[len(alarms)-1].Confirmed {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	require.True(t, alarms[len(alarms)-1].Confirmed, "terminal 0x0001 acknowledgment should confirm the alarm")
 	trackSerial := session.GetNextSerialNum()
 	server.Send(session.ID, &model.Msg8202{Header: model.GenMsgHeader(device, 0x8202, trackSerial), TimeInterval: 1, ValidityPeriod: 30})
 	deadline = time.Now().Add(2 * time.Second)

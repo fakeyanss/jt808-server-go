@@ -196,8 +196,18 @@ func Run(serv *server.TCPServer, cfg *config.Config) {
 			return
 		}
 		msg := &model.Msg8203{Header: model.GenMsgHeader(device, 0x8203, session.GetNextSerialNum()), AlarmSerial: request.AlarmSerial, AlarmType: request.AlarmType}
+		storage.GetAlarmCache().RegisterConfirmation(phone, msg.Header.SerialNumber, request.AlarmSerial, request.AlarmType)
 		serv.Send(session.ID, msg)
 		c.JSON(http.StatusAccepted, gin.H{"messageId": "0x8203", "alarmSerial": request.AlarmSerial, "alarmType": request.AlarmType})
+	})
+
+	router.GET("/device/:phone/alarms", func(c *gin.Context) {
+		phone := c.Param("phone")
+		if _, err := cache.GetDeviceByPhone(phone); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
+			return
+		}
+		c.JSON(http.StatusOK, storage.GetAlarmCache().List(phone))
 	})
 
 	router.PUT("/device/:phone/params", func(c *gin.Context) {
