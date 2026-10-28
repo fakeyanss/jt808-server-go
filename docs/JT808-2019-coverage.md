@@ -62,13 +62,13 @@ amendment text has been reviewed.
 | `0x8500` | Vehicle control | Missing | No model or processor path. |
 | `0x0500` | Vehicle control response | Missing | No model or processor path. |
 | `0x8600` | Set circular area | Missing | No model or processor path. |
-| `0x8601` | Delete circular area | Missing | No model or processor path. |
+| `0x8601` | Delete circular area | Partial | Encodes/decodes the standard ID list and supports deletion of all areas; HTTP downlink plus simulator acknowledgement. |
 | `0x8602` | Set rectangular area | Missing | No model or processor path. |
-| `0x8603` | Delete rectangular area | Missing | No model or processor path. |
+| `0x8603` | Delete rectangular area | Partial | Shared delete-ID message model, HTTP downlink, and simulator acknowledgement. |
 | `0x8604` | Set polygonal area | Missing | No model or processor path. |
-| `0x8605` | Delete polygonal area | Missing | No model or processor path. |
+| `0x8605` | Delete polygonal area | Partial | Shared delete-ID message model, HTTP downlink, and simulator acknowledgement. |
 | `0x8606` | Set route | Missing | No model or processor path. |
-| `0x8607` | Delete route | Missing | No model or processor path. |
+| `0x8607` | Delete route | Partial | Shared delete-ID message model, HTTP downlink, and simulator acknowledgement. |
 | `0x8700` | Driving recorder data collection command | Missing | No model or processor path. |
 | `0x0700` | Driving recorder data upload | Missing | No model or processor path. |
 | `0x8701` | Driving recorder parameter download | Missing | No model or processor path. |

@@ -139,6 +139,11 @@ func initProcessOption() processOptions {
 			return &model.ProcessData{Incoming: &model.Msg8105{}, Outgoing: &model.Msg0001{}}
 		},
 	}
+	for _, messageID := range []uint16{0x8601, 0x8603, 0x8605, 0x8607} {
+		options[messageID] = &action{genData: func() *model.ProcessData {
+			return &model.ProcessData{Incoming: &model.Msg860Delete{}, Outgoing: &model.Msg0001{}}
+		}}
+	}
 	options[0x8106] = &action{genData: func() *model.ProcessData {
 		return &model.ProcessData{Incoming: &model.Msg8106{}, Outgoing: &model.Msg0104{}}
 	}, process: processMsg8106}

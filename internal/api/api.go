@@ -212,6 +212,39 @@ func Run(serv *server.TCPServer, cfg *config.Config) {
 		c.JSON(http.StatusAccepted, gin.H{"messageId": "0x8105", "commandWord": request.CommandWord})
 	})
 
+	router.POST("/device/:phone/regions/delete", func(c *gin.Context) {
+		var request struct {
+			MessageID uint16   `json:"messageId" binding:"required"`
+			IDs       []uint32 `json:"ids"`
+		}
+		if err := c.ShouldBindJSON(&request); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
+			return
+		}
+		if request.MessageID != 0x8601 && request.MessageID != 0x8603 && request.MessageID != 0x8605 && request.MessageID != 0x8607 {
+			c.JSON(http.StatusBadRequest, gin.H{"err": "messageId must be 0x8601, 0x8603, 0x8605, or 0x8607"})
+			return
+		}
+		if len(request.IDs) > 125 {
+			c.JSON(http.StatusBadRequest, gin.H{"err": "at most 125 IDs are allowed per message"})
+			return
+		}
+		phone := c.Param("phone")
+		device, err := cache.GetDeviceByPhone(phone)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
+			return
+		}
+		session, err := storage.GetSession(device.SessionID)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
+			return
+		}
+		msg := &model.Msg860Delete{Header: model.GenMsgHeader(device, request.MessageID, session.GetNextSerialNum()), IDs: request.IDs}
+		serv.Send(session.ID, msg)
+		c.JSON(http.StatusAccepted, gin.H{"messageId": request.MessageID, "count": len(request.IDs)})
+	})
+
 	router.POST("/device/:phone/alarms/confirm", func(c *gin.Context) {
 		var request struct {
 			AlarmSerial uint16 `json:"alarmSerial"`
