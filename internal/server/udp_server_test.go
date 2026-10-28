@@ -188,6 +188,42 @@ func TestTCPServerProcessesJT808Registration(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("client simulator did not answer 0x8107")
 	}
+	report := &model.Msg0200{Header: model.GenMsgHeader(device, 0x0200, session.GetNextSerialNum()), AlarmSign: 0x20, StatusSign: 0x03, Latitude: 31123456, Longitude: 121123456, Altitude: 12, Speed: 85, Direction: 90, Time: "261028204500"}
+	require.NoError(t, cli.SendWithError(report))
+	deadline = time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := storage.GetGeoCache().GetGeoLatestByPhone(phone); err == nil {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	locationSerial := session.GetNextSerialNum()
+	locationResponse, cancelLocation, err := storage.GetLocationResponseBroker().Register(phone, locationSerial)
+	require.NoError(t, err)
+	defer cancelLocation()
+	server.Send(session.ID, &model.Msg8201{Header: model.GenMsgHeader(device, 0x8201, locationSerial)})
+	select {
+	case response := <-locationResponse:
+		require.Equal(t, locationSerial, response.AnswerSerialNumber)
+		require.Equal(t, report.Latitude, response.Location.Latitude)
+		require.Equal(t, report.Longitude, response.Location.Longitude)
+		require.Equal(t, report.AlarmSign, response.Location.AlarmSign)
+	case <-time.After(2 * time.Second):
+		t.Fatal("client simulator did not answer 0x8201")
+	}
+	trackSerial := session.GetNextSerialNum()
+	server.Send(session.ID, &model.Msg8202{Header: model.GenMsgHeader(device, 0x8202, trackSerial), TimeInterval: 1, ValidityPeriod: 30})
+	deadline = time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) && storage.GetLocationTrackingCache().Interval(phone, 9*time.Second) != time.Second {
+		time.Sleep(10 * time.Millisecond)
+	}
+	require.Equal(t, time.Second, storage.GetLocationTrackingCache().Interval(phone, 9*time.Second))
+	server.Send(session.ID, &model.Msg8202{Header: model.GenMsgHeader(device, 0x8202, session.GetNextSerialNum()), TimeInterval: 0})
+	deadline = time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) && storage.GetLocationTrackingCache().Interval(phone, 9*time.Second) != 9*time.Second {
+		time.Sleep(10 * time.Millisecond)
+	}
+	require.Equal(t, 9*time.Second, storage.GetLocationTrackingCache().Interval(phone, 9*time.Second))
 	storage.GetDeviceCache().DelDeviceByPhone(phone)
 	protocol.NewKeepaliveTimer().Cancel(phone)
 }

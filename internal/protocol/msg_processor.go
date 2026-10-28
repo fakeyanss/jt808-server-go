@@ -59,6 +59,9 @@ func initProcessOption() processOptions {
 		},
 		process: processMsg0003,
 	}
+	options[0x0004] = &action{genData: func() *model.ProcessData {
+		return &model.ProcessData{Incoming: &model.Msg0004{}, Outgoing: &model.Msg8004{}}
+	}}
 	options[0x0005] = &action{genData: func() *model.ProcessData { return &model.ProcessData{Incoming: &model.Msg0005{}} }, process: processMsg0005}
 	options[0x0100] = &action{ // 注册
 		genData: func() *model.ProcessData {
@@ -79,6 +82,16 @@ func initProcessOption() processOptions {
 		process: processMsg0104,
 	}
 	options[0x0107] = &action{genData: func() *model.ProcessData { return &model.ProcessData{Incoming: &model.Msg0107{}} }, process: processMsg0107}
+	options[0x0201] = &action{genData: func() *model.ProcessData { return &model.ProcessData{Incoming: &model.Msg0201{}} }, process: processMsg0201}
+	options[0x8202] = &action{genData: func() *model.ProcessData {
+		return &model.ProcessData{Incoming: &model.Msg8202{}, Outgoing: &model.Msg0001{}}
+	}, process: processMsg8202}
+	options[0x8203] = &action{genData: func() *model.ProcessData {
+		return &model.ProcessData{Incoming: &model.Msg8203{}, Outgoing: &model.Msg0001{}}
+	}}
+	options[0x8204] = &action{genData: func() *model.ProcessData {
+		return &model.ProcessData{Incoming: &model.Msg8204{}, Outgoing: &model.Msg0001{}}
+	}}
 	options[0x0200] = &action{ // 位置信息上报
 		genData: func() *model.ProcessData {
 			return &model.ProcessData{Incoming: &model.Msg0200{}, Outgoing: &model.Msg8001{}}
@@ -102,6 +115,7 @@ func initProcessOption() processOptions {
 		},
 		process: processMsg8003,
 	}
+	options[0x8004] = &action{genData: func() *model.ProcessData { return &model.ProcessData{Incoming: &model.Msg8004{}} }}
 	options[0x8100] = &action{ // 注册应答
 		genData: func() *model.ProcessData {
 			return &model.ProcessData{Incoming: &model.Msg8100{}, Outgoing: &model.Msg0102{}}
@@ -126,6 +140,9 @@ func initProcessOption() processOptions {
 	options[0x8107] = &action{genData: func() *model.ProcessData {
 		return &model.ProcessData{Incoming: &model.Msg8107{}, Outgoing: &model.Msg0107{}}
 	}, process: processMsg8107}
+	options[0x8201] = &action{genData: func() *model.ProcessData {
+		return &model.ProcessData{Incoming: &model.Msg8201{}, Outgoing: &model.Msg0201{}}
+	}, process: processMsg8201}
 	options[0x9205] = &action{ // 查询终端音视频资源列表
 		genData: func() *model.ProcessData {
 			return &model.ProcessData{Incoming: &model.Msg9205{}, Outgoing: &model.Msg1205{}}
@@ -386,6 +403,48 @@ func processMsg0104(_ context.Context, data *model.ProcessData) error {
 
 func processMsg0107(_ context.Context, data *model.ProcessData) error {
 	storage.GetPropertyResponseBroker().Deliver(data.Incoming.(*model.Msg0107))
+	return nil
+}
+
+func processMsg8201(_ context.Context, data *model.ProcessData) error {
+	in := data.Incoming.(*model.Msg8201)
+	out := data.Outgoing.(*model.Msg0201)
+	geo, err := storage.GetGeoCache().GetGeoLatestByPhone(in.Header.PhoneNumber)
+	if err != nil {
+		return err
+	}
+	if geo.Report != nil {
+		location := *geo.Report
+		locationHeader := *out.Header
+		locationHeader.MsgID = 0x0200
+		location.Header = &locationHeader
+		out.Location = &location
+		return nil
+	}
+	if geo.Geo == nil || geo.Location == nil || geo.Drive == nil {
+		return storage.ErrGisNotFound
+	}
+	out.Location = &model.Msg0200{
+		Header:     out.Header,
+		StatusSign: geo.Geo.Encode(),
+		Latitude:   uint32(geo.Location.Latitude * float64(model.LocationAccuracy)),
+		Longitude:  uint32(geo.Location.Longitude * float64(model.LocationAccuracy)),
+		Altitude:   geo.Location.Altitude,
+		Speed:      uint16(geo.Drive.Speed * float64(model.SpeedAccuracy)),
+		Direction:  geo.Drive.Direction,
+		Time:       hex.FormatTime(geo.Time),
+	}
+	return nil
+}
+
+func processMsg0201(_ context.Context, data *model.ProcessData) error {
+	storage.GetLocationResponseBroker().Deliver(data.Incoming.(*model.Msg0201))
+	return nil
+}
+
+func processMsg8202(_ context.Context, data *model.ProcessData) error {
+	in := data.Incoming.(*model.Msg8202)
+	storage.GetLocationTrackingCache().Set(in.Header.PhoneNumber, in.TimeInterval, in.ValidityPeriod)
 	return nil
 }
 

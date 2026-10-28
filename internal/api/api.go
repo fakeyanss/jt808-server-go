@@ -141,6 +141,65 @@ func Run(serv *server.TCPServer, cfg *config.Config) {
 		}
 	})
 
+	router.GET("/device/:phone/location", func(c *gin.Context) {
+		phone := c.Param("phone")
+		device, err := cache.GetDeviceByPhone(phone)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
+			return
+		}
+		session, err := storage.GetSession(device.SessionID)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
+			return
+		}
+		serial := session.GetNextSerialNum()
+		responses := storage.GetLocationResponseBroker()
+		responseCh, cancel, err := responses.Register(phone, serial)
+		if err != nil {
+			c.JSON(http.StatusConflict, gin.H{"err": err.Error()})
+			return
+		}
+		defer cancel()
+		serv.Send(session.ID, &model.Msg8201{Header: model.GenMsgHeader(device, 0x8201, serial)})
+		ctx, cancelRequest := context.WithTimeout(c.Request.Context(), 10*time.Second)
+		defer cancelRequest()
+		select {
+		case response := <-responseCh:
+			c.JSON(http.StatusOK, response.Location)
+		case <-ctx.Done():
+			if c.Request.Context().Err() != nil {
+				return
+			}
+			c.JSON(http.StatusGatewayTimeout, gin.H{"err": "terminal location query timed out"})
+		}
+	})
+
+	router.POST("/device/:phone/alarms/confirm", func(c *gin.Context) {
+		var request struct {
+			AlarmSerial uint16 `json:"alarmSerial"`
+			AlarmType   uint32 `json:"alarmType"`
+		}
+		if err := c.ShouldBindJSON(&request); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
+			return
+		}
+		phone := c.Param("phone")
+		device, err := cache.GetDeviceByPhone(phone)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
+			return
+		}
+		session, err := storage.GetSession(device.SessionID)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
+			return
+		}
+		msg := &model.Msg8203{Header: model.GenMsgHeader(device, 0x8203, session.GetNextSerialNum()), AlarmSerial: request.AlarmSerial, AlarmType: request.AlarmType}
+		serv.Send(session.ID, msg)
+		c.JSON(http.StatusAccepted, gin.H{"messageId": "0x8203", "alarmSerial": request.AlarmSerial, "alarmType": request.AlarmType})
+	})
+
 	router.PUT("/device/:phone/params", func(c *gin.Context) {
 		phone := c.Param("phone")
 		params := model.DeviceParams{}

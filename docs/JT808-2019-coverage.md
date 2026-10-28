@@ -34,7 +34,7 @@ amendment text has been reviewed.
 | `0x0100` | Terminal registration | Implemented | Validates duplicate plate/phone and returns `0x8100`. |
 | `0x8100` | Terminal registration response | Implemented | Returns authentication code; client simulator proceeds to authentication. |
 | `0x0003` | Terminal logout | Implemented | Removes device state and cancels keepalive tracking. |
-| `0x0004` | Query server time | Model only | Model exists; it is not registered in the message processor. |
+| `0x0004` | Query server time | Implemented | Responds with a BCD timestamp in `0x8004`. |
 | `0x0102` | Terminal authentication | Implemented | Validates the generated auth code and updates device state. |
 | `0x8103` | Set terminal parameters | Implemented | Decodes and caches provided parameter values. |
 | `0x8104` | Query terminal parameters | Implemented | HTTP query sends a serial-correlated request and returns the terminal response; timeout is 10 seconds. |
@@ -46,9 +46,9 @@ amendment text has been reviewed.
 | `0x8108` | Terminal upgrade package | Missing | No model or processor path. |
 | `0x0108` | Terminal upgrade result notification | Missing | No model or processor path. |
 | `0x0200` | Location information report | Implemented | Decodes location, caches latest geo data and responds with `0x8001`. |
-| `0x8201` | Location information query | Missing | No model or processor path. |
-| `0x0201` | Location information query response | Missing | No model or processor path. |
-| `0x8202` | Temporary location tracking control | Missing | No model or processor path. |
+| `0x8201` | Location information query | Implemented | Sends a query to the terminal; HTTP `/device/:phone/location` waits for the serial-correlated response. |
+| `0x0201` | Location information query response | Implemented | Encodes/decodes the answer serial and base location report; delivers responses to pending HTTP queries. |
+| `0x8202` | Temporary location tracking control | Implemented | Client simulator changes its location report interval for the requested validity period and restores the configured interval on stop/expiry; replies with `0x0001`. |
 | `0x8301` | Event setting | Missing | No model or processor path. |
 | `0x0301` | Event report | Missing | No model or processor path. |
 | `0x8302` | Question issue | Missing | No model or processor path. |
@@ -56,7 +56,7 @@ amendment text has been reviewed.
 | `0x8303` | Information menu setting | Missing | No model or processor path. |
 | `0x0303` | Information menu response/cancel | Missing | No model or processor path. |
 | `0x8304` | Information service | Missing | No model or processor path. |
-| `0x8004` | Query server time response | Model only | Encoder/model exists; no server processor path or time source. |
+| `0x8004` | Query server time response | Implemented | Decodes the server timestamp; the client simulator accepts the response. |
 | `0x8400` | Call callback | Missing | No model or processor path. |
 | `0x8401` | Set phonebook | Missing | No model or processor path. |
 | `0x8500` | Vehicle control | Missing | No model or processor path. |
@@ -72,8 +72,8 @@ amendment text has been reviewed.
 | `0x8700` | Driving recorder data collection command | Missing | No model or processor path. |
 | `0x0700` | Driving recorder data upload | Missing | No model or processor path. |
 | `0x8701` | Driving recorder parameter download | Missing | No model or processor path. |
-| `0x8203` | Manual alarm confirmation | Missing | No model or processor path. |
-| `0x8204` | Server-initiated link detection request | Missing | No model or processor path. |
+| `0x8203` | Manual alarm confirmation | Partial | HTTP command serializes alarm serial/type and the client simulator acknowledges it; alarm history and terminal-side confirmation state are not stored. |
+| `0x8204` | Server-initiated link detection request | Implemented | Empty-body request is decoded by the client simulator and receives `0x0001`. |
 | `0x8300` | Text information issue | Missing | No model or processor path. |
 | `0x0702` | Driver identity information report | Missing | No model or processor path. |
 | `0x8702` | Driver identity information request | Missing | No model or processor path. |

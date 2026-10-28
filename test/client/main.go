@@ -94,18 +94,36 @@ func buildDeviceGeo(ctx context.Context) {
 func reportLocation(ctx context.Context, cli *client.TCPClient) {
 	deviceGeoConf := ctx.Value(DeviceGeoConfCtxKey{}).(*config.DeviceGeoConf)
 	geoCache := storage.GetGeoCache()
-
-	for {
-		device := getDevice(ctx)
+	tracker := storage.GetLocationTrackingCache()
+	device := getDevice(ctx)
+	fallback := time.Duration(deviceGeoConf.LocationReportInterval) * time.Second
+	sendLocation := func() {
 		deviceGeo, err := geoCache.GetGeoLatestByPhone(device.Phone)
 		if err == nil {
-			msg := datagen.GenMsg0200(deviceGeoConf, device, deviceGeo)
-			cli.Send(msg)
+			cli.Send(datagen.GenMsg0200(deviceGeoConf, device, deviceGeo))
 		}
+	}
+	sendLocation()
+	timer := time.NewTimer(tracker.Interval(device.Phone, fallback))
+	defer timer.Stop()
+	changed := tracker.Changed(device.Phone)
+	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-time.After(time.Duration(deviceGeoConf.LocationReportInterval) * time.Second):
+		case <-changed:
+			changed = tracker.Changed(device.Phone)
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
+			timer.Reset(tracker.Interval(device.Phone, fallback))
+			sendLocation()
+		case <-timer.C:
+			sendLocation()
+			timer.Reset(tracker.Interval(device.Phone, fallback))
 		}
 	}
 }
