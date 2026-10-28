@@ -32,3 +32,22 @@ func writeHeader(m JT808Msg, pkt []byte) ([]byte, error) {
 	}
 	return append(headerPkt, pkt...), nil
 }
+
+// cloneReplyHeader keeps encoding a response from changing the decoded
+// incoming message header or its body attributes.
+func cloneReplyHeader(in *MsgHeader, messageID uint16) *MsgHeader {
+	if in == nil {
+		return nil
+	}
+	out := *in
+	out.MsgID = messageID
+	if in.Attr != nil {
+		attr := *in.Attr
+		out.Attr = &attr
+	}
+	if in.Frag != nil {
+		frag := *in.Frag
+		out.Frag = &frag
+	}
+	return &out
+}

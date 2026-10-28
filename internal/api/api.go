@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"encoding/hex"
 	"net/http"
 	"os"
 	"strconv"
@@ -27,6 +28,40 @@ func Run(serv *server.TCPServer, cfg *config.Config) {
 
 	router.GET("/device", func(c *gin.Context) {
 		c.JSON(http.StatusOK, cache.ListDevice())
+	})
+
+	router.GET("/device/:phone/reports/:kind", func(c *gin.Context) {
+		phone := c.Param("phone")
+		if _, err := cache.GetDeviceByPhone(phone); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
+			return
+		}
+		industry := storage.GetIndustryCache()
+		var result any
+		switch c.Param("kind") {
+		case "driver":
+			result = industry.Driver(phone)
+		case "can":
+			result = industry.CAN(phone)
+		case "recorder":
+			result = industry.RecordData(phone)
+		case "media-event":
+			result = industry.MediaEvent(phone)
+		case "media-capture":
+			result = industry.Capture(phone)
+		case "media-search":
+			result = industry.MediaSearch(phone)
+		case "media-uploads":
+			result = industry.MediaUploads(phone)
+		default:
+			c.JSON(http.StatusBadRequest, gin.H{"err": "kind must be driver, can, recorder, media-event, media-capture, media-search, or media-uploads"})
+			return
+		}
+		if result == nil {
+			c.JSON(http.StatusNotFound, gin.H{"err": "no report received"})
+			return
+		}
+		c.JSON(http.StatusOK, result)
 	})
 
 	router.GET("/device/:phone/geo", func(c *gin.Context) {
@@ -243,6 +278,221 @@ func Run(serv *server.TCPServer, cfg *config.Config) {
 		msg := &model.Msg860Delete{Header: model.GenMsgHeader(device, request.MessageID, session.GetNextSerialNum()), IDs: request.IDs}
 		serv.Send(session.ID, msg)
 		c.JSON(http.StatusAccepted, gin.H{"messageId": request.MessageID, "count": len(request.IDs)})
+	})
+
+	router.POST("/device/:phone/regions/set", func(c *gin.Context) {
+		var request struct {
+			MessageID uint16 `json:"messageId" binding:"required"`
+			BodyHex   string `json:"bodyHex" binding:"required"`
+		}
+		if err := c.ShouldBindJSON(&request); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
+			return
+		}
+		if request.MessageID != 0x8600 && request.MessageID != 0x8602 && request.MessageID != 0x8604 && request.MessageID != 0x8606 {
+			c.JSON(http.StatusBadRequest, gin.H{"err": "messageId must be 0x8600, 0x8602, 0x8604, or 0x8606"})
+			return
+		}
+		body, err := hex.DecodeString(request.BodyHex)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"err": "bodyHex must be an even-length hexadecimal string"})
+			return
+		}
+		if len(body) < 2 || body[0] > 2 || body[1] == 0 {
+			c.JSON(http.StatusBadRequest, gin.H{"err": "bodyHex must contain a valid setting attribute and nonzero item count"})
+			return
+		}
+		msg := &model.MsgRegionRouteSet{Body: body}
+		phone := c.Param("phone")
+		device, err := cache.GetDeviceByPhone(phone)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
+			return
+		}
+		session, err := storage.GetSession(device.SessionID)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
+			return
+		}
+		msg.Header = model.GenMsgHeader(device, request.MessageID, session.GetNextSerialNum())
+		serv.Send(session.ID, msg)
+		c.JSON(http.StatusAccepted, gin.H{"messageId": request.MessageID, "count": body[1]})
+	})
+
+	router.POST("/device/:phone/regions/query", func(c *gin.Context) {
+		var request struct {
+			QueryType uint8    `json:"queryType" binding:"required,min=1,max=4"`
+			IDs       []uint32 `json:"ids"`
+		}
+		if err := c.ShouldBindJSON(&request); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
+			return
+		}
+		if len(request.IDs) > 125 {
+			c.JSON(http.StatusBadRequest, gin.H{"err": "at most 125 IDs are allowed per query"})
+			return
+		}
+		phone := c.Param("phone")
+		device, err := cache.GetDeviceByPhone(phone)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
+			return
+		}
+		session, err := storage.GetSession(device.SessionID)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
+			return
+		}
+		broker := storage.GetRegionResponseBroker()
+		response, cancel, err := broker.Register(phone, request.QueryType)
+		if err != nil {
+			c.JSON(http.StatusConflict, gin.H{"err": err.Error()})
+			return
+		}
+		defer cancel()
+		serv.Send(session.ID, &model.Msg8608{Header: model.GenMsgHeader(device, 0x8608, session.GetNextSerialNum()), QueryType: request.QueryType, IDs: request.IDs})
+		ctx, cancelRequest := context.WithTimeout(c.Request.Context(), 10*time.Second)
+		defer cancelRequest()
+		select {
+		case result := <-response:
+			c.JSON(http.StatusOK, result)
+		case <-ctx.Done():
+			if c.Request.Context().Err() != nil {
+				return
+			}
+			c.JSON(http.StatusGatewayTimeout, gin.H{"err": "region/route query timed out"})
+		}
+	})
+
+	router.POST("/device/:phone/driver/query", func(c *gin.Context) {
+		phone := c.Param("phone")
+		device, err := cache.GetDeviceByPhone(phone)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
+			return
+		}
+		session, err := storage.GetSession(device.SessionID)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
+			return
+		}
+		serv.Send(session.ID, &model.Msg8702{Header: model.GenMsgHeader(device, 0x8702, session.GetNextSerialNum())})
+		c.JSON(http.StatusAccepted, gin.H{"messageId": "0x8702"})
+	})
+	router.POST("/device/:phone/recorder/command", func(c *gin.Context) {
+		var request struct {
+			MessageID uint16 `json:"messageId" binding:"required"`
+			Command   uint8  `json:"command"`
+			DataHex   string `json:"dataHex"`
+		}
+		if err := c.ShouldBindJSON(&request); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
+			return
+		}
+		if request.MessageID != 0x8700 && request.MessageID != 0x8701 {
+			c.JSON(http.StatusBadRequest, gin.H{"err": "messageId must be 0x8700 or 0x8701"})
+			return
+		}
+		data, err := hex.DecodeString(request.DataHex)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"err": "dataHex must be an even-length hexadecimal string"})
+			return
+		}
+		phone := c.Param("phone")
+		device, err := cache.GetDeviceByPhone(phone)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
+			return
+		}
+		session, err := storage.GetSession(device.SessionID)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
+			return
+		}
+		serv.Send(session.ID, &model.MsgRecordCommand{Header: model.GenMsgHeader(device, request.MessageID, session.GetNextSerialNum()), Command: request.Command, Data: data})
+		c.JSON(http.StatusAccepted, gin.H{"messageId": request.MessageID, "command": request.Command})
+	})
+	router.POST("/device/:phone/media/capture", func(c *gin.Context) {
+		var request model.Msg8801
+		if err := c.ShouldBindJSON(&request); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
+			return
+		}
+		phone := c.Param("phone")
+		device, err := cache.GetDeviceByPhone(phone)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
+			return
+		}
+		session, err := storage.GetSession(device.SessionID)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
+			return
+		}
+		request.Header = model.GenMsgHeader(device, 0x8801, session.GetNextSerialNum())
+		if _, err := request.Encode(); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"err": "invalid camera command fields"})
+			return
+		}
+		serv.Send(session.ID, &request)
+		c.JSON(http.StatusAccepted, gin.H{"messageId": "0x8801"})
+	})
+	router.POST("/device/:phone/media/search", func(c *gin.Context) {
+		var request model.Msg8802
+		if err := c.ShouldBindJSON(&request); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
+			return
+		}
+		phone := c.Param("phone")
+		device, err := cache.GetDeviceByPhone(phone)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
+			return
+		}
+		session, err := storage.GetSession(device.SessionID)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
+			return
+		}
+		request.Header = model.GenMsgHeader(device, 0x8802, session.GetNextSerialNum())
+		if _, err := request.Encode(); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"err": "invalid media search fields"})
+			return
+		}
+		serv.Send(session.ID, &request)
+		c.JSON(http.StatusAccepted, gin.H{"messageId": "0x8802"})
+	})
+	router.POST("/device/:phone/media/command", func(c *gin.Context) {
+		var request struct {
+			MessageID uint16 `json:"messageId" binding:"required"`
+			BodyHex   string `json:"bodyHex"`
+		}
+		if err := c.ShouldBindJSON(&request); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
+			return
+		}
+		if request.MessageID != 0x8803 && request.MessageID != 0x8804 && request.MessageID != 0x8805 {
+			c.JSON(http.StatusBadRequest, gin.H{"err": "messageId must be 0x8803, 0x8804, or 0x8805"})
+			return
+		}
+		body, err := hex.DecodeString(request.BodyHex)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"err": "bodyHex must be an even-length hexadecimal string"})
+			return
+		}
+		phone := c.Param("phone")
+		device, err := cache.GetDeviceByPhone(phone)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
+			return
+		}
+		session, err := storage.GetSession(device.SessionID)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
+			return
+		}
+		serv.Send(session.ID, &model.MsgRawBody{Header: model.GenMsgHeader(device, request.MessageID, session.GetNextSerialNum()), Body: body})
+		c.JSON(http.StatusAccepted, gin.H{"messageId": request.MessageID})
 	})
 
 	router.POST("/device/:phone/alarms/confirm", func(c *gin.Context) {

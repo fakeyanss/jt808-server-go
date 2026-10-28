@@ -1,5 +1,7 @@
 package model
 
+import "github.com/fakeyanss/jt808-server-go/internal/codec/hex"
+
 // 多媒体数据上传
 // 与JT1078合用时，此消息只上传图片数据
 type Msg0801 struct {
@@ -14,11 +16,32 @@ type Msg0801 struct {
 }
 
 func (m *Msg0801) Decode(packet *PacketData) error {
+	if packet == nil || packet.Header == nil || len(packet.Body) < 36 {
+		return ErrDecodeMsg
+	}
 	m.Header = packet.Header
+	i := 0
+	m.MultiMediaID = hex.ReadDoubleWord(packet.Body, &i)
+	if m.MultiMediaID == 0 {
+		return ErrDecodeMsg
+	}
+	m.MultiMediaType = hex.ReadByte(packet.Body, &i)
+	m.MultiMediaContainer = hex.ReadByte(packet.Body, &i)
+	m.EventID = hex.ReadByte(packet.Body, &i)
+	m.LogicChannelID = hex.ReadByte(packet.Body, &i)
+	m.GeoAlarmBody = append([]byte(nil), packet.Body[i:i+28]...)
+	m.FragmentData = append([]byte(nil), packet.Body[i+28:]...)
 	return nil
 }
 
 func (m *Msg0801) Encode() (pkt []byte, err error) {
+	if m.Header == nil || m.MultiMediaID == 0 || len(m.GeoAlarmBody) != 28 {
+		return nil, ErrEncodeMsg
+	}
+	pkt = hex.WriteDoubleWord(pkt, m.MultiMediaID)
+	pkt = append(pkt, m.MultiMediaType, m.MultiMediaContainer, m.EventID, m.LogicChannelID)
+	pkt = hex.WriteBytes(pkt, m.GeoAlarmBody)
+	pkt = hex.WriteBytes(pkt, m.FragmentData)
 	pkt, err = writeHeader(m, pkt)
 	return pkt, err
 }

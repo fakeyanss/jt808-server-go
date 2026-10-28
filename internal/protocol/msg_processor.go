@@ -98,6 +98,57 @@ func initProcessOption() processOptions {
 		},
 		process: processMsg0200,
 	}
+	for _, messageID := range []uint16{0x8600, 0x8602, 0x8604, 0x8606} {
+		options[messageID] = &action{genData: func() *model.ProcessData {
+			return &model.ProcessData{Incoming: &model.MsgRegionRouteSet{}, Outgoing: &model.Msg0001{}}
+		}}
+	}
+	options[0x8608] = &action{genData: func() *model.ProcessData {
+		return &model.ProcessData{Incoming: &model.Msg8608{}, Outgoing: &model.Msg0608{}}
+	}}
+	options[0x0608] = &action{genData: func() *model.ProcessData { return &model.ProcessData{Incoming: &model.Msg0608{}} }, process: processRegionResponse}
+	options[0x0702] = &action{genData: func() *model.ProcessData {
+		return &model.ProcessData{Incoming: &model.Msg0702{}, Outgoing: &model.Msg8001{}}
+	}, process: processIndustryReport}
+	options[0x0705] = &action{genData: func() *model.ProcessData {
+		return &model.ProcessData{Incoming: &model.Msg0705{}, Outgoing: &model.Msg8001{}}
+	}, process: processIndustryReport}
+	options[0x0700] = &action{genData: func() *model.ProcessData {
+		return &model.ProcessData{Incoming: &model.Msg0700{}, Outgoing: &model.Msg8001{}}
+	}, process: processIndustryReport}
+	options[0x8700] = &action{genData: func() *model.ProcessData {
+		return &model.ProcessData{Incoming: &model.MsgRecordCommand{}, Outgoing: &model.Msg0700{}}
+	}}
+	options[0x8701] = &action{genData: func() *model.ProcessData {
+		return &model.ProcessData{Incoming: &model.MsgRecordCommand{}, Outgoing: &model.Msg0001{}}
+	}}
+	options[0x8702] = &action{genData: func() *model.ProcessData {
+		return &model.ProcessData{Incoming: &model.Msg8702{}, Outgoing: &model.Msg0702{}}
+	}}
+	options[0x0800] = &action{genData: func() *model.ProcessData {
+		return &model.ProcessData{Incoming: &model.Msg0800{}, Outgoing: &model.Msg8001{}}
+	}, process: processIndustryReport}
+	options[0x0801] = &action{genData: func() *model.ProcessData {
+		return &model.ProcessData{Incoming: &model.Msg0801{}, Outgoing: &model.Msg8800{}}
+	}, process: processIndustryReport}
+	options[0x8800] = &action{genData: func() *model.ProcessData { return &model.ProcessData{Incoming: &model.Msg8800{}} }}
+	options[0x8801] = &action{genData: func() *model.ProcessData {
+		return &model.ProcessData{Incoming: &model.Msg8801{}, Outgoing: &model.Msg0805{}}
+	}}
+	options[0x8802] = &action{genData: func() *model.ProcessData {
+		return &model.ProcessData{Incoming: &model.Msg8802{}, Outgoing: &model.Msg0802{}}
+	}}
+	options[0x0805] = &action{genData: func() *model.ProcessData {
+		return &model.ProcessData{Incoming: &model.Msg0805{}, Outgoing: &model.Msg8001{}}
+	}, process: processIndustryReport}
+	options[0x0802] = &action{genData: func() *model.ProcessData {
+		return &model.ProcessData{Incoming: &model.Msg0802{}, Outgoing: &model.Msg8001{}}
+	}, process: processIndustryReport}
+	for _, messageID := range []uint16{0x8803, 0x8804, 0x8805} {
+		options[messageID] = &action{genData: func() *model.ProcessData {
+			return &model.ProcessData{Incoming: &model.MsgRawBody{}, Outgoing: &model.Msg0001{}}
+		}}
+	}
 	options[0x1205] = &action{ // 终端上传音视频资源列表
 		genData: func() *model.ProcessData {
 			return &model.ProcessData{Incoming: &model.Msg1205{}} // 无需回复
@@ -219,7 +270,7 @@ func (mp *JT808MsgProcessor) Process(ctx context.Context, pkt *model.PacketData)
 	if log.Logger.GetLevel() == zerolog.DebugLevel {
 		// print log of msg content
 		session := ctx.Value(model.SessionCtxKey{}).(*model.Session)
-		inJSON, err := json.Marshal(in)
+		inJSON, err := json.Marshal(redactIncomingForLog(in))
 		if err != nil {
 			return nil, errors.Wrap(err, "Fail to serialize incoming msg to json")
 		}
@@ -262,6 +313,22 @@ func (mp *JT808MsgProcessor) Process(ctx context.Context, pkt *model.PacketData)
 		return nil, nil // 此类型msg不需要回复
 	}
 	return data, nil
+}
+
+func redactIncomingForLog(in model.JT808Msg) model.JT808Msg {
+	switch msg := in.(type) {
+	case *model.Msg0702:
+		copy := *msg
+		copy.Name, copy.QualificationCode, copy.IssuingAuthority, copy.IdentityNumber = "[redacted]", "[redacted]", "[redacted]", "[redacted]"
+		return &copy
+	case *model.Msg0801:
+		copy := *msg
+		copy.GeoAlarmBody = nil
+		copy.FragmentData = nil
+		return &copy
+	default:
+		return in
+	}
 }
 
 func decodeMessageSafely(msg model.JT808Msg, pkt *model.PacketData) (err error) {
@@ -723,5 +790,15 @@ func processMsg9205(_ context.Context, data *model.ProcessData) error {
 	out.StreamType = 0
 	out.StorageType = 0
 
+	return nil
+}
+
+func processIndustryReport(_ context.Context, data *model.ProcessData) error {
+	storage.GetIndustryCache().Record(data.Incoming)
+	return nil
+}
+
+func processRegionResponse(_ context.Context, data *model.ProcessData) error {
+	storage.GetRegionResponseBroker().Deliver(data.Incoming.(*model.Msg0608))
 	return nil
 }

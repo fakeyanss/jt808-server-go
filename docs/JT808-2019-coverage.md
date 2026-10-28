@@ -61,37 +61,37 @@ amendment text has been reviewed.
 | `0x8401` | Set phonebook | Missing | No model or processor path. |
 | `0x8500` | Vehicle control | Missing | No model or processor path. |
 | `0x0500` | Vehicle control response | Missing | No model or processor path. |
-| `0x8600` | Set circular area | Missing | No model or processor path. |
+| `0x8600` | Set circular area | Partial | HTTP downlink accepts a standard message body as hex; area items are transported losslessly but not decoded into typed area records. |
 | `0x8601` | Delete circular area | Partial | Encodes/decodes the standard ID list and supports deletion of all areas; HTTP downlink plus simulator acknowledgement. |
-| `0x8602` | Set rectangular area | Missing | No model or processor path. |
+| `0x8602` | Set rectangular area | Partial | Shared standard-body passthrough endpoint and simulator acknowledgment; no typed rectangle item parser. |
 | `0x8603` | Delete rectangular area | Partial | Shared delete-ID message model, HTTP downlink, and simulator acknowledgement. |
-| `0x8604` | Set polygonal area | Missing | No model or processor path. |
+| `0x8604` | Set polygonal area | Partial | Shared standard-body passthrough endpoint and simulator acknowledgment; no typed polygon item parser. |
 | `0x8605` | Delete polygonal area | Partial | Shared delete-ID message model, HTTP downlink, and simulator acknowledgement. |
-| `0x8606` | Set route | Missing | No model or processor path. |
+| `0x8606` | Set route | Partial | Shared standard-body passthrough endpoint and simulator acknowledgment; no typed route-point parser. |
 | `0x8607` | Delete route | Partial | Shared delete-ID message model, HTTP downlink, and simulator acknowledgement. |
-| `0x8700` | Driving recorder data collection command | Missing | No model or processor path. |
-| `0x0700` | Driving recorder data upload | Missing | No model or processor path. |
-| `0x8701` | Driving recorder parameter download | Missing | No model or processor path. |
+| `0x8700` | Driving recorder data collection command | Partial | Typed command envelope and HTTP downlink; GB/T 19056 data block remains opaque. Simulator returns a sample `0x0700`. |
+| `0x0700` | Driving recorder data upload | Partial | Answer serial and command are decoded, opaque GB/T 19056 data is cached; generic acknowledgment is sent. |
+| `0x8701` | Driving recorder parameter download | Partial | Typed command envelope and HTTP downlink; GB/T 19056 data block remains opaque. Simulator sends `0x0001`. |
 | `0x8203` | Manual alarm confirmation | Partial | HTTP command serializes alarm serial/type; matching in-memory alarm events are marked confirmed after terminal `0x0001`; durable storage remains open. |
 | `0x8204` | Server-initiated link detection request | Implemented | Empty-body request is decoded by the client simulator and receives `0x0001`. |
 | `0x8300` | Text information issue | Missing | No model or processor path. |
-| `0x0702` | Driver identity information report | Missing | No model or processor path. |
-| `0x8702` | Driver identity information request | Missing | No model or processor path. |
+| `0x0702` | Driver identity information report | Implemented | Decodes IC-card state, BCD time, read result, GBK name/issuer and fixed-width credentials; caches latest report and sends `0x8001`. |
+| `0x8702` | Driver identity information request | Partial | Empty-body command; simulator returns a synthetic `0x0702`; HTTP downlink is available. |
 | `0x0704` | Batch positioning data upload | Missing | No model or processor path. |
-| `0x0705` | CAN bus data upload | Missing | No model or processor path. |
-| `0x0800` | Multimedia event information upload | Model only | Model is marked TODO and is not registered in the processor. |
-| `0x0801` | Multimedia data upload | Model only | Model exists; no processor path, storage pipeline, or `0x8800` response flow. |
-| `0x8800` | Multimedia upload response | Model only | Model exists; no processor path. |
-| `0x8801` | Camera immediate capture command | Missing | No model or processor path. |
-| `0x0805` | Camera capture response | Missing | No model or processor path. |
-| `0x8802` | Search stored multimedia data | Missing | No model or processor path. |
-| `0x0802` | Stored multimedia search response | Missing | No model or processor path. |
-| `0x8608` | Query region/route data | Missing | No model or processor path. |
-| `0x0608` | Region/route data response | Missing | No model or processor path. |
+| `0x0705` | CAN bus data upload | Implemented | Decodes the 5-byte BCD timestamp, CAN ID flags and fixed 8-byte data items; caches latest report and sends `0x8001`. |
+| `0x0800` | Multimedia event information upload | Implemented | Decodes and caches the 8-byte event descriptor; sends `0x8001`. |
+| `0x0801` | Multimedia data upload | Partial | Decodes the media descriptor, fixed 28-byte base location body, and remaining media bytes; bounded in-memory cache and `0x8800` response. Extended location items and fragment reassembly remain open. |
+| `0x8800` | Multimedia upload response | Partial | Encodes/decodes media ID and up to 125 requested retransmission packet IDs; the server does not retain/replay media payload packets in response to requested IDs. |
+| `0x8801` | Camera immediate capture command | Implemented | Decodes the 12-byte command; simulator returns `0x0805`. HTTP downlink available. |
+| `0x0805` | Camera capture response | Implemented | Decodes result and media IDs, caches latest response, and receives platform `0x8001`. |
+| `0x8802` | Search stored multimedia data | Partial | Decodes search criteria and HTTP downlink; simulator returns an empty `0x0802` response. |
+| `0x0802` | Stored multimedia search response | Partial | Correlation serial, count and raw result records are decoded/cached; type-specific media records are not parsed. |
+| `0x8608` | Query region/route data | Implemented | Decodes query type and DWORD ID list; HTTP request waits for a matching `0x0608`; simulator can answer empty. |
+| `0x0608` | Region/route data response | Partial | Query type/count envelope decoded and correlated; variable type-specific records preserved as raw bytes. |
 | `0x0701` | Electronic waybill upload | Missing | No model or processor path. |
-| `0x8803` | Stored multimedia upload command | Missing | No model or processor path. |
-| `0x8804` | Start audio recording command | Missing | No model or processor path. |
-| `0x8805` | Single stored multimedia upload command | Missing | No model or processor path. |
+| `0x8803` | Stored multimedia upload command | Partial | Raw standard-body HTTP downlink and simulator generic acknowledgment. |
+| `0x8804` | Start audio recording command | Partial | Raw standard-body HTTP downlink and simulator generic acknowledgment. |
+| `0x8805` | Single stored multimedia upload command | Partial | Raw standard-body HTTP downlink and simulator generic acknowledgment. |
 | `0x8900` | Data uplink transparent transmission | Missing | No model or processor path. |
 | `0x0900` | Data downlink transparent transmission | Missing | No model or processor path. |
 | `0x0901` | Compressed data report | Missing | No model or processor path. |

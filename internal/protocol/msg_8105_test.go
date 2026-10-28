@@ -31,3 +31,36 @@ func TestRegionRouteDeletionProducesGenericAcknowledgement(t *testing.T) {
 		})
 	}
 }
+
+func TestSimulatorRepliesToRegionDriverRecorderAndMultimediaCommands(t *testing.T) {
+	tests := []struct {
+		id       uint16
+		body     []byte
+		response any
+	}{
+		{0x8608, []byte{1, 0, 0, 0, 0}, &model.Msg0608{}},
+		{0x8702, nil, &model.Msg0702{}},
+		{0x8700, []byte{3, 0xaa}, &model.Msg0700{}},
+		{0x8701, []byte{3, 0xaa}, &model.Msg0001{}},
+		{0x8801, []byte{1, 0, 1, 0, 0, 0, 1, 1, 0, 0, 0, 0}, &model.Msg0805{}},
+		{0x8802, make([]byte, 15), &model.Msg0802{}},
+		{0x8803, []byte{1}, &model.Msg0001{}},
+		{0x8804, []byte{1}, &model.Msg0001{}},
+		{0x8805, []byte{1}, &model.Msg0001{}},
+	}
+	for _, tt := range tests {
+		t.Run(fmt.Sprintf("%04x", tt.id), func(t *testing.T) {
+			header := &model.MsgHeader{MsgID: tt.id, SerialNumber: 19, PhoneNumber: "188765432109", Attr: &model.MsgBodyAttr{}}
+			result, err := NewJT808MsgProcessor().Process(context.Background(), &model.PacketData{Header: header, Body: tt.body})
+			require.NoError(t, err)
+			require.IsType(t, tt.response, result.Outgoing)
+			if ack, ok := result.Outgoing.(*model.Msg0001); ok {
+				require.Equal(t, tt.id, ack.AnswerMessageID)
+			}
+			if capture, ok := result.Outgoing.(*model.Msg0805); ok {
+				require.Equal(t, uint16(19), capture.AnswerSerial)
+				require.Equal(t, uint8(0), capture.Result)
+			}
+		})
+	}
+}

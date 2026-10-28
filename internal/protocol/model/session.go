@@ -74,6 +74,18 @@ func (s *Session) TrackReliable(msgID, serial uint16, phone string, frame []byte
 		responseID = 0x0104
 	case 0x9205:
 		responseID = 0x1205
+	case 0x8608:
+		responseID = 0x0608
+	case 0x8700:
+		responseID = 0x0700
+	case 0x8702:
+		responseID = 0x0702
+	case 0x0801:
+		responseID = 0x8800
+	case 0x8801:
+		responseID = 0x0805
+	case 0x8802:
+		responseID = 0x0802
 	}
 	pending := &pendingPacket{frame: append([]byte(nil), frame...), phone: phone, responseID: responseID, done: make(chan struct{})}
 	s.pendingMu.Lock()

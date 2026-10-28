@@ -2,6 +2,7 @@ package datagen
 
 import (
 	"bytes"
+	"fmt"
 	"math/rand"
 	"strconv"
 	"time"
@@ -187,4 +188,28 @@ func GenMsg0200(conf *config.DeviceGeoConf, device *model.Device, deviceGeo *mod
 		m.Speed = 100 * model.SpeedAccuracy
 	}
 	return m
+}
+
+func GenMsg0702(device *model.Device) *model.Msg0702 {
+	return &model.Msg0702{Header: genMsgHeader(0x0702, device), State: 1, Time: hex.FormatTime(time.Now()), ReadResult: 0, Name: "模拟驾驶员", QualificationCode: "1234567890", IssuingAuthority: "模拟交通管理部门", ValidUntil: "20301231", IdentityNumber: "110101199001010011"}
+}
+
+func GenMsg0705(device *model.Device) *model.Msg0705 {
+	now := time.Now()
+	return &model.Msg0705{Header: genMsgHeader(0x0705, device), FirstTime: now.Format("150405") + fmt.Sprintf("%04d", now.Nanosecond()/100000), Items: []model.CANDataItem{{CANID: 0x60000123, Data: [8]byte{0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08}}}}
+}
+
+func GenMsg0700(device *model.Device) *model.Msg0700 {
+	return &model.Msg0700{Header: genMsgHeader(0x0700, device), AnswerSerial: 1, Command: 1, Data: []byte{0x01, 0x02, 0x03}}
+}
+
+func GenMsg0800(device *model.Device) *model.Msg0800 {
+	return &model.Msg0800{Header: genMsgHeader(0x0800, device), MultiMediaID: uint32(time.Now().Unix()), MultiMediaType: 0, MultiMediaContainer: 0, EventID: 1, LogicChannelID: 1}
+}
+
+func GenMsg0801(device *model.Device) *model.Msg0801 {
+	location := &model.Msg0200{Header: genMsgHeader(0x0200, device), Latitude: 31123456, Longitude: 121123456, Time: hex.FormatTime(time.Now())}
+	encoded, _ := location.Encode()
+	locationBody := append([]byte(nil), encoded[len(encoded)-int(location.Header.Attr.BodyLength):]...)
+	return &model.Msg0801{Header: genMsgHeader(0x0801, device), MultiMediaID: uint32(time.Now().Unix()), MultiMediaType: 0, MultiMediaContainer: 0, EventID: 1, LogicChannelID: 1, GeoAlarmBody: locationBody, FragmentData: []byte{0xff, 0xd8, 0xff, 0xd9}}
 }

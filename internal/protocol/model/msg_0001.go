@@ -41,7 +41,6 @@ func (m *Msg0001) GenOutgoing(incoming JT808Msg) error {
 	m.AnswerMessageID = header.MsgID
 	m.Result = 0
 
-	m.Header = header
-	m.Header.MsgID = 0x0001
+	m.Header = cloneReplyHeader(header, 0x0001)
 	return nil
 }

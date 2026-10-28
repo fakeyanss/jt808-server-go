@@ -243,6 +243,106 @@ func TestTCPServerProcessesJT808Registration(t *testing.T) {
 	protocol.NewKeepaliveTimer().Cancel(phone)
 }
 
+func TestTCPClientSimulatorIndustryMessages(t *testing.T) {
+	server := NewTCPServer()
+	require.NoError(t, server.Listen("127.0.0.1:0"))
+	go server.Start()
+	t.Cleanup(server.Stop)
+	cli := client.NewTCPClient()
+	require.NoError(t, cli.Dial(server.listener.Addr().String()))
+	t.Cleanup(cli.Stop)
+	go cli.Start()
+	const phone = "188765433210"
+	registration := &model.Msg0100{Header: &model.MsgHeader{MsgID: 0x0100, Attr: &model.MsgBodyAttr{VersionDesc: model.Version2013}, PhoneNumber: phone}, ProvinceID: 11, CityID: 1101, ManufacturerID: "ABCDE", DeviceMode: "JT808-INDUSTRY-SIM", DeviceID: "INDUSTRY-01", PlateColor: 1, PlateNumber: "京A76543"}
+	require.NoError(t, cli.SendWithError(registration))
+	var device *model.Device
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		device, _ = storage.GetDeviceCache().GetDeviceByPhone(phone)
+		if device != nil && device.Status == model.DeviceStatusOnline {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	require.NotNil(t, device)
+	require.Equal(t, model.DeviceStatusOnline, device.Status)
+	t.Cleanup(func() { storage.GetDeviceCache().DelDeviceByPhone(phone); protocol.NewKeepaliveTimer().Cancel(phone) })
+
+	industry := storage.GetIndustryCache()
+	for _, msg := range []model.JT808Msg{
+		&model.Msg0702{Header: model.GenMsgHeader(device, 0x0702, 2), State: 1, Time: "261028120000", ReadResult: 0, Name: "模拟司机", QualificationCode: "CERT-01", IssuingAuthority: "交通部门", ValidUntil: "20301231", IdentityNumber: "ID-01"},
+		&model.Msg0705{Header: model.GenMsgHeader(device, 0x0705, 3), FirstTime: "1234567890", Items: []model.CANDataItem{{CANID: 0x60000123, Data: [8]byte{1, 2, 3}}}},
+		&model.Msg0700{Header: model.GenMsgHeader(device, 0x0700, 4), AnswerSerial: 1, Command: 2, Data: []byte{0xaa}},
+		&model.Msg0800{Header: model.GenMsgHeader(device, 0x0800, 5), MultiMediaID: 70, MultiMediaType: 0, MultiMediaContainer: 0, EventID: 1, LogicChannelID: 1},
+		&model.Msg0801{Header: model.GenMsgHeader(device, 0x0801, 6), MultiMediaID: 71, MultiMediaType: 0, MultiMediaContainer: 0, EventID: 1, LogicChannelID: 1, GeoAlarmBody: make([]byte, 28), FragmentData: []byte{0xff, 0xd8, 0xff, 0xd9}},
+	} {
+		require.NoError(t, cli.SendWithError(msg))
+	}
+	deadline = time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if industry.Driver(phone) != nil && industry.CAN(phone) != nil && industry.RecordData(phone) != nil && industry.MediaEvent(phone) != nil && len(industry.MediaUploads(phone)) == 1 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	require.Equal(t, "模拟司机", industry.Driver(phone).Name)
+	require.Equal(t, uint32(0x60000123), industry.CAN(phone).Items[0].CANID)
+	require.Equal(t, []byte{0xaa}, industry.RecordData(phone).Data)
+	require.Equal(t, uint32(71), industry.MediaUploads(phone)[0].MultiMediaID)
+
+	session, err := storage.GetSession(device.SessionID)
+	require.NoError(t, err)
+	responseCh, cancel, err := storage.GetRegionResponseBroker().Register(phone, 1)
+	require.NoError(t, err)
+	defer cancel()
+	server.Send(session.ID, &model.Msg8608{Header: model.GenMsgHeader(device, 0x8608, session.GetNextSerialNum()), QueryType: 1})
+	select {
+	case response := <-responseCh:
+		require.Equal(t, uint32(0), response.Count)
+	case <-time.After(2 * time.Second):
+		t.Fatal("simulator did not answer 0x8608")
+	}
+
+	server.Send(session.ID, &model.MsgRawBody{Header: model.GenMsgHeader(device, 0x8702, session.GetNextSerialNum())})
+	deadline = time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if report := industry.Driver(phone); report != nil && report.Name == "模拟驾驶员" {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	require.Equal(t, "模拟驾驶员", industry.Driver(phone).Name, "simulator should answer driver query with 0x0702")
+
+	server.Send(session.ID, &model.MsgRecordCommand{Header: model.GenMsgHeader(device, 0x8700, session.GetNextSerialNum()), Command: 3, Data: []byte{0x55}})
+	deadline = time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if report := industry.RecordData(phone); report != nil && report.Command == 3 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	require.Equal(t, uint8(3), industry.RecordData(phone).Command, "simulator should answer 0x8700 with 0x0700")
+
+	server.Send(session.ID, &model.Msg8801{Header: model.GenMsgHeader(device, 0x8801, session.GetNextSerialNum()), ChannelID: 1, Command: 1, Quality: 1})
+	deadline = time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if industry.Capture(phone) != nil {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	require.NotNil(t, industry.Capture(phone), "simulator should answer 0x8801 with 0x0805")
+	server.Send(session.ID, &model.Msg8802{Header: model.GenMsgHeader(device, 0x8802, session.GetNextSerialNum()), MediaType: 0, ChannelID: 1, EventID: 1, StartTime: "261028000000", EndTime: "261028235959"})
+	deadline = time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if industry.MediaSearch(phone) != nil {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	require.NotNil(t, industry.MediaSearch(phone), "simulator should answer 0x8802 with 0x0802")
+}
+
 func TestClientFaultFramesDoNotPreventFollowingRegistration(t *testing.T) {
 	for _, transport := range []model.TransportProtocol{model.TCPProto, model.UDPProto} {
 		for _, fault := range []string{"bad-checksum", "bad-escape", "oversize"} {
