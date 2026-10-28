@@ -1,8 +1,10 @@
 package server
 
 import (
+	"context"
 	"errors"
 	"net"
+	"strings"
 	"testing"
 	"time"
 
@@ -12,6 +14,55 @@ import (
 	"github.com/fakeyanss/jt808-server-go/internal/storage"
 	"github.com/stretchr/testify/require"
 )
+
+func TestTCPServerRetransmitsRequestedDownlinkFragments(t *testing.T) {
+	server := NewTCPServer()
+	require.NoError(t, server.Listen("127.0.0.1:0"))
+	go server.Start()
+	t.Cleanup(server.Stop)
+
+	cli := client.NewTCPClient()
+	require.NoError(t, cli.Dial(server.listener.Addr().String()))
+	t.Cleanup(cli.Stop)
+	const phone = "188765432109"
+	var session *model.Session
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		session, _ = storage.GetSession(cli.Session.Conn.LocalAddr().String())
+		if session != nil {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	require.NotNil(t, session)
+	device := &model.Device{Phone: phone, VersionDesc: model.Version2013}
+	originalSerial := session.GetNextSerialNum()
+	params := &model.DeviceParams{ParamCnt: 6}
+	for i := 0; i < 6; i++ {
+		params.Params = append(params.Params, &model.ParamData{ParamID: 0x0010, ParamValue: strings.Repeat("X", 200)})
+	}
+	message := &model.Msg8103{Header: model.GenMsgHeader(device, 0x8103, originalSerial), Parameters: params}
+	encoded, err := message.Encode()
+	require.NoError(t, err)
+	total := uint16((len(encoded) - 12 + 1022) / 1023)
+	require.Greater(t, total, uint16(1))
+	server.Send(session.ID, message)
+	frameHandler := protocol.NewJT808FrameHandler(cli.Session.Conn)
+	originalFrames := make([][]byte, total)
+	for i := uint16(0); i < total; i++ {
+		_ = cli.Session.Conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+		got, err := frameHandler.Recv(context.Background())
+		require.NoError(t, err)
+		originalFrames[i] = append([]byte(nil), got...)
+	}
+	require.NoError(t, cli.RequestFragmentRetransmission(device, originalSerial, []uint16{2, total}))
+	for _, index := range []uint16{2, total} {
+		_ = cli.Session.Conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+		got, err := frameHandler.Recv(context.Background())
+		require.NoError(t, err)
+		require.Equal(t, originalFrames[index-1], []byte(got), "retransmitted fragment %d must match its original encoded frame", index)
+	}
+}
 
 func TestUDPSessionConnKeepsDatagramBoundaries(t *testing.T) {
 	conn := newUDPSessionConn(&net.UDPConn{}, &net.UDPAddr{}, nil)

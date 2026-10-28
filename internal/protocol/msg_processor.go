@@ -59,6 +59,7 @@ func initProcessOption() processOptions {
 		},
 		process: processMsg0003,
 	}
+	options[0x0005] = &action{genData: func() *model.ProcessData { return &model.ProcessData{Incoming: &model.Msg0005{}} }, process: processMsg0005}
 	options[0x0100] = &action{ // 注册
 		genData: func() *model.ProcessData {
 			return &model.ProcessData{Incoming: &model.Msg0100{}, Outgoing: &model.Msg8100{}}
@@ -479,6 +480,35 @@ func processMsg8003(ctx context.Context, data *model.ProcessData) error {
 		}
 	}
 	return nil
+}
+
+// processMsg0005 replays cached platform fragments requested by a terminal.
+func processMsg0005(ctx context.Context, data *model.ProcessData) error {
+	request := data.Incoming.(*model.Msg0005)
+	session, ok := ctx.Value(model.SessionCtxKey{}).(*model.Session)
+	if !ok || session == nil {
+		return nil
+	}
+	retransmitCachedSegments(session, request.Header.PhoneNumber, request.OriginalSerialNumber, request.PacketIDs)
+	return nil
+}
+
+func retransmitCachedSegments(session *model.Session, phone string, originalSerial uint16, packetIDs []uint16) {
+	frames := storage.GetSentSegmentFrames(phone, originalSerial, packetIDs)
+	if frames == nil {
+		log.Warn().Str("device", phone).Uint16("original_serial", originalSerial).Msg("No cached fragments for retransmission request")
+		return
+	}
+	for i, frame := range frames {
+		if frame == nil {
+			log.Warn().Str("device", phone).Uint16("packet_id", packetIDs[i]).Msg("Requested fragment is not cached")
+			continue
+		}
+		if err := session.WriteFrame(frame); err != nil {
+			log.Error().Err(err).Str("device", phone).Msg("Failed to retransmit cached fragment")
+			return
+		}
+	}
 }
 
 // 收到注册应答，回复鉴权

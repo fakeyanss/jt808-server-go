@@ -8,7 +8,10 @@ import (
 	"github.com/rs/zerolog/log"
 
 	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
+	"github.com/fakeyanss/jt808-server-go/internal/storage"
 )
+
+const maxJT808BodyLength = 1023
 
 // tcp/udp 消息处理组
 type Pipeline struct {
@@ -110,15 +113,64 @@ func encode() delegateFunc {
 		if pd == nil || pd.Outgoing == nil { // 不需要回复，不用后续处理
 			return nil, nil
 		}
-		pkt, err := p.pc.Encode(pd.Outgoing)
-		nxtCtx := context.WithValue(ctx, model.PacketEncodeCtxKey{}, pkt)
-		return nxtCtx, err
+		encoded, err := pd.Outgoing.Encode()
+		if err != nil {
+			return nil, err
+		}
+		header := pd.Outgoing.GetHeader()
+		headerLen := 12
+		if header.Attr.VersionDesc == model.Version2019 {
+			headerLen = 17
+		}
+		if header.IsFragmented() {
+			headerLen += 4
+		}
+		if len(encoded) < headerLen {
+			return nil, ErrMalformedFrame
+		}
+		body := encoded[headerLen:]
+		if len(body) <= maxJT808BodyLength {
+			pkt, err := p.pc.Encode(pd.Outgoing)
+			return context.WithValue(ctx, model.PacketEncodeCtxKey{}, [][]byte{pkt}), err
+		}
+		if header.IsFragmented() || header.Frag != nil {
+			return nil, ErrMalformedFrame
+		}
+		total := (len(body) + maxJT808BodyLength - 1) / maxJT808BodyLength
+		if total > 65535 {
+			return nil, ErrMalformedFrame
+		}
+		serials := make([]uint16, total)
+		serials[0] = header.SerialNumber
+		if session, ok := ctx.Value(model.SessionCtxKey{}).(*model.Session); ok && total > 1 {
+			copy(serials[1:], session.GetNextSerialNums(total-1))
+		}
+		frames := make([][]byte, total)
+		for i := 0; i < total; i++ {
+			start, end := i*maxJT808BodyLength, (i+1)*maxJT808BodyLength
+			if end > len(body) {
+				end = len(body)
+			}
+			fragmentHeader := *header
+			fragmentAttr := *header.Attr
+			fragmentAttr.PacketFragmented = 1
+			fragmentAttr.PacketFragmentedDesc = model.PacketFragmentedTrue
+			fragmentHeader.Attr = &fragmentAttr
+			fragmentHeader.SerialNumber = serials[i]
+			fragmentHeader.Frag = &model.MsgFragmentation{Total: uint16(total), Index: uint16(i + 1)}
+			frames[i], err = p.pc.EncodePacketData(&fragmentHeader, body[start:end])
+			if err != nil {
+				return nil, err
+			}
+			storage.CacheSentSegmentFrame(header.PhoneNumber, serials[0], uint16(i+1), uint16(total), frames[i])
+		}
+		return context.WithValue(ctx, model.PacketEncodeCtxKey{}, frames), nil
 	})
 }
 
 func send() delegateFunc {
 	return delegateFunc(func(ctx context.Context, p *Pipeline) (context.Context, error) {
-		packet := ctx.Value(model.PacketEncodeCtxKey{}).([]byte)
+		packets := ctx.Value(model.PacketEncodeCtxKey{}).([][]byte)
 		session, _ := ctx.Value(model.SessionCtxKey{}).(*model.Session)
 		if session != nil {
 			session.WriteMu.Lock()
@@ -131,14 +183,38 @@ func send() delegateFunc {
 		}
 		data, _ := ctx.Value(model.ProcessDataCtxKey{}).(*model.ProcessData)
 		var header *model.MsgHeader
-		if session != nil && data != nil && data.Outgoing != nil {
+		if data != nil && data.Outgoing != nil {
 			header = data.Outgoing.GetHeader()
-			session.TrackReliable(header.MsgID, header.SerialNumber, header.PhoneNumber, packet)
 		}
-		err := p.fh.Send(packet)
-		if err != nil && session != nil && header != nil {
-			session.CancelReliable(header.MsgID, header.SerialNumber)
+		for i, packet := range packets {
+			serial := uint16(0)
+			if session != nil && header != nil {
+				serial = header.SerialNumber
+				for n := 0; n < i; n++ {
+					serial = incrementJT808Serial(serial)
+				}
+				session.TrackReliable(header.MsgID, serial, header.PhoneNumber, packet)
+			}
+			if err := p.fh.Send(packet); err != nil {
+				if session != nil && header != nil {
+					for j := 0; j <= i; j++ {
+						failedSerial := header.SerialNumber
+						for n := 0; n < j; n++ {
+							failedSerial = incrementJT808Serial(failedSerial)
+						}
+						session.CancelReliable(header.MsgID, failedSerial)
+					}
+				}
+				return nil, err
+			}
 		}
-		return ctx, err
+		return ctx, nil
 	})
+}
+
+func incrementJT808Serial(serial uint16) uint16 {
+	if serial == 65535 {
+		return 1
+	}
+	return serial + 1
 }

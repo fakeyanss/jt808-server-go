@@ -238,3 +238,13 @@ func (cli *TCPClient) SendWithError(msg model.JT808Msg) error {
 	ctx = context.WithValue(ctx, model.ProcessDataCtxKey{}, &model.ProcessData{Outgoing: msg})
 	return pg.ProcessConnWrite(ctx)
 }
+
+// RequestFragmentRetransmission sends a terminal-side 0x0005 request. It is
+// intended for simulator scenarios that verify platform resend behavior.
+func (cli *TCPClient) RequestFragmentRetransmission(device *model.Device, originalSerial uint16, packetIDs []uint16) error {
+	if cli.Session == nil || device == nil || device.Phone == "" || len(packetIDs) == 0 || len(packetIDs) > 65535 {
+		return errors.New("invalid fragment retransmission request")
+	}
+	header := model.GenMsgHeader(device, 0x0005, cli.Session.GetNextSerialNum())
+	return cli.SendWithError(&model.Msg0005{Header: header, OriginalSerialNumber: originalSerial, PacketIDs: packetIDs})
+}

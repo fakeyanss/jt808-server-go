@@ -30,7 +30,7 @@ amendment text has been reviewed.
 | `0x8001` | Platform general acknowledgment | Implemented | Encodes responses and settles pending messages. |
 | `0x0002` | Terminal heartbeat | Implemented | Refreshes device activity and receives `0x8001`. |
 | `0x8003` | Platform retransmission request | Implemented | Server requests missing fragments after an idle interval, retries at most three times, and clears state on completion; the client simulator replays requested frames. |
-| `0x0005` | Terminal retransmission request | Missing | Request/response and retransmitted packet selection are absent. |
+| `0x0005` | Terminal retransmission request | Implemented | Oversized platform messages are split into indexed frames and cached; the terminal simulator can request selected frames, which the server replays byte-for-byte. |
 | `0x0100` | Terminal registration | Implemented | Validates duplicate plate/phone and returns `0x8100`. |
 | `0x8100` | Terminal registration response | Implemented | Returns authentication code; client simulator proceeds to authentication. |
 | `0x0003` | Terminal logout | Implemented | Removes device state and cancels keepalive tracking. |
