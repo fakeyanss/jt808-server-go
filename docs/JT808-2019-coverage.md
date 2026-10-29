@@ -5,6 +5,9 @@ This matrix compares the implementation in `internal/protocol/model` and
 Table B.1 of `docs/协议文档/JTT 808-2019.pdf`. Status is based on executable
 code, not the older feature summary in README.
 
+For project-wide completed work, prioritized TODOs, dependencies, and
+acceptance criteria, see [JT808-project-roadmap.md](JT808-project-roadmap.md).
+
 The 2019 standard's Amendment 1 was published by the Ministry of Transport in
 2021. Its official announcement is recorded at
 <https://xxgk.mot.gov.cn/2020/jigou/kjs/202111/t20211111_3625608.html>. The
@@ -86,12 +89,12 @@ amendment text has been reviewed.
 | `0x0805` | Camera capture response | Implemented | Decodes result and media IDs, caches latest response, and receives platform `0x8001`. |
 | `0x8802` | Search stored multimedia data | Implemented | Decodes search criteria and HTTP downlink; simulator filters its bounded in-memory `0x0801` catalog by type, channel, event, and capture time, then returns matching records. |
 | `0x0802` | Stored multimedia search response | Implemented | Decodes/encodes each 35-byte result as media ID, media type, channel, event, and typed `0x0200` location fields; response is cached. |
-| `0x8608` | Query region/route data | Implemented | Decodes query type and DWORD ID list; HTTP request waits for a matching `0x0608`; simulator can answer empty. |
+| `0x8608` | Query region/route data | Partial | Decodes query type and DWORD ID list; HTTP request waits for a matching `0x0608`, but the simulator has no region/route catalog and can only return an empty result. |
 | `0x0608` | Region/route data response | Partial | Query type/count envelope decoded and correlated; variable type-specific records preserved as raw bytes. |
 | `0x0701` | Electronic waybill upload | Missing | No model or processor path. |
-| `0x8803` | Stored multimedia upload command | Implemented | Typed 16-byte command with media type/channel/event, BCD range and delete flag; HTTP raw-body input is validated against the typed model; simulator sends the required generic acknowledgment. |
-| `0x8804` | Start audio recording command | Implemented | Typed 5-byte start/stop, duration, save and sample-rate fields; simulator sends the required generic acknowledgment. |
-| `0x8805` | Single stored multimedia upload command | Implemented | Typed media ID and delete flag; HTTP raw-body input is validated against the typed model; simulator sends the required generic acknowledgment. |
+| `0x8803` | Stored multimedia upload command | Partial | Typed 16-byte command with media type/channel/event, BCD range and delete flag; HTTP body is validated and simulator sends the generic acknowledgment, but it does not select/upload matching stored media. |
+| `0x8804` | Start audio recording command | Partial | Typed 5-byte start/stop, duration, save and sample-rate fields; simulator acknowledges but does not record or upload audio. |
+| `0x8805` | Single stored multimedia upload command | Partial | Typed media ID and delete flag; HTTP body is validated and simulator acknowledges, but it does not upload the selected media. |
 | `0x8900` | Data uplink transparent transmission | Missing | No model or processor path. |
 | `0x0900` | Data downlink transparent transmission | Missing | No model or processor path. |
 | `0x0901` | Compressed data report | Missing | No model or processor path. |
