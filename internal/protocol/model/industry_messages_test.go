@@ -69,16 +69,29 @@ func TestRegionRouteQueryRoundTrip(t *testing.T) {
 	response := &Msg0608{Header: genMsgHeader(0x0608), QueryType: 4}
 	decodedResponse := &Msg0608{}
 	roundTrip(t, response, decodedResponse)
-	require.Empty(t, decodedResponse.Records)
+	require.Zero(t, decodedResponse.Count)
 }
 
 func TestRegionSetCameraCaptureAndMultimediaSearchRoundTrip(t *testing.T) {
-	set := &MsgRegionRouteSet{Header: genMsgHeader(0x8600), Body: []byte{1, 1, 0xaa, 0xbb}}
+	set := &MsgRegionRouteSet{
+		Header:      genMsgHeader(0x8600),
+		SettingAttr: 1,
+		Circles: []CircleArea{{
+			ID: 1, Attr: AreaAttrTime | AreaAttrSpeed,
+			Latitude: 31000000, Longitude: 121000000, Radius: 500,
+			StartTime: "261028000000", EndTime: "261028235959",
+			MaxSpeed: 600, Duration: 10, Name: "测试圆",
+		}},
+	}
 	decodedSet := &MsgRegionRouteSet{}
 	roundTrip(t, set, decodedSet)
-	require.Equal(t, set.Body, decodedSet.Body)
-	set.Body = []byte{0, 0}
-	require.Error(t, func() error { _, err := set.Encode(); return err }())
+	require.Equal(t, set.SettingAttr, decodedSet.SettingAttr)
+	require.Equal(t, set.Circles[0].ID, decodedSet.Circles[0].ID)
+	require.Equal(t, set.Circles[0].Name, decodedSet.Circles[0].Name)
+	require.Equal(t, set.Circles[0].StartTime, decodedSet.Circles[0].StartTime)
+	empty := &MsgRegionRouteSet{Header: genMsgHeader(0x8600), SettingAttr: 1}
+	_, err := empty.Encode()
+	require.Error(t, err)
 
 	capture := &Msg8801{Header: genMsgHeader(0x8801), ChannelID: 1, Command: 3, Interval: 2, Save: 1, Resolution: 2, Quality: 5, Brightness: 10, Contrast: 20, Saturation: 30, Chroma: 40}
 	decodedCapture := &Msg8801{}

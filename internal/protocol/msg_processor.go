@@ -101,11 +101,11 @@ func initProcessOption() processOptions {
 	for _, messageID := range []uint16{0x8600, 0x8602, 0x8604, 0x8606} {
 		options[messageID] = &action{genData: func() *model.ProcessData {
 			return &model.ProcessData{Incoming: &model.MsgRegionRouteSet{}, Outgoing: &model.Msg0001{}}
-		}}
+		}, process: processRegionRouteSet}
 	}
 	options[0x8608] = &action{genData: func() *model.ProcessData {
 		return &model.ProcessData{Incoming: &model.Msg8608{}, Outgoing: &model.Msg0608{}}
-	}}
+	}, process: processRegionRouteQuery}
 	options[0x0608] = &action{genData: func() *model.ProcessData { return &model.ProcessData{Incoming: &model.Msg0608{}} }, process: processRegionResponse}
 	options[0x0702] = &action{genData: func() *model.ProcessData {
 		return &model.ProcessData{Incoming: &model.Msg0702{}, Outgoing: &model.Msg8001{}}
@@ -197,7 +197,7 @@ func initProcessOption() processOptions {
 	for _, messageID := range []uint16{0x8601, 0x8603, 0x8605, 0x8607} {
 		options[messageID] = &action{genData: func() *model.ProcessData {
 			return &model.ProcessData{Incoming: &model.Msg860Delete{}, Outgoing: &model.Msg0001{}}
-		}}
+		}, process: processRegionRouteDelete}
 	}
 	options[0x8106] = &action{genData: func() *model.ProcessData {
 		return &model.ProcessData{Incoming: &model.Msg8106{}, Outgoing: &model.Msg0104{}}
@@ -824,6 +824,38 @@ func processIndustryReport(_ context.Context, data *model.ProcessData) error {
 
 func processRegionResponse(_ context.Context, data *model.ProcessData) error {
 	storage.GetRegionResponseBroker().Deliver(data.Incoming.(*model.Msg0608))
+	return nil
+}
+
+// processRegionRouteSet stores accepted area/route items in the terminal
+// simulator's catalog so a subsequent 0x8608 query returns typed records.
+func processRegionRouteSet(_ context.Context, data *model.ProcessData) error {
+	in := data.Incoming.(*model.MsgRegionRouteSet)
+	storage.GetRegionCatalog().ApplySet(in.Header.PhoneNumber, in)
+	return nil
+}
+
+// processRegionRouteDelete removes area/route items from the catalog.
+func processRegionRouteDelete(_ context.Context, data *model.ProcessData) error {
+	in := data.Incoming.(*model.Msg860Delete)
+	typ, ok := model.RegionRouteDeleteType(in.Header.MsgID)
+	if !ok {
+		return nil
+	}
+	storage.GetRegionCatalog().Delete(in.Header.PhoneNumber, typ, in.IDs)
+	return nil
+}
+
+// processRegionRouteQuery populates the outgoing 0x0608 with stored catalog
+// records, filtered by the requested IDs.
+func processRegionRouteQuery(_ context.Context, data *model.ProcessData) error {
+	query := data.Incoming.(*model.Msg8608)
+	resp := data.Outgoing.(*model.Msg0608)
+	stored := storage.GetRegionCatalog().Query(query.Header.PhoneNumber, query.QueryType, query.IDs)
+	resp.Circles = stored.Circles
+	resp.Rectangles = stored.Rectangles
+	resp.Polygons = stored.Polygons
+	resp.Routes = stored.Routes
 	return nil
 }
 

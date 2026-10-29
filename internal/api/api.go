@@ -282,8 +282,13 @@ func Run(serv *server.TCPServer, cfg *config.Config) {
 
 	router.POST("/device/:phone/regions/set", func(c *gin.Context) {
 		var request struct {
-			MessageID uint16 `json:"messageId" binding:"required"`
-			BodyHex   string `json:"bodyHex" binding:"required"`
+			MessageID   uint16                `json:"messageId" binding:"required"`
+			SettingAttr uint8                 `json:"settingAttr"`
+			Circles     []model.CircleArea    `json:"circles"`
+			Rectangles  []model.RectangleArea `json:"rectangles"`
+			Polygons    []model.PolygonArea   `json:"polygons"`
+			Routes      []model.Route         `json:"routes"`
+			BodyHex     string                `json:"bodyHex"`
 		}
 		if err := c.ShouldBindJSON(&request); err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
@@ -293,16 +298,6 @@ func Run(serv *server.TCPServer, cfg *config.Config) {
 			c.JSON(http.StatusBadRequest, gin.H{"err": "messageId must be 0x8600, 0x8602, 0x8604, or 0x8606"})
 			return
 		}
-		body, err := hex.DecodeString(request.BodyHex)
-		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"err": "bodyHex must be an even-length hexadecimal string"})
-			return
-		}
-		if len(body) < 2 || body[0] > 2 || body[1] == 0 {
-			c.JSON(http.StatusBadRequest, gin.H{"err": "bodyHex must contain a valid setting attribute and nonzero item count"})
-			return
-		}
-		msg := &model.MsgRegionRouteSet{Body: body}
 		phone := c.Param("phone")
 		device, err := cache.GetDeviceByPhone(phone)
 		if err != nil {
@@ -314,9 +309,40 @@ func Run(serv *server.TCPServer, cfg *config.Config) {
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
 		}
-		msg.Header = model.GenMsgHeader(device, request.MessageID, session.GetNextSerialNum())
+
+		var msg *model.MsgRegionRouteSet
+		var count int
+		if request.BodyHex != "" {
+			body, err := hex.DecodeString(request.BodyHex)
+			if err != nil {
+				c.JSON(http.StatusBadRequest, gin.H{"err": "bodyHex must be an even-length hexadecimal string"})
+				return
+			}
+			// Round-trip through the typed decoder so malformed bodies are rejected.
+			msg = &model.MsgRegionRouteSet{Header: model.GenMsgHeader(device, request.MessageID, session.GetNextSerialNum())}
+			if err := msg.Decode(&model.PacketData{Header: msg.Header, Body: body}); err != nil {
+				c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
+				return
+			}
+			count = msg.ItemCount()
+			msg.Header = model.GenMsgHeader(device, request.MessageID, session.GetNextSerialNum())
+		} else {
+			msg = &model.MsgRegionRouteSet{
+				Header:      model.GenMsgHeader(device, request.MessageID, session.GetNextSerialNum()),
+				SettingAttr: model.AreaSettingAttr(request.SettingAttr),
+				Circles:     request.Circles,
+				Rectangles:  request.Rectangles,
+				Polygons:    request.Polygons,
+				Routes:      request.Routes,
+			}
+			count = msg.ItemCount()
+		}
+		if count == 0 {
+			c.JSON(http.StatusBadRequest, gin.H{"err": "at least one region/route item is required"})
+			return
+		}
 		serv.Send(session.ID, msg)
-		c.JSON(http.StatusAccepted, gin.H{"messageId": request.MessageID, "count": body[1]})
+		c.JSON(http.StatusAccepted, gin.H{"messageId": request.MessageID, "count": count})
 	})
 
 	router.POST("/device/:phone/regions/query", func(c *gin.Context) {
