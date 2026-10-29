@@ -131,24 +131,28 @@ func initProcessOption() processOptions {
 	options[0x0801] = &action{genData: func() *model.ProcessData {
 		return &model.ProcessData{Incoming: &model.Msg0801{}, Outgoing: &model.Msg8800{}}
 	}, process: processIndustryReport}
-	options[0x8800] = &action{genData: func() *model.ProcessData { return &model.ProcessData{Incoming: &model.Msg8800{}} }}
+	options[0x8800] = &action{genData: func() *model.ProcessData { return &model.ProcessData{Incoming: &model.Msg8800{}} }, process: processMsg8800}
 	options[0x8801] = &action{genData: func() *model.ProcessData {
 		return &model.ProcessData{Incoming: &model.Msg8801{}, Outgoing: &model.Msg0805{}}
 	}}
 	options[0x8802] = &action{genData: func() *model.ProcessData {
 		return &model.ProcessData{Incoming: &model.Msg8802{}, Outgoing: &model.Msg0802{}}
-	}}
+	}, process: processMediaSearchResponse}
 	options[0x0805] = &action{genData: func() *model.ProcessData {
 		return &model.ProcessData{Incoming: &model.Msg0805{}, Outgoing: &model.Msg8001{}}
 	}, process: processIndustryReport}
 	options[0x0802] = &action{genData: func() *model.ProcessData {
 		return &model.ProcessData{Incoming: &model.Msg0802{}, Outgoing: &model.Msg8001{}}
 	}, process: processIndustryReport}
-	for _, messageID := range []uint16{0x8803, 0x8804, 0x8805} {
-		options[messageID] = &action{genData: func() *model.ProcessData {
-			return &model.ProcessData{Incoming: &model.MsgRawBody{}, Outgoing: &model.Msg0001{}}
-		}}
-	}
+	options[0x8803] = &action{genData: func() *model.ProcessData {
+		return &model.ProcessData{Incoming: &model.Msg8803{}, Outgoing: &model.Msg0001{}}
+	}}
+	options[0x8804] = &action{genData: func() *model.ProcessData {
+		return &model.ProcessData{Incoming: &model.Msg8804{}, Outgoing: &model.Msg0001{}}
+	}}
+	options[0x8805] = &action{genData: func() *model.ProcessData {
+		return &model.ProcessData{Incoming: &model.Msg8805{}, Outgoing: &model.Msg0001{}}
+	}}
 	options[0x1205] = &action{ // 终端上传音视频资源列表
 		genData: func() *model.ProcessData {
 			return &model.ProcessData{Incoming: &model.Msg1205{}} // 无需回复
@@ -633,6 +637,26 @@ func processMsg0005(ctx context.Context, data *model.ProcessData) error {
 	return nil
 }
 
+// processMsg8800 replays media upload fragments retained by the terminal
+// simulator. JT808 transport-level 0x8003 recovery remains independent.
+func processMsg8800(ctx context.Context, data *model.ProcessData) error {
+	request := data.Incoming.(*model.Msg8800)
+	if len(request.RetransmitIDs) == 0 {
+		return nil
+	}
+	session, ok := ctx.Value(model.SessionCtxKey{}).(*model.Session)
+	if !ok || session == nil {
+		return nil
+	}
+	serial, ok := storage.GetMediaSegmentSerial(request.Header.PhoneNumber, request.MultiMediaID)
+	if !ok {
+		log.Warn().Str("device", request.Header.PhoneNumber).Uint32("media_id", request.MultiMediaID).Msg("No cached media fragments for retransmission request")
+		return nil
+	}
+	retransmitCachedSegments(session, request.Header.PhoneNumber, serial, request.RetransmitIDs)
+	return nil
+}
+
 func retransmitCachedSegments(session *model.Session, phone string, originalSerial uint16, packetIDs []uint16) {
 	frames := storage.GetSentSegmentFrames(phone, originalSerial, packetIDs)
 	if frames == nil {
@@ -800,5 +824,30 @@ func processIndustryReport(_ context.Context, data *model.ProcessData) error {
 
 func processRegionResponse(_ context.Context, data *model.ProcessData) error {
 	storage.GetRegionResponseBroker().Deliver(data.Incoming.(*model.Msg0608))
+	return nil
+}
+
+func processMediaSearchResponse(_ context.Context, data *model.ProcessData) error {
+	query := data.Incoming.(*model.Msg8802)
+	response := data.Outgoing.(*model.Msg0802)
+	for _, media := range storage.GetIndustryCache().MediaUploads(query.Header.PhoneNumber) {
+		if media.MultiMediaType != query.MediaType || (query.ChannelID != 0 && media.LogicChannelID != query.ChannelID) || (query.EventID != 0 && media.EventID != query.EventID) {
+			continue
+		}
+		if len(media.GeoAlarmBody) != 28 {
+			continue
+		}
+		location := model.Msg0200{}
+		if err := location.Decode(&model.PacketData{Header: query.Header, Body: media.GeoAlarmBody}); err != nil {
+			continue
+		}
+		if query.StartTime != "000000000000" && location.Time < query.StartTime {
+			continue
+		}
+		if query.EndTime != "000000000000" && location.Time > query.EndTime {
+			continue
+		}
+		response.Items = append(response.Items, model.MediaSearchItem{MediaID: media.MultiMediaID, MediaType: media.MultiMediaType, ChannelID: media.LogicChannelID, EventID: media.EventID, Location: location})
+	}
 	return nil
 }

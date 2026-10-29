@@ -289,9 +289,49 @@ func TestTCPClientSimulatorIndustryMessages(t *testing.T) {
 	require.Equal(t, uint32(0x60000123), industry.CAN(phone).Items[0].CANID)
 	require.Equal(t, []byte{0xaa}, industry.RecordData(phone).Data)
 	require.Equal(t, uint32(71), industry.MediaUploads(phone)[0].MultiMediaID)
-
 	session, err := storage.GetSession(device.SessionID)
 	require.NoError(t, err)
+	// Exercise media-layer retransmission separately from JT808's 0x8003
+	// transport reassembly: the terminal simulator must replay the original
+	// encoded media fragments requested by 0x8800.
+	media := &model.Msg0801{Header: model.GenMsgHeader(device, 0x0801, 30), MultiMediaID: 72, GeoAlarmBody: make([]byte, 28), FragmentData: make([]byte, 1500)}
+	for i := range media.FragmentData {
+		media.FragmentData[i] = byte(i)
+	}
+	require.NoError(t, cli.SendFragments(media, 300))
+	deadline = time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		for _, upload := range industry.MediaUploads(phone) {
+			if upload.MultiMediaID == 72 {
+				goto mediaUploaded
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("simulator upload was not received")
+mediaUploaded:
+	server.Send(session.ID, &model.Msg8800{Header: model.GenMsgHeader(device, 0x8800, 31), MultiMediaID: 72, RetransmitIDs: []uint16{1, 2, 3, 4, 5, 6}})
+	deadline = time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		count := 0
+		for _, upload := range industry.MediaUploads(phone) {
+			if upload.MultiMediaID == 72 {
+				count++
+			}
+		}
+		if count >= 2 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	countMedia := 0
+	for _, upload := range industry.MediaUploads(phone) {
+		if upload.MultiMediaID == 72 {
+			countMedia++
+		}
+	}
+	require.GreaterOrEqual(t, countMedia, 2, "0x8800 should trigger replay of cached media packet fragments")
+
 	responseCh, cancel, err := storage.GetRegionResponseBroker().Register(phone, 1)
 	require.NoError(t, err)
 	defer cancel()
@@ -332,7 +372,7 @@ func TestTCPClientSimulatorIndustryMessages(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	require.NotNil(t, industry.Capture(phone), "simulator should answer 0x8801 with 0x0805")
-	server.Send(session.ID, &model.Msg8802{Header: model.GenMsgHeader(device, 0x8802, session.GetNextSerialNum()), MediaType: 0, ChannelID: 1, EventID: 1, StartTime: "261028000000", EndTime: "261028235959"})
+	server.Send(session.ID, &model.Msg8802{Header: model.GenMsgHeader(device, 0x8802, session.GetNextSerialNum()), MediaType: 0, ChannelID: 1, EventID: 1, StartTime: "000000000000", EndTime: "000000000000"})
 	deadline = time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
 		if industry.MediaSearch(phone) != nil {
@@ -340,7 +380,10 @@ func TestTCPClientSimulatorIndustryMessages(t *testing.T) {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	require.NotNil(t, industry.MediaSearch(phone), "simulator should answer 0x8802 with 0x0802")
+	searchResult := industry.MediaSearch(phone)
+	require.NotNil(t, searchResult, "simulator should answer 0x8802 with 0x0802")
+	require.Len(t, searchResult.Items, 1, "simulator search catalog should return a media result")
+	require.Equal(t, uint32(71), searchResult.Items[0].MediaID)
 }
 
 func TestClientFaultFramesDoNotPreventFollowingRegistration(t *testing.T) {

@@ -69,7 +69,7 @@ func TestRegionRouteQueryRoundTrip(t *testing.T) {
 	response := &Msg0608{Header: genMsgHeader(0x0608), QueryType: 4}
 	decodedResponse := &Msg0608{}
 	roundTrip(t, response, decodedResponse)
-	require.Equal(t, uint32(0), decodedResponse.Count)
+	require.Empty(t, decodedResponse.Records)
 }
 
 func TestRegionSetCameraCaptureAndMultimediaSearchRoundTrip(t *testing.T) {
@@ -90,4 +90,23 @@ func TestRegionSetCameraCaptureAndMultimediaSearchRoundTrip(t *testing.T) {
 	roundTrip(t, search, decodedSearch)
 	require.Equal(t, search.StartTime, decodedSearch.StartTime)
 	require.Equal(t, search.EndTime, decodedSearch.EndTime)
+	result := &Msg0802{Header: genMsgHeader(0x0802), AnswerSerial: 7, Items: []MediaSearchItem{{MediaID: 10, MediaType: 2, ChannelID: 1, EventID: 3, Location: Msg0200{Latitude: 31000000, Longitude: 121000000, Time: search.StartTime}}}}
+	decodedResult := &Msg0802{}
+	roundTrip(t, result, decodedResult)
+	require.Equal(t, result.Items[0].MediaID, decodedResult.Items[0].MediaID)
+	require.Equal(t, result.Items[0].Location.Latitude, decodedResult.Items[0].Location.Latitude)
+}
+
+func TestTypedMediaCommandRoundTrips(t *testing.T) {
+	cases := []struct {
+		in  JT808Msg
+		out JT808Msg
+	}{
+		{&Msg8803{Header: genMsgHeader(0x8803), MediaType: 1, ChannelID: 2, EventID: 3, StartTime: "261028000000", EndTime: "261028235959", DeleteFlag: 1}, &Msg8803{}},
+		{&Msg8804{Header: genMsgHeader(0x8804), Command: 1, Duration: 30, Save: 1, SampleRate: 2}, &Msg8804{}},
+		{&Msg8805{Header: genMsgHeader(0x8805), MediaID: 11, DeleteFlag: 1}, &Msg8805{}},
+	}
+	for _, tc := range cases {
+		roundTrip(t, tc.in, tc.out)
+	}
 }

@@ -196,6 +196,7 @@ func dialAndSend(cfg *config.Config, cliWg *sync.WaitGroup, fragmentSize int, re
 			routines.GoSafe(func() {
 				wg.Wait()
 				for _, msg := range []model.JT808Msg{datagen.GenMsg0702(d), datagen.GenMsg0705(d), datagen.GenMsg0700(d), datagen.GenMsg0800(d), datagen.GenMsg0801(d)} {
+					storage.GetIndustryCache().Record(msg)
 					cli.Send(msg)
 				}
 			})

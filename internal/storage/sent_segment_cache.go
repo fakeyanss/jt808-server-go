@@ -16,13 +16,42 @@ type sentSegmentState struct {
 type sentSegmentCache struct {
 	mu      sync.Mutex
 	entries map[string]*sentSegmentState
+	media   map[string]mediaSegmentLink
 	bytes   int
 }
 
-var sentSegments = &sentSegmentCache{entries: make(map[string]*sentSegmentState)}
+type mediaSegmentLink struct {
+	serial    uint16
+	updatedAt time.Time
+}
+
+var sentSegments = &sentSegmentCache{entries: make(map[string]*sentSegmentState), media: make(map[string]mediaSegmentLink)}
 
 func sentSegmentKey(phone string, originalSerial uint16) string {
 	return fmt.Sprintf("%s/%04x", phone, originalSerial)
+}
+
+// CacheMediaSegment links a multimedia ID to the JT808 message serial whose
+// encoded fragments the terminal simulator retained for 0x8800 retransmits.
+func CacheMediaSegment(phone string, mediaID uint32, serial uint16) {
+	if phone == "" || mediaID == 0 {
+		return
+	}
+	sentSegments.mu.Lock()
+	defer sentSegments.mu.Unlock()
+	sentSegments.media[fmt.Sprintf("%s/%08x", phone, mediaID)] = mediaSegmentLink{serial: serial, updatedAt: time.Now()}
+}
+
+func GetMediaSegmentSerial(phone string, mediaID uint32) (uint16, bool) {
+	sentSegments.mu.Lock()
+	defer sentSegments.mu.Unlock()
+	key := fmt.Sprintf("%s/%08x", phone, mediaID)
+	link, ok := sentSegments.media[key]
+	if !ok || time.Since(link.updatedAt) > segmentCacheTTL {
+		delete(sentSegments.media, key)
+		return 0, false
+	}
+	return link.serial, true
 }
 
 // CacheSentSegmentFrame retains simulator frames so a 0x8003 request can

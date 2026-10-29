@@ -491,7 +491,22 @@ func Run(serv *server.TCPServer, cfg *config.Config) {
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
 		}
-		serv.Send(session.ID, &model.MsgRawBody{Header: model.GenMsgHeader(device, request.MessageID, session.GetNextSerialNum()), Body: body})
+		header := model.GenMsgHeader(device, request.MessageID, session.GetNextSerialNum())
+		packet := &model.PacketData{Header: header, Body: body}
+		var msg model.JT808Msg
+		switch request.MessageID {
+		case 0x8803:
+			msg = &model.Msg8803{}
+		case 0x8804:
+			msg = &model.Msg8804{}
+		case 0x8805:
+			msg = &model.Msg8805{}
+		}
+		if err := msg.Decode(packet); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"err": "bodyHex does not match the selected JT808 media command format"})
+			return
+		}
+		serv.Send(session.ID, msg)
 		c.JSON(http.StatusAccepted, gin.H{"messageId": request.MessageID})
 	})
 

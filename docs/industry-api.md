@@ -16,7 +16,8 @@ return `202 Accepted`; resulting terminal reports can be read from
 - `POST /device/:phone/regions/query` accepts `queryType` (1 circle, 2 rectangle,
   3 polygon, 4 route) and optional `ids`. It waits up to 10 seconds for `0x0608`.
   The response envelope is decoded; type-specific variable-length records are
-  retained as raw bytes.
+  currently retained as raw bytes. The simulator currently returns no stored
+  region/route records.
 
 ## Driver, CAN, and driving recorder
 
@@ -35,13 +36,20 @@ multimedia upload report after authentication with `go run ./test/client --indus
 - `POST /device/:phone/media/capture` accepts the `0x8801` command fields and
   returns asynchronously; the simulator answers with `0x0805`.
 - `POST /device/:phone/media/search` accepts the `0x8802` media type, channel,
-  event, start time, and end time. The simulator returns an empty `0x0802` result.
-- `POST /device/:phone/media/command` sends raw `bodyHex` for `0x8803`, `0x8804`,
-  or `0x8805`.
+  event, start time, and end time. The simulator filters its in-memory upload
+  catalog and returns matching `0x0802` items with typed media metadata and
+  location data. All-zero start/end times mean no time filter.
+- `POST /device/:phone/media/command` sends the standard body in `bodyHex` for
+  `0x8803`, `0x8804`, or `0x8805`; each body is decoded and validated against its
+  typed command fields before sending.
 - Read received reports with `/reports/media-event`, `/reports/media-capture`,
   `/reports/media-search`, and `/reports/media-uploads`.
 
 The upload handler decodes the 8-byte media descriptor, 28-byte base location
 report, and remaining media fragment bytes. The in-memory cache keeps at most
 100 uploads per device, and ignores a single fragment larger than 1 MiB. Media
-payloads and reports are not persisted yet.
+payloads and reports are not persisted yet. `0x8800` packet-ID retransmission
+is implemented in the client simulator for fragmented uploads: it retains sent
+frames and replays requested IDs. Server-side detection of missing media packets
+and request generation still needs implementation. The `0x0802` result decoder
+parses each standard 35-byte media record.

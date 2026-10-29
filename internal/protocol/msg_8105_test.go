@@ -44,9 +44,9 @@ func TestSimulatorRepliesToRegionDriverRecorderAndMultimediaCommands(t *testing.
 		{0x8701, []byte{3, 0xaa}, &model.Msg0001{}},
 		{0x8801, []byte{1, 0, 1, 0, 0, 0, 1, 1, 0, 0, 0, 0}, &model.Msg0805{}},
 		{0x8802, make([]byte, 15), &model.Msg0802{}},
-		{0x8803, []byte{1}, &model.Msg0001{}},
-		{0x8804, []byte{1}, &model.Msg0001{}},
-		{0x8805, []byte{1}, &model.Msg0001{}},
+		{0x8803, []byte{1, 1, 1, 0x26, 0x10, 0x28, 0, 0, 0, 0x26, 0x10, 0x28, 0x23, 0x59, 0x59, 1}, &model.Msg0001{}},
+		{0x8804, []byte{1, 0, 30, 1, 2}, &model.Msg0001{}},
+		{0x8805, []byte{0, 0, 0, 1, 1}, &model.Msg0001{}},
 	}
 	for _, tt := range tests {
 		t.Run(fmt.Sprintf("%04x", tt.id), func(t *testing.T) {

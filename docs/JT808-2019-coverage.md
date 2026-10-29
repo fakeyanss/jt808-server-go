@@ -81,17 +81,17 @@ amendment text has been reviewed.
 | `0x0705` | CAN bus data upload | Implemented | Decodes the 5-byte BCD timestamp, CAN ID flags and fixed 8-byte data items; caches latest report and sends `0x8001`. |
 | `0x0800` | Multimedia event information upload | Implemented | Decodes and caches the 8-byte event descriptor; sends `0x8001`. |
 | `0x0801` | Multimedia data upload | Partial | Decodes the media descriptor, fixed 28-byte base location body, and remaining media bytes; bounded in-memory cache and `0x8800` response. Extended location items and fragment reassembly remain open. |
-| `0x8800` | Multimedia upload response | Partial | Encodes/decodes media ID and up to 125 requested retransmission packet IDs; the server does not retain/replay media payload packets in response to requested IDs. |
+| `0x8800` | Multimedia upload response | Partial | Encodes/decodes media ID and requested packet IDs. The client simulator links media IDs to cached JT808 upload fragments and replays those exact frames when requested; server-side timeout/missing-media detection is not implemented. |
 | `0x8801` | Camera immediate capture command | Implemented | Decodes the 12-byte command; simulator returns `0x0805`. HTTP downlink available. |
 | `0x0805` | Camera capture response | Implemented | Decodes result and media IDs, caches latest response, and receives platform `0x8001`. |
-| `0x8802` | Search stored multimedia data | Partial | Decodes search criteria and HTTP downlink; simulator returns an empty `0x0802` response. |
-| `0x0802` | Stored multimedia search response | Partial | Correlation serial, count and raw result records are decoded/cached; type-specific media records are not parsed. |
+| `0x8802` | Search stored multimedia data | Implemented | Decodes search criteria and HTTP downlink; simulator filters its bounded in-memory `0x0801` catalog by type, channel, event, and capture time, then returns matching records. |
+| `0x0802` | Stored multimedia search response | Implemented | Decodes/encodes each 35-byte result as media ID, media type, channel, event, and typed `0x0200` location fields; response is cached. |
 | `0x8608` | Query region/route data | Implemented | Decodes query type and DWORD ID list; HTTP request waits for a matching `0x0608`; simulator can answer empty. |
 | `0x0608` | Region/route data response | Partial | Query type/count envelope decoded and correlated; variable type-specific records preserved as raw bytes. |
 | `0x0701` | Electronic waybill upload | Missing | No model or processor path. |
-| `0x8803` | Stored multimedia upload command | Partial | Raw standard-body HTTP downlink and simulator generic acknowledgment. |
-| `0x8804` | Start audio recording command | Partial | Raw standard-body HTTP downlink and simulator generic acknowledgment. |
-| `0x8805` | Single stored multimedia upload command | Partial | Raw standard-body HTTP downlink and simulator generic acknowledgment. |
+| `0x8803` | Stored multimedia upload command | Implemented | Typed 16-byte command with media type/channel/event, BCD range and delete flag; HTTP raw-body input is validated against the typed model; simulator sends the required generic acknowledgment. |
+| `0x8804` | Start audio recording command | Implemented | Typed 5-byte start/stop, duration, save and sample-rate fields; simulator sends the required generic acknowledgment. |
+| `0x8805` | Single stored multimedia upload command | Implemented | Typed media ID and delete flag; HTTP raw-body input is validated against the typed model; simulator sends the required generic acknowledgment. |
 | `0x8900` | Data uplink transparent transmission | Missing | No model or processor path. |
 | `0x0900` | Data downlink transparent transmission | Missing | No model or processor path. |
 | `0x0901` | Compressed data report | Missing | No model or processor path. |

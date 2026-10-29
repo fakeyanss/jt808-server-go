@@ -152,6 +152,9 @@ func (cli *TCPClient) SendFragmentsWithFault(msg model.JT808Msg, fragmentSize in
 	}
 	codec := protocol.NewJT808PacketCodec()
 	serials := cli.Session.GetNextSerialNums(total)
+	if media, ok := msg.(*model.Msg0801); ok {
+		storage.CacheMediaSegment(header.PhoneNumber, media.MultiMediaID, serials[0])
+	}
 	frames := make([][]byte, total)
 	for idx := 0; idx < total; idx++ {
 		start := idx * fragmentSize

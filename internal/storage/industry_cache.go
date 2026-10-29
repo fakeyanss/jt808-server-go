@@ -62,7 +62,7 @@ func (c *IndustryCache) Record(msg model.JT808Msg) {
 		c.captures[phone] = &copy
 	case *model.Msg0802:
 		copy := *m
-		copy.Records = append([]byte(nil), m.Records...)
+		copy.Items = append([]model.MediaSearchItem(nil), m.Items...)
 		c.mediaSearches[phone] = &copy
 	}
 }
@@ -139,6 +139,6 @@ func (c *IndustryCache) MediaSearch(phone string) *model.Msg0802 {
 		return nil
 	}
 	copy := *m
-	copy.Records = append([]byte(nil), m.Records...)
+	copy.Items = append([]model.MediaSearchItem(nil), m.Items...)
 	return &copy
 }
