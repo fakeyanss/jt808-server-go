@@ -146,13 +146,13 @@ func initProcessOption() processOptions {
 	}, process: processIndustryReport}
 	options[0x8803] = &action{genData: func() *model.ProcessData {
 		return &model.ProcessData{Incoming: &model.Msg8803{}, Outgoing: &model.Msg0001{}}
-	}}
+	}, process: processMsg8803}
 	options[0x8804] = &action{genData: func() *model.ProcessData {
 		return &model.ProcessData{Incoming: &model.Msg8804{}, Outgoing: &model.Msg0001{}}
-	}}
+	}, process: processMsg8804}
 	options[0x8805] = &action{genData: func() *model.ProcessData {
 		return &model.ProcessData{Incoming: &model.Msg8805{}, Outgoing: &model.Msg0001{}}
-	}}
+	}, process: processMsg8805}
 	options[0x1205] = &action{ // 终端上传音视频资源列表
 		genData: func() *model.ProcessData {
 			return &model.ProcessData{Incoming: &model.Msg1205{}} // 无需回复
@@ -881,5 +881,147 @@ func processMediaSearchResponse(_ context.Context, data *model.ProcessData) erro
 		}
 		response.Items = append(response.Items, model.MediaSearchItem{MediaID: media.MultiMediaID, MediaType: media.MultiMediaType, ChannelID: media.LogicChannelID, EventID: media.EventID, Location: location})
 	}
+	return nil
+}
+
+// sendOutgoingMsg encodes and writes a JT808 message through the session's
+// pipeline so large payloads are fragmented automatically. It is used by
+// terminal-simulator process functions to push extra messages (e.g. 0x0801
+// uploads) in addition to the pipeline's own outgoing ack.
+func sendOutgoingMsg(session *model.Session, msg model.JT808Msg) error {
+	if session == nil || msg == nil {
+		return errors.New("nil session or message")
+	}
+	ctx := context.WithValue(context.Background(), model.SessionCtxKey{}, session)
+	ctx = context.WithValue(ctx, model.ProcessDataCtxKey{}, &model.ProcessData{Outgoing: msg})
+	return NewPipeline(session.Conn).ProcessConnWrite(ctx)
+}
+
+// mediaTimeMatches reports whether the 0x0200 location body of an uploaded
+// media item falls inside the requested BCD time range. A zero boundary is
+// treated as "no constraint".
+func mediaTimeMatches(geoBody []byte, start, end string) bool {
+	if len(geoBody) != 28 {
+		return true
+	}
+	location := model.Msg0200{}
+	if err := location.Decode(&model.PacketData{Body: geoBody}); err != nil {
+		return true
+	}
+	if start != "000000000000" && location.Time < start {
+		return false
+	}
+	if end != "000000000000" && location.Time > end {
+		return false
+	}
+	return true
+}
+
+// processMsg8803 handles a platform "stored media upload" command on the
+// terminal simulator side: it replays every previously captured media item
+// that matches the requested type, channel, event and time range as 0x0801
+// upload messages.
+func processMsg8803(ctx context.Context, data *model.ProcessData) error {
+	cmd := data.Incoming.(*model.Msg8803)
+	session, _ := ctx.Value(model.SessionCtxKey{}).(*model.Session)
+	if session == nil {
+		return nil
+	}
+	phone := cmd.Header.PhoneNumber
+	industry := storage.GetIndustryCache()
+	uploads := industry.MediaUploads(phone)
+	for i := range uploads {
+		media := uploads[i]
+		if media.MultiMediaType != cmd.MediaType {
+			continue
+		}
+		if cmd.ChannelID != 0 && media.LogicChannelID != cmd.ChannelID {
+			continue
+		}
+		if cmd.EventID != 0 && media.EventID != cmd.EventID {
+			continue
+		}
+		if !mediaTimeMatches(media.GeoAlarmBody, cmd.StartTime, cmd.EndTime) {
+			continue
+		}
+		upload := &model.Msg0801{
+			Header:              model.GenMsgHeader(&model.Device{Phone: phone, VersionDesc: cmd.Header.Attr.VersionDesc, ProtocolVersion: cmd.Header.ProtocolVersion}, 0x0801, session.GetNextSerialNum()),
+			MultiMediaID:        media.MultiMediaID,
+			MultiMediaType:      media.MultiMediaType,
+			MultiMediaContainer: media.MultiMediaContainer,
+			EventID:             media.EventID,
+			LogicChannelID:      media.LogicChannelID,
+			GeoAlarmBody:        append([]byte(nil), media.GeoAlarmBody...),
+			FragmentData:        append([]byte(nil), media.FragmentData...),
+		}
+		if err := sendOutgoingMsg(session, upload); err != nil {
+			log.Error().Err(err).Str("device", phone).Uint32("media_id", media.MultiMediaID).Msg("Failed to upload stored media on 0x8803")
+		}
+	}
+	return nil
+}
+
+// processMsg8804 handles an audio recording command: it flips the simulator's
+// recording flag and, when starting, emits a small number of audio 0x0801
+// frames so the platform receives real media data.
+func processMsg8804(ctx context.Context, data *model.ProcessData) error {
+	cmd := data.Incoming.(*model.Msg8804)
+	session, _ := ctx.Value(model.SessionCtxKey{}).(*model.Session)
+	phone := cmd.Header.PhoneNumber
+	industry := storage.GetIndustryCache()
+	industry.SetRecording(phone, cmd.Command == 1)
+	if cmd.Command != 1 || session == nil {
+		return nil
+	}
+	device := &model.Device{Phone: phone, VersionDesc: cmd.Header.Attr.VersionDesc, ProtocolVersion: cmd.Header.ProtocolVersion}
+	frameCount := 3
+	for i := 0; i < frameCount; i++ {
+		upload := &model.Msg0801{
+			Header:              model.GenMsgHeader(device, 0x0801, session.GetNextSerialNum()),
+			MultiMediaID:        uint32(time.Now().UnixNano()/1e6) + uint32(i),
+			MultiMediaType:      1, // audio
+			MultiMediaContainer: 3, // WAV
+			EventID:             0, // platform command
+			LogicChannelID:      1,
+			GeoAlarmBody:        make([]byte, 28),
+			FragmentData:        []byte{0x52, 0x49, 0x46, 0x46, byte(i)},
+		}
+		if err := sendOutgoingMsg(session, upload); err != nil {
+			log.Error().Err(err).Str("device", phone).Int("frame", i).Msg("Failed to upload recorded audio frame")
+		}
+	}
+	return nil
+}
+
+// processMsg8805 handles a single-item media upload command by replaying the
+// stored media item whose multimedia identifier matches the request.
+func processMsg8805(ctx context.Context, data *model.ProcessData) error {
+	cmd := data.Incoming.(*model.Msg8805)
+	session, _ := ctx.Value(model.SessionCtxKey{}).(*model.Session)
+	if session == nil {
+		return nil
+	}
+	phone := cmd.Header.PhoneNumber
+	industry := storage.GetIndustryCache()
+	for _, media := range industry.MediaUploads(phone) {
+		if media.MultiMediaID != cmd.MediaID {
+			continue
+		}
+		upload := &model.Msg0801{
+			Header:              model.GenMsgHeader(&model.Device{Phone: phone, VersionDesc: cmd.Header.Attr.VersionDesc, ProtocolVersion: cmd.Header.ProtocolVersion}, 0x0801, session.GetNextSerialNum()),
+			MultiMediaID:        media.MultiMediaID,
+			MultiMediaType:      media.MultiMediaType,
+			MultiMediaContainer: media.MultiMediaContainer,
+			EventID:             media.EventID,
+			LogicChannelID:      media.LogicChannelID,
+			GeoAlarmBody:        append([]byte(nil), media.GeoAlarmBody...),
+			FragmentData:        append([]byte(nil), media.FragmentData...),
+		}
+		if err := sendOutgoingMsg(session, upload); err != nil {
+			log.Error().Err(err).Str("device", phone).Uint32("media_id", media.MultiMediaID).Msg("Failed to upload single media on 0x8805")
+		}
+		return nil
+	}
+	log.Warn().Str("device", phone).Uint32("media_id", cmd.MediaID).Msg("0x8805 requested media not found in simulator catalog")
 	return nil
 }

@@ -17,9 +17,10 @@ type IndustryCache struct {
 	mediaUploads  map[string][]*model.Msg0801
 	captures      map[string]*model.Msg0805
 	mediaSearches map[string]*model.Msg0802
+	recording     map[string]bool
 }
 
-var industryCache = &IndustryCache{drivers: map[string]*model.Msg0702{}, cans: map[string]*model.Msg0705{}, records: map[string]*model.Msg0700{}, mediaEvents: map[string]*model.Msg0800{}, mediaUploads: map[string][]*model.Msg0801{}, captures: map[string]*model.Msg0805{}, mediaSearches: map[string]*model.Msg0802{}}
+var industryCache = &IndustryCache{drivers: map[string]*model.Msg0702{}, cans: map[string]*model.Msg0705{}, records: map[string]*model.Msg0700{}, mediaEvents: map[string]*model.Msg0800{}, mediaUploads: map[string][]*model.Msg0801{}, captures: map[string]*model.Msg0805{}, mediaSearches: map[string]*model.Msg0802{}, recording: map[string]bool{}}
 
 func GetIndustryCache() *IndustryCache { return industryCache }
 func (c *IndustryCache) Record(msg model.JT808Msg) {
@@ -141,4 +142,18 @@ func (c *IndustryCache) MediaSearch(phone string) *model.Msg0802 {
 	copy := *m
 	copy.Items = append([]model.MediaSearchItem(nil), m.Items...)
 	return &copy
+}
+
+// SetRecording toggles the terminal simulator's recording flag for a device.
+func (c *IndustryCache) SetRecording(phone string, active bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.recording[phone] = active
+}
+
+// IsRecording reports whether the terminal simulator is currently recording.
+func (c *IndustryCache) IsRecording(phone string) bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.recording[phone]
 }

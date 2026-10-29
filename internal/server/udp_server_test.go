@@ -386,6 +386,112 @@ mediaUploaded:
 	require.Equal(t, uint32(71), searchResult.Items[0].MediaID)
 }
 
+func TestSimulatorMediaUploadCommands(t *testing.T) {
+	server := NewTCPServer()
+	require.NoError(t, server.Listen("127.0.0.1:0"))
+	go server.Start()
+	t.Cleanup(server.Stop)
+	cli := client.NewTCPClient()
+	require.NoError(t, cli.Dial(server.listener.Addr().String()))
+	t.Cleanup(cli.Stop)
+	go cli.Start()
+	const phone = "188765433220"
+	registration := &model.Msg0100{Header: &model.MsgHeader{MsgID: 0x0100, Attr: &model.MsgBodyAttr{VersionDesc: model.Version2013}, PhoneNumber: phone}, ProvinceID: 11, CityID: 1101, ManufacturerID: "ABCDE", DeviceMode: "JT808-MEDIA-SIM", DeviceID: "MEDIA-01", PlateColor: 1, PlateNumber: "京A88030"}
+	require.NoError(t, cli.SendWithError(registration))
+	var device *model.Device
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		device, _ = storage.GetDeviceCache().GetDeviceByPhone(phone)
+		if device != nil && device.Status == model.DeviceStatusOnline {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	require.NotNil(t, device)
+	require.Equal(t, model.DeviceStatusOnline, device.Status)
+	t.Cleanup(func() { storage.GetDeviceCache().DelDeviceByPhone(phone); protocol.NewKeepaliveTimer().Cancel(phone) })
+
+	industry := storage.GetIndustryCache()
+	session, err := storage.GetSession(device.SessionID)
+	require.NoError(t, err)
+
+	// Seed the simulator's stored-media catalog by uploading one image item.
+	require.NoError(t, cli.SendWithError(&model.Msg0801{Header: model.GenMsgHeader(device, 0x0801, 6), MultiMediaID: 71, MultiMediaType: 0, MultiMediaContainer: 0, EventID: 1, LogicChannelID: 1, GeoAlarmBody: make([]byte, 28), FragmentData: []byte{0xff, 0xd8, 0xff, 0xd9}}))
+	deadline = time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if countMediaID(industry.MediaUploads(phone), 71) >= 1 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	require.Equal(t, 1, countMediaID(industry.MediaUploads(phone), 71), "seed media should be uploaded once")
+
+	// 0x8803: upload all stored images on channel 1 event 1 -> simulator replays media 71.
+	server.Send(session.ID, &model.Msg8803{Header: model.GenMsgHeader(device, 0x8803, session.GetNextSerialNum()), MediaType: 0, ChannelID: 1, EventID: 1, StartTime: "000000000000", EndTime: "000000000000", DeleteFlag: 0})
+	deadline = time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if countMediaID(industry.MediaUploads(phone), 71) >= 2 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	require.GreaterOrEqual(t, countMediaID(industry.MediaUploads(phone), 71), 2, "0x8803 should trigger re-upload of matching stored media")
+
+	// 0x8805: upload a single stored media item by id -> simulator replays media 71 again.
+	server.Send(session.ID, &model.Msg8805{Header: model.GenMsgHeader(device, 0x8805, session.GetNextSerialNum()), MediaID: 71, DeleteFlag: 0})
+	deadline = time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if countMediaID(industry.MediaUploads(phone), 71) >= 3 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	require.GreaterOrEqual(t, countMediaID(industry.MediaUploads(phone), 71), 3, "0x8805 should trigger re-upload of the requested media id")
+
+	// 0x8804 start recording -> simulator emits audio frames (media type 1).
+	server.Send(session.ID, &model.Msg8804{Header: model.GenMsgHeader(device, 0x8804, session.GetNextSerialNum()), Command: 1, Duration: 10, Save: 1, SampleRate: 2})
+	deadline = time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if countMediaType(industry.MediaUploads(phone), 1) >= 3 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	require.GreaterOrEqual(t, countMediaType(industry.MediaUploads(phone), 1), 3, "0x8804 start should upload audio frames")
+	require.True(t, industry.IsRecording(phone), "recording flag should be active after start command")
+
+	// 0x8804 stop recording -> simulator clears recording flag.
+	server.Send(session.ID, &model.Msg8804{Header: model.GenMsgHeader(device, 0x8804, session.GetNextSerialNum()), Command: 0, Duration: 0, Save: 0, SampleRate: 0})
+	deadline = time.Now().Add(1 * time.Second)
+	for time.Now().Before(deadline) {
+		if !industry.IsRecording(phone) {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	require.False(t, industry.IsRecording(phone), "recording flag should be cleared after stop command")
+}
+
+func countMediaID(uploads []model.Msg0801, id uint32) int {
+	count := 0
+	for _, u := range uploads {
+		if u.MultiMediaID == id {
+			count++
+		}
+	}
+	return count
+}
+
+func countMediaType(uploads []model.Msg0801, mediaType uint8) int {
+	count := 0
+	for _, u := range uploads {
+		if u.MultiMediaType == mediaType {
+			count++
+		}
+	}
+	return count
+}
+
 func TestClientFaultFramesDoNotPreventFollowingRegistration(t *testing.T) {
 	for _, transport := range []model.TransportProtocol{model.TCPProto, model.UDPProto} {
 		for _, fault := range []string{"bad-checksum", "bad-escape", "oversize"} {
