@@ -107,9 +107,14 @@ func TestNumberStr2BCD(t *testing.T) {
 			want: []byte{0x12, 0x34, 0x56, 0x78, 0x90, 0x12},
 		},
 		{
-			name: "case2: short number",
+			name: "case2: short even number",
 			args: args{number: "1234"},
-			want: []byte{0xff, 0xff, 0x12, 0x34},
+			want: []byte{0x12, 0x34},
+		},
+		{
+			name: "case3: odd number padded with F",
+			args: args{number: "123"},
+			want: []byte{0xF1, 0x23},
 		},
 	}
 	for _, tt := range tests {

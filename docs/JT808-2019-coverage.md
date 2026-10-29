@@ -72,9 +72,9 @@ amendment text has been reviewed.
 | `0x8605` | Delete polygonal area | Partial | Shared delete-ID message model, HTTP downlink, and simulator acknowledgement. |
 | `0x8606` | Set route | Partial | Shared standard-body passthrough endpoint and simulator acknowledgment; no typed route-point parser. |
 | `0x8607` | Delete route | Partial | Shared delete-ID message model, HTTP downlink, and simulator acknowledgement. |
-| `0x8700` | Driving recorder data collection command | Partial | Typed command envelope and HTTP downlink; GB/T 19056 data block remains opaque. Simulator returns a sample `0x0700`. |
-| `0x0700` | Driving recorder data upload | Partial | Answer serial and command are decoded, opaque GB/T 19056 data is cached; generic acknowledgment is sent. |
-| `0x8701` | Driving recorder parameter download | Partial | Typed command envelope and HTTP downlink; GB/T 19056 data block remains opaque. Simulator sends `0x0001`. |
+| `0x8700` | Driving recorder data collection command | Implemented | Typed GB/T 19056 data block codec for commands `0x31`/`0x33`/`0x56`/`0x57`/`0x58`; HTTP downlink available. Simulator returns a typed `0x0700` response block. |
+| `0x0700` | Driving recorder data upload | Implemented | Answer serial, command byte, and typed GB/T 19056 response blocks (`0xB1`/`0xB3`/`0xD6`/`0xD8`) are decoded; data is cached and a generic acknowledgment is sent. |
+| `0x8701` | Driving recorder parameter download | Implemented | Typed `0x41` parameter-setting block (with 16-byte Salt) and `0xC1` response block codec; HTTP downlink available. Simulator sends `0x0001`. |
 | `0x8203` | Manual alarm confirmation | Partial | HTTP command serializes alarm serial/type; matching in-memory alarm events are marked confirmed after terminal `0x0001`; durable storage remains open. |
 | `0x8204` | Server-initiated link detection request | Implemented | Empty-body request is decoded by the client simulator and receives `0x0001`. |
 | `0x8300` | Text information issue | Missing | No model or processor path. |

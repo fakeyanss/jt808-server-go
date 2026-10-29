@@ -118,7 +118,7 @@ func initProcessOption() processOptions {
 	}, process: processIndustryReport}
 	options[0x8700] = &action{genData: func() *model.ProcessData {
 		return &model.ProcessData{Incoming: &model.MsgRecordCommand{}, Outgoing: &model.Msg0700{}}
-	}}
+	}, process: processMsg8700}
 	options[0x8701] = &action{genData: func() *model.ProcessData {
 		return &model.ProcessData{Incoming: &model.MsgRecordCommand{}, Outgoing: &model.Msg0001{}}
 	}}
@@ -1023,5 +1023,49 @@ func processMsg8805(ctx context.Context, data *model.ProcessData) error {
 		return nil
 	}
 	log.Warn().Str("device", phone).Uint32("media_id", cmd.MediaID).Msg("0x8805 requested media not found in simulator catalog")
+	return nil
+}
+
+// processMsg8700 populates the outgoing 0x0700 with a typed GB/T 19056 response
+// data block matching the platform command. Unsupported commands leave the
+// response data empty.
+func processMsg8700(_ context.Context, data *model.ProcessData) error {
+	cmd := data.Incoming.(*model.MsgRecordCommand)
+	resp := data.Outgoing.(*model.Msg0700)
+	now := time.Now()
+	switch cmd.Command {
+	case model.RecorderCmdCollectInfo:
+		resp.DataBlock = &model.RecorderInfoResponse{
+			Magic:           "GBT19056",
+			StandardVersion: "21",
+			RevisionNo:      0,
+			RecorderTime:    hex.FormatTime(now),
+			RecorderID:      make([]byte, 35),
+			PlateNo:         "京A12345",
+			PlateCategory:   "小型汽车",
+			VIN:             "LSVNV2182E2100001",
+			SerialNo:        "000000000001",
+			PulseCoeff:      100,
+			InstallTime:     "230101000000",
+		}
+	case model.RecorderCmdCollectFile:
+		resp.DataBlock = &model.RecorderFileResponse{
+			Items: []model.RecorderFileResponseItem{
+				{Category: model.FileCategoryLog, FileLength: 4, FileData: []byte{0xAA, 0xBB, 0xCC, 0xDD}},
+			},
+		}
+	case model.RecorderCmdPositionTestOn, model.RecorderCmdPositionTestOff:
+		resp.DataBlock = &model.RecorderPositionTestResponse{
+			Time:    hex.FormatTime(now),
+			GGAData: "$GPGGA,120000,3954.3265,N,11623.5432,E,1,08,1.0,45.3,M,,,,*47",
+			RMCData: "$GPRMC,120000,A,3954.3265,N,11623.5432,E,0.0,0.0,291026,,,A*5C",
+		}
+	case model.RecorderCmdDigestTest:
+		resp.DataBlock = &model.RecorderDigestTestResponse{
+			RecorderTime: hex.FormatTime(now),
+			RecorderID:   make([]byte, 35),
+			Digest:       make([]byte, 32),
+		}
+	}
 	return nil
 }

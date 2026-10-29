@@ -34,7 +34,7 @@ partial, and missing message IDs; use the prioritized tasks below to plan work.
 | Location and alarms | Done for current scope | Location reports/cache, location query response flow, alarm history in bounded memory, and manual alarm confirmation flow. Extended location items and durable history remain open. |
 | Parameters and terminal properties | Done for current scope | Set/query/specified-query/property flows with serial-correlated response handling. |
 | Driver identity and CAN | Done for current scope | Typed `0x0702`, `0x0705`, driver query command, in-memory latest-report access and simulator reports. |
-| Recorder message envelope | Partial foundation | `0x8700/0x8701/0x0700` command/data envelopes and simulator samples exist; GB/T 19056 sub-records are not decoded. |
+| Recorder message envelope | Done | `0x8700/0x8701/0x0700` typed GB/T 19056-2021 data block codecs for `0x31/0x33/0x41/0x56/0x57/0x58` commands and their responses; simulator returns command-specific typed blocks. |
 | Region/route message envelope | Partial foundation | Set/delete/query message paths and response correlation exist; set bodies and `0x0608` items are opaque, simulator query has no stored objects. |
 | Multimedia base flow | Partial | Event/upload/capture/search messages and bounded upload cache exist. `0x0802` is parsed into typed 35-byte records and searched against cached uploads. Extended location items and full command behavior are open. |
 | Media command codecs | Done at codec/dispatch level | `0x8803/04/05` have typed layouts, validation and HTTP downlink. Simulator acknowledges them but does not execute the requested upload/recording behavior. |
@@ -75,9 +75,10 @@ JT/T 808-2019 PDF and note any 2011/2013 compatibility behavior explicitly.
 
 #### P0.2 — GB/T 19056 record command and data block decoding
 
-**Status:** Not done. `0x8700`, `0x8701`, and `0x0700` carry command bytes and
-opaque data. The exact GB/T 19056 edition is not currently vendored in
-`docs/协议文档/`.
+**Status:** Done. GB/T 19056-2021 data blocks for `0x31`/`0x33`/`0x41`/`0x56`/`0x57`/`0x58`
+commands and their responses are typed-encoded/decoded. The simulator returns
+command-specific typed response blocks. Unsupported commands fall back to raw
+data passthrough.
 
 **Work:**
 
