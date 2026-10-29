@@ -23,14 +23,15 @@ func Run(serv *server.TCPServer, cfg *config.Config) {
 	// web server structure
 	gin.SetMode(gin.ReleaseMode)
 	router := gin.Default()
+	api := router.Group("/api")
 	cache := storage.GetDeviceCache()
 	geoCache := storage.GetGeoCache()
 
-	router.GET("/device", func(c *gin.Context) {
+	api.GET("/device", func(c *gin.Context) {
 		c.JSON(http.StatusOK, cache.ListDevice())
 	})
 
-	router.GET("/device/:phone/reports/:kind", func(c *gin.Context) {
+	api.GET("/device/:phone/reports/:kind", func(c *gin.Context) {
 		phone := c.Param("phone")
 		if _, err := cache.GetDeviceByPhone(phone); err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
@@ -64,7 +65,7 @@ func Run(serv *server.TCPServer, cfg *config.Config) {
 		c.JSON(http.StatusOK, result)
 	})
 
-	router.GET("/device/:phone/geo", func(c *gin.Context) {
+	api.GET("/device/:phone/geo", func(c *gin.Context) {
 		phone := c.Param("phone")
 
 		device, err := cache.GetDeviceByPhone(phone)
@@ -88,7 +89,7 @@ func Run(serv *server.TCPServer, cfg *config.Config) {
 		c.JSON(http.StatusOK, res)
 	})
 
-	router.GET("/device/:phone/params", func(c *gin.Context) {
+	api.GET("/device/:phone/params", func(c *gin.Context) {
 		phone := c.Param("phone")
 		device, err := cache.GetDeviceByPhone(phone)
 		if err != nil {
@@ -143,7 +144,7 @@ func Run(serv *server.TCPServer, cfg *config.Config) {
 		}
 	})
 
-	router.GET("/device/:phone/properties", func(c *gin.Context) {
+	api.GET("/device/:phone/properties", func(c *gin.Context) {
 		phone := c.Param("phone")
 		device, err := cache.GetDeviceByPhone(phone)
 		if err != nil {
@@ -176,7 +177,7 @@ func Run(serv *server.TCPServer, cfg *config.Config) {
 		}
 	})
 
-	router.GET("/device/:phone/location", func(c *gin.Context) {
+	api.GET("/device/:phone/location", func(c *gin.Context) {
 		phone := c.Param("phone")
 		device, err := cache.GetDeviceByPhone(phone)
 		if err != nil {
@@ -210,7 +211,7 @@ func Run(serv *server.TCPServer, cfg *config.Config) {
 		}
 	})
 
-	router.POST("/device/:phone/control", func(c *gin.Context) {
+	api.POST("/device/:phone/control", func(c *gin.Context) {
 		var request struct {
 			CommandWord  uint8  `json:"commandWord" binding:"required"`
 			CommandParam string `json:"commandParam"`
@@ -247,7 +248,7 @@ func Run(serv *server.TCPServer, cfg *config.Config) {
 		c.JSON(http.StatusAccepted, gin.H{"messageId": "0x8105", "commandWord": request.CommandWord})
 	})
 
-	router.POST("/device/:phone/regions/delete", func(c *gin.Context) {
+	api.POST("/device/:phone/regions/delete", func(c *gin.Context) {
 		var request struct {
 			MessageID uint16   `json:"messageId" binding:"required"`
 			IDs       []uint32 `json:"ids"`
@@ -280,7 +281,7 @@ func Run(serv *server.TCPServer, cfg *config.Config) {
 		c.JSON(http.StatusAccepted, gin.H{"messageId": request.MessageID, "count": len(request.IDs)})
 	})
 
-	router.POST("/device/:phone/regions/set", func(c *gin.Context) {
+	api.POST("/device/:phone/regions/set", func(c *gin.Context) {
 		var request struct {
 			MessageID   uint16                `json:"messageId" binding:"required"`
 			SettingAttr uint8                 `json:"settingAttr"`
@@ -345,7 +346,7 @@ func Run(serv *server.TCPServer, cfg *config.Config) {
 		c.JSON(http.StatusAccepted, gin.H{"messageId": request.MessageID, "count": count})
 	})
 
-	router.POST("/device/:phone/regions/query", func(c *gin.Context) {
+	api.POST("/device/:phone/regions/query", func(c *gin.Context) {
 		var request struct {
 			QueryType uint8    `json:"queryType" binding:"required,min=1,max=4"`
 			IDs       []uint32 `json:"ids"`
@@ -390,7 +391,7 @@ func Run(serv *server.TCPServer, cfg *config.Config) {
 		}
 	})
 
-	router.POST("/device/:phone/driver/query", func(c *gin.Context) {
+	api.POST("/device/:phone/driver/query", func(c *gin.Context) {
 		phone := c.Param("phone")
 		device, err := cache.GetDeviceByPhone(phone)
 		if err != nil {
@@ -405,7 +406,7 @@ func Run(serv *server.TCPServer, cfg *config.Config) {
 		serv.Send(session.ID, &model.Msg8702{Header: model.GenMsgHeader(device, 0x8702, session.GetNextSerialNum())})
 		c.JSON(http.StatusAccepted, gin.H{"messageId": "0x8702"})
 	})
-	router.POST("/device/:phone/recorder/command", func(c *gin.Context) {
+	api.POST("/device/:phone/recorder/command", func(c *gin.Context) {
 		var request struct {
 			MessageID uint16 `json:"messageId" binding:"required"`
 			Command   uint8  `json:"command"`
@@ -438,7 +439,7 @@ func Run(serv *server.TCPServer, cfg *config.Config) {
 		serv.Send(session.ID, &model.MsgRecordCommand{Header: model.GenMsgHeader(device, request.MessageID, session.GetNextSerialNum()), Command: request.Command, Data: data})
 		c.JSON(http.StatusAccepted, gin.H{"messageId": request.MessageID, "command": request.Command})
 	})
-	router.POST("/device/:phone/media/capture", func(c *gin.Context) {
+	api.POST("/device/:phone/media/capture", func(c *gin.Context) {
 		var request model.Msg8801
 		if err := c.ShouldBindJSON(&request); err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
@@ -463,7 +464,7 @@ func Run(serv *server.TCPServer, cfg *config.Config) {
 		serv.Send(session.ID, &request)
 		c.JSON(http.StatusAccepted, gin.H{"messageId": "0x8801"})
 	})
-	router.POST("/device/:phone/media/search", func(c *gin.Context) {
+	api.POST("/device/:phone/media/search", func(c *gin.Context) {
 		var request model.Msg8802
 		if err := c.ShouldBindJSON(&request); err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
@@ -488,7 +489,7 @@ func Run(serv *server.TCPServer, cfg *config.Config) {
 		serv.Send(session.ID, &request)
 		c.JSON(http.StatusAccepted, gin.H{"messageId": "0x8802"})
 	})
-	router.POST("/device/:phone/media/command", func(c *gin.Context) {
+	api.POST("/device/:phone/media/command", func(c *gin.Context) {
 		var request struct {
 			MessageID uint16 `json:"messageId" binding:"required"`
 			BodyHex   string `json:"bodyHex"`
@@ -536,7 +537,7 @@ func Run(serv *server.TCPServer, cfg *config.Config) {
 		c.JSON(http.StatusAccepted, gin.H{"messageId": request.MessageID})
 	})
 
-	router.POST("/device/:phone/alarms/confirm", func(c *gin.Context) {
+	api.POST("/device/:phone/alarms/confirm", func(c *gin.Context) {
 		var request struct {
 			AlarmSerial uint16 `json:"alarmSerial"`
 			AlarmType   uint32 `json:"alarmType"`
@@ -562,7 +563,7 @@ func Run(serv *server.TCPServer, cfg *config.Config) {
 		c.JSON(http.StatusAccepted, gin.H{"messageId": "0x8203", "alarmSerial": request.AlarmSerial, "alarmType": request.AlarmType})
 	})
 
-	router.GET("/device/:phone/alarms", func(c *gin.Context) {
+	api.GET("/device/:phone/alarms", func(c *gin.Context) {
 		phone := c.Param("phone")
 		if _, err := cache.GetDeviceByPhone(phone); err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
@@ -571,7 +572,7 @@ func Run(serv *server.TCPServer, cfg *config.Config) {
 		c.JSON(http.StatusOK, storage.GetAlarmCache().List(phone))
 	})
 
-	router.PUT("/device/:phone/params", func(c *gin.Context) {
+	api.PUT("/device/:phone/params", func(c *gin.Context) {
 		phone := c.Param("phone")
 		params := model.DeviceParams{}
 		if err := c.ShouldBind(&params); err != nil {
