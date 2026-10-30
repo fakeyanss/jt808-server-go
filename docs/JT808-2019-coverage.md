@@ -83,8 +83,8 @@ amendment text has been reviewed.
 | `0x0704` | Batch positioning data upload | Missing | No model or processor path. |
 | `0x0705` | CAN bus data upload | Implemented | Decodes the 5-byte BCD timestamp, CAN ID flags and fixed 8-byte data items; caches latest report and sends `0x8001`. |
 | `0x0800` | Multimedia event information upload | Implemented | Decodes and caches the 8-byte event descriptor; sends `0x8001`. |
-| `0x0801` | Multimedia data upload | Partial | Decodes the media descriptor, fixed 28-byte base location body, and remaining media bytes; bounded in-memory cache and `0x8800` response. Extended location items and fragment reassembly remain open. |
-| `0x8800` | Multimedia upload response | Partial | Encodes/decodes media ID and requested packet IDs. The client simulator links media IDs to cached JT808 upload fragments and replays those exact frames when requested; server-side timeout/missing-media detection is not implemented. |
+| `0x0801` | Multimedia data upload | Implemented | Decodes the media descriptor, fixed 28-byte base location body, and remaining media bytes; bounded in-memory cache, `0x8800` response, and server-side missing-fragment detection via `0x8800` retransmission. Extended location items remain open. |
+| `0x8800` | Multimedia upload response | Implemented | Encodes/decodes media ID and requested packet IDs. Server detects missing `0x0801` fragments and sends `0x8800` with the missing packet IDs; the simulator replays cached frames and the server reassembles exactly once. |
 | `0x8801` | Camera immediate capture command | Implemented | Decodes the 12-byte command; simulator returns `0x0805`. HTTP downlink available. |
 | `0x0805` | Camera capture response | Implemented | Decodes result and media IDs, caches latest response, and receives platform `0x8001`. |
 | `0x8802` | Search stored multimedia data | Implemented | Decodes search criteria and HTTP downlink; simulator filters its bounded in-memory `0x0801` catalog by type, channel, event, and capture time, then returns matching records. |

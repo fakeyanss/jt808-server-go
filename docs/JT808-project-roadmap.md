@@ -38,7 +38,7 @@ partial, and missing message IDs; use the prioritized tasks below to plan work.
 | Region/route message envelope | Partial foundation | Set/delete/query message paths and response correlation exist; set bodies and `0x0608` items are opaque, simulator query has no stored objects. |
 | Multimedia base flow | Partial | Event/upload/capture/search messages and bounded upload cache exist. `0x0802` is parsed into typed 35-byte records and searched against cached uploads. Extended location items and full command behavior are open. |
 | Media command codecs | Done at codec/dispatch level | `0x8803/04/05` have typed layouts, validation and HTTP downlink. Simulator acknowledges them but does not execute the requested upload/recording behavior. |
-| Media retransmission client behavior | Done for simulator | The simulator retains fragmented `0x0801` frames and replays requested packet IDs when sent `0x8800`; server-side media loss detection and request generation remain open. |
+| Media retransmission | Done | Server detects missing `0x0801` fragments and requests retransmission with `0x8800` (media ID + missing packet IDs); first-fragment loss falls back to `0x8003`. Simulator replays cached frames; server reassembles exactly once. `0x8003` remains for non-media transport fragmentation. |
 | Protocol status documentation | Done as index | `JT808-2019-coverage.md` maps Appendix B message IDs to implementation states and notes. Amendment 1 conformance has not been reviewed. |
 
 ## Prioritized TODO
@@ -126,9 +126,13 @@ search reflects the resulting catalog.
 
 #### P0.4 — Server-side missing media packet detection and `0x8800` requests
 
-**Status:** Partial. Client can replay cached media fragments on a requested
-`0x8800`; server currently receives a completed `0x0801` and always returns the
-normal acknowledgment, without detecting missing media data.
+**Status:** Done. The server tracks in-progress `0x0801` fragments by device and
+original serial, extracts the `MultiMediaID` from the first fragment, and on idle
+timeout sends `0x8800` listing the missing packet IDs. The simulator replays the
+cached frames; the server reassembles the media exactly once and releases state.
+If the first fragment (which carries the media ID) is missing, the server falls
+back to `0x8003` for that recovery only; non-media messages keep using `0x8003`
+exclusively.
 
 **Work:**
 

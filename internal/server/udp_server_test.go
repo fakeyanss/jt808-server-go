@@ -478,6 +478,80 @@ func TestSimulatorMediaUploadCommands(t *testing.T) {
 	require.False(t, industry.IsRecording(phone), "recording flag should be cleared after stop command")
 }
 
+// TestSimulatorMediaRetransmissionRecoversDroppedPacket sends a fragmented
+// 0x0801 with one fragment dropped and verifies the server detects the gap,
+// requests retransmission via 0x8800, and reassembles the media exactly once.
+func TestSimulatorMediaRetransmissionRecoversDroppedPacket(t *testing.T) {
+	server := NewTCPServer()
+	require.NoError(t, server.Listen("127.0.0.1:0"))
+	go server.Start()
+	t.Cleanup(server.Stop)
+	cli := client.NewTCPClient()
+	require.NoError(t, cli.Dial(server.listener.Addr().String()))
+	t.Cleanup(cli.Stop)
+	go cli.Start()
+	const phone = "188765433240"
+	registration := &model.Msg0100{Header: &model.MsgHeader{MsgID: 0x0100, Attr: &model.MsgBodyAttr{VersionDesc: model.Version2013}, PhoneNumber: phone}, ProvinceID: 11, CityID: 1101, ManufacturerID: "ABCDE", DeviceMode: "JT808-MEDIA-SIM", DeviceID: "MEDIA-02", PlateColor: 1, PlateNumber: "京A88000"}
+	require.NoError(t, cli.SendWithError(registration))
+	var device *model.Device
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		device, _ = storage.GetDeviceCache().GetDeviceByPhone(phone)
+		if device != nil && device.Status == model.DeviceStatusOnline {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	require.NotNil(t, device)
+	require.Equal(t, model.DeviceStatusOnline, device.Status)
+	t.Cleanup(func() { storage.GetDeviceCache().DelDeviceByPhone(phone); protocol.NewKeepaliveTimer().Cancel(phone) })
+
+	industry := storage.GetIndustryCache()
+
+	// Build a 1500-byte media payload split into 5 fragments of 300 bytes.
+	const mediaID = uint32(8801)
+	original := make([]byte, 1500)
+	for i := range original {
+		original[i] = byte(i % 251)
+	}
+	media := &model.Msg0801{
+		Header:       model.GenMsgHeader(device, 0x0801, 40),
+		MultiMediaID: mediaID,
+		GeoAlarmBody: make([]byte, 28),
+		FragmentData: original,
+	}
+	// Drop fragment 3 (1-based); the server must request it via 0x8800.
+	require.NoError(t, cli.SendFragmentsWithFault(media, 300, false, 3))
+
+	// The media should be reassembled exactly once after retransmission.
+	deadline = time.Now().Add(5 * time.Second)
+	var matched *model.Msg0801
+	for time.Now().Before(deadline) {
+		for i := range industry.MediaUploads(phone) {
+			u := industry.MediaUploads(phone)[i]
+			if u.MultiMediaID == mediaID && len(u.FragmentData) == len(original) {
+				matched = &u
+				break
+			}
+		}
+		if matched != nil {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	require.NotNil(t, matched, "dropped media fragment should be recovered via 0x8800 retransmission")
+	require.Equal(t, original, matched.FragmentData, "reassembled media must match the original payload exactly")
+
+	// The media record must appear exactly once (no duplicate reassembly).
+	count := 0
+	for _, u := range industry.MediaUploads(phone) {
+		if u.MultiMediaID == mediaID && len(u.FragmentData) == len(original) {
+			count++
+		}
+	}
+	require.Equal(t, 1, count, "media should be reassembled exactly once after retransmission")
+}
+
 func countMediaID(uploads []model.Msg0801, id uint32) int {
 	count := 0
 	for _, u := range uploads {

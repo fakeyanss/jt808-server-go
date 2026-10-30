@@ -246,7 +246,11 @@ func (mp *JT808MsgProcessor) Process(ctx context.Context, pkt *model.PacketData)
 	}
 	if pkt.SegCompleted {
 		if session, ok := ctx.Value(model.SessionCtxKey{}).(*model.Session); ok && session != nil {
-			cancelSegmentRetransmission(session, pkt.Header.PhoneNumber, pkt.Header.MsgID, pkt.Header.SerialNumber)
+			if pkt.Header.MsgID == 0x0801 {
+				cancelMediaRetransmission(session, pkt.Header.PhoneNumber, pkt.Header.MsgID, pkt.Header.SerialNumber)
+			} else {
+				cancelSegmentRetransmission(session, pkt.Header.PhoneNumber, pkt.Header.MsgID, pkt.Header.SerialNumber)
+			}
 		}
 	}
 
@@ -360,7 +364,11 @@ func processSegmentPacket(ctx context.Context, pkt *model.PacketData) (*model.Pr
 		Result:             model.ResultSuccess,
 	}
 	if session, ok := ctx.Value(model.SessionCtxKey{}).(*model.Session); ok && session != nil {
-		scheduleSegmentRetransmission(session, pkt)
+		if pkt.Header.MsgID == 0x0801 {
+			scheduleMediaRetransmission(session, pkt)
+		} else {
+			scheduleSegmentRetransmission(session, pkt)
+		}
 	}
 	return &model.ProcessData{Outgoing: outgoingMsg}, nil
 }
