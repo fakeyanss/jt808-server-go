@@ -19,8 +19,8 @@ type DeviceMediaQuery struct {
 
 func (q *DeviceMediaQuery) Decode(pkt []byte, idx *int) {
 	q.LogicChannelID = hex.ReadByte(pkt, idx)
-	q.StartTime = hex.ReadTime(pkt, idx)
-	q.EndTime = hex.ReadTime(pkt, idx)
+	q.StartTime = readOptionalTime(pkt, idx)
+	q.EndTime = readOptionalTime(pkt, idx)
 	q.AlarmSign = hex.ReadDoubleWord(pkt, idx)
 	q.AlarmSignExt = hex.ReadDoubleWord(pkt, idx)
 	q.MediaType = hex.ReadByte(pkt, idx)
@@ -28,10 +28,38 @@ func (q *DeviceMediaQuery) Decode(pkt []byte, idx *int) {
 	q.StorageType = hex.ReadByte(pkt, idx)
 }
 
+// readOptionalTime reads a 6-byte BCD time and returns nil when all bytes are
+// zero, which the JT808 standard treats as "no time constraint".
+func readOptionalTime(pkt []byte, idx *int) *time.Time {
+	if *idx+6 > len(pkt) {
+		return nil
+	}
+	allZero := true
+	for _, b := range pkt[*idx : *idx+6] {
+		if b != 0 {
+			allZero = false
+			break
+		}
+	}
+	if allZero {
+		*idx += 6
+		return nil
+	}
+	return hex.ReadTime(pkt, idx)
+}
+
 func (q *DeviceMediaQuery) Encode() (pkt []byte) {
 	pkt = hex.WriteByte(pkt, q.LogicChannelID)
-	pkt = hex.WriteTime(pkt, *q.StartTime)
-	pkt = hex.WriteTime(pkt, *q.EndTime)
+	if q.StartTime != nil {
+		pkt = hex.WriteTime(pkt, *q.StartTime)
+	} else {
+		pkt = append(pkt, 0, 0, 0, 0, 0, 0)
+	}
+	if q.EndTime != nil {
+		pkt = hex.WriteTime(pkt, *q.EndTime)
+	} else {
+		pkt = append(pkt, 0, 0, 0, 0, 0, 0)
+	}
 	pkt = hex.WriteDoubleWord(pkt, q.AlarmSign)
 	pkt = hex.WriteDoubleWord(pkt, q.AlarmSignExt)
 	pkt = hex.WriteByte(pkt, q.MediaType)

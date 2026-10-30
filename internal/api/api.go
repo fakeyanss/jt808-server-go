@@ -489,6 +489,63 @@ func Run(serv *server.TCPServer, cfg *config.Config) {
 		serv.Send(session.ID, &request)
 		c.JSON(http.StatusAccepted, gin.H{"messageId": "0x8802"})
 	})
+	api.POST("/device/:phone/media/resources", func(c *gin.Context) {
+		var request struct {
+			LogicChannelID uint8  `json:"logicChannelId"`
+			StartTime      string `json:"startTime"`
+			EndTime        string `json:"endTime"`
+			AlarmSign      uint32 `json:"alarmSign"`
+			AlarmSignExt   uint32 `json:"alarmSignExt"`
+			MediaType      uint8  `json:"mediaType"`
+			StreamType     uint8  `json:"streamType"`
+			StorageType    uint8  `json:"storageType"`
+		}
+		if err := c.ShouldBindJSON(&request); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
+			return
+		}
+		phone := c.Param("phone")
+		device, err := cache.GetDeviceByPhone(phone)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
+			return
+		}
+		session, err := storage.GetSession(device.SessionID)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
+			return
+		}
+		msg := model.Msg9205{}
+		msg.LogicChannelID = request.LogicChannelID
+		msg.AlarmSign = request.AlarmSign
+		msg.AlarmSignExt = request.AlarmSignExt
+		msg.MediaType = request.MediaType
+		msg.StreamType = request.StreamType
+		msg.StorageType = request.StorageType
+		if request.StartTime != "" {
+			t, err := time.Parse("2006-01-02 15:04:05", request.StartTime)
+			if err != nil {
+				c.JSON(http.StatusBadRequest, gin.H{"err": "startTime must be '2006-01-02 15:04:05' format"})
+				return
+			}
+			msg.StartTime = &t
+		}
+		if request.EndTime != "" {
+			t, err := time.Parse("2006-01-02 15:04:05", request.EndTime)
+			if err != nil {
+				c.JSON(http.StatusBadRequest, gin.H{"err": "endTime must be '2006-01-02 15:04:05' format"})
+				return
+			}
+			msg.EndTime = &t
+		}
+		msg.Header = model.GenMsgHeader(device, 0x9205, session.GetNextSerialNum())
+		if _, err := msg.Encode(); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"err": "invalid resource query fields"})
+			return
+		}
+		serv.Send(session.ID, &msg)
+		c.JSON(http.StatusAccepted, gin.H{"messageId": "0x9205"})
+	})
 	api.POST("/device/:phone/media/command", func(c *gin.Context) {
 		var request struct {
 			MessageID uint16 `json:"messageId" binding:"required"`
@@ -535,6 +592,266 @@ func Run(serv *server.TCPServer, cfg *config.Config) {
 		}
 		serv.Send(session.ID, msg)
 		c.JSON(http.StatusAccepted, gin.H{"messageId": request.MessageID})
+	})
+
+	api.POST("/device/:phone/text/issue", func(c *gin.Context) {
+		var request model.Msg8300
+		if err := c.ShouldBindJSON(&request); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
+			return
+		}
+		phone := c.Param("phone")
+		device, err := cache.GetDeviceByPhone(phone)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
+			return
+		}
+		session, err := storage.GetSession(device.SessionID)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
+			return
+		}
+		request.Header = model.GenMsgHeader(device, 0x8300, session.GetNextSerialNum())
+		if _, err := request.Encode(); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"err": "invalid text issue fields"})
+			return
+		}
+		serv.Send(session.ID, &request)
+		c.JSON(http.StatusAccepted, gin.H{"messageId": "0x8300"})
+	})
+	api.POST("/device/:phone/events/set", func(c *gin.Context) {
+		var request model.Msg8301
+		if err := c.ShouldBindJSON(&request); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
+			return
+		}
+		phone := c.Param("phone")
+		device, err := cache.GetDeviceByPhone(phone)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
+			return
+		}
+		session, err := storage.GetSession(device.SessionID)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
+			return
+		}
+		request.ItemCount = uint8(len(request.Items))
+		request.Header = model.GenMsgHeader(device, 0x8301, session.GetNextSerialNum())
+		if _, err := request.Encode(); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"err": "invalid event set fields"})
+			return
+		}
+		serv.Send(session.ID, &request)
+		c.JSON(http.StatusAccepted, gin.H{"messageId": "0x8301"})
+	})
+
+	api.POST("/device/:phone/vehicle/control", func(c *gin.Context) {
+		var request model.Msg8500
+		if err := c.ShouldBindJSON(&request); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
+			return
+		}
+		phone := c.Param("phone")
+		device, err := cache.GetDeviceByPhone(phone)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
+			return
+		}
+		session, err := storage.GetSession(device.SessionID)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
+			return
+		}
+		request.Header = model.GenMsgHeader(device, 0x8500, session.GetNextSerialNum())
+		if _, err := request.Encode(); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"err": "invalid vehicle control fields"})
+			return
+		}
+		serv.Send(session.ID, &request)
+		c.JSON(http.StatusAccepted, gin.H{"messageId": "0x8500"})
+	})
+
+	api.POST("/device/:phone/question/issue", func(c *gin.Context) {
+		var request model.Msg8302
+		if err := c.ShouldBindJSON(&request); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
+			return
+		}
+		phone := c.Param("phone")
+		device, err := cache.GetDeviceByPhone(phone)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
+			return
+		}
+		session, err := storage.GetSession(device.SessionID)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
+			return
+		}
+		request.Header = model.GenMsgHeader(device, 0x8302, session.GetNextSerialNum())
+		if _, err := request.Encode(); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"err": "invalid question issue fields"})
+			return
+		}
+		serv.Send(session.ID, &request)
+		c.JSON(http.StatusAccepted, gin.H{"messageId": "0x8302"})
+	})
+
+	api.POST("/device/:phone/info/menu/set", func(c *gin.Context) {
+		var request model.Msg8303
+		if err := c.ShouldBindJSON(&request); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
+			return
+		}
+		phone := c.Param("phone")
+		device, err := cache.GetDeviceByPhone(phone)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
+			return
+		}
+		session, err := storage.GetSession(device.SessionID)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
+			return
+		}
+		request.Header = model.GenMsgHeader(device, 0x8303, session.GetNextSerialNum())
+		if _, err := request.Encode(); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"err": "invalid info menu set fields"})
+			return
+		}
+		serv.Send(session.ID, &request)
+		c.JSON(http.StatusAccepted, gin.H{"messageId": "0x8303"})
+	})
+
+	api.POST("/device/:phone/info/service", func(c *gin.Context) {
+		var request model.Msg8304
+		if err := c.ShouldBindJSON(&request); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
+			return
+		}
+		phone := c.Param("phone")
+		device, err := cache.GetDeviceByPhone(phone)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
+			return
+		}
+		session, err := storage.GetSession(device.SessionID)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
+			return
+		}
+		request.Header = model.GenMsgHeader(device, 0x8304, session.GetNextSerialNum())
+		if _, err := request.Encode(); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"err": "invalid info service fields"})
+			return
+		}
+		serv.Send(session.ID, &request)
+		c.JSON(http.StatusAccepted, gin.H{"messageId": "0x8304"})
+	})
+
+	api.POST("/device/:phone/call/callback", func(c *gin.Context) {
+		var request model.Msg8400
+		if err := c.ShouldBindJSON(&request); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
+			return
+		}
+		phone := c.Param("phone")
+		device, err := cache.GetDeviceByPhone(phone)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
+			return
+		}
+		session, err := storage.GetSession(device.SessionID)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
+			return
+		}
+		request.Header = model.GenMsgHeader(device, 0x8400, session.GetNextSerialNum())
+		if _, err := request.Encode(); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"err": "invalid call callback fields"})
+			return
+		}
+		serv.Send(session.ID, &request)
+		c.JSON(http.StatusAccepted, gin.H{"messageId": "0x8400"})
+	})
+
+	api.POST("/device/:phone/phonebook/set", func(c *gin.Context) {
+		var request model.Msg8401
+		if err := c.ShouldBindJSON(&request); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
+			return
+		}
+		phone := c.Param("phone")
+		device, err := cache.GetDeviceByPhone(phone)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
+			return
+		}
+		session, err := storage.GetSession(device.SessionID)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
+			return
+		}
+		request.Header = model.GenMsgHeader(device, 0x8401, session.GetNextSerialNum())
+		if _, err := request.Encode(); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"err": "invalid phonebook set fields"})
+			return
+		}
+		serv.Send(session.ID, &request)
+		c.JSON(http.StatusAccepted, gin.H{"messageId": "0x8401"})
+	})
+
+	api.POST("/device/:phone/terminal/upgrade", func(c *gin.Context) {
+		var request model.Msg8108
+		if err := c.ShouldBindJSON(&request); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
+			return
+		}
+		phone := c.Param("phone")
+		device, err := cache.GetDeviceByPhone(phone)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
+			return
+		}
+		session, err := storage.GetSession(device.SessionID)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
+			return
+		}
+		request.Header = model.GenMsgHeader(device, 0x8108, session.GetNextSerialNum())
+		if _, err := request.Encode(); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"err": "invalid terminal upgrade fields"})
+			return
+		}
+		serv.Send(session.ID, &request)
+		c.JSON(http.StatusAccepted, gin.H{"messageId": "0x8108"})
+	})
+
+	api.POST("/device/:phone/transparent/down", func(c *gin.Context) {
+		var request model.Msg8900
+		if err := c.ShouldBindJSON(&request); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
+			return
+		}
+		phone := c.Param("phone")
+		device, err := cache.GetDeviceByPhone(phone)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
+			return
+		}
+		session, err := storage.GetSession(device.SessionID)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
+			return
+		}
+		request.Header = model.GenMsgHeader(device, 0x8900, session.GetNextSerialNum())
+		if _, err := request.Encode(); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"err": "invalid transparent downlink fields"})
+			return
+		}
+		serv.Send(session.ID, &request)
+		c.JSON(http.StatusAccepted, gin.H{"messageId": "0x8900"})
 	})
 
 	api.POST("/device/:phone/alarms/confirm", func(c *gin.Context) {

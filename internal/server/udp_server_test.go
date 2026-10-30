@@ -1,6 +1,8 @@
 package server
 
 import (
+	"bytes"
+	"compress/zlib"
 	"context"
 	"errors"
 	"net"
@@ -476,6 +478,727 @@ func TestSimulatorMediaUploadCommands(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	require.False(t, industry.IsRecording(phone), "recording flag should be cleared after stop command")
+}
+
+// buildGeoAlarmBody builds a 28-byte 0x0200 base body with the given BCD time.
+func buildGeoAlarmBody(timeBCD string) []byte {
+	body := make([]byte, 28)
+	// AlarmSign, StatusSign, Latitude, Longitude, Altitude, Speed, Direction are zero.
+	// Time starts at byte 22 (6 BCD bytes).
+	for i := 0; i < 6 && i*2 < len(timeBCD); i++ {
+		high := timeBCD[i*2] - '0'
+		low := byte(0)
+		if i*2+1 < len(timeBCD) {
+			low = timeBCD[i*2+1] - '0'
+		}
+		body[22+i] = high<<4 | low
+	}
+	return body
+}
+
+// TestSimulatorMediaResourceListQuery seeds media uploads of varying types,
+// channels and times, then verifies 0x9205 queries return correctly filtered
+// 0x1205 resource lists backed by the media catalog.
+func TestSimulatorMediaResourceListQuery(t *testing.T) {
+	server := NewTCPServer()
+	require.NoError(t, server.Listen("127.0.0.1:0"))
+	go server.Start()
+	t.Cleanup(server.Stop)
+	cli := client.NewTCPClient()
+	require.NoError(t, cli.Dial(server.listener.Addr().String()))
+	t.Cleanup(cli.Stop)
+	go cli.Start()
+	const phone = "188765433229"
+	registration := &model.Msg0100{Header: &model.MsgHeader{MsgID: 0x0100, Attr: &model.MsgBodyAttr{VersionDesc: model.Version2013}, PhoneNumber: phone}, ProvinceID: 11, CityID: 1101, ManufacturerID: "ABCDE", DeviceMode: "JT808-MEDIA-SIM", DeviceID: "MEDIA-02", PlateColor: 1, PlateNumber: "京A88031"}
+	require.NoError(t, cli.SendWithError(registration))
+	var device *model.Device
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		device, _ = storage.GetDeviceCache().GetDeviceByPhone(phone)
+		if device != nil && device.Status == model.DeviceStatusOnline {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	require.NotNil(t, device)
+	require.Equal(t, model.DeviceStatusOnline, device.Status)
+	t.Cleanup(func() { storage.GetDeviceCache().DelDeviceByPhone(phone); protocol.NewKeepaliveTimer().Cancel(phone) })
+
+	industry := storage.GetIndustryCache()
+	session, err := storage.GetSession(device.SessionID)
+	require.NoError(t, err)
+
+	// Empty catalog query returns zero items.
+	querySerial := session.GetNextSerialNum()
+	server.Send(session.ID, &model.Msg9205{Header: model.GenMsgHeader(device, 0x9205, querySerial), DeviceMediaQuery: model.DeviceMediaQuery{LogicChannelID: 0, MediaType: 0, StreamType: 0, StorageType: 0}})
+	deadline = time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if industry.MediaResourceList(phone) != nil {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	emptyResult := industry.MediaResourceList(phone)
+	require.NotNil(t, emptyResult, "simulator should answer 0x9205 with 0x1205 even for empty catalog")
+	require.Equal(t, uint16(querySerial), emptyResult.AnswerSerialNumber, "answer serial must match query serial")
+	require.Equal(t, uint32(0), emptyResult.MediaCount, "empty catalog should return zero items")
+	require.Len(t, emptyResult.Items, 0)
+
+	// Seed three media items: image on channel 1, audio on channel 2, video on channel 1.
+	seedItems := []struct {
+		id       uint32
+		typ      uint8
+		channel  uint8
+		timeBCD  string
+		dataSize int
+	}{
+		{101, 0, 1, "240101120000", 100}, // image, channel 1, noon Jan 1
+		{102, 1, 2, "240101130000", 200}, // audio, channel 2, 1pm Jan 1
+		{103, 2, 1, "240102120000", 300}, // video, channel 1, noon Jan 2
+	}
+	for _, s := range seedItems {
+		require.NoError(t, cli.SendWithError(&model.Msg0801{
+			Header:              model.GenMsgHeader(device, 0x0801, uint16(100+s.id)),
+			MultiMediaID:        s.id,
+			MultiMediaType:      s.typ,
+			MultiMediaContainer: 0,
+			EventID:             1,
+			LogicChannelID:      s.channel,
+			GeoAlarmBody:        buildGeoAlarmBody(s.timeBCD),
+			FragmentData:        make([]byte, s.dataSize),
+		}))
+	}
+	deadline = time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if len(industry.MediaUploads(phone)) >= 3 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	require.Len(t, industry.MediaUploads(phone), 3, "three media items should be uploaded")
+
+	// Query all (mediaType 0) -> all 3 items.
+	server.Send(session.ID, &model.Msg9205{Header: model.GenMsgHeader(device, 0x9205, session.GetNextSerialNum()), DeviceMediaQuery: model.DeviceMediaQuery{LogicChannelID: 0, MediaType: 0}})
+	deadline = time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if r := industry.MediaResourceList(phone); r != nil && r.MediaCount == 3 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	allResult := industry.MediaResourceList(phone)
+	require.Equal(t, uint32(3), allResult.MediaCount, "mediaType=0 should return all items")
+	require.Len(t, allResult.Items, 3)
+
+	// Filter by channel 1 -> items 101 and 103.
+	server.Send(session.ID, &model.Msg9205{Header: model.GenMsgHeader(device, 0x9205, session.GetNextSerialNum()), DeviceMediaQuery: model.DeviceMediaQuery{LogicChannelID: 1, MediaType: 0}})
+	deadline = time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if r := industry.MediaResourceList(phone); r != nil && r.MediaCount == 2 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	chResult := industry.MediaResourceList(phone)
+	require.Equal(t, uint32(2), chResult.MediaCount, "channel 1 filter should return 2 items")
+	for _, item := range chResult.Items {
+		require.Equal(t, uint8(1), item.LogicChannelID)
+	}
+
+	// Filter by media type 1 (audio) -> only item 102.
+	server.Send(session.ID, &model.Msg9205{Header: model.GenMsgHeader(device, 0x9205, session.GetNextSerialNum()), DeviceMediaQuery: model.DeviceMediaQuery{LogicChannelID: 0, MediaType: 1}})
+	deadline = time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if r := industry.MediaResourceList(phone); r != nil && r.MediaCount == 1 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	audioResult := industry.MediaResourceList(phone)
+	require.Equal(t, uint32(1), audioResult.MediaCount, "mediaType=1 (audio) should return 1 item")
+	require.Equal(t, uint8(1), audioResult.Items[0].MediaType)
+	require.Equal(t, uint32(200), audioResult.Items[0].Size, "item size should reflect fragment data length")
+
+	// Filter by time range Jan 1 00:00 to Jan 1 23:59 -> items 101 and 102.
+	start := time.Date(2024, 1, 1, 0, 0, 0, 0, time.Local)
+	end := time.Date(2024, 1, 1, 23, 59, 59, 0, time.Local)
+	server.Send(session.ID, &model.Msg9205{Header: model.GenMsgHeader(device, 0x9205, session.GetNextSerialNum()), DeviceMediaQuery: model.DeviceMediaQuery{LogicChannelID: 0, MediaType: 0, StartTime: &start, EndTime: &end}})
+	deadline = time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if r := industry.MediaResourceList(phone); r != nil && r.MediaCount == 2 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	timeResult := industry.MediaResourceList(phone)
+	require.Equal(t, uint32(2), timeResult.MediaCount, "Jan 1 time range should return 2 items")
+}
+
+// TestSimulatorTextAndEventMessages exercises 0x8300 text issue, 0x8301 event
+// set/delete/append semantics, and 0x0301 event report storage.
+func TestSimulatorTextAndEventMessages(t *testing.T) {
+	server := NewTCPServer()
+	require.NoError(t, server.Listen("127.0.0.1:0"))
+	go server.Start()
+	t.Cleanup(server.Stop)
+	cli := client.NewTCPClient()
+	require.NoError(t, cli.Dial(server.listener.Addr().String()))
+	t.Cleanup(cli.Stop)
+	go cli.Start()
+	const phone = "188765433228"
+	registration := &model.Msg0100{Header: &model.MsgHeader{MsgID: 0x0100, Attr: &model.MsgBodyAttr{VersionDesc: model.Version2013}, PhoneNumber: phone}, ProvinceID: 11, CityID: 1101, ManufacturerID: "ABCDE", DeviceMode: "JT808-EVENT-SIM", DeviceID: "EVENT-01", PlateColor: 1, PlateNumber: "京A88032"}
+	require.NoError(t, cli.SendWithError(registration))
+	var device *model.Device
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		device, _ = storage.GetDeviceCache().GetDeviceByPhone(phone)
+		if device != nil && device.Status == model.DeviceStatusOnline {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	require.NotNil(t, device)
+	require.Equal(t, model.DeviceStatusOnline, device.Status)
+	t.Cleanup(func() { storage.GetDeviceCache().DelDeviceByPhone(phone); protocol.NewKeepaliveTimer().Cancel(phone) })
+
+	industry := storage.GetIndustryCache()
+	session, err := storage.GetSession(device.SessionID)
+	require.NoError(t, err)
+
+	// 0x8300 text issue -> terminal acknowledges with 0x0001 (no observable side effect).
+	server.Send(session.ID, &model.Msg8300{Header: model.GenMsgHeader(device, 0x8300, session.GetNextSerialNum()), Flag: 1, TextType: 1, Text: "hello终端"})
+	time.Sleep(300 * time.Millisecond)
+
+	// 0x8301 set type 1 (replace) with two events.
+	server.Send(session.ID, &model.Msg8301{
+		Header:  model.GenMsgHeader(device, 0x8301, session.GetNextSerialNum()),
+		SetType: 1,
+		Items: []model.EventItem{
+			{ID: 1, Content: "紧急报警"},
+			{ID: 2, Content: "疲劳驾驶"},
+		},
+	})
+	deadline = time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if len(industry.Events(phone)) == 2 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	events := industry.Events(phone)
+	require.Len(t, events, 2, "set type 1 should store two events")
+	eventMap := map[uint8]string{}
+	for _, e := range events {
+		eventMap[e.ID] = e.Content
+	}
+	require.Equal(t, "紧急报警", eventMap[1])
+	require.Equal(t, "疲劳驾驶", eventMap[2])
+
+	// 0x8301 set type 2 (append) adds a third event.
+	server.Send(session.ID, &model.Msg8301{
+		Header:  model.GenMsgHeader(device, 0x8301, session.GetNextSerialNum()),
+		SetType: 2,
+		Items:   []model.EventItem{{ID: 3, Content: "超速"}},
+	})
+	deadline = time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if len(industry.Events(phone)) == 3 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	require.Len(t, industry.Events(phone), 3, "append should add one event")
+
+	// 0x8301 set type 0 (delete all) clears the catalog.
+	server.Send(session.ID, &model.Msg8301{Header: model.GenMsgHeader(device, 0x8301, session.GetNextSerialNum()), SetType: 0})
+	deadline = time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if len(industry.Events(phone)) == 0 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	require.Len(t, industry.Events(phone), 0, "delete all should clear events")
+
+	// 0x0301 event report from terminal -> platform stores it.
+	require.NoError(t, cli.SendWithError(&model.Msg0301{Header: model.GenMsgHeader(device, 0x0301, 5), EventID: 7}))
+	deadline = time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if industry.EventReport(phone) != nil {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	report := industry.EventReport(phone)
+	require.NotNil(t, report, "platform should store 0x0301 event report")
+	require.Equal(t, uint8(7), report.EventID)
+}
+
+// TestSimulatorVehicleControl verifies 0x8500 commands store control flags and
+// the 0x0500 response echoes them back to the platform.
+func TestSimulatorVehicleControl(t *testing.T) {
+	server := NewTCPServer()
+	require.NoError(t, server.Listen("127.0.0.1:0"))
+	go server.Start()
+	t.Cleanup(server.Stop)
+	cli := client.NewTCPClient()
+	require.NoError(t, cli.Dial(server.listener.Addr().String()))
+	t.Cleanup(cli.Stop)
+	go cli.Start()
+	const phone = "188765433227"
+	registration := &model.Msg0100{Header: &model.MsgHeader{MsgID: 0x0100, Attr: &model.MsgBodyAttr{VersionDesc: model.Version2013}, PhoneNumber: phone}, ProvinceID: 11, CityID: 1101, ManufacturerID: "ABCDE", DeviceMode: "JT808-VEH-SIM", DeviceID: "VEH-01", PlateColor: 1, PlateNumber: "京A88033"}
+	require.NoError(t, cli.SendWithError(registration))
+	var device *model.Device
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		device, _ = storage.GetDeviceCache().GetDeviceByPhone(phone)
+		if device != nil && device.Status == model.DeviceStatusOnline {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	require.NotNil(t, device)
+	require.Equal(t, model.DeviceStatusOnline, device.Status)
+	t.Cleanup(func() { storage.GetDeviceCache().DelDeviceByPhone(phone); protocol.NewKeepaliveTimer().Cancel(phone) })
+
+	industry := storage.GetIndustryCache()
+	session, err := storage.GetSession(device.SessionID)
+	require.NoError(t, err)
+
+	// 0x8500 lock door (bit0=1) -> terminal stores flags and echoes via 0x0500.
+	const lockFlags uint16 = 0x0001
+	server.Send(session.ID, &model.Msg8500{Header: model.GenMsgHeader(device, 0x8500, session.GetNextSerialNum()), ControlFlags: lockFlags})
+	deadline = time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if industry.VehicleControl(phone) == lockFlags {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	require.Equal(t, lockFlags, industry.VehicleControl(phone), "0x8500 should store control flags")
+
+	// 0x8500 unlock door (bit0=0) -> flags update.
+	const unlockFlags uint16 = 0x0000
+	server.Send(session.ID, &model.Msg8500{Header: model.GenMsgHeader(device, 0x8500, session.GetNextSerialNum()), ControlFlags: unlockFlags})
+	deadline = time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if industry.VehicleControl(phone) == unlockFlags {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	require.Equal(t, unlockFlags, industry.VehicleControl(phone), "second 0x8500 should update control flags")
+}
+
+// TestSimulatorQuestionMenuInfoService verifies 0x8302/0x0302 question flow,
+// 0x8303/0x0303 info menu flow, and 0x8304 info service are decoded and cached.
+func TestSimulatorQuestionMenuInfoService(t *testing.T) {
+	server := NewTCPServer()
+	require.NoError(t, server.Listen("127.0.0.1:0"))
+	go server.Start()
+	t.Cleanup(server.Stop)
+	cli := client.NewTCPClient()
+	require.NoError(t, cli.Dial(server.listener.Addr().String()))
+	t.Cleanup(cli.Stop)
+	go cli.Start()
+	const phone = "188765433225"
+	registration := &model.Msg0100{Header: &model.MsgHeader{MsgID: 0x0100, Attr: &model.MsgBodyAttr{VersionDesc: model.Version2013}, PhoneNumber: phone}, ProvinceID: 11, CityID: 1101, ManufacturerID: "ABCDE", DeviceMode: "JT808-Q-SIM", DeviceID: "Q-01", PlateColor: 1, PlateNumber: "京A88035"}
+	require.NoError(t, cli.SendWithError(registration))
+	var device *model.Device
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		device, _ = storage.GetDeviceCache().GetDeviceByPhone(phone)
+		if device != nil && device.Status == model.DeviceStatusOnline {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	require.NotNil(t, device)
+	require.Equal(t, model.DeviceStatusOnline, device.Status)
+	t.Cleanup(func() { storage.GetDeviceCache().DelDeviceByPhone(phone); protocol.NewKeepaliveTimer().Cancel(phone) })
+
+	industry := storage.GetIndustryCache()
+	session, err := storage.GetSession(device.SessionID)
+	require.NoError(t, err)
+
+	// 0x8302 question issue with two candidates.
+	server.Send(session.ID, &model.Msg8302{
+		Header:   model.GenMsgHeader(device, 0x8302, session.GetNextSerialNum()),
+		Flag:     1,
+		Question: "是否继续运输",
+		Candidates: []model.QuestionCandidate{
+			{ID: 101, Content: "继续"},
+			{ID: 102, Content: "停止"},
+		},
+	})
+	deadline = time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if q := industry.Question(phone); q != nil {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	q := industry.Question(phone)
+	require.NotNil(t, q, "0x8302 should store the question")
+	require.Equal(t, "是否继续运输", q.Question)
+	require.Len(t, q.Candidates, 2)
+	candMap := map[uint32]string{}
+	for _, c := range q.Candidates {
+		candMap[c.ID] = c.Content
+	}
+	require.Equal(t, "继续", candMap[101])
+	require.Equal(t, "停止", candMap[102])
+
+	// 0x0302 question response from terminal.
+	require.NoError(t, cli.SendWithError(&model.Msg0302{Header: model.GenMsgHeader(device, 0x0302, 6), AnswerSerial: session.GetNextSerialNum() - 1, AnswerID: 101}))
+	deadline = time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if industry.QuestionResponse(phone) != nil {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	resp := industry.QuestionResponse(phone)
+	require.NotNil(t, resp, "0x0302 should be stored")
+	require.Equal(t, uint32(101), resp.AnswerID)
+
+	// 0x8303 set type 1 (replace) with two menu items.
+	server.Send(session.ID, &model.Msg8303{
+		Header:  model.GenMsgHeader(device, 0x8303, session.GetNextSerialNum()),
+		SetType: 1,
+		Items: []model.InfoMenuItem{
+			{ID: 1, Content: "路况播报"},
+			{ID: 2, Content: "天气信息"},
+		},
+	})
+	deadline = time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if len(industry.InfoMenu(phone)) == 2 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	menus := industry.InfoMenu(phone)
+	require.Len(t, menus, 2, "set type 1 should store two menu items")
+	menuMap := map[uint32]string{}
+	for _, m := range menus {
+		menuMap[m.ID] = m.Content
+	}
+	require.Equal(t, "路况播报", menuMap[1])
+	require.Equal(t, "天气信息", menuMap[2])
+
+	// 0x8303 set type 0 (delete all) clears the menu.
+	server.Send(session.ID, &model.Msg8303{Header: model.GenMsgHeader(device, 0x8303, session.GetNextSerialNum()), SetType: 0})
+	deadline = time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if len(industry.InfoMenu(phone)) == 0 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	require.Len(t, industry.InfoMenu(phone), 0, "delete all should clear menu")
+
+	// 0x0303 info on-demand from terminal.
+	require.NoError(t, cli.SendWithError(&model.Msg0303{Header: model.GenMsgHeader(device, 0x0303, 7), Action: 1, MenuID: 1}))
+	deadline = time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if industry.MenuAction(phone) != nil {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	action := industry.MenuAction(phone)
+	require.NotNil(t, action, "0x0303 should be stored")
+	require.Equal(t, uint8(1), action.Action)
+	require.Equal(t, uint32(1), action.MenuID)
+
+	// 0x8304 info service.
+	server.Send(session.ID, &model.Msg8304{Header: model.GenMsgHeader(device, 0x8304, session.GetNextSerialNum()), InfoType: 2, Content: "前方服务区2公里"})
+	deadline = time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if industry.InfoService(phone) != nil {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	info := industry.InfoService(phone)
+	require.NotNil(t, info, "0x8304 should be stored")
+	require.Equal(t, uint8(2), info.InfoType)
+	require.Equal(t, "前方服务区2公里", info.Content)
+}
+
+// TestSimulatorPhonebookAndUpgrade verifies 0x8400 call callback, 0x8401
+// phonebook setting, 0x8108 terminal upgrade, and 0x0108 upgrade result are
+// decoded and cached.
+func TestSimulatorPhonebookAndUpgrade(t *testing.T) {
+	server := NewTCPServer()
+	require.NoError(t, server.Listen("127.0.0.1:0"))
+	go server.Start()
+	t.Cleanup(server.Stop)
+	cli := client.NewTCPClient()
+	require.NoError(t, cli.Dial(server.listener.Addr().String()))
+	t.Cleanup(cli.Stop)
+	go cli.Start()
+	const phone = "188765433224"
+	registration := &model.Msg0100{Header: &model.MsgHeader{MsgID: 0x0100, Attr: &model.MsgBodyAttr{VersionDesc: model.Version2013}, PhoneNumber: phone}, ProvinceID: 11, CityID: 1101, ManufacturerID: "ABCDE", DeviceMode: "JT808-PB-SIM", DeviceID: "PB-01", PlateColor: 1, PlateNumber: "京A88036"}
+	require.NoError(t, cli.SendWithError(registration))
+	var device *model.Device
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		device, _ = storage.GetDeviceCache().GetDeviceByPhone(phone)
+		if device != nil && device.Status == model.DeviceStatusOnline {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	require.NotNil(t, device)
+	require.Equal(t, model.DeviceStatusOnline, device.Status)
+	t.Cleanup(func() { storage.GetDeviceCache().DelDeviceByPhone(phone); protocol.NewKeepaliveTimer().Cancel(phone) })
+
+	industry := storage.GetIndustryCache()
+	session, err := storage.GetSession(device.SessionID)
+	require.NoError(t, err)
+
+	// 0x8400 call callback.
+	server.Send(session.ID, &model.Msg8400{Header: model.GenMsgHeader(device, 0x8400, session.GetNextSerialNum()), Flag: 0, Phone: "13800138000"})
+	deadline = time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if industry.CallBack(phone) != nil {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	cb := industry.CallBack(phone)
+	require.NotNil(t, cb, "0x8400 should be stored")
+	require.Equal(t, uint8(0), cb.Flag)
+	require.Equal(t, "13800138000", cb.Phone)
+
+	// 0x8401 set type 1 (replace) with two contacts.
+	server.Send(session.ID, &model.Msg8401{
+		Header:  model.GenMsgHeader(device, 0x8401, session.GetNextSerialNum()),
+		SetType: 1,
+		Items: []model.PhonebookContact{
+			{Flag: 3, Phone: "13900139000", Name: "调度"},
+			{Flag: 1, Phone: "13700137000", Name: "家人"},
+		},
+	})
+	deadline = time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if len(industry.Phonebook(phone)) == 2 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	contacts := industry.Phonebook(phone)
+	require.Len(t, contacts, 2, "set type 1 should store two contacts")
+	contactMap := map[string]string{}
+	for _, c := range contacts {
+		contactMap[c.Phone] = c.Name
+	}
+	require.Equal(t, "调度", contactMap["13900139000"])
+	require.Equal(t, "家人", contactMap["13700137000"])
+
+	// 0x8401 set type 0 (delete all) clears the phonebook.
+	server.Send(session.ID, &model.Msg8401{Header: model.GenMsgHeader(device, 0x8401, session.GetNextSerialNum()), SetType: 0})
+	deadline = time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if len(industry.Phonebook(phone)) == 0 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	require.Len(t, industry.Phonebook(phone), 0, "delete all should clear phonebook")
+
+	// 0x8108 terminal upgrade command.
+	upgradeData := []byte{0x01, 0x02, 0x03, 0x04}
+	server.Send(session.ID, &model.Msg8108{
+		Header:      model.GenMsgHeader(device, 0x8108, session.GetNextSerialNum()),
+		UpgradeType: 0,
+		MakerID:     "JT808",
+		Version:     "v1.2.3",
+		Data:        upgradeData,
+	})
+	deadline = time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if industry.Upgrade(phone) != nil {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	up := industry.Upgrade(phone)
+	require.NotNil(t, up, "0x8108 should be stored")
+	require.Equal(t, uint8(0), up.UpgradeType)
+	require.Equal(t, "JT808", up.MakerID)
+	require.Equal(t, "v1.2.3", up.Version)
+	require.Equal(t, upgradeData, up.Data)
+
+	// 0x0108 upgrade result notification from terminal.
+	require.NoError(t, cli.SendWithError(&model.Msg0108{Header: model.GenMsgHeader(device, 0x0108, 8), UpgradeType: 0, Result: 0}))
+	deadline = time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if industry.UpgradeResult(phone) != nil {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	result := industry.UpgradeResult(phone)
+	require.NotNil(t, result, "0x0108 should be stored")
+	require.Equal(t, uint8(0), result.UpgradeType)
+	require.Equal(t, uint8(0), result.Result)
+}
+
+// TestSimulatorTransparentAndCompressed verifies 0x8900 downlink transparent,
+// 0x0900 uplink transparent, and 0x0901 compressed report are decoded and
+// cached (with zlib decompression for 0x0901).
+func TestSimulatorTransparentAndCompressed(t *testing.T) {
+	server := NewTCPServer()
+	require.NoError(t, server.Listen("127.0.0.1:0"))
+	go server.Start()
+	t.Cleanup(server.Stop)
+	cli := client.NewTCPClient()
+	require.NoError(t, cli.Dial(server.listener.Addr().String()))
+	t.Cleanup(cli.Stop)
+	go cli.Start()
+	const phone = "188765433223"
+	registration := &model.Msg0100{Header: &model.MsgHeader{MsgID: 0x0100, Attr: &model.MsgBodyAttr{VersionDesc: model.Version2013}, PhoneNumber: phone}, ProvinceID: 11, CityID: 1101, ManufacturerID: "ABCDE", DeviceMode: "JT808-TT-SIM", DeviceID: "TT-01", PlateColor: 1, PlateNumber: "京A88037"}
+	require.NoError(t, cli.SendWithError(registration))
+	var device *model.Device
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		device, _ = storage.GetDeviceCache().GetDeviceByPhone(phone)
+		if device != nil && device.Status == model.DeviceStatusOnline {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	require.NotNil(t, device)
+	require.Equal(t, model.DeviceStatusOnline, device.Status)
+	t.Cleanup(func() { storage.GetDeviceCache().DelDeviceByPhone(phone); protocol.NewKeepaliveTimer().Cancel(phone) })
+
+	industry := storage.GetIndustryCache()
+	session, err := storage.GetSession(device.SessionID)
+	require.NoError(t, err)
+
+	// 0x8900 downlink transparent transmission.
+	payload := []byte{0xAA, 0xBB, 0xCC, 0xDD}
+	server.Send(session.ID, &model.Msg8900{Header: model.GenMsgHeader(device, 0x8900, session.GetNextSerialNum()), Type: 0x0001, Data: payload})
+	deadline = time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if industry.TransparentDown(phone) != nil {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	down := industry.TransparentDown(phone)
+	require.NotNil(t, down, "0x8900 should be stored")
+	require.Equal(t, uint32(0x0001), down.Type)
+	require.Equal(t, payload, down.Data)
+
+	// 0x0900 uplink transparent transmission from terminal.
+	require.NoError(t, cli.SendWithError(&model.Msg0900{Header: model.GenMsgHeader(device, 0x0900, 9), Type: 0x0002, Data: []byte{0x11, 0x22}}))
+	deadline = time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if industry.TransparentUp(phone) != nil {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	up := industry.TransparentUp(phone)
+	require.NotNil(t, up, "0x0900 should be stored")
+	require.Equal(t, uint32(0x0002), up.Type)
+	require.Equal(t, []byte{0x11, 0x22}, up.Data)
+
+	// 0x0901 compressed data report from terminal.
+	raw := []byte("compressed payload for testing")
+	var buf bytes.Buffer
+	zw := zlib.NewWriter(&buf)
+	_, err = zw.Write(raw)
+	require.NoError(t, err)
+	require.NoError(t, zw.Close())
+	compressed := buf.Bytes()
+	require.NoError(t, cli.SendWithError(&model.Msg0901{Header: model.GenMsgHeader(device, 0x0901, 10), Data: compressed}))
+	deadline = time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if industry.Compressed(phone) != nil {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	cmp := industry.Compressed(phone)
+	require.NotNil(t, cmp, "0x0901 should be stored")
+	require.Equal(t, compressed, cmp.Data)
+	require.Equal(t, raw, cmp.Decompressed, "0x0901 should decompress to original payload")
+}
+
+// TestSimulatorWaybillAndBatchLocation verifies 0x0701 electronic waybill and
+// 0x0704 batch positioning uploads are decoded and cached.
+func TestSimulatorWaybillAndBatchLocation(t *testing.T) {
+	server := NewTCPServer()
+	require.NoError(t, server.Listen("127.0.0.1:0"))
+	go server.Start()
+	t.Cleanup(server.Stop)
+	cli := client.NewTCPClient()
+	require.NoError(t, cli.Dial(server.listener.Addr().String()))
+	t.Cleanup(cli.Stop)
+	go cli.Start()
+	const phone = "188765433226"
+	registration := &model.Msg0100{Header: &model.MsgHeader{MsgID: 0x0100, Attr: &model.MsgBodyAttr{VersionDesc: model.Version2013}, PhoneNumber: phone}, ProvinceID: 11, CityID: 1101, ManufacturerID: "ABCDE", DeviceMode: "JT808-WB-SIM", DeviceID: "WB-01", PlateColor: 1, PlateNumber: "京A88034"}
+	require.NoError(t, cli.SendWithError(registration))
+	var device *model.Device
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		device, _ = storage.GetDeviceCache().GetDeviceByPhone(phone)
+		if device != nil && device.Status == model.DeviceStatusOnline {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	require.NotNil(t, device)
+	require.Equal(t, model.DeviceStatusOnline, device.Status)
+	t.Cleanup(func() { storage.GetDeviceCache().DelDeviceByPhone(phone); protocol.NewKeepaliveTimer().Cancel(phone) })
+
+	industry := storage.GetIndustryCache()
+
+	// 0x0701 electronic waybill upload.
+	require.NoError(t, cli.SendWithError(&model.Msg0701{Header: model.GenMsgHeader(device, 0x0701, 3), Content: "运单编号:WB20240101001;发货方:北京A公司;收货方:上海B公司"}))
+	deadline = time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if industry.Waybill(phone) != nil {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	waybill := industry.Waybill(phone)
+	require.NotNil(t, waybill, "platform should store 0x0701 waybill")
+	require.Contains(t, waybill.Content, "WB20240101001")
+
+	// 0x0704 batch positioning with two 28-byte location items.
+	loc1Raw := buildGeoAlarmBody("240101120000")
+	loc2Raw := buildGeoAlarmBody("240101120100")
+	batch := &model.Msg0704{
+		Header:    model.GenMsgHeader(device, 0x0704, 4),
+		ItemCount: 2,
+		DataType:  0,
+		Items: []model.BatchLocationItem{
+			{Length: uint16(len(loc1Raw)), Body: loc1Raw},
+			{Length: uint16(len(loc2Raw)), Body: loc2Raw},
+		},
+	}
+	require.NoError(t, cli.SendWithError(batch))
+	deadline = time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if bl := industry.BatchLocation(phone); bl != nil && bl.ItemCount == 2 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	batchLoc := industry.BatchLocation(phone)
+	require.NotNil(t, batchLoc, "platform should store 0x0704 batch location")
+	require.Equal(t, uint16(2), batchLoc.ItemCount)
+	require.Equal(t, uint8(0), batchLoc.DataType)
+	require.Len(t, batchLoc.Items, 2)
+	require.Equal(t, "240101120000", batchLoc.Items[0].Loc.Time)
+	require.Equal(t, "240101120100", batchLoc.Items[1].Loc.Time)
 }
 
 // TestSimulatorMediaRetransmissionRecoversDroppedPacket sends a fragmented

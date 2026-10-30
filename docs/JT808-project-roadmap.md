@@ -31,12 +31,12 @@ partial, and missing message IDs; use the prioritized tasks below to plan work.
 |---|---|---|
 | JT808 framing and sessions | Done | Message headers, BCD/GBK fields, escaping/checksum, TCP/UDP sessions, acknowledgments, keepalive and retransmission handling. |
 | Client simulator and protocol tests | Done | Registration/authentication, reports, downlink handling, synthetic industry messages, malformed-frame and fragmentation scenarios; localhost client/server tests are part of `go test ./...`. |
-| Location and alarms | Done for current scope | Location reports/cache, location query response flow, alarm history in bounded memory, and manual alarm confirmation flow. Extended location items and durable history remain open. |
+| Location and alarms | Done for current scope | Location reports/cache with TLV extended items, location query response flow, alarm history in bounded memory, and manual alarm confirmation flow. Durable history remains open. |
 | Parameters and terminal properties | Done for current scope | Set/query/specified-query/property flows with serial-correlated response handling. |
 | Driver identity and CAN | Done for current scope | Typed `0x0702`, `0x0705`, driver query command, in-memory latest-report access and simulator reports. |
 | Recorder message envelope | Done | `0x8700/0x8701/0x0700` typed GB/T 19056-2021 data block codecs for `0x31/0x33/0x41/0x56/0x57/0x58` commands and their responses; simulator returns command-specific typed blocks. |
-| Region/route message envelope | Partial foundation | Set/delete/query message paths and response correlation exist; set bodies and `0x0608` items are opaque, simulator query has no stored objects. |
-| Multimedia base flow | Partial | Event/upload/capture/search messages and bounded upload cache exist. `0x0802` is parsed into typed 35-byte records and searched against cached uploads. Extended location items and full command behavior are open. |
+| Region/route message envelope | Done | Typed circle/rectangle/polygon/route structures with attribute-controlled fields; set/delete/query paths backed by a per-device simulator catalog; structured JSON HTTP input and decoded query responses. |
+| Multimedia base flow | Done | Event/upload/capture/search messages and bounded upload cache; `0x0802` typed 35-byte records searched against cached uploads; `0x9205/0x1205` resource lists backed by the same catalog with channel/type/time filters. |
 | Media command codecs | Done at codec/dispatch level | `0x8803/04/05` have typed layouts, validation and HTTP downlink. Simulator acknowledges them but does not execute the requested upload/recording behavior. |
 | Media retransmission | Done | Server detects missing `0x0801` fragments and requests retransmission with `0x8800` (media ID + missing packet IDs); first-fragment loss falls back to `0x8003`. Simulator replays cached frames; server reassembles exactly once. `0x8003` remains for non-media transport fragmentation. |
 | Protocol status documentation | Done as index | `JT808-2019-coverage.md` maps Appendix B message IDs to implementation states and notes. Amendment 1 conformance has not been reviewed. |
@@ -159,32 +159,44 @@ before choosing a receive-state design.
 
 #### P1.1 — Finish multimedia resource and location support
 
-**Status:** Partial. `0x0801` parses the 28-byte base location and payload;
-extended location items are not decoded. `0x9205/0x1205` still use a hard-coded
-resource result and are not backed by the media catalog.
+**Status:** Done. `0x0200` decodes the 28-byte base body plus TLV extended
+(附加信息) items. `0x9205/0x1205` are backed by the same in-memory media catalog
+as `0x0802` search, with channel/media-type/time-range filters and serial
+correlation. HTTP `/device/:phone/media/resources` endpoint available.
 
-**Work:** Decode supported `0x0200` extended items in media records; build
-`0x1205` resource lists and `0x9205` responses from the same catalog; cover
-time/channel/type filters, empty catalog, large lists and serial correlation.
+**Work:**
 
-**Acceptance:** Both query families return the same media items that the `0x0802`
-catalog can retrieve; item payloads are typed and tested against vectors.
+- Decode `0x0200` TLV extended items (ID + 2-byte length + data) after the
+  28-byte base body; encode them back on serialization.
+- Refactor `0x1205` to carry a typed list of `DeviceMedia` items (28 bytes
+  each) instead of a single hard-coded record.
+- Back `processMsg9205` with `IndustryCache.MediaUploads`, filtering by logic
+  channel, media type (0=all/1=audio/2=video/3=video-or-av), and BCD time
+  range. Zero time boundaries mean no constraint.
+- Store the latest `0x1205` response per device and expose it via
+  `IndustryCache.MediaResourceList`.
+
+**Acceptance:** `0x9205` queries return the same media items that `0x0802`
+search can retrieve; filters for channel, media type, and time range are
+verified end-to-end; empty catalog returns zero items; answer serial matches
+the query serial.
 
 #### P1.2 — Implement high-value missing message families
 
-**Status:** Missing or partial as listed in the coverage matrix.
+**Status:** All six sub-groups implemented end-to-end (typed models,
+processor, simulator storage, HTTP endpoints, e2e tests).
 
 **Recommended order:**
 
-1. Text issue `0x8300` and event set/report `0x8301/0x0301`.
-2. Vehicle control `0x8500/0x0500` with explicit simulator-side safe test effects.
-3. Electronic waybill `0x0701` and batch positioning `0x0704`.
-4. Information question/menu/service `0x8302/0x0302`, `0x8303/0x0303`,
+1. **Done** Text issue `0x8300` and event set/report `0x8301/0x0301`.
+2. **Done** Vehicle control `0x8500/0x0500` with explicit simulator-side safe test effects.
+3. **Done** Electronic waybill `0x0701` and batch positioning `0x0704`.
+4. **Done** Information question/menu/service `0x8302/0x0302`, `0x8303/0x0303`,
    `0x8304`.
-5. Phone callback/phonebook `0x8400/0x8401` and terminal upgrade
+5. **Done** Phone callback/phonebook `0x8400/0x8401` and terminal upgrade
    `0x8108/0x0108` where target deployments require them.
-6. Transparent transmission `0x8900/0x0900` and compressed report `0x0901` for
-   integrations that need them.
+6. **Done** Transparent transmission `0x8900/0x0900` and compressed report
+   `0x0901` (with zlib decompression) for integrations that need them.
 
 For each selected family, add typed models, bounds/encoding validation,
 processor/API behavior, simulator response or report behavior, and full flow

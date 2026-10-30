@@ -46,24 +46,24 @@ amendment text has been reviewed.
 | `0x8106` | Query specified terminal parameters | Implemented | HTTP `/device/:phone/params?ids=...` sends selected IDs; the response is correlated by phone and platform serial. |
 | `0x8107` | Query terminal properties | Implemented | HTTP `/device/:phone/properties` sends a query and waits up to 10 seconds for the terminal response. |
 | `0x0107` | Terminal properties response | Implemented | Decodes 2011/2013/2019 field widths and delivers the response to the pending phone query. |
-| `0x8108` | Terminal upgrade package | Missing | No model or processor path. |
-| `0x0108` | Terminal upgrade result notification | Missing | No model or processor path. |
-| `0x0200` | Location information report | Partial | Decodes and caches latest geo data; alarm-bit events are kept in a bounded in-memory history and can be confirmed after terminal acknowledgment. Durable storage and extended location items remain open. |
+| `0x8108` | Terminal upgrade package | Implemented | Typed upgrade type, 5-byte maker ID, version string, and DWORD-prefixed upgrade data; cached per device; terminal acknowledges `0x0001`; HTTP `/device/:phone/terminal/upgrade` endpoint. |
+| `0x0108` | Terminal upgrade result notification | Implemented | Decodes upgrade type and result code; cached per device; platform replies `0x8001`. |
+| `0x0200` | Location information report | Implemented | Decodes the 28-byte base body plus TLV extended (附加信息) items; caches latest geo data; alarm-bit events are kept in a bounded in-memory history and can be confirmed after terminal acknowledgment. Durable storage remains open. |
 | `0x8201` | Location information query | Implemented | Sends a query to the terminal; HTTP `/device/:phone/location` waits for the serial-correlated response. |
 | `0x0201` | Location information query response | Implemented | Encodes/decodes the answer serial and base location report; delivers responses to pending HTTP queries. |
 | `0x8202` | Temporary location tracking control | Implemented | Client simulator changes its location report interval for the requested validity period and restores the configured interval on stop/expiry; replies with `0x0001`. |
-| `0x8301` | Event setting | Missing | No model or processor path. |
-| `0x0301` | Event report | Missing | No model or processor path. |
-| `0x8302` | Question issue | Missing | No model or processor path. |
-| `0x0302` | Question response | Missing | No model or processor path. |
-| `0x8303` | Information menu setting | Missing | No model or processor path. |
-| `0x0303` | Information menu response/cancel | Missing | No model or processor path. |
-| `0x8304` | Information service | Missing | No model or processor path. |
+| `0x8301` | Event setting | Implemented | Typed set type and event item list with GBK content; simulator stores events per set type (delete/replace/append/modify); HTTP `/device/:phone/events/set` endpoint. |
+| `0x0301` | Event report | Implemented | Decodes event ID; cached per device; platform replies `0x8001`. |
+| `0x8302` | Question issue | Implemented | Typed flag, GBK question, and candidate answer list (DWORD ID + GBK content); cached per device; terminal acknowledges `0x0001`; HTTP `/device/:phone/question/issue` endpoint. |
+| `0x0302` | Question response | Implemented | Decodes answer serial and chosen candidate ID; cached per device; platform replies `0x8001`. |
+| `0x8303` | Information menu setting | Implemented | Typed set type and menu item list (DWORD ID + GBK content); simulator stores menu per set type (delete/replace/append/modify); HTTP `/device/:phone/info/menu/set` endpoint. |
+| `0x0303` | Information menu response/cancel | Implemented | Decodes on-demand/cancel action flag and menu ID; cached per device; platform replies `0x8001`. |
+| `0x8304` | Information service | Implemented | Typed info type, WORD length and GBK content; cached per device; terminal acknowledges `0x0001`; HTTP `/device/:phone/info/service` endpoint. |
 | `0x8004` | Query server time response | Implemented | Decodes the server timestamp; the client simulator accepts the response. |
-| `0x8400` | Call callback | Missing | No model or processor path. |
-| `0x8401` | Set phonebook | Missing | No model or processor path. |
-| `0x8500` | Vehicle control | Missing | No model or processor path. |
-| `0x0500` | Vehicle control response | Missing | No model or processor path. |
+| `0x8400` | Call callback | Implemented | Typed flag and GBK phone number; cached per device; terminal acknowledges `0x0001`; HTTP `/device/:phone/call/callback` endpoint. |
+| `0x8401` | Set phonebook | Implemented | Typed set type and contact list (flag, GBK phone, GBK name); simulator stores contacts per set type (delete/replace/append/modify) keyed by phone number; HTTP `/device/:phone/phonebook/set` endpoint. |
+| `0x8500` | Vehicle control | Implemented | Typed control flags; simulator stores flags and echoes them in `0x0500`; HTTP `/device/:phone/vehicle/control` endpoint. |
+| `0x0500` | Vehicle control response | Implemented | Decodes control flags; cached per device; platform replies `0x8001`. |
 | `0x8600` | Set circular area | Partial | HTTP downlink accepts a standard message body as hex; area items are transported losslessly but not decoded into typed area records. |
 | `0x8601` | Delete circular area | Partial | Encodes/decodes the standard ID list and supports deletion of all areas; HTTP downlink plus simulator acknowledgement. |
 | `0x8602` | Set rectangular area | Partial | Shared standard-body passthrough endpoint and simulator acknowledgment; no typed rectangle item parser. |
@@ -77,10 +77,10 @@ amendment text has been reviewed.
 | `0x8701` | Driving recorder parameter download | Implemented | Typed `0x41` parameter-setting block (with 16-byte Salt) and `0xC1` response block codec; HTTP downlink available. Simulator sends `0x0001`. |
 | `0x8203` | Manual alarm confirmation | Partial | HTTP command serializes alarm serial/type; matching in-memory alarm events are marked confirmed after terminal `0x0001`; durable storage remains open. |
 | `0x8204` | Server-initiated link detection request | Implemented | Empty-body request is decoded by the client simulator and receives `0x0001`. |
-| `0x8300` | Text information issue | Missing | No model or processor path. |
+| `0x8300` | Text information issue | Implemented | Typed flag, text type, and GBK text; simulator acknowledges with `0x0001`; HTTP `/device/:phone/text/issue` endpoint. |
 | `0x0702` | Driver identity information report | Implemented | Decodes IC-card state, BCD time, read result, GBK name/issuer and fixed-width credentials; caches latest report and sends `0x8001`. |
 | `0x8702` | Driver identity information request | Partial | Empty-body command; simulator returns a synthetic `0x0702`; HTTP downlink is available. |
-| `0x0704` | Batch positioning data upload | Missing | No model or processor path. |
+| `0x0704` | Batch positioning data upload | Implemented | Decodes item count, data type, and per-item length-prefixed bodies; each body is parsed as a typed `0x0200` location. Cached per device; platform replies `0x8001`. |
 | `0x0705` | CAN bus data upload | Implemented | Decodes the 5-byte BCD timestamp, CAN ID flags and fixed 8-byte data items; caches latest report and sends `0x8001`. |
 | `0x0800` | Multimedia event information upload | Implemented | Decodes and caches the 8-byte event descriptor; sends `0x8001`. |
 | `0x0801` | Multimedia data upload | Implemented | Decodes the media descriptor, fixed 28-byte base location body, and remaining media bytes; bounded in-memory cache, `0x8800` response, and server-side missing-fragment detection via `0x8800` retransmission. Extended location items remain open. |
@@ -91,13 +91,13 @@ amendment text has been reviewed.
 | `0x0802` | Stored multimedia search response | Implemented | Decodes/encodes each 35-byte result as media ID, media type, channel, event, and typed `0x0200` location fields; response is cached. |
 | `0x8608` | Query region/route data | Partial | Decodes query type and DWORD ID list; HTTP request waits for a matching `0x0608`, but the simulator has no region/route catalog and can only return an empty result. |
 | `0x0608` | Region/route data response | Partial | Query type/count envelope decoded and correlated; variable type-specific records preserved as raw bytes. |
-| `0x0701` | Electronic waybill upload | Missing | No model or processor path. |
+| `0x0701` | Electronic waybill upload | Implemented | Decodes GBK waybill content; cached per device; platform replies `0x8001`. |
 | `0x8803` | Stored multimedia upload command | Partial | Typed 16-byte command with media type/channel/event, BCD range and delete flag; HTTP body is validated and simulator sends the generic acknowledgment, but it does not select/upload matching stored media. |
 | `0x8804` | Start audio recording command | Partial | Typed 5-byte start/stop, duration, save and sample-rate fields; simulator acknowledges but does not record or upload audio. |
 | `0x8805` | Single stored multimedia upload command | Partial | Typed media ID and delete flag; HTTP body is validated and simulator acknowledges, but it does not upload the selected media. |
-| `0x8900` | Data uplink transparent transmission | Missing | No model or processor path. |
-| `0x0900` | Data downlink transparent transmission | Missing | No model or processor path. |
-| `0x0901` | Compressed data report | Missing | No model or processor path. |
+| `0x8900` | Data downlink transparent transmission | Implemented | Typed DWORD message type and raw payload bytes; cached per device; terminal acknowledges `0x0001`; HTTP `/device/:phone/transparent/down` endpoint. |
+| `0x0900` | Data uplink transparent transmission | Implemented | Decodes DWORD message type and raw payload bytes; cached per device; platform replies `0x8001`. |
+| `0x0901` | Compressed data report | Implemented | Decodes DWORD length and zlib-compressed body; the inflated payload is stored in `Decompressed` (nil on failure); cached per device; platform replies `0x8001`. |
 | `0x8A00` | Platform RSA public key | Missing | RSA public-key exchange and encrypted bodies are unsupported. |
 | `0x0A00` | Terminal RSA public key | Missing | RSA public-key exchange and encrypted bodies are unsupported. |
 | `0x8F00`–`0x8FFF` | Platform-reserved messages | Reserved/custom | No reserved-ID extension handler. |
@@ -109,8 +109,8 @@ amendment text has been reviewed.
 
 | ID | Message | Status | Implementation note |
 |---|---|---|---|
-| `0x9205` | Query terminal audio/video resource list | Partial | Processor returns a hard-coded one-item result and echoes the requested time range. |
-| `0x1205` | Terminal audio/video resource list | Partial | Model exists; list generation is not backed by a media catalog. |
+| `0x9205` | Query terminal audio/video resource list | Implemented | Processor filters the in-memory media catalog by channel, media type, and time range; HTTP `/device/:phone/media/resources` endpoint available. |
+| `0x1205` | Terminal audio/video resource list | Implemented | Typed list of `DeviceMedia` items (28 bytes each) generated from the media catalog; response cached per device. |
 
 ## Golden protocol vectors
 

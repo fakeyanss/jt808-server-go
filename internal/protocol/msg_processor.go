@@ -155,8 +155,9 @@ func initProcessOption() processOptions {
 	}, process: processMsg8805}
 	options[0x1205] = &action{ // 终端上传音视频资源列表
 		genData: func() *model.ProcessData {
-			return &model.ProcessData{Incoming: &model.Msg1205{}} // 无需回复
+			return &model.ProcessData{Incoming: &model.Msg1205{}, Outgoing: &model.Msg8001{}} // 无需回复
 		},
+		process: processIndustryReport,
 	}
 	options[0x8001] = &action{ // 通用应答
 		genData: func() *model.ProcessData {
@@ -193,6 +194,119 @@ func initProcessOption() processOptions {
 		genData: func() *model.ProcessData {
 			return &model.ProcessData{Incoming: &model.Msg8105{}, Outgoing: &model.Msg0001{}}
 		},
+	}
+	options[0x8300] = &action{ // 文本信息下发
+		genData: func() *model.ProcessData {
+			return &model.ProcessData{Incoming: &model.Msg8300{}, Outgoing: &model.Msg0001{}}
+		},
+	}
+	options[0x8301] = &action{ // 事件设置
+		genData: func() *model.ProcessData {
+			return &model.ProcessData{Incoming: &model.Msg8301{}, Outgoing: &model.Msg0001{}}
+		},
+		process: processMsg8301,
+	}
+	options[0x0301] = &action{ // 事件上报
+		genData: func() *model.ProcessData {
+			return &model.ProcessData{Incoming: &model.Msg0301{}, Outgoing: &model.Msg8001{}}
+		},
+		process: processIndustryReport,
+	}
+	options[0x8302] = &action{ // 提问下发
+		genData: func() *model.ProcessData {
+			return &model.ProcessData{Incoming: &model.Msg8302{}, Outgoing: &model.Msg0001{}}
+		},
+		process: processMsg8302,
+	}
+	options[0x0302] = &action{ // 提问应答
+		genData: func() *model.ProcessData {
+			return &model.ProcessData{Incoming: &model.Msg0302{}, Outgoing: &model.Msg8001{}}
+		},
+		process: processIndustryReport,
+	}
+	options[0x8303] = &action{ // 信息点播菜单设置
+		genData: func() *model.ProcessData {
+			return &model.ProcessData{Incoming: &model.Msg8303{}, Outgoing: &model.Msg0001{}}
+		},
+		process: processMsg8303,
+	}
+	options[0x0303] = &action{ // 信息点播/取消
+		genData: func() *model.ProcessData {
+			return &model.ProcessData{Incoming: &model.Msg0303{}, Outgoing: &model.Msg8001{}}
+		},
+		process: processIndustryReport,
+	}
+	options[0x8304] = &action{ // 信息服务
+		genData: func() *model.ProcessData {
+			return &model.ProcessData{Incoming: &model.Msg8304{}, Outgoing: &model.Msg0001{}}
+		},
+		process: processMsg8304,
+	}
+	options[0x8400] = &action{ // 电话回拨
+		genData: func() *model.ProcessData {
+			return &model.ProcessData{Incoming: &model.Msg8400{}, Outgoing: &model.Msg0001{}}
+		},
+		process: processIndustryReport,
+	}
+	options[0x8401] = &action{ // 设置电话本
+		genData: func() *model.ProcessData {
+			return &model.ProcessData{Incoming: &model.Msg8401{}, Outgoing: &model.Msg0001{}}
+		},
+		process: processMsg8401,
+	}
+	options[0x8108] = &action{ // 终端升级
+		genData: func() *model.ProcessData {
+			return &model.ProcessData{Incoming: &model.Msg8108{}, Outgoing: &model.Msg0001{}}
+		},
+		process: processIndustryReport,
+	}
+	options[0x0108] = &action{ // 升级结果通知
+		genData: func() *model.ProcessData {
+			return &model.ProcessData{Incoming: &model.Msg0108{}, Outgoing: &model.Msg8001{}}
+		},
+		process: processIndustryReport,
+	}
+	options[0x8900] = &action{ // 数据下行透传
+		genData: func() *model.ProcessData {
+			return &model.ProcessData{Incoming: &model.Msg8900{}, Outgoing: &model.Msg0001{}}
+		},
+		process: processIndustryReport,
+	}
+	options[0x0900] = &action{ // 数据上行透传
+		genData: func() *model.ProcessData {
+			return &model.ProcessData{Incoming: &model.Msg0900{}, Outgoing: &model.Msg8001{}}
+		},
+		process: processIndustryReport,
+	}
+	options[0x0901] = &action{ // 数据压缩上报
+		genData: func() *model.ProcessData {
+			return &model.ProcessData{Incoming: &model.Msg0901{}, Outgoing: &model.Msg8001{}}
+		},
+		process: processIndustryReport,
+	}
+	options[0x8500] = &action{ // 车辆控制
+		genData: func() *model.ProcessData {
+			return &model.ProcessData{Incoming: &model.Msg8500{}, Outgoing: &model.Msg0500{}}
+		},
+		process: processMsg8500,
+	}
+	options[0x0500] = &action{ // 车辆控制应答
+		genData: func() *model.ProcessData {
+			return &model.ProcessData{Incoming: &model.Msg0500{}, Outgoing: &model.Msg8001{}}
+		},
+		process: processIndustryReport,
+	}
+	options[0x0701] = &action{ // 电子运单上报
+		genData: func() *model.ProcessData {
+			return &model.ProcessData{Incoming: &model.Msg0701{}, Outgoing: &model.Msg8001{}}
+		},
+		process: processIndustryReport,
+	}
+	options[0x0704] = &action{ // 批量定位数据上传
+		genData: func() *model.ProcessData {
+			return &model.ProcessData{Incoming: &model.Msg0704{}, Outgoing: &model.Msg8001{}}
+		},
+		process: processIndustryReport,
 	}
 	for _, messageID := range []uint16{0x8601, 0x8603, 0x8605, 0x8607} {
 		options[messageID] = &action{genData: func() *model.ProcessData {
@@ -811,22 +925,121 @@ func processMsg8107(_ context.Context, data *model.ProcessData) error {
 func processMsg9205(_ context.Context, data *model.ProcessData) error {
 	in := data.Incoming.(*model.Msg9205)
 	out := data.Outgoing.(*model.Msg1205)
-	out.MediaCount = 1
-	out.LogicChannelID = in.LogicChannelID
-	// todo, generate several start-end time pair by input time range
-	out.StartTime = in.StartTime
-	out.EndTime = in.EndTime
-	out.AlarmSign = 0
-	out.AlarmSignExt = 0
-	out.MediaType = 0
-	out.StreamType = 0
-	out.StorageType = 0
-
+	out.Items = nil
+	for _, media := range storage.GetIndustryCache().MediaUploads(in.Header.PhoneNumber) {
+		if in.LogicChannelID != 0 && media.LogicChannelID != in.LogicChannelID {
+			continue
+		}
+		if !mediaTypeMatches(in.MediaType, media.MultiMediaType) {
+			continue
+		}
+		var location model.Msg0200
+		if err := location.Decode(&model.PacketData{Header: in.Header, Body: media.GeoAlarmBody}); err != nil {
+			continue
+		}
+		if !mediaTimeInRange(location.Time, in.StartTime, in.EndTime) {
+			continue
+		}
+		item := model.DeviceMedia{}
+		item.LogicChannelID = media.LogicChannelID
+		t := hex.ParseTime(location.Time)
+		item.StartTime = &t
+		item.EndTime = &t
+		item.AlarmSign = location.AlarmSign
+		item.AlarmSignExt = 0
+		item.MediaType = media.MultiMediaType
+		item.StreamType = 0
+		item.StorageType = 0
+		item.Size = uint32(len(media.FragmentData))
+		out.Items = append(out.Items, item)
+	}
+	out.MediaCount = uint32(len(out.Items))
 	return nil
+}
+
+// mediaTypeMatches reports whether a stored 0x0801 media type satisfies a
+// 0x9205 query media type. 0x9205 uses 0=音视频, 1=音频, 2=视频, 3=视频或音视频.
+func mediaTypeMatches(queryType, storedType uint8) bool {
+	switch queryType {
+	case 0:
+		return true
+	case 1:
+		return storedType == 1
+	case 2:
+		return storedType == 2
+	case 3:
+		return storedType == 0 || storedType == 2
+	default:
+		return true
+	}
+}
+
+// mediaTimeInRange reports whether a BCD time string falls within the optional
+// query time range. Zero boundaries mean no constraint.
+func mediaTimeInRange(t string, start, end *time.Time) bool {
+	if (start == nil && end == nil) || t == "" {
+		return true
+	}
+	loc, err := time.Parse("060102150405", t)
+	if err != nil {
+		return true
+	}
+	if start != nil && loc.Before(*start) {
+		return false
+	}
+	if end != nil && loc.After(*end) {
+		return false
+	}
+	return true
 }
 
 func processIndustryReport(_ context.Context, data *model.ProcessData) error {
 	storage.GetIndustryCache().Record(data.Incoming)
+	return nil
+}
+
+// processMsg8301 stores configured event items in the terminal simulator's
+// event catalog according to the 0x8301 set type.
+func processMsg8301(_ context.Context, data *model.ProcessData) error {
+	in := data.Incoming.(*model.Msg8301)
+	storage.GetIndustryCache().ApplyEventSet(in.Header.PhoneNumber, in.SetType, in.Items)
+	return nil
+}
+
+// processMsg8302 stores the issued question so the latest question and its
+// candidate answers are available to the terminal simulator.
+func processMsg8302(_ context.Context, data *model.ProcessData) error {
+	storage.GetIndustryCache().Record(data.Incoming)
+	return nil
+}
+
+// processMsg8303 updates the terminal simulator's information on-demand menu
+// catalog according to the 0x8303 set type.
+func processMsg8303(_ context.Context, data *model.ProcessData) error {
+	in := data.Incoming.(*model.Msg8303)
+	storage.GetIndustryCache().ApplyInfoMenuSet(in.Header.PhoneNumber, in.SetType, in.Items)
+	return nil
+}
+
+// processMsg8304 stores the latest information-service message for a device.
+func processMsg8304(_ context.Context, data *model.ProcessData) error {
+	storage.GetIndustryCache().Record(data.Incoming)
+	return nil
+}
+
+// processMsg8401 updates the terminal simulator's phonebook according to the
+// 0x8401 set type.
+func processMsg8401(_ context.Context, data *model.ProcessData) error {
+	in := data.Incoming.(*model.Msg8401)
+	storage.GetIndustryCache().ApplyPhonebookSet(in.Header.PhoneNumber, in.SetType, in.Items)
+	return nil
+}
+
+// processMsg8500 stores the vehicle control flags so the 0x0500 response echoes
+// them back to the platform.
+func processMsg8500(_ context.Context, data *model.ProcessData) error {
+	in := data.Incoming.(*model.Msg8500)
+	storage.GetIndustryCache().SetVehicleControl(in.Header.PhoneNumber, in.ControlFlags)
 	return nil
 }
 
