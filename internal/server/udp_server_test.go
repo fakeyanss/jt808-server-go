@@ -448,6 +448,12 @@ func TestSimulatorMediaUploadCommands(t *testing.T) {
 	}
 	require.GreaterOrEqual(t, countMediaID(industry.MediaUploads(phone), 71), 3, "0x8805 should trigger re-upload of the requested media id")
 
+	// 0x8805 with a non-existent media id -> simulator must not upload anything.
+	before := len(industry.MediaUploads(phone))
+	server.Send(session.ID, &model.Msg8805{Header: model.GenMsgHeader(device, 0x8805, session.GetNextSerialNum()), MediaID: 999999, DeleteFlag: 0})
+	time.Sleep(500 * time.Millisecond)
+	require.Equal(t, before, len(industry.MediaUploads(phone)), "0x8805 with unknown media id should not trigger any upload")
+
 	// 0x8804 start recording -> simulator emits audio frames (media type 1).
 	server.Send(session.ID, &model.Msg8804{Header: model.GenMsgHeader(device, 0x8804, session.GetNextSerialNum()), Command: 1, Duration: 10, Save: 1, SampleRate: 2})
 	deadline = time.Now().Add(3 * time.Second)
@@ -573,6 +579,92 @@ func TestSimulatorRecorderCommandTypedResponses(t *testing.T) {
 	require.True(t, ok, "0x58 response should carry a typed RecorderDigestTestResponse")
 	require.Len(t, digestResp.RecorderID, 35)
 	require.Len(t, digestResp.Digest, 32)
+
+	// 0x33 collect file -> response should be a typed RecorderFileResponse.
+	server.Send(session.ID, &model.MsgRecordCommand{
+		Header:  model.GenMsgHeader(device, 0x8700, session.GetNextSerialNum()),
+		Command: model.RecorderCmdCollectFile,
+		DataBlock: &model.RecorderFileRequest{Items: []model.RecorderFileRequestItem{
+			{Category: model.FileCategoryLog, StartTime: "261030000000", EndTime: "261030235959"},
+		}},
+	})
+	deadline = time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if r := industry.RecordData(phone); r != nil && r.Command == model.RecorderCmdCollectFile {
+			if _, ok := r.DataBlock.(*model.RecorderFileResponse); ok {
+				break
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	resp = industry.RecordData(phone)
+	require.Equal(t, model.RecorderCmdCollectFile, resp.Command)
+	fileResp, ok := resp.DataBlock.(*model.RecorderFileResponse)
+	require.True(t, ok, "0x33 response should carry a typed RecorderFileResponse")
+	require.Len(t, fileResp.Items, 1)
+	require.Equal(t, model.FileCategoryLog, fileResp.Items[0].Category)
+	require.Equal(t, uint32(4), fileResp.Items[0].FileLength)
+	require.Equal(t, []byte{0xAA, 0xBB, 0xCC, 0xDD}, fileResp.Items[0].FileData)
+}
+
+// TestSimulatorRecorderParamSettingRoundTrip sends 0x8701 (parameter setting)
+// and verifies the terminal acknowledges it with a 0x0001. A short ack
+// timeout makes the connection close quickly if the 0x0001 is never received,
+// so a still-online device proves the round-trip succeeded.
+func TestSimulatorRecorderParamSettingRoundTrip(t *testing.T) {
+	server := NewTCPServer()
+	require.NoError(t, server.Listen("127.0.0.1:0"))
+	go server.Start()
+	t.Cleanup(server.Stop)
+	cli := client.NewTCPClient()
+	require.NoError(t, cli.Dial(server.listener.Addr().String()))
+	t.Cleanup(cli.Stop)
+	go cli.Start()
+	const phone = "188765433231"
+	registration := &model.Msg0100{Header: &model.MsgHeader{MsgID: 0x0100, Attr: &model.MsgBodyAttr{VersionDesc: model.Version2013}, PhoneNumber: phone}, ProvinceID: 11, CityID: 1101, ManufacturerID: "ABCDE", DeviceMode: "JT808-RECORDER-SIM", DeviceID: "RECORDER-02", PlateColor: 1, PlateNumber: "京A87010"}
+	require.NoError(t, cli.SendWithError(registration))
+	var device *model.Device
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		device, _ = storage.GetDeviceCache().GetDeviceByPhone(phone)
+		if device != nil && device.Status == model.DeviceStatusOnline {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	require.NotNil(t, device)
+	require.Equal(t, model.DeviceStatusOnline, device.Status)
+	t.Cleanup(func() { storage.GetDeviceCache().DelDeviceByPhone(phone); protocol.NewKeepaliveTimer().Cancel(phone) })
+
+	session, err := storage.GetSession(device.SessionID)
+	require.NoError(t, err)
+	// Tighten the reliable-send window so a missing 0x0001 closes the
+	// connection within a few hundred milliseconds.
+	session.AckTimeout = 50 * time.Millisecond
+	session.MaxRetries = 1
+
+	server.Send(session.ID, &model.MsgRecordCommand{
+		Header:  model.GenMsgHeader(device, 0x8701, session.GetNextSerialNum()),
+		Command: model.RecorderCmdParamSet,
+		DataBlock: &model.RecorderParamSetting{
+			ParamFlags:    0xFF,
+			RecorderID:    make([]byte, 35),
+			PlateNo:       "京A87010",
+			PlateCategory: "小型汽车",
+			VIN:           "LSVNV2182E2100001",
+			SerialNo:      "000000000001",
+			PulseCoeff:    100,
+			InstallTime:   "230101000000",
+			Salt:          make([]byte, 16),
+		},
+	})
+
+	// Wait well beyond the retransmission window; if the 0x0001 ack was
+	// processed the session stays open, otherwise it gets closed.
+	time.Sleep(300 * time.Millisecond)
+	device, _ = storage.GetDeviceCache().GetDeviceByPhone(phone)
+	require.NotNil(t, device, "device should still be cached after 0x8701 round-trip")
+	require.Equal(t, model.DeviceStatusOnline, device.Status, "0x8701 should be acknowledged by 0x0001 and keep the device online")
 }
 
 func TestClientFaultFramesDoNotPreventFollowingRegistration(t *testing.T) {
