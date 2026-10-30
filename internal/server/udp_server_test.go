@@ -492,6 +492,89 @@ func countMediaType(uploads []model.Msg0801, mediaType uint8) int {
 	return count
 }
 
+// TestSimulatorRecorderCommandTypedResponses sends supported GB/T 19056
+// commands and verifies the 0x0700 carries a typed response data block.
+func TestSimulatorRecorderCommandTypedResponses(t *testing.T) {
+	server := NewTCPServer()
+	require.NoError(t, server.Listen("127.0.0.1:0"))
+	go server.Start()
+	t.Cleanup(server.Stop)
+	cli := client.NewTCPClient()
+	require.NoError(t, cli.Dial(server.listener.Addr().String()))
+	t.Cleanup(cli.Stop)
+	go cli.Start()
+	const phone = "188765433230"
+	registration := &model.Msg0100{Header: &model.MsgHeader{MsgID: 0x0100, Attr: &model.MsgBodyAttr{VersionDesc: model.Version2013}, PhoneNumber: phone}, ProvinceID: 11, CityID: 1101, ManufacturerID: "ABCDE", DeviceMode: "JT808-RECORDER-SIM", DeviceID: "RECORDER-01", PlateColor: 1, PlateNumber: "京A87000"}
+	require.NoError(t, cli.SendWithError(registration))
+	var device *model.Device
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		device, _ = storage.GetDeviceCache().GetDeviceByPhone(phone)
+		if device != nil && device.Status == model.DeviceStatusOnline {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	require.NotNil(t, device)
+	require.Equal(t, model.DeviceStatusOnline, device.Status)
+	t.Cleanup(func() { storage.GetDeviceCache().DelDeviceByPhone(phone); protocol.NewKeepaliveTimer().Cancel(phone) })
+
+	industry := storage.GetIndustryCache()
+	session, err := storage.GetSession(device.SessionID)
+	require.NoError(t, err)
+
+	// 0x31 collect info -> response should be a typed RecorderInfoResponse.
+	infoReq := &model.RecorderInfoRequest{
+		StandardVersion: "21", RevisionNo: 0,
+		CommTime: "261030120000", CommDeviceName: "PLATFORM-01",
+	}
+	server.Send(session.ID, &model.MsgRecordCommand{
+		Header:    model.GenMsgHeader(device, 0x8700, session.GetNextSerialNum()),
+		Command:   model.RecorderCmdCollectInfo,
+		DataBlock: infoReq,
+	})
+	deadline = time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if r := industry.RecordData(phone); r != nil && r.Command == model.RecorderCmdCollectInfo {
+			if _, ok := r.DataBlock.(*model.RecorderInfoResponse); ok {
+				break
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	resp := industry.RecordData(phone)
+	require.NotNil(t, resp)
+	require.Equal(t, model.RecorderCmdCollectInfo, resp.Command)
+	infoResp, ok := resp.DataBlock.(*model.RecorderInfoResponse)
+	require.True(t, ok, "0x31 response should carry a typed RecorderInfoResponse")
+	require.Equal(t, "GBT19056", infoResp.Magic)
+	require.Equal(t, "21", infoResp.StandardVersion)
+	require.Equal(t, "京A12345", infoResp.PlateNo)
+	require.Equal(t, "LSVNV2182E2100001", infoResp.VIN)
+
+	// 0x58 digest test -> response should be a typed RecorderDigestTestResponse.
+	server.Send(session.ID, &model.MsgRecordCommand{
+		Header:    model.GenMsgHeader(device, 0x8700, session.GetNextSerialNum()),
+		Command:   model.RecorderCmdDigestTest,
+		DataBlock: &model.RecorderDigestTestRequest{CommTime: "261030120000"},
+	})
+	deadline = time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if r := industry.RecordData(phone); r != nil && r.Command == model.RecorderCmdDigestTest {
+			if _, ok := r.DataBlock.(*model.RecorderDigestTestResponse); ok {
+				break
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	resp = industry.RecordData(phone)
+	require.Equal(t, model.RecorderCmdDigestTest, resp.Command)
+	digestResp, ok := resp.DataBlock.(*model.RecorderDigestTestResponse)
+	require.True(t, ok, "0x58 response should carry a typed RecorderDigestTestResponse")
+	require.Len(t, digestResp.RecorderID, 35)
+	require.Len(t, digestResp.Digest, 32)
+}
+
 func TestClientFaultFramesDoNotPreventFollowingRegistration(t *testing.T) {
 	for _, transport := range []model.TransportProtocol{model.TCPProto, model.UDPProto} {
 		for _, fault := range []string{"bad-checksum", "bad-escape", "oversize"} {

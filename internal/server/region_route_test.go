@@ -124,9 +124,43 @@ func TestRegionRouteSetQueryDeleteRoundTrip(t *testing.T) {
 	respRect := catalog.Query(device.Phone, 2, nil)
 	require.Equal(t, uint32(201), respRect.Rectangles[0].ID)
 
+	waitFor(t, 2*time.Second, func() bool {
+		return len(catalog.Query(device.Phone, 4, nil).Routes) == 1
+	})
 	respRoute := catalog.Query(device.Phone, 4, nil)
 	require.Equal(t, uint32(401), respRoute.Routes[0].ID)
 	require.Len(t, respRoute.Routes[0].Segments, 1)
+
+	// --- Set a polygon, query it back, then delete ---
+	setPolygon := &model.MsgRegionRouteSet{
+		Header:      model.GenMsgHeader(device, 0x8604, session.GetNextSerialNum()),
+		SettingAttr: 1,
+		Polygons: []model.PolygonArea{{
+			ID: 301, Attr: model.AreaAttrTime | model.AreaAttrSpeed,
+			StartTime: "261028000000", EndTime: "261028235959",
+			MaxSpeed: 800, Duration: 15,
+			Vertices: []model.PolygonVertex{
+				{Latitude: 31000000, Longitude: 121000000},
+				{Latitude: 31000010, Longitude: 121000010},
+				{Latitude: 30999990, Longitude: 121000020},
+			},
+			Name: "多边形1",
+		}},
+	}
+	server.Send(session.ID, setPolygon)
+	waitFor(t, 2*time.Second, func() bool {
+		return len(catalog.Query(device.Phone, 3, nil).Polygons) == 1
+	})
+	respPoly := catalog.Query(device.Phone, 3, nil)
+	require.Equal(t, uint32(301), respPoly.Polygons[0].ID)
+	require.Equal(t, "多边形1", respPoly.Polygons[0].Name)
+	require.Len(t, respPoly.Polygons[0].Vertices, 3)
+
+	server.Send(session.ID, &model.Msg860Delete{Header: model.GenMsgHeader(device, 0x8605, session.GetNextSerialNum()), IDs: []uint32{301}})
+	waitFor(t, 2*time.Second, func() bool {
+		return len(catalog.Query(device.Phone, 3, nil).Polygons) == 0
+	})
+	require.Empty(t, catalog.Query(device.Phone, 3, nil).Polygons)
 
 	// --- Delete circle 101, then verify gone ---
 	server.Send(session.ID, &model.Msg860Delete{Header: model.GenMsgHeader(device, 0x8601, session.GetNextSerialNum()), IDs: []uint32{101}})
