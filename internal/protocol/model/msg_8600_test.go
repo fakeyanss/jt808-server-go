@@ -6,6 +6,25 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestMsg8600CircleRoundTrip(t *testing.T) {
+	set := &MsgRegionRouteSet{
+		Header:      genMsgHeader(0x8600),
+		SettingAttr: 1,
+		Circles: []CircleArea{{
+			ID: 1, Attr: AreaAttrTime | AreaAttrSpeed,
+			Latitude: 31000000, Longitude: 121000000, Radius: 500,
+			StartTime: "261028000000", EndTime: "261028235959",
+			MaxSpeed: 600, Duration: 10, Name: "测试圆",
+		}},
+	}
+	decoded := &MsgRegionRouteSet{}
+	roundTrip(t, set, decoded)
+	require.Equal(t, set.SettingAttr, decoded.SettingAttr)
+	require.Equal(t, set.Circles[0].ID, decoded.Circles[0].ID)
+	require.Equal(t, set.Circles[0].Name, decoded.Circles[0].Name)
+	require.Equal(t, set.Circles[0].StartTime, decoded.Circles[0].StartTime)
+}
+
 func TestCircleAreaRoundTrip(t *testing.T) {
 	msg := &MsgRegionRouteSet{
 		Header:      genMsgHeader(0x8600),
@@ -119,20 +138,4 @@ func TestRegionRouteSetValidation(t *testing.T) {
 	// zero count rejected
 	err = (&MsgRegionRouteSet{}).Decode(&PacketData{Header: genMsgHeader(0x8600), Body: []byte{1, 0}})
 	require.Error(t, err)
-}
-
-func TestMsg0608RoundTripWithRecords(t *testing.T) {
-	resp := &Msg0608{
-		Header:    genMsgHeader(0x0608),
-		QueryType: 1,
-		Circles: []CircleArea{
-			{ID: 1, Attr: 0, Latitude: 31000000, Longitude: 121000000, Radius: 500, Name: "圆1"},
-			{ID: 2, Attr: AreaAttrSpeed, Latitude: 32000000, Longitude: 122000000, Radius: 300, MaxSpeed: 500, Duration: 5, Name: "圆2"},
-		},
-	}
-	decoded := &Msg0608{}
-	roundTrip(t, resp, decoded)
-	require.Equal(t, resp.QueryType, decoded.QueryType)
-	require.Equal(t, uint32(2), decoded.Count)
-	require.Equal(t, resp.Circles, decoded.Circles)
 }

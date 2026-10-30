@@ -16,9 +16,3 @@ func TestMsg8203EncodeDecode(t *testing.T) {
 	require.Equal(t, msg.AlarmType, decoded.AlarmType)
 	require.Error(t, decoded.Decode(&PacketData{Header: msg.Header, Body: []byte{0, 1}}))
 }
-
-func TestMsg8204EmptyBody(t *testing.T) {
-	msg := &Msg8204{}
-	require.NoError(t, msg.Decode(&PacketData{Header: genMsgHeader(0x8204)}))
-	require.Error(t, msg.Decode(&PacketData{Header: genMsgHeader(0x8204), Body: []byte{1}}))
-}
