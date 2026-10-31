@@ -1513,3 +1513,463 @@ func TestClientFaultFramesDoNotPreventFollowingRegistration(t *testing.T) {
 		}
 	}
 }
+
+// bareTerminal is a raw TCP peer driving the JT808 wire protocol itself, so
+// tests can send uplink messages the high-level client never generates
+// (e.g. a terminal-side 0x8204/0x8105/0x8500).
+type bareTerminal struct {
+	conn  net.Conn
+	codec *protocol.JT808PacketCodec
+	fh    *protocol.JT808FrameHandler
+}
+
+func uplinkHeader(msgID uint16, phone string, serial uint16) *model.MsgHeader {
+	return &model.MsgHeader{
+		MsgID:        msgID,
+		Attr:         &model.MsgBodyAttr{VersionDesc: model.Version2013},
+		PhoneNumber:  phone,
+		SerialNumber: serial,
+	}
+}
+
+func newBareTerminal(t *testing.T, addr string) *bareTerminal {
+	t.Helper()
+	conn, err := net.Dial("tcp", addr)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = conn.Close() })
+	return &bareTerminal{
+		conn:  conn,
+		codec: protocol.NewJT808PacketCodec(),
+		fh:    protocol.NewJT808FrameHandler(conn),
+	}
+}
+
+// dialBareTerminal opens a raw connection and completes 0x0100/0x0102
+// registration, leaving an online device the test fully controls on the wire.
+func dialBareTerminal(t *testing.T, addr, phone, plate, deviceID string) *bareTerminal {
+	t.Helper()
+	b := newBareTerminal(t, addr)
+	t.Cleanup(func() {
+		storage.GetDeviceCache().DelDeviceByPhone(phone)
+		protocol.NewKeepaliveTimer().Cancel(phone)
+	})
+	b.send(t, &model.Msg0100{
+		Header:         uplinkHeader(0x0100, phone, 1),
+		ProvinceID:     11,
+		CityID:         1101,
+		ManufacturerID: "ABCDE",
+		DeviceMode:     "JT808-BARE-SIM",
+		DeviceID:       deviceID,
+		PlateColor:     1,
+		PlateNumber:    plate,
+	})
+	regReply := &model.Msg8100{}
+	b.recvInto(t, 3*time.Second, 0x8100, regReply)
+	require.Equal(t, model.ResSuccess, regReply.Result, "registration should succeed")
+
+	b.send(t, &model.Msg0102{Header: uplinkHeader(0x0102, phone, 2), AuthCode: regReply.AuthCode})
+	authReply := &model.Msg8001{}
+	b.recvInto(t, 3*time.Second, 0x8001, authReply)
+	require.Equal(t, model.ResultSuccess, authReply.Result)
+	require.Equal(t, uint16(0x0102), authReply.AnswerMessageID)
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		d, err := storage.GetDeviceCache().GetDeviceByPhone(phone)
+		if err == nil && d.Status == model.DeviceStatusOnline {
+			return b
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("device %s did not become online", phone)
+	return nil
+}
+
+func (b *bareTerminal) send(t *testing.T, msg model.JT808Msg) {
+	t.Helper()
+	frame, err := b.codec.Encode(msg)
+	require.NoError(t, err)
+	_, err = b.conn.Write(frame)
+	require.NoError(t, err)
+}
+
+// recvInto skips unrelated frames and decodes the first frame carrying
+// wantMsgID into msg.
+func (b *bareTerminal) recvInto(t *testing.T, timeout time.Duration, wantMsgID uint16, msg model.JT808Msg) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for {
+		if remain := time.Until(deadline); remain <= 0 {
+			t.Fatalf("timeout waiting for msg 0x%04x", wantMsgID)
+		}
+		require.NoError(t, b.conn.SetReadDeadline(deadline))
+		frame, err := b.fh.Recv(context.Background())
+		require.NoError(t, err)
+		pkt, err := b.codec.Decode(frame)
+		require.NoError(t, err)
+		if pkt.Header.MsgID != wantMsgID {
+			continue
+		}
+		require.NoError(t, msg.Decode(pkt))
+		return
+	}
+}
+
+func waitDeviceAbsent(t *testing.T, phone string) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := storage.GetDeviceCache().GetDeviceByPhone(phone); err != nil {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("device %s was not removed from cache", phone)
+}
+
+func TestTCPServerHeartbeatRefreshesDeviceComTime(t *testing.T) {
+	server := NewTCPServer()
+	require.NoError(t, server.Listen("127.0.0.1:0"))
+	go server.Start()
+	t.Cleanup(server.Stop)
+
+	const phone = "188765433221"
+	b := dialBareTerminal(t, server.listener.Addr().String(), phone, "京B00021", "BARE-HB-01")
+
+	cache := storage.GetDeviceCache()
+	device, err := cache.GetDeviceByPhone(phone)
+	require.NoError(t, err)
+	// Backdate the last communication time beyond the keepalive window.
+	stale := time.Now().Add(-90 * time.Second)
+	device.LastestComTime = stale
+	cache.CacheDevice(device)
+
+	b.send(t, &model.Msg0002{Header: uplinkHeader(0x0002, phone, 10)})
+	ack := &model.Msg8001{}
+	b.recvInto(t, 3*time.Second, 0x8001, ack)
+	require.Equal(t, uint16(0x0002), ack.AnswerMessageID)
+	require.Equal(t, model.ResultSuccess, ack.Result)
+
+	refreshed, err := cache.GetDeviceByPhone(phone)
+	require.NoError(t, err)
+	require.True(t, refreshed.LastestComTime.After(stale.Add(80*time.Second)), "heartbeat must refresh LastestComTime")
+	require.WithinDuration(t, time.Now(), refreshed.LastestComTime, 5*time.Second)
+}
+
+func TestTCPServerHeartbeatFromUnknownDeviceClosesConn(t *testing.T) {
+	server := NewTCPServer()
+	require.NoError(t, server.Listen("127.0.0.1:0"))
+	go server.Start()
+	t.Cleanup(server.Stop)
+
+	b := newBareTerminal(t, server.listener.Addr().String())
+	b.send(t, &model.Msg0002{Header: uplinkHeader(0x0002, "188765439999", 1)})
+	require.NoError(t, b.conn.SetReadDeadline(time.Now().Add(3*time.Second)))
+	_, err := b.fh.Recv(context.Background())
+	require.Error(t, err, "unknown-device heartbeat must close the connection")
+}
+
+func TestTCPServerLogoutClearsCacheAndKeepsConn(t *testing.T) {
+	server := NewTCPServer()
+	require.NoError(t, server.Listen("127.0.0.1:0"))
+	go server.Start()
+	t.Cleanup(server.Stop)
+
+	const phone = "188765433222"
+	b := dialBareTerminal(t, server.listener.Addr().String(), phone, "京B00022", "BARE-LO-01")
+
+	b.send(t, &model.Msg0003{Header: uplinkHeader(0x0003, phone, 20)})
+	ack := &model.Msg8001{}
+	b.recvInto(t, 3*time.Second, 0x8001, ack)
+	require.Equal(t, uint16(0x0003), ack.AnswerMessageID)
+	require.Equal(t, model.ResultSuccess, ack.Result)
+
+	waitDeviceAbsent(t, phone)
+
+	// The server keeps the connection open after logout, waiting for the
+	// terminal to close it to avoid TCP TIMEWAIT on the server side.
+	require.NoError(t, b.conn.SetReadDeadline(time.Now().Add(300*time.Millisecond)))
+	_, err := b.fh.Recv(context.Background())
+	require.Error(t, err)
+	var netErr net.Error
+	require.True(t, errors.As(err, &netErr) && netErr.Timeout(), "expected read timeout on kept-open conn, got %v", err)
+}
+
+func TestTCPServerAnswersServerTimeQuery(t *testing.T) {
+	server := NewTCPServer()
+	require.NoError(t, server.Listen("127.0.0.1:0"))
+	go server.Start()
+	t.Cleanup(server.Stop)
+
+	const phone = "188765433232"
+	b := dialBareTerminal(t, server.listener.Addr().String(), phone, "京B00032", "BARE-TIME-1")
+
+	b.send(t, &model.Msg0004{Header: uplinkHeader(0x0004, phone, 30)})
+	reply := &model.Msg8004{}
+	b.recvInto(t, 3*time.Second, 0x8004, reply)
+	require.NotNil(t, reply.ServerTime)
+	// BCD time carries local wall-clock fields but hex.ParseTime labels it
+	// UTC, so rebuild the wall clock in the local location before comparing.
+	srv := reply.ServerTime
+	srvWall := time.Date(srv.Year(), srv.Month(), srv.Day(), srv.Hour(), srv.Minute(), srv.Second(), 0, time.Local)
+	require.WithinDuration(t, time.Now(), srvWall, 2*time.Second)
+}
+
+func TestTCPServerAnswersTerminalUplink8204(t *testing.T) {
+	server := NewTCPServer()
+	require.NoError(t, server.Listen("127.0.0.1:0"))
+	go server.Start()
+	t.Cleanup(server.Stop)
+
+	const phone = "188765433233"
+	b := dialBareTerminal(t, server.listener.Addr().String(), phone, "京B00033", "BARE-LINK-1")
+
+	b.send(t, &model.Msg8204{Header: uplinkHeader(0x8204, phone, 40)})
+	ack := &model.Msg0001{}
+	b.recvInto(t, 3*time.Second, 0x0001, ack)
+	require.Equal(t, uint16(0x8204), ack.AnswerMessageID)
+	require.Equal(t, uint8(0), ack.Result)
+}
+
+func TestTCPServerAnswersTerminalUplink8105(t *testing.T) {
+	server := NewTCPServer()
+	require.NoError(t, server.Listen("127.0.0.1:0"))
+	go server.Start()
+	t.Cleanup(server.Stop)
+
+	const phone = "188765433234"
+	b := dialBareTerminal(t, server.listener.Addr().String(), phone, "京B00034", "BARE-CTRL-1")
+
+	for i, msg := range []*model.Msg8105{
+		{Header: uplinkHeader(0x8105, phone, 50), CommandWord: 0x01},
+		{Header: uplinkHeader(0x8105, phone, 51), CommandWord: 0x02, CommandParam: "12345"},
+	} {
+		b.send(t, msg)
+		ack := &model.Msg0001{}
+		b.recvInto(t, 3*time.Second, 0x0001, ack)
+		require.Equal(t, uint16(0x8105), ack.AnswerMessageID, "8105 case %d", i)
+		require.Equal(t, uint8(0), ack.Result)
+	}
+}
+
+func TestTCPServerTerminalUplink8500Echoes0500(t *testing.T) {
+	server := NewTCPServer()
+	require.NoError(t, server.Listen("127.0.0.1:0"))
+	go server.Start()
+	t.Cleanup(server.Stop)
+
+	const phone = "188765433235"
+	b := dialBareTerminal(t, server.listener.Addr().String(), phone, "京B00035", "BARE-VCTL-1")
+
+	b.send(t, &model.Msg8500{Header: uplinkHeader(0x8500, phone, 60), ControlFlags: 0x0007})
+	reply := &model.Msg0500{}
+	b.recvInto(t, 3*time.Second, 0x0500, reply)
+	require.Equal(t, uint16(0x0007), reply.ControlFlags)
+	require.Equal(t, uint16(0x0007), storage.GetIndustryCache().VehicleControl(phone))
+}
+
+func TestTCPServerRejectsDuplicateRegistration(t *testing.T) {
+	server := NewTCPServer()
+	require.NoError(t, server.Listen("127.0.0.1:0"))
+	go server.Start()
+	t.Cleanup(server.Stop)
+
+	const phoneA = "188765433236"
+	const phoneB = "188765433237"
+	const plateA = "京B00036"
+	const plateC = "京B00037"
+	dialBareTerminal(t, server.listener.Addr().String(), phoneA, plateA, "BARE-DUP-A")
+	cache := storage.GetDeviceCache()
+
+	// Same plate, different phone on a new conn -> car already registered.
+	b2 := newBareTerminal(t, server.listener.Addr().String())
+	b2.send(t, &model.Msg0100{
+		Header:         uplinkHeader(0x0100, phoneB, 1),
+		ProvinceID:     11,
+		CityID:         1101,
+		ManufacturerID: "ABCDE",
+		DeviceMode:     "JT808-BARE-SIM",
+		DeviceID:       "BARE-DUP-B",
+		PlateColor:     1,
+		PlateNumber:    plateA,
+	})
+	carDup := &model.Msg8100{}
+	b2.recvInto(t, 3*time.Second, 0x8100, carDup)
+	require.Equal(t, model.ResCarAlreadyRegister, carDup.Result)
+	_, err := cache.GetDeviceByPhone(phoneB)
+	require.ErrorIs(t, err, storage.ErrDeviceNotFound)
+
+	// Same phone, different plate on a new conn -> device already registered.
+	b3 := newBareTerminal(t, server.listener.Addr().String())
+	b3.send(t, &model.Msg0100{
+		Header:         uplinkHeader(0x0100, phoneA, 1),
+		ProvinceID:     11,
+		CityID:         1101,
+		ManufacturerID: "ABCDE",
+		DeviceMode:     "JT808-BARE-SIM",
+		DeviceID:       "BARE-DUP-C",
+		PlateColor:     1,
+		PlateNumber:    plateC,
+	})
+	devDup := &model.Msg8100{}
+	b3.recvInto(t, 3*time.Second, 0x8100, devDup)
+	require.Equal(t, model.ResDeviceAlreadyRegister, devDup.Result)
+	require.False(t, cache.HasPlate(plateC), "rejected registration must not cache its plate")
+
+	original, err := cache.GetDeviceByPhone(phoneA)
+	require.NoError(t, err)
+	require.Equal(t, model.DeviceStatusOnline, original.Status, "original device must stay untouched")
+}
+
+func TestTCPServerRejectsWrongAuthCode(t *testing.T) {
+	server := NewTCPServer()
+	require.NoError(t, server.Listen("127.0.0.1:0"))
+	go server.Start()
+	t.Cleanup(server.Stop)
+
+	const phone = "188765433238"
+	b := newBareTerminal(t, server.listener.Addr().String())
+	t.Cleanup(func() {
+		storage.GetDeviceCache().DelDeviceByPhone(phone)
+		protocol.NewKeepaliveTimer().Cancel(phone)
+	})
+	b.send(t, &model.Msg0100{
+		Header:         uplinkHeader(0x0100, phone, 1),
+		ProvinceID:     11,
+		CityID:         1101,
+		ManufacturerID: "ABCDE",
+		DeviceMode:     "JT808-BARE-SIM",
+		DeviceID:       "BARE-AUTH-1",
+		PlateColor:     1,
+		PlateNumber:    "京B00038",
+	})
+	regReply := &model.Msg8100{}
+	b.recvInto(t, 3*time.Second, 0x8100, regReply)
+	require.Equal(t, model.ResSuccess, regReply.Result)
+
+	b.send(t, &model.Msg0102{Header: uplinkHeader(0x0102, phone, 2), AuthCode: regReply.AuthCode + "X"})
+	ack := &model.Msg8001{}
+	b.recvInto(t, 3*time.Second, 0x8001, ack)
+	require.Equal(t, uint16(0x0102), ack.AnswerMessageID)
+	require.Equal(t, model.ResultFail, ack.Result)
+
+	waitDeviceAbsent(t, phone)
+
+	// Connection is intentionally kept open after a failed authentication.
+	require.NoError(t, b.conn.SetReadDeadline(time.Now().Add(300*time.Millisecond)))
+	_, err := b.fh.Recv(context.Background())
+	require.Error(t, err)
+	var netErr net.Error
+	require.True(t, errors.As(err, &netErr) && netErr.Timeout(), "expected read timeout on kept-open conn, got %v", err)
+}
+
+func TestTCPServerMergesTerminalParamsAndAnswers8104(t *testing.T) {
+	server := NewTCPServer()
+	require.NoError(t, server.Listen("127.0.0.1:0"))
+	go server.Start()
+	t.Cleanup(server.Stop)
+
+	const phone = "188765433239"
+	b := dialBareTerminal(t, server.listener.Addr().String(), phone, "京B00039", "BARE-PARAM-1")
+
+	b.send(t, &model.Msg8103{
+		Header:     uplinkHeader(0x8103, phone, 3),
+		Parameters: &model.DeviceParams{ParamCnt: 1, Params: []*model.ParamData{{ParamID: 0x0001, ParamValue: uint32(111)}}},
+	})
+	ack := &model.Msg0001{}
+	b.recvInto(t, 3*time.Second, 0x0001, ack)
+	require.Equal(t, uint16(0x8103), ack.AnswerMessageID)
+
+	b.send(t, &model.Msg8103{
+		Header: uplinkHeader(0x8103, phone, 4),
+		Parameters: &model.DeviceParams{ParamCnt: 2, Params: []*model.ParamData{
+			{ParamID: 0x0001, ParamValue: uint32(222)},
+			{ParamID: 0x0002, ParamValue: uint32(333)},
+		}},
+	})
+	b.recvInto(t, 3*time.Second, 0x0001, &model.Msg0001{})
+
+	// Terminal-side 0x8104 query: the shared processor answers with the merged
+	// parameter set carried in a platform-direction 0x0104.
+	b.send(t, &model.Msg8104{Header: uplinkHeader(0x8104, phone, 5)})
+	reply := &model.Msg0104{}
+	b.recvInto(t, 3*time.Second, 0x0104, reply)
+	require.Equal(t, uint16(5), reply.AnswerSerialNumber)
+	require.Equal(t, uint8(2), reply.AnswerParamCnt)
+	require.Len(t, reply.Parameters.Params, 2)
+	require.Equal(t, uint32(0x0001), reply.Parameters.Params[0].ParamID)
+	require.Equal(t, uint32(222), reply.Parameters.Params[0].ParamValue)
+	require.Equal(t, uint32(0x0002), reply.Parameters.Params[1].ParamID)
+	require.Equal(t, uint32(333), reply.Parameters.Params[1].ParamValue)
+
+	cached, err := storage.GetDeviceParamsCache().GetDeviceParamsByPhone(phone)
+	require.NoError(t, err)
+	require.Len(t, cached.Params, 2)
+	require.Equal(t, uint32(222), cached.Params[0].ParamValue)
+}
+
+// TestSimulatorRecorderPositionTestCommands covers GB/T 19056 0x56/0x57:
+// the simulator answers with a typed 0xD6 position-test data block.
+func TestSimulatorRecorderPositionTestCommands(t *testing.T) {
+	server := NewTCPServer()
+	require.NoError(t, server.Listen("127.0.0.1:0"))
+	go server.Start()
+	t.Cleanup(server.Stop)
+	cli := client.NewTCPClient()
+	require.NoError(t, cli.Dial(server.listener.Addr().String()))
+	t.Cleanup(cli.Stop)
+	go cli.Start()
+	const phone = "188765433241"
+	registration := &model.Msg0100{Header: &model.MsgHeader{MsgID: 0x0100, Attr: &model.MsgBodyAttr{VersionDesc: model.Version2013}, PhoneNumber: phone}, ProvinceID: 11, CityID: 1101, ManufacturerID: "ABCDE", DeviceMode: "JT808-RECORDER-SIM", DeviceID: "RECORDER-03", PlateColor: 1, PlateNumber: "京A87020"}
+	require.NoError(t, cli.SendWithError(registration))
+	var device *model.Device
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		device, _ = storage.GetDeviceCache().GetDeviceByPhone(phone)
+		if device != nil && device.Status == model.DeviceStatusOnline {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	require.NotNil(t, device)
+	require.Equal(t, model.DeviceStatusOnline, device.Status)
+	t.Cleanup(func() { storage.GetDeviceCache().DelDeviceByPhone(phone); protocol.NewKeepaliveTimer().Cancel(phone) })
+
+	industry := storage.GetIndustryCache()
+	session, err := storage.GetSession(device.SessionID)
+	require.NoError(t, err)
+
+	cases := []struct {
+		name  string
+		cmd   uint8
+		block any
+	}{
+		{"on", model.RecorderCmdPositionTestOn, &model.RecorderPositionTestRequest{Duration: 60}},
+		{"off", model.RecorderCmdPositionTestOff, nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			server.Send(session.ID, &model.MsgRecordCommand{
+				Header:    model.GenMsgHeader(device, 0x8700, session.GetNextSerialNum()),
+				Command:   tc.cmd,
+				DataBlock: tc.block,
+			})
+			deadline := time.Now().Add(3 * time.Second)
+			for time.Now().Before(deadline) {
+				if r := industry.RecordData(phone); r != nil && r.Command == tc.cmd {
+					if _, ok := r.DataBlock.(*model.RecorderPositionTestResponse); ok {
+						break
+					}
+				}
+				time.Sleep(10 * time.Millisecond)
+			}
+			resp := industry.RecordData(phone)
+			require.NotNil(t, resp)
+			require.Equal(t, tc.cmd, resp.Command)
+			pos, ok := resp.DataBlock.(*model.RecorderPositionTestResponse)
+			require.True(t, ok, "0x%02x response should carry a typed RecorderPositionTestResponse", tc.cmd)
+			require.True(t, strings.HasPrefix(pos.GGAData, "$GPGGA"), "unexpected GGA data %q", pos.GGAData)
+			require.True(t, strings.HasPrefix(pos.RMCData, "$GPRMC"), "unexpected RMC data %q", pos.RMCData)
+		})
+	}
+}
