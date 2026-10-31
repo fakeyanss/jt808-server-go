@@ -2,6 +2,7 @@ package datagen
 
 import (
 	"bytes"
+	"compress/zlib"
 	"fmt"
 	"math/rand"
 	"strconv"
@@ -212,4 +213,68 @@ func GenMsg0801(device *model.Device) *model.Msg0801 {
 	encoded, _ := location.Encode()
 	locationBody := append([]byte(nil), encoded[len(encoded)-int(location.Header.Attr.BodyLength):]...)
 	return &model.Msg0801{Header: genMsgHeader(0x0801, device), MultiMediaID: uint32(time.Now().Unix()), MultiMediaType: 0, MultiMediaContainer: 0, EventID: 1, LogicChannelID: 1, GeoAlarmBody: locationBody, FragmentData: []byte{0xff, 0xd8, 0xff, 0xd9}}
+}
+
+func GenMsg0003(device *model.Device) *model.Msg0003 {
+	return &model.Msg0003{Header: genMsgHeader(0x0003, device)}
+}
+
+func GenMsg0004(device *model.Device) *model.Msg0004 {
+	return &model.Msg0004{Header: genMsgHeader(0x0004, device)}
+}
+
+// GenMsg0102 builds a terminal authentication message. In the normal flow
+// the simulator generates it automatically from the 0x8100 reply; authCode is
+// exposed as a parameter so failure-path scenarios can send a wrong code.
+func GenMsg0102(device *model.Device, authCode string) *model.Msg0102 {
+	return &model.Msg0102{Header: genMsgHeader(0x0102, device), AuthCodeLen: uint8(len(authCode)), AuthCode: authCode, IMEI: device.IMEI, SoftwareVersion: device.SoftwareVersion}
+}
+
+func GenMsg0301(device *model.Device, eventID uint8) *model.Msg0301 {
+	return &model.Msg0301{Header: genMsgHeader(0x0301, device), EventID: eventID}
+}
+
+func GenMsg0302(device *model.Device, answerSerial uint16, answerID uint32) *model.Msg0302 {
+	return &model.Msg0302{Header: genMsgHeader(0x0302, device), AnswerSerial: answerSerial, AnswerID: answerID}
+}
+
+func GenMsg0303(device *model.Device, action uint8, menuID uint32) *model.Msg0303 {
+	return &model.Msg0303{Header: genMsgHeader(0x0303, device), Action: action, MenuID: menuID}
+}
+
+func GenMsg0108(device *model.Device, upgradeType, result uint8) *model.Msg0108 {
+	return &model.Msg0108{Header: genMsgHeader(0x0108, device), UpgradeType: upgradeType, Result: result}
+}
+
+func GenMsg0701(device *model.Device, content string) *model.Msg0701 {
+	return &model.Msg0701{Header: genMsgHeader(0x0701, device), Content: content}
+}
+
+// GenMsg0704 builds a normal batch-location upload with two 28-byte items.
+func GenMsg0704(device *model.Device) *model.Msg0704 {
+	now := hex.FormatTime(time.Now())
+	buildBody := func(t string) []byte {
+		location := &model.Msg0200{Header: genMsgHeader(0x0200, device), Latitude: 31123456, Longitude: 121123456, Time: t}
+		encoded, _ := location.Encode()
+		return append([]byte(nil), encoded[len(encoded)-int(location.Header.Attr.BodyLength):]...)
+	}
+	items := make([]model.BatchLocationItem, 2)
+	for i := range items {
+		body := buildBody(now)
+		items[i] = model.BatchLocationItem{Length: uint16(len(body)), Body: body}
+	}
+	return &model.Msg0704{Header: genMsgHeader(0x0704, device), ItemCount: uint16(len(items)), DataType: 0, Items: items}
+}
+
+func GenMsg0900(device *model.Device, typ uint32, data []byte) *model.Msg0900 {
+	return &model.Msg0900{Header: genMsgHeader(0x0900, device), Type: typ, Data: append([]byte(nil), data...)}
+}
+
+// GenMsg0901 zlib-compresses raw into a 0x0901 compressed report.
+func GenMsg0901(device *model.Device, raw []byte) *model.Msg0901 {
+	var buf bytes.Buffer
+	zw := zlib.NewWriter(&buf)
+	_, _ = zw.Write(raw)
+	_ = zw.Close()
+	return &model.Msg0901{Header: genMsgHeader(0x0901, device), Length: uint32(buf.Len()), Data: buf.Bytes()}
 }
