@@ -1,15 +1,30 @@
 package storage
 
 import (
-	"strings"
+	"fmt"
 	"sync"
+	"time"
 
 	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
 )
 
+const segmentCacheTTL = 2 * time.Minute
+const maxSegmentCount = 4096
+const maxSegmentCacheEntries = 1024
+const maxSegmentCacheBytes = 16 << 20
+
+type segmentState struct {
+	total     uint16
+	parts     [][]byte
+	received  int
+	bytes     int
+	updatedAt time.Time
+}
+
 type SegmentCache struct {
-	cacheByKey map[string]*model.Segment
-	mutex      *sync.Mutex
+	cacheByKey  map[string]*segmentState
+	mutex       *sync.Mutex
+	cachedBytes int
 }
 
 var segmentCacheSingleton *SegmentCache
@@ -18,28 +33,130 @@ var segmentCacheInitOnce sync.Once
 func getSegmentCache() *SegmentCache {
 	segmentCacheInitOnce.Do(func() {
 		segmentCacheSingleton = &SegmentCache{
-			cacheByKey: make(map[string]*model.Segment),
+			cacheByKey: make(map[string]*segmentState),
 			mutex:      &sync.Mutex{},
 		}
 	})
 	return segmentCacheSingleton
 }
 
-func CacheSegment(seg *model.Segment) bool {
-	b := new(strings.Builder)
-	b.WriteString(seg.Phone)
-	b.WriteString("/")
-	b.WriteRune(rune(seg.MsgID))
-	key := b.String()
+// CacheSegment stores fragments by device, message ID and original message serial.
+// It returns true only after all distinct fragment indexes have arrived, regardless
+// of their arrival order. Duplicate fragments do not duplicate their payload.
+func CacheSegment(seg *model.Segment, serialNumber uint16) bool {
+	if seg == nil || seg.SegTotal == 0 || seg.SegNo == 0 || seg.SegNo > seg.SegTotal || len(seg.Data) == 0 {
+		return false
+	}
+	cache := getSegmentCache()
+	// JT808 assigns consecutive serial numbers to fragments. Normalize each
+	// fragment to the first fragment's serial so out-of-order arrivals join.
+	firstSerial := FirstFragmentSerial(serialNumber, seg.SegNo)
+	key := fmt.Sprintf("%s/%04x/%04x", seg.Phone, seg.MsgID, firstSerial)
+	cache.mutex.Lock()
+	defer cache.mutex.Unlock()
+
+	now := time.Now()
+	for k, state := range cache.cacheByKey {
+		if now.Sub(state.updatedAt) > segmentCacheTTL {
+			cache.cachedBytes -= state.bytes
+			delete(cache.cacheByKey, k)
+		}
+	}
+	if seg.SegTotal > maxSegmentCount || len(seg.Data) > maxSegmentCacheBytes {
+		return false
+	}
+
+	state := cache.cacheByKey[key]
+	if state == nil || state.total != seg.SegTotal {
+		if state != nil {
+			cache.cachedBytes -= state.bytes
+		}
+		if len(cache.cacheByKey) >= maxSegmentCacheEntries {
+			cache.evictOldest(key)
+		}
+		state = &segmentState{total: seg.SegTotal, parts: make([][]byte, seg.SegTotal)}
+		cache.cacheByKey[key] = state
+	}
+	state.updatedAt = now
+	idx := int(seg.SegNo - 1)
+	if state.parts[idx] == nil {
+		for cache.cachedBytes+len(seg.Data) > maxSegmentCacheBytes {
+			if !cache.evictOldest(key) {
+				return false
+			}
+		}
+		state.parts[idx] = append([]byte(nil), seg.Data...)
+		state.received++
+		state.bytes += len(seg.Data)
+		cache.cachedBytes += len(seg.Data)
+	}
+	if state.received != int(state.total) {
+		return false
+	}
+
+	assembled := make([]byte, 0)
+	for _, part := range state.parts {
+		assembled = append(assembled, part...)
+	}
+	seg.Data = assembled
+	cache.cachedBytes -= state.bytes
+	delete(cache.cacheByKey, key)
+	return true
+}
+
+// FirstFragmentSerial converts a fragment's terminal serial to the original
+// message serial, accounting for JT808's 1..65535 serial-number wraparound.
+func FirstFragmentSerial(serialNumber, fragmentIndex uint16) uint16 {
+	for i := uint16(1); i < fragmentIndex; i++ {
+		if serialNumber <= 1 {
+			serialNumber = 65535
+		} else {
+			serialNumber--
+		}
+	}
+	return serialNumber
+}
+
+// MissingSegmentIndexes returns the 1-based fragment indexes still absent for
+// the segmented message containing seg. It is intended for 0x8003 requests.
+func MissingSegmentIndexes(seg *model.Segment, serialNumber uint16) []uint16 {
+	if seg == nil || seg.SegTotal == 0 || seg.SegNo == 0 || seg.SegNo > seg.SegTotal {
+		return nil
+	}
+	firstSerial := FirstFragmentSerial(serialNumber, seg.SegNo)
+	key := fmt.Sprintf("%s/%04x/%04x", seg.Phone, seg.MsgID, firstSerial)
 	cache := getSegmentCache()
 	cache.mutex.Lock()
 	defer cache.mutex.Unlock()
-	s, ok := cache.cacheByKey[key]
-	if !ok {
-		cache.cacheByKey[key] = seg
-		return s.IsComplete()
+	state := cache.cacheByKey[key]
+	if state == nil || state.total != seg.SegTotal || time.Since(state.updatedAt) > segmentCacheTTL {
+		return nil
 	}
-	s.Merge(seg)
-	// cache.cacheByKey[key] = s
-	return s.IsComplete()
+	missing := make([]uint16, 0, int(state.total)-state.received)
+	for idx, part := range state.parts {
+		if part == nil {
+			missing = append(missing, uint16(idx+1))
+		}
+	}
+	return missing
+}
+
+func (cache *SegmentCache) evictOldest(excludeKey string) bool {
+	var oldestKey string
+	var oldest time.Time
+	for key, state := range cache.cacheByKey {
+		if key == excludeKey {
+			continue
+		}
+		if oldestKey == "" || state.updatedAt.Before(oldest) {
+			oldestKey = key
+			oldest = state.updatedAt
+		}
+	}
+	if oldestKey == "" {
+		return false
+	}
+	cache.cachedBytes -= cache.cacheByKey[oldestKey].bytes
+	delete(cache.cacheByKey, oldestKey)
+	return true
 }

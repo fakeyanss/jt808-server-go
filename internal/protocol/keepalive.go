@@ -70,6 +70,7 @@ func checkDeviceKeepalive(t *KeepaliveTimer, devicePhone string) {
 	if errors.Is(err, storage.ErrDeviceNotFound) {
 		log.Debug().Str("device", devicePhone).Msg("Fail to find device cache")
 		t.Cancel(devicePhone)
+		return
 	}
 	if d.ShouleTurnOffline() {
 		// 保活失效

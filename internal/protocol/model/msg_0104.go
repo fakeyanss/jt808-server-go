@@ -49,12 +49,17 @@ func (m *Msg0104) GetHeader() *MsgHeader {
 }
 
 func (m *Msg0104) GenOutgoing(incoming JT808Msg) error {
-	in, ok := incoming.(*Msg8104)
-	if !ok {
+	var h *MsgHeader
+	switch in := incoming.(type) {
+	case *Msg8104:
+		h = in.Header
+	case *Msg8106:
+		h = in.Header
+	default:
 		return ErrGenOutgoingMsg
 	}
-	m.AnswerSerialNumber = in.Header.SerialNumber
-	m.Header = in.Header
+	m.AnswerSerialNumber = h.SerialNumber
+	m.Header = h
 	m.Header.MsgID = 0x0104
 
 	return nil

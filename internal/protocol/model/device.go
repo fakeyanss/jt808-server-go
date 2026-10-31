@@ -68,6 +68,7 @@ func (d *Device) ShouldClear() bool {
 // 终端设备地理位置状态相关信息
 type DeviceGeo struct {
 	Phone    string    `json:"phone"`
+	Report   *Msg0200  `json:"-"`
 	Geo      *GeoMeta  `json:"gis"`
 	Location *Location `json:"location"`
 	Drive    *Drive    `json:"drive"`
@@ -76,6 +77,8 @@ type DeviceGeo struct {
 
 func (dg *DeviceGeo) Decode(phone string, m *Msg0200) error {
 	dg.Phone = phone
+	reportCopy := *m
+	dg.Report = &reportCopy
 	geoMetaInstance := &GeoMeta{}
 	geoMetaInstance.Decode(m.StatusSign)
 	dg.Geo = geoMetaInstance

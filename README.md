@@ -409,6 +409,8 @@ make release
 ```
 默认读取 `jt808-server-go` 同级目录的 `configs/default.yaml` 。
 
+默认开启 TCP `8080`、UDP `8081` 和 HTTP `8008` 监听；将 `server.port.udpPort` 设为空可关闭 UDP。可靠消息的确认超时和最多重发次数可通过 `server.ackTimeoutMs`、`server.maxRetransmissions` 配置。
+
 源码运行：
 ```sh
 make run
@@ -444,6 +446,12 @@ make release-client
 ```
 默认读取 `jt808-client-go` 同级目录的 `configs/default.yaml` ，可自定义终端的配置：
 
+客户端支持 `TCP` 和 `UDP`。默认配置连接本机 `localhost:8080`；UDP 测试时将 `device.transProto` 设为 `UDP` 并连接 `localhost:8081`。确认超时和最多重发次数可通过 `client.ackTimeoutMs`、`client.maxRetransmissions` 配置。
+
+可用 `-fragment-size 16 -reverse-fragments` 将注册消息切成 16 字节消息体分包并倒序发送，验证服务端的乱序重组和逐包应答。再加 `-drop-fragment 2` 可在首次发送时跳过第 2 包；服务端发现缺包后会发送 `0x8003`，模拟器按请求补发缓存的原始分包。
+
+可用 `-fault-frame bad-checksum`、`-fault-frame bad-escape` 或 `-fault-frame oversize` 在注册前发送一帧故障数据，再发送正常注册消息，检查服务端是否拒绝异常帧并继续处理后续有效消息。该选项可配合 TCP 或 UDP 配置使用。
+
 ```yaml
 ......
 
@@ -458,7 +466,7 @@ client:
     phoneReg: "[0-9]{20}"
     plateReg: "京 A[A-Z0-9]{5}"
     protocolVersion: "2019" # 协议版本
-    transProto: "TCP" # 协议类型，现仅支持 TCP
+    transProto: "TCP" # 协议类型：TCP 或 UDP
     keepalive: 20 # 保活周期，单位 s
     provinceIdReg: "[0-9]{2}"
     cityIdReg: "[0-9]{4}"

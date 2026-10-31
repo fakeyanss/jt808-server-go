@@ -18,9 +18,12 @@ const (
 )
 
 var (
-	ErrEmptyPacket  = errors.New("Empty packet")
-	ErrVerifyFailed = errors.New("Verify failed")
-	ErrEncodeType   = errors.New("Error data type")
+	ErrEmptyPacket           = errors.New("Empty packet")
+	ErrVerifyFailed          = errors.New("Verify failed")
+	ErrEncodeType            = errors.New("Error data type")
+	ErrMalformedFrame        = errors.New("Malformed JT808 frame")
+	ErrBodyLengthMismatch    = errors.New("JT808 body length mismatch")
+	ErrEncryptionUnsupported = errors.New("JT808 message encryption is unsupported")
 )
 
 type PacketCodec interface {
@@ -46,10 +49,18 @@ func NewJT808PacketCodec() *JT808PacketCodec {
 //
 // 反转义 -> 校验 -> 反序列化
 func (pc *JT808PacketCodec) Decode(payload []byte) (*model.PacketData, error) {
-	pkt := pc.unescape(payload)
-
-	verifyCode := payload[len(payload)-1]
-	pkt, err := pc.verify(pkt)
+	if len(payload) < 15 || payload[0] != boundaryMark || payload[len(payload)-1] != boundaryMark {
+		return nil, ErrMalformedFrame
+	}
+	pkt, err := pc.unescape(payload)
+	if err != nil {
+		return nil, err
+	}
+	if len(pkt) < 13 { // shortest JT808 header plus checksum
+		return nil, ErrMalformedFrame
+	}
+	verifyCode := pkt[len(pkt)-1]
+	pkt, err = pc.verify(pkt)
 	if err != nil {
 		return nil, err
 	}
@@ -64,13 +75,26 @@ func (pc *JT808PacketCodec) Decode(payload []byte) (*model.PacketData, error) {
 		return nil, errors.Wrap(err, "Fail to decode packet")
 	}
 
+	if int(pd.Header.Attr.BodyLength) != len(pkt)-pd.Header.Idx {
+		return nil, ErrBodyLengthMismatch
+	}
+	if pd.Header.Attr.Encryption != uint8(model.EncryptionNone) {
+		return nil, ErrEncryptionUnsupported
+	}
 	pd.Body = pkt[pd.Header.Idx:]
 
 	if pd.Header.IsFragmented() {
 		seg := model.NewSegment(pd)
-		pd.SegCompleted = storage.CacheSegment(seg)
+		firstSerial := pd.Header.SerialNumber - (pd.Header.Frag.Index - 1)
+		pd.SegCompleted = storage.CacheSegment(seg, pd.Header.SerialNumber)
 		// 分包接收完成
 		pd.Body = seg.Data
+		if pd.SegCompleted {
+			pd.Header.SerialNumber = firstSerial
+			pd.Header.Attr.PacketFragmented = 0
+			pd.Header.Attr.PacketFragmentedDesc = model.PacketFragmentedFalse
+			pd.Header.Frag = nil
+		}
 	}
 
 	pd.Header.Idx = 0 // reset idx
@@ -82,7 +106,8 @@ func (pc *JT808PacketCodec) Decode(payload []byte) (*model.PacketData, error) {
 //
 // 序列化 -> 生成校验码 -> 转义
 func (pc *JT808PacketCodec) Encode(data any) (pkt []byte, err error) {
-	if out, ok := data.(model.JT808Msg); ok {
+	out, ok := data.(model.JT808Msg)
+	if ok {
 		pkt, err = out.Encode()
 	} else {
 		return nil, ErrEncodeType
@@ -91,12 +116,41 @@ func (pc *JT808PacketCodec) Encode(data any) (pkt []byte, err error) {
 	if err != nil {
 		return nil, errors.Wrap(err, "Fail to encode jtmsg")
 	}
+	header := out.GetHeader()
+	headerLen := 12
+	if header.Attr.VersionDesc == model.Version2019 {
+		headerLen = 17
+	}
+	if header.IsFragmented() {
+		headerLen += 4
+	}
+	if len(pkt) < headerLen {
+		return nil, ErrMalformedFrame
+	}
+	return pc.EncodePacketData(header, pkt[headerLen:])
+}
 
+// EncodePacketData encodes a message header and body without requiring a
+// message-specific struct. It is also used by the protocol simulator to build
+// long-message fragments.
+func (pc *JT808PacketCodec) EncodePacketData(header *model.MsgHeader, body []byte) ([]byte, error) {
+	if header == nil || header.Attr == nil || len(body) > 1023 {
+		return nil, ErrMalformedFrame
+	}
+	if header.Attr.Encryption != uint8(model.EncryptionNone) {
+		return nil, ErrEncryptionUnsupported
+	}
+	if (header.Attr.PacketFragmented == 1) != (header.Frag != nil) {
+		return nil, ErrMalformedFrame
+	}
+	header.Attr.BodyLength = uint16(len(body))
+	headerPacket, err := header.Encode()
+	if err != nil {
+		return nil, err
+	}
+	pkt := append(headerPacket, body...)
 	pkt = pc.genVerifier(pkt)
-
-	payload := pc.escape(pkt)
-
-	return payload, nil
+	return pc.escape(pkt), nil
 }
 
 // Unescape JT808 packet.
@@ -105,7 +159,7 @@ func (pc *JT808PacketCodec) Encode(data any) (pkt []byte, err error) {
 //
 //	0x7d0x02 -> 0x7e
 //	0x7d0x01 -> 0x7d
-func (pc *JT808PacketCodec) unescape(src []byte) []byte {
+func (pc *JT808PacketCodec) unescape(src []byte) ([]byte, error) {
 	dst := make([]byte, 0)
 	i, n := 1, len(src)
 	for i < n-1 {
@@ -115,12 +169,14 @@ func (pc *JT808PacketCodec) unescape(src []byte) []byte {
 		} else if i < n-2 && src[i] == 0x7d && src[i+1] == 0x01 {
 			dst = append(dst, escapeMark)
 			i += 2
+		} else if src[i] == escapeMark {
+			return nil, ErrMalformedFrame
 		} else {
 			dst = append(dst, src[i])
 			i++
 		}
 	}
-	return dst
+	return dst, nil
 }
 
 // Escape JT808 packet.

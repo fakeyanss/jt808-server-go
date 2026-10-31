@@ -74,5 +74,7 @@ func ClearSession(id string) {
 // 统计session个数
 func countSession() int {
 	c := getSessionCache()
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
 	return len(c.cacheByID)
 }

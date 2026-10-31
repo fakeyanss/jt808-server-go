@@ -1,6 +1,7 @@
 package config
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -53,4 +54,16 @@ func TestLoad(t *testing.T) {
 			assert.Equal(t, tt.want, got)
 		})
 	}
+}
+
+func TestEmbeddedDefaultsMatchCheckedInConfigs(t *testing.T) {
+	server, err := Asset(DefaultServConfPath)
+	assert.NoError(t, err)
+	assert.True(t, strings.Contains(string(server), "ackTimeoutMs: 5000"))
+	assert.True(t, strings.Contains(string(server), "udpPort: \"8081\""))
+
+	client, err := Asset(DefaultCliConfPath)
+	assert.NoError(t, err)
+	assert.True(t, strings.Contains(string(client), "remoteAddr: \"localhost:8080\""))
+	assert.True(t, strings.Contains(string(client), "maxRetransmissions: 3"))
 }

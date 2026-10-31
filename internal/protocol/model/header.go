@@ -25,6 +25,9 @@ type MsgHeader struct {
 
 // 将[]byte解码成消息头结构体
 func (h *MsgHeader) Decode(pkt []byte) error {
+	if len(pkt) < 4 {
+		return ErrDecodeHeader
+	}
 	var idx int
 
 	h.MsgID = hex.ReadWord(pkt, &idx) // 消息id [0,2)位
@@ -32,6 +35,16 @@ func (h *MsgHeader) Decode(pkt []byte) error {
 	h.Attr = &MsgBodyAttr{}
 	err := h.Attr.Decode(hex.ReadWord(pkt, &idx)) // 消息体属性 [2,4)位
 	if err != nil {
+		return ErrDecodeHeader
+	}
+	minHeaderLen := 12
+	if h.Attr.VersionDesc == Version2019 {
+		minHeaderLen = 17
+	}
+	if h.Attr.PacketFragmentedDesc {
+		minHeaderLen += 4
+	}
+	if len(pkt) < minHeaderLen {
 		return ErrDecodeHeader
 	}
 
@@ -53,7 +66,7 @@ func (h *MsgHeader) Decode(pkt []byte) error {
 	if h.Attr.PacketFragmentedDesc {
 		h.Frag = &MsgFragmentation{}
 		err = h.Frag.Decode(pkt, &idx) // 消息包封装项
-		if err != nil {
+		if err != nil || h.Frag.Total == 0 || h.Frag.Index == 0 || h.Frag.Index > h.Frag.Total {
 			return ErrDecodeHeader
 		}
 	}
@@ -211,6 +224,7 @@ func GenMsgHeader(d *Device, msgID, serialNumber uint16) *MsgHeader {
 		Attr: &MsgBodyAttr{
 			Encryption:       uint8(EncryptionNone),
 			PacketFragmented: 0,
+			VersionDesc:      d.VersionDesc,
 			VersionSign:      versionDecode(d.VersionDesc),
 			Extra:            0,
 		},

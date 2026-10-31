@@ -73,12 +73,11 @@ func bcd2NumberStr(bcd []byte) string {
 //	8 -> 1000
 //	9 -> 1001
 func numberStr2BCD(number string) []byte {
-	var rNumber = number
-	for i := 0; i < 8-len(number); i++ {
-		rNumber = "f" + rNumber
+	rNumber := number
+	if len(rNumber)%2 == 1 {
+		rNumber = "F" + rNumber
 	}
-	bcd := Str2Byte(rNumber)
-	return bcd
+	return Str2Byte(rNumber)
 }
 
 // 对应JT808类型BYTE

@@ -11,6 +11,8 @@ log:
 
 server:
   name: "jt808-server-go"
+  ackTimeoutMs: 5000
+  maxRetransmissions: 3
   port:
     tcpPort: "8080"
     udpPort: "8081"

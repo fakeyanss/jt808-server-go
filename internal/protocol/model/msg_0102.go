@@ -20,7 +20,7 @@ func (m *Msg0102) Decode(packet *PacketData) error {
 	pkt, idx := packet.Body, 0
 	ver := m.Header.Attr.VersionDesc
 	if ver == Version2013 {
-		m.AuthCode = hex.ReadString(pkt, &idx, int(m.Header.Attr.BodyLength)-idx)
+		m.AuthCode = hex.ReadString(pkt, &idx, len(pkt)-idx)
 	} else if ver == Version2019 {
 		m.AuthCodeLen = hex.ReadByte(pkt, &idx)
 		m.AuthCode = hex.ReadString(pkt, &idx, int(m.AuthCodeLen))

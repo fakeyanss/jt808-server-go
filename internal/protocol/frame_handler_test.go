@@ -10,6 +10,20 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestFrameHandlerSkipsEmptyBoundaryAndResynchronizesAfterOversize(t *testing.T) {
+	valid := hex.Str2Byte("7e1122334455668899557e")
+	stream := append([]byte{0x7e, 0x7e, 0x7e}, bytes.Repeat([]byte{0x11}, MaxFrameLen)...)
+	stream = append(stream, 0x7e, 0x7e)
+	stream = append(stream, valid[1:]...)
+	fh := &JT808FrameHandler{rbuf: bufio.NewReader(bytes.NewReader(stream))}
+
+	_, err := fh.Recv(context.Background())
+	require.ErrorIs(t, err, ErrFrameTooLong)
+	frame, err := fh.Recv(context.Background())
+	require.NoError(t, err)
+	require.Equal(t, FramePayload(valid), frame)
+}
+
 func TestJT808Frame_handler_recv(t *testing.T) {
 	type args struct {
 		payload []byte

@@ -32,14 +32,20 @@ func GetDeviceCache() *DeviceCache {
 }
 
 func (cache *DeviceCache) ListDevice() []*model.Device {
-	return maps.Values(cache.cacheByPhone)
+	cache.mutex.Lock()
+	defer cache.mutex.Unlock()
+	devices := maps.Values(cache.cacheByPhone)
+	for i, device := range devices {
+		devices[i] = cloneDevice(device)
+	}
+	return devices
 }
 
 func (cache *DeviceCache) GetDeviceByPlate(carPlate string) (*model.Device, error) {
 	cache.mutex.Lock()
 	defer cache.mutex.Unlock()
 	if d, ok := cache.cacheByPlate[carPlate]; ok {
-		return d, nil
+		return cloneDevice(d), nil
 	}
 	return nil, ErrDeviceNotFound
 }
@@ -53,7 +59,7 @@ func (cache *DeviceCache) GetDeviceByPhone(phone string) (*model.Device, error) 
 	cache.mutex.Lock()
 	defer cache.mutex.Unlock()
 	if d, ok := cache.cacheByPhone[phone]; ok {
-		return d, nil
+		return cloneDevice(d), nil
 	}
 	return nil, ErrDeviceNotFound
 }
@@ -64,8 +70,20 @@ func (cache *DeviceCache) HasPhone(phone string) bool {
 }
 
 func (cache *DeviceCache) cacheDevice(d *model.Device) {
-	cache.cacheByPlate[d.Plate] = d
-	cache.cacheByPhone[d.Phone] = d
+	copy := cloneDevice(d)
+	cache.cacheByPlate[copy.Plate] = copy
+	cache.cacheByPhone[copy.Phone] = copy
+}
+
+// cloneDevice keeps callers from mutating cache-owned state after a lookup.
+// Device fields are scalar values except Conn, which intentionally remains a
+// shared transport handle.
+func cloneDevice(device *model.Device) *model.Device {
+	if device == nil {
+		return nil
+	}
+	copy := *device
+	return &copy
 }
 
 func (cache *DeviceCache) CacheDevice(d *model.Device) {

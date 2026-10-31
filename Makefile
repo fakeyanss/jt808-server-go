@@ -48,6 +48,11 @@ release-client: set-env
 lint: set-env
 	bash $(CURDIR)/scripts/lint.sh
 
+# smoke 阶段，构建真实 server/client 二进制并跑端到端冒烟，可单独执行: make smoke
+# 可选: --keep-logs 保留日志，或 SMOKE_TCP_PORT/SMOKE_UDP_PORT/SMOKE_HTTP_PORT 覆盖端口
+smoke:
+	bash $(CURDIR)/scripts/smoke.sh
+
 # clean 阶段，清除过程中的输出， 可单独执行命令: make clean
 clean:
 	bash $(CURDIR)/scripts/build.sh clean
@@ -62,4 +67,4 @@ statline:
 	echo "TOTAL_CODE_LINE: $$total"
 
 # avoid filename conflict and speed up build
-.PHONY: all prepare test compile release lint clean
+.PHONY: all prepare test compile release lint clean smoke

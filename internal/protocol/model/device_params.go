@@ -58,10 +58,7 @@ func (p *DeviceParams) Update(newParams *DeviceParams) {
 		paramMap[param.ParamID] = param
 	}
 	for _, newParam := range newParams.Params {
-		id := newParam.ParamID
-		if _, ok := paramMap[id]; ok {
-			paramMap[id] = newParam
-		}
+		paramMap[newParam.ParamID] = newParam // upsert: overwrite existing IDs, add new ones
 	}
 	mergeParams := []*ParamData{}
 	for _, param := range paramMap {

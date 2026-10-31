@@ -4,6 +4,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/rs/zerolog/log"
 
@@ -38,6 +39,7 @@ func main() {
 	}
 
 	serv := server.NewTCPServer()
+	serv.SetReliability(time.Duration(cfg.Server.AckTimeoutMS)*time.Millisecond, cfg.Server.MaxRetransmissions)
 	addr := ":" + cfg.Server.Port.TCPPort
 	err := serv.Listen(addr)
 	if err != nil {
@@ -45,6 +47,16 @@ func main() {
 		os.Exit(1)
 	}
 	routines.GoSafe(func() { serv.Start() })
+	if cfg.Server.Port.UDPPort != "" {
+		udpServ := server.NewUDPServer()
+		udpServ.SetReliability(time.Duration(cfg.Server.AckTimeoutMS)*time.Millisecond, cfg.Server.MaxRetransmissions)
+		udpAddr := ":" + cfg.Server.Port.UDPPort
+		if err := udpServ.Listen(udpAddr); err != nil {
+			log.Error().Err(err).Str("addr", udpAddr).Msg("Fail to listen udp addr")
+			os.Exit(1)
+		}
+		routines.GoSafe(func() { udpServ.Start() })
+	}
 
 	routines.GoSafe(func() { api.Run(serv, cfg) })
 
