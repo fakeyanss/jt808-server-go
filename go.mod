@@ -1,6 +1,6 @@
 module github.com/fakeyanss/jt808-server-go
 
-go 1.19
+go 1.26
 
 require (
 	github.com/AnatolyRugalev/goregen v0.1.0

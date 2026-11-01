@@ -32,6 +32,19 @@ func TestRegionRouteDeletionProducesGenericAcknowledgement(t *testing.T) {
 	}
 }
 
+func TestSimulatorParameterTemplateDecodes(t *testing.T) {
+	header := &model.MsgHeader{MsgID: 0x8104, SerialNumber: 20, PhoneNumber: "188765432100", Attr: &model.MsgBodyAttr{}}
+	result, err := NewJT808MsgProcessor().Process(context.Background(), &model.PacketData{Header: header})
+	require.NoError(t, err)
+	reply, ok := result.Outgoing.(*model.Msg0104)
+	require.True(t, ok)
+	require.Equal(t, uint8(39), reply.Parameters.ParamCnt)
+	require.Len(t, reply.Parameters.Params, 39)
+	last := reply.Parameters.Params[38]
+	require.Equal(t, uint32(0x0076), last.ParamID)
+	require.Equal(t, uint8(15), last.ParamLen)
+}
+
 func TestSimulatorRepliesToRegionDriverRecorderAndMultimediaCommands(t *testing.T) {
 	tests := []struct {
 		id       uint16

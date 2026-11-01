@@ -377,7 +377,7 @@ end
 
 ## 编译和运行
 
-需要本地有 go 1.19+环境。
+需要本地有 go 1.26+ 环境。
 
 ### 构建 jt808-server-go
 
@@ -394,7 +394,7 @@ make compile
 ```sh
 make release
 
-# 产出在 target/releases：
+# 产出在 target/release：
 # jt808-server-go_darwin_amd64
 # jt808-server-go_darwin_arm64
 # jt808-server-go_linux_amd64
@@ -432,7 +432,7 @@ make compile-client
 ```sh
 make release-client
 
-# 产出在 target/releases：
+# 产出在 target/release：
 # jt808-client-go_darwin_amd64
 # jt808-client-go_darwin_arm64
 # jt808-client-go_linux_amd64

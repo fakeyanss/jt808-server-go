@@ -12,14 +12,7 @@ $(info BUILD_COMMIT: $(BUILD_COMMIT))
 $(info ========================================)
 
 # 执行编译，可使用命令 make 或 make all 执行
-all: prepare lint test compile
-
-# prepare阶段，下载非 Go 依赖，可单独执行命令: make prepare
-prepare:
-	bash $(CURDIR)/scripts/install.sh golangcilint # 下载非go pkg依赖
-	bash $(CURDIR)/scripts/install.sh gobindata
-	git version # 低于 2.17.1 可能不能正常工作
-	go env # 打印出 go 环境信息，可用于排查问题
+all: test compile
 
 set-env:
 	go mod download -x || go mod download -x # 下载 Go 依赖
@@ -45,9 +38,6 @@ release: set-env
 release-client: set-env
 	bash $(CURDIR)/scripts/build.sh release $(TEST_CLIENT_NAME)
 
-lint: set-env
-	bash $(CURDIR)/scripts/lint.sh
-
 # smoke 阶段，构建真实 server/client 二进制并跑端到端冒烟，可单独执行: make smoke
 # 可选: --keep-logs 保留日志，或 SMOKE_TCP_PORT/SMOKE_UDP_PORT/SMOKE_HTTP_PORT 覆盖端口
 smoke:
@@ -67,4 +57,4 @@ statline:
 	echo "TOTAL_CODE_LINE: $$total"
 
 # avoid filename conflict and speed up build
-.PHONY: all prepare test compile release lint clean smoke
+.PHONY: all test compile release clean smoke

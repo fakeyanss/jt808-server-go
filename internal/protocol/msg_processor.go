@@ -878,8 +878,10 @@ func processMsg8104(_ context.Context, data *model.ProcessData) error {
 			"00000030045A4A6830" +
 			"00000031026C64" +
 			"000000320409302130" +
-			"0000007623030000010100010202000103030001"
-		_ = out.Parameters.Decode(out.Header.PhoneNumber, uint8(paramCnt), hex.Str2Byte(paramByteStr))
+			"000000760F030000010100010202000103030001"
+		if err := out.Parameters.Decode(out.Header.PhoneNumber, uint8(paramCnt), hex.Str2Byte(paramByteStr)); err != nil {
+			return err
+		}
 		paramCache.CacheDeviceParams(out.Parameters)
 	} else {
 		out.Parameters = params

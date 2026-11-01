@@ -10,7 +10,9 @@ import (
 	"github.com/rs/zerolog"
 	"github.com/spf13/viper"
 
+	serverconfigs "github.com/fakeyanss/jt808-server-go/configs"
 	"github.com/fakeyanss/jt808-server-go/pkg/logger"
+	clientconfigs "github.com/fakeyanss/jt808-server-go/test/client/configs"
 )
 
 type LogLevelType string
@@ -25,9 +27,9 @@ const (
 
 const (
 	DefaultServConfKey  string = "embedded-default-server-config"
-	DefaultServConfPath string = "configs/default.yaml"
 	DefaultCliConfKey   string = "embedded-default-client-config"
-	DefaultCliConfPath  string = "test/client/configs/default.yaml"
+	defaultServConfFile string = "default.yaml"
+	defaultCliConfFile  string = "default.yaml"
 )
 
 type logConf struct {
@@ -151,16 +153,14 @@ func Load(confFilePath string) *Config {
 
 		var err error
 		if confFilePath == DefaultServConfKey || confFilePath == DefaultCliConfKey {
-			// replace default embedded conf path
-			if confFilePath == DefaultServConfKey {
-				confFilePath = DefaultServConfPath
-			} else if confFilePath == DefaultCliConfKey {
-				confFilePath = DefaultCliConfPath
-			}
 			var confContent []byte
-			confContent, err = Asset(confFilePath)
+			if confFilePath == DefaultServConfKey {
+				confContent, err = serverconfigs.FS.ReadFile(defaultServConfFile)
+			} else {
+				confContent, err = clientconfigs.FS.ReadFile(defaultCliConfFile)
+			}
 			if err != nil {
-				panic(errors.Wrap(err, "Fail to read default config with bindata"))
+				panic(errors.Wrap(err, "Fail to read embedded default config"))
 			}
 			err = viper.ReadConfig(bytes.NewBuffer(confContent))
 		} else {

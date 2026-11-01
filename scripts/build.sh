@@ -31,7 +31,7 @@ function release() {
 	os=$1
 	arch=$2
 	package="${target}_${os}_${arch}"
-	output=$target_dir/releases/$package
+	output=$target_dir/release/$package
 
 	echo "build $package..."
 	mkdir -p $output
@@ -49,9 +49,6 @@ function copy_conf() {
 	conf_dir=$1
 	mkdir -p $conf_dir
 	cp -r $conf_src $conf_dir
-
-	echo "compiling default conf to embedded asset.go"
-	$(go env GOPATH)/bin/go-bindata -o internal/config/asset.go -pkg config $conf_asset
 }
 
 # target: jt808-server-go / jt808-client-go
@@ -62,7 +59,6 @@ time=$(date +'%Y-%m-%dT%H:%M:%S')
 version=$(git rev-parse --short HEAD)
 build_file="main.go"
 conf_src="$project_dir/configs/"
-conf_asset="configs test/client/configs"
 if [[ $target == "jt808-client-go" ]]; then
 	build_file="test/client/main.go"
 	conf_src="$project_dir/test/client/configs/"
@@ -77,13 +73,18 @@ compile)
 	compile $2
 	;;
 release)
-	# OS X Mac
-	release darwin amd64
-	release darwin arm64
+	if [[ -n "${3:-}" && -n "${4:-}" ]]; then
+		# 单平台构建，供 Dockerfile 等只需要一个目标的场景使用
+		release "$3" "$4"
+	else
+		# OS X Mac
+		release darwin amd64
+		release darwin arm64
 
-	# Linux
-	release linux amd64
-	release linux arm64
+		# Linux
+		release linux amd64
+		release linux arm64
+	fi
 	;;
 clean)
 	echo "clean test and compile output..."
