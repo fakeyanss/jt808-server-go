@@ -614,3 +614,54 @@ internal/storage/
 | **D3** | 媒体（0x0801/0x1205）/运单（0x0701）等 B 类元数据何时落库 | **后续独立任务开发，不放入 M1/M2**。这两阶段只在 HotView 留最新值；`WaybillRepository`/`MediaMetadataRepository` 与对应建表在独立里程碑实现 | §3.1、§6.4、§7.1、M2 |
 | **D4** | 单机是否支持「关闭内存 L1 / 直读直写库」模式（超低资源设备） | **支持**。提供 `storage.frontCache.enabled` 开关（单机/分布式均生效，默认开）；关闭后配置类直读直写库、latest 回源库或 Redis | §8、§14 |
 | **D5** | API 鉴权 / 多租户 / 存储隔离 | **需求尚不明确，后续专题讨论**（与路线图 P2.2 运维就绪一并考虑）；本期存储设计不做多租户假设，表结构预留 `phone` 维度即可 | P2.2 |
+
+---
+
+## 19. 实施记录
+
+### 19.1 M1（2026-11-01，分支 `dev/p0-baseline`，基线 `84b888a`）
+
+**已落地**
+
+- 新增 `internal/storage/repository.go`：定义 `DeviceRepository`、`GeoRepository`、`ConnectionRegistry`、
+  `FragmentAssembler`、`RetransmitTracker`、`DeviceParamsRepository` 六个接口，并提供
+  `NewDeviceRepository` / `NewGeoRepository` / `NewConnectionRegistry` / `NewFragmentAssembler` /
+  `NewRetransmitTracker` / `NewDeviceParamsRepository` 构造独立内存实例，供测试与新代码注入。
+- 现有 `*_cache.go` 的具体类型即内存实现（map + mutex 逻辑未搬家，避免破坏既有测试对包内状态的访问），
+  通过编译期断言确认其满足接口；包级函数与 `GetXxxCache()` 保留为薄 wrapper，转发默认实例，
+  既有调用点零改动。
+- 每个仓储新增业务语义方法（`GetByPhone`/`Upsert`/`DeleteByPhone`/`Append`/`Bind`/`Unbind`/`CacheSegment` 等），
+  原方法（`GetDeviceByPhone`/`CacheDevice`/`StoreSession`/`MissingSegmentIndexes` 等）改为一行转发。
+- 新增单元测试：`device_repository_test.go`、`session_registry_test.go`、`segment_assembler_test.go`、
+  `geo_repository_test.go`，覆盖错误值、快照语义、并发写入/读取。
+
+**与 §6.4 的偏差（需在 M2 收口）**
+
+§6.4 要求 M1 完成后删除 `GetXxxCache()` 与 `*Cache` 旧名。本轮按任务范围先保留旧入口作为过渡 wrapper，
+原因：① 本轮明确不做全量调用点迁移；② 既有测试直接访问 `getSegmentCache()` 的包内字段。
+因此"删除旧名"顺延到 M2，与调用点 DI 迁移一起完成。
+
+**本轮未接口化（按优先级顺延）**
+
+- `AlarmCache`：现有 `Record`/`List`/`RegisterConfirmation`/`ConfirmByCommand` 与目标接口方法名冲突，
+  需要先决定接口命名或拆分"事件存储 / 确认命令路由"（后者属协调态），留待 M2。
+- `RegionCatalog`：`Delete`/`Query` 与目标接口语义需按 family 重新设计（`ReplaceAll` 事务化），M2 处理。
+- `IndustryCache`：单个结构承载 20+ 类数据，必须先按 §6.4 拆分（配置/凭证/快照/模拟器态）再定义接口。
+- `*_response.go` 与 `LocationTrackingCache`：属 A 类 rendezvous/本地定时器，接口化价值低于上面几类，
+  且 `LocationTrackingCache` 在 `internal/storage` 之外也有直接读，放到 M2/M3 与 Coordinator 一并设计。
+
+### 19.2 发现但未修改的既有实现问题（仅记录，待单独评审）
+
+1. **`sentSegmentCache.CacheFrame` 容量拒绝路径破坏了字节计数**（`internal/storage/sent_segment_cache.go`）：
+   重写同一分片时先执行 `state.bytes -= len(old)` / `cache.bytes -= len(old)`，随后若
+   `cache.bytes+len(frame) > maxSegmentCacheBytes` 直接 `return`，但 `state.frames[idx]` 仍是旧帧。
+   结果是旧帧还在、计数却已扣减，后续淘汰会多扣一次，容量上界失真。属既有逻辑，本轮原样保留。
+2. **`container.RingBuffer` 的并发读写未同步**（`pkg/container/ring_buffer.go`）：
+   `Write` 直接写 `r.Container[current]`，`Latest` 直接读 `r.Container[(w-1)%r.Size]`，
+   仅位置变量使用 atomic；定位上报与 API 详情并发访问时存在数据竞争的理论风险。
+   `go test -race ./...` 当前未触发，因为单测未构造该并发组合。本轮未改动。
+3. **`RingBuffer.seekReader` 的负数取模**：`(current+delta)%r.Size` 在 delta 为负时可能得到负索引；
+   `Read` 路径潜在越界。定位流程只用 `Write`/`Latest`，暂未触发。本轮未改动。
+4. `GeoRepository.Latest` 与既有 `GetGeoLatestByPhone` 一样返回缓冲区内的对象指针（非快照），
+   调用方若修改会影响后续读取；这是既有语义，M1 为保持行为一致未改为深拷贝。
+

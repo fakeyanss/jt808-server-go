@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"context"
 	"fmt"
 	"sync"
 	"time"
@@ -21,6 +22,7 @@ type segmentState struct {
 	updatedAt time.Time
 }
 
+// SegmentCache 是 FragmentAssembler 的内存实现。
 type SegmentCache struct {
 	cacheByKey  map[string]*segmentState
 	mutex       *sync.Mutex
@@ -30,12 +32,17 @@ type SegmentCache struct {
 var segmentCacheSingleton *SegmentCache
 var segmentCacheInitOnce sync.Once
 
+// NewSegmentCache 创建独立的内存分包重组器。
+func NewSegmentCache() *SegmentCache {
+	return &SegmentCache{
+		cacheByKey: make(map[string]*segmentState),
+		mutex:      &sync.Mutex{},
+	}
+}
+
 func getSegmentCache() *SegmentCache {
 	segmentCacheInitOnce.Do(func() {
-		segmentCacheSingleton = &SegmentCache{
-			cacheByKey: make(map[string]*segmentState),
-			mutex:      &sync.Mutex{},
-		}
+		segmentCacheSingleton = NewSegmentCache()
 	})
 	return segmentCacheSingleton
 }
@@ -43,11 +50,10 @@ func getSegmentCache() *SegmentCache {
 // CacheSegment stores fragments by device, message ID and original message serial.
 // It returns true only after all distinct fragment indexes have arrived, regardless
 // of their arrival order. Duplicate fragments do not duplicate their payload.
-func CacheSegment(seg *model.Segment, serialNumber uint16) bool {
+func (cache *SegmentCache) CacheSegment(_ context.Context, seg *model.Segment, serialNumber uint16) bool {
 	if seg == nil || seg.SegTotal == 0 || seg.SegNo == 0 || seg.SegNo > seg.SegTotal || len(seg.Data) == 0 {
 		return false
 	}
-	cache := getSegmentCache()
 	// JT808 assigns consecutive serial numbers to fragments. Normalize each
 	// fragment to the first fragment's serial so out-of-order arrivals join.
 	firstSerial := FirstFragmentSerial(serialNumber, seg.SegNo)
@@ -104,28 +110,14 @@ func CacheSegment(seg *model.Segment, serialNumber uint16) bool {
 	return true
 }
 
-// FirstFragmentSerial converts a fragment's terminal serial to the original
-// message serial, accounting for JT808's 1..65535 serial-number wraparound.
-func FirstFragmentSerial(serialNumber, fragmentIndex uint16) uint16 {
-	for i := uint16(1); i < fragmentIndex; i++ {
-		if serialNumber <= 1 {
-			serialNumber = 65535
-		} else {
-			serialNumber--
-		}
-	}
-	return serialNumber
-}
-
-// MissingSegmentIndexes returns the 1-based fragment indexes still absent for
-// the segmented message containing seg. It is intended for 0x8003 requests.
-func MissingSegmentIndexes(seg *model.Segment, serialNumber uint16) []uint16 {
+// MissingIndexes returns the 1-based fragment indexes still absent for the
+// segmented message containing seg. It is intended for 0x8003 requests.
+func (cache *SegmentCache) MissingIndexes(_ context.Context, seg *model.Segment, serialNumber uint16) []uint16 {
 	if seg == nil || seg.SegTotal == 0 || seg.SegNo == 0 || seg.SegNo > seg.SegTotal {
 		return nil
 	}
 	firstSerial := FirstFragmentSerial(serialNumber, seg.SegNo)
 	key := fmt.Sprintf("%s/%04x/%04x", seg.Phone, seg.MsgID, firstSerial)
-	cache := getSegmentCache()
 	cache.mutex.Lock()
 	defer cache.mutex.Unlock()
 	state := cache.cacheByKey[key]
@@ -159,4 +151,29 @@ func (cache *SegmentCache) evictOldest(excludeKey string) bool {
 	cache.cachedBytes -= cache.cacheByKey[oldestKey].bytes
 	delete(cache.cacheByKey, oldestKey)
 	return true
+}
+
+// FirstFragmentSerial converts a fragment's terminal serial to the original
+// message serial, accounting for JT808's 1..65535 serial-number wraparound.
+func FirstFragmentSerial(serialNumber, fragmentIndex uint16) uint16 {
+	for i := uint16(1); i < fragmentIndex; i++ {
+		if serialNumber <= 1 {
+			serialNumber = 65535
+		} else {
+			serialNumber--
+		}
+	}
+	return serialNumber
+}
+
+// 以下为兼容既有调用点的包级薄封装。
+
+// CacheSegment 缓存上行分包，完整时返回 true 并回填 seg.Data。
+func CacheSegment(seg *model.Segment, serialNumber uint16) bool {
+	return getSegmentCache().CacheSegment(context.Background(), seg, serialNumber)
+}
+
+// MissingSegmentIndexes 返回尚未到达的分包序号，用于 0x8003 请求。
+func MissingSegmentIndexes(seg *model.Segment, serialNumber uint16) []uint16 {
+	return getSegmentCache().MissingIndexes(context.Background(), seg, serialNumber)
 }
