@@ -11,11 +11,9 @@ log:
 
 server:
   name: "jt808-server-go"
-  # standalone：全量缓存 + HTTP API（默认，保持历史行为）；gateway：仅协议接入，业务数据走 Action 回调
-  mode: "standalone"
   ackTimeoutMs: 5000
   maxRetransmissions: 3
-  # gateway 模式下的业务数据回调示例；url 为空时不启用
+  # 业务数据 Action 回调示例；url 为空时不启用
   action:
     http:
       url: ""

@@ -37,9 +37,9 @@
 
 逐消息的逐条实现状态（Implemented / Partial / Missing）见 [docs/JT808-2019-coverage.md](docs/JT808-2019-coverage.md)。
 
-### Gateway 模式和 Standalone 模式（设计目标，尚未实现）
+### Gateway 模式和 Standalone 模式（设计目标，代码未实现）
 
-当前实现为单一运行模式：协议接入 + 内存缓存 + HTTP 管理 API。模式拆分、Action Hook 与持久化均尚未落地，以下为设计目标：
+当前实现为单一运行模式：协议接入 + 内存缓存 + HTTP 管理 API。模式拆分、Action Hook 与持久化均尚未落地，完整设计规格见 [docs/gateway-mode-design.md](docs/gateway-mode-design.md)。以下为设计目标：
 
 **Gateway** 模式（规划）：jt808-server 只作为终端设备接入层，提供协议解析能力，仅缓存设备信息用于信令控制。
 可实现 Action 接口对特定消息进行 Hook 操作，方便对接第三方业务平台。
@@ -52,7 +52,7 @@
 
 ## 系统设计
 
-jt808-server-go 可以作为设备接入网关 (Gateway 模式），解析和回复协议消息，并在特定的消息处理中，回调第三方业务平台，满足业务平台的车辆运营监管功能需求。
+jt808-server-go 的设计目标之一是作为设备接入网关（Gateway 模式，尚未实现），解析和回复协议消息，并在特定的消息处理中，回调第三方业务平台，满足业务平台的车辆运营监管功能需求。
 
 <img src="docs/.asset/system-context-1.png" alt="system context 1" width="800">
 
@@ -77,7 +77,7 @@ Rel_Neighbor(jt808serv, webapp, "Msg Hook", "HTTP")
 ```
 -->
 
-jt808-server-go 也可以作为设备接入和管理系统进行一体化部署（Standalone 模式），提供基础的设备接入和管理能力。
+jt808-server-go 当前以单一形态运行，可视为设备接入和管理系统的一体化部署（对应设计中的 Standalone 模式），提供基础的设备接入和管理能力。
 
 <img src="docs/.asset/system-context-2.png" alt="system context 2" width="800">
 
@@ -408,8 +408,7 @@ make release
 
 默认开启 TCP `8080`、UDP `8081` 和 HTTP `8008` 监听；将 `server.port.udpPort` 设为空可关闭 UDP。可靠消息的确认超时和最多重发次数可通过 `server.ackTimeoutMs`、`server.maxRetransmissions` 配置。
 
-`server.mode` 控制进程运行角色，默认 `standalone`，保持历史行为：设备、定位、报警等数据全量写入内存缓存，并启动 HTTP API。
-设为 `gateway` 时只保留注册、鉴权、心跳等连接现场，定位/报警等业务数据不再写入 `internal/storage`，改为通过 Action 回调外发，同时不启动 HTTP API。gateway 模式可通过 `server.action.http.url`、`server.action.http.timeoutMs` 配置示例 HTTP 回调；回调失败只记录日志，不影响协议流程。
+gateway/standalone 为设计目标，当前代码未实现，规格见 [docs/gateway-mode-design.md](docs/gateway-mode-design.md)。现有行为保持单一形态：设备、定位、报警等数据全量写入内存缓存，并启动 HTTP API。可选的 Action HTTP 回调通过 `server.action.http.url`、`server.action.http.timeoutMs` 配置；回调失败只记录日志，不影响协议流程。
 
 源码运行：
 ```sh

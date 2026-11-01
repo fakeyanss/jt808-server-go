@@ -3,7 +3,6 @@ package config
 import (
 	"bytes"
 	"fmt"
-	"strings"
 	"sync"
 
 	"github.com/mix-go/xfmt"
@@ -45,32 +44,8 @@ type logConf struct {
 	MaxAgeOfRolling     int          `yaml:"maxAgeOfRolling"`
 }
 
-// ServerMode 定义服务进程的运行角色。
-//
-//   - standalone：完整单机服务，协议数据全量写入内存缓存并提供 HTTP API；
-//   - gateway：协议接入网关，只保留注册/鉴权等连接现场，业务数据通过 Action 回调外发。
-type ServerMode string
-
-const (
-	ServerModeStandalone ServerMode = "standalone"
-	ServerModeGateway    ServerMode = "gateway"
-)
-
-// ParseServerMode 解析并校验 server.mode。空值按 standalone 处理，保证历史配置行为不变。
-func ParseServerMode(raw string) (ServerMode, error) {
-	switch ServerMode(strings.ToLower(strings.TrimSpace(raw))) {
-	case "", ServerModeStandalone:
-		return ServerModeStandalone, nil
-	case ServerModeGateway:
-		return ServerModeGateway, nil
-	default:
-		return "", fmt.Errorf("invalid server.mode %q: must be %q or %q", raw, ServerModeGateway, ServerModeStandalone)
-	}
-}
-
 type serverConf struct {
 	Name               string      `yaml:"name"`
-	Mode               ServerMode  `yaml:"mode"`
 	Port               *servPort   `yaml:"port"`
 	Banner             *servBanner `yaml:"banner"`
 	Action             *actionConf `yaml:"action"`
@@ -212,20 +187,9 @@ func Load(confFilePath string) *Config {
 		if err != nil {
 			panic(errors.Wrap(err, "Fail to unmarshal config"))
 		}
-		if config.Server != nil && config.Server.Mode == "" {
-			config.Server.Mode = ServerModeStandalone
-		}
 		fmt.Printf("Load configuration: %s\n", xfmt.Sprintf("%+v", config))
 	})
 	return config
-}
-
-// ServerMode 返回校验后的运行模式。配置缺失或非法时返回错误，由启动流程退出。
-func (c *Config) ServerMode() (ServerMode, error) {
-	if c == nil || c.Server == nil {
-		return "", fmt.Errorf("server config is missing")
-	}
-	return ParseServerMode(string(c.Server.Mode))
 }
 
 func (c *Config) ParseLogConf() *logger.Config {

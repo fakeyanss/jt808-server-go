@@ -28,13 +28,6 @@ func main() {
 	logConfig := cfg.ParseLogConf()
 	log.Logger = *logger.Configure(logConfig).Logger
 
-	mode, err := cfg.ServerMode()
-	if err != nil {
-		log.Error().Err(err).Msg("Invalid server.mode, exit")
-		os.Exit(1)
-	}
-	log.Info().Str("mode", string(mode)).Msg("Server mode")
-
 	var hooks action.Hooks = action.Noop{}
 	if cfg.Server.Action != nil && cfg.Server.Action.HTTP != nil && cfg.Server.Action.HTTP.URL != "" {
 		hooks = action.NewHTTPCallback(cfg.Server.Action.HTTP.URL, time.Duration(cfg.Server.Action.HTTP.TimeoutMS)*time.Millisecond)
@@ -53,10 +46,10 @@ func main() {
 	}
 
 	serv := server.NewTCPServer()
-	serv.SetRole(mode, hooks)
+	serv.SetHooks(hooks)
 	serv.SetReliability(time.Duration(cfg.Server.AckTimeoutMS)*time.Millisecond, cfg.Server.MaxRetransmissions)
 	addr := ":" + cfg.Server.Port.TCPPort
-	err = serv.Listen(addr)
+	err := serv.Listen(addr)
 	if err != nil {
 		log.Error().Err(err).Str("addr", addr).Msg("Fail to listen tcp addr")
 		os.Exit(1)
@@ -64,7 +57,7 @@ func main() {
 	routines.GoSafe(func() { serv.Start() })
 	if cfg.Server.Port.UDPPort != "" {
 		udpServ := server.NewUDPServer()
-		udpServ.SetRole(mode, hooks)
+		udpServ.SetHooks(hooks)
 		udpServ.SetReliability(time.Duration(cfg.Server.AckTimeoutMS)*time.Millisecond, cfg.Server.MaxRetransmissions)
 		udpAddr := ":" + cfg.Server.Port.UDPPort
 		if err := udpServ.Listen(udpAddr); err != nil {
@@ -74,11 +67,7 @@ func main() {
 		routines.GoSafe(func() { udpServ.Start() })
 	}
 
-	if mode == config.ServerModeStandalone {
-		routines.GoSafe(func() { api.Run(serv, cfg) })
-	} else {
-		log.Info().Msg("HTTP API is disabled in gateway mode")
-	}
+	routines.GoSafe(func() { api.Run(serv, cfg) })
 
 	select {} // block here
 }

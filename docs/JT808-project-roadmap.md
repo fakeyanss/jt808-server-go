@@ -237,6 +237,9 @@ HTTP `/device/:phone/media/resources` 端点可用。
 
 ## 暂缓 / 依赖部署形态
 
+- Gateway / Standalone 模式拆分：设计阶段，规格见
+  [gateway-mode-design.md](gateway-mode-design.md)。当前代码未实现模式开关，
+  保持单一形态（全量消息处理 + 内存缓存 + HTTP API）；待 M3 后按部署形态评估。
 - RSA 密钥交换与加密消息体（`0x8A00/0x0A00`）：暂缓，
   直到目标终端需要且密钥管理需求达成一致。
 - 厂商保留 ID 与厂商私有扩展：仅当设备集成需要明确的格式时，
