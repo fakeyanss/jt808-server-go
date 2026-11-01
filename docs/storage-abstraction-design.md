@@ -300,9 +300,11 @@ type Coordinator interface {
 - 业务层通过**构造函数注入**接口；迁移期可提供一个返回接口（而非具体 `*Cache`）的访问器过渡，
   但名称同步改为接口名，`GetXxxCache` 与 `*Cache` 类型在 M1 完成后不再保留。
 
-> 实施状态（M2 已完成，见 §19.3）：`GetXxxCache` 与 `*Cache` 旧名已全部删除，调用点统一迁移到
-> 接口方法命名；对外只保留 `repository.go` 的接口、`NewXxxRepository` 构造器、`Stores` 聚合与
-> `Default()` 默认入口。上表"现有（文件）"列保留为历史对照。
+> 实施状态（M2 与包结构分层已完成，见 §19.3 / §19.4）：`GetXxxCache` 与 `*Cache` 旧名已全部删除，
+> 调用点统一迁移到接口方法命名。落地分层为 **`repository`（持久化契约 + 内存实现）/
+> `runtime`（A 类执行现场与本地 rendezvous）/ `storage`（仅装配与后端选择）** 三包：
+> `repository.go` 只保留持久化接口与错误值，A 类接口在 `runtime/runtime.go`，
+> `Stores` 聚合、`NewStores()`/`Default()` 在 `internal/storage`。上表"现有（文件）"列保留为历史对照。
 
 ---
 
@@ -548,24 +550,45 @@ storage:
 
 ---
 
-## 15. 建议目录结构
+## 15. 目录结构（已落地）
 
 ```
-internal/repository/
-  repository.go          # 仓储/协调接口、错误、查询与保留期类型
-  registry.go            # 按 config 装配实现；SetStoreForTest/Reset
-  memory/                # 场景1：内存仓储（含现有 map/ring 逻辑收敛）
-  sql/
-    store.go             # *sql.DB 装配、UnitOfWork
-    dialect.go           # sqlite/mysql 方言
-    device_repo.go params_repo.go region_repo.go
-    location_repo.go alarm_repo.go outbox_repo.go ...
-    migration/           # go:embed 的版本化 *.sql + 迁移器
-  coord/
-    coordinator.go       # 接口 + noop（单机）
-    redis/               # 场景3：owner/presence/bus/reply
-  *_cache.go             # M1 起按 §6.4 正名/拆分（→ repository / registry / hotview），旧 *Cache 名在 M1 收敛删除
+internal/repository/              # 持久化契约 + 内存实现；只依赖 model
+  repository.go                   # DeviceRepository / GeoRepository / DeviceParamsRepository + 错误值
+  device_repository_memory.go     # 内存实现（非导出类型，包外只能经接口使用）
+  geo_repository_memory.go
+  params_repository.go
+  alarm_repository.go             # AlarmRepository（报警历史 + 确认关联）
+  region_repository.go            # RegionRepository（圆/矩形/多边形/路线目录）
+  industry_repository.go          # IndustryRepository（行业上报/下发目录快照）
+  sql/                            # M2：SQL 实现（device/params + 迁移器），待实现
+  migration/                      # go:embed 的版本化 *.sql + 迁移器
+
+internal/runtime/                 # A 类执行现场：生命周期绑定连接/进程，多实例不可共享
+  runtime.go                      # ConnectionRegistry / FragmentAssembler / RetransmitTracker
+                                  # + Stores 聚合 + Default()
+  connection_registry.go          # 连接现场（session + 在线态）
+  fragment_assembler.go           # 分包重组（TTL 2min / 容量淘汰）
+  retransmit_tracker.go           # 下行重传（0x8003/0x8800 帧缓存）
+  param_response_broker.go        # 本地 chan rendezvous
+  property_response_broker.go
+  location_response_broker.go
+  region_response_broker.go
+  location_tracking.go            # 临时跟踪定时器
+  *_test.go
+
+internal/storage/                 # 仅装配：后端选择与初始化
+  storage.go                      # Stores 聚合 + NewMemory() + Default()
 ```
+
+依赖方向（编译期约束）：
+
+- `repository`、`runtime` 只依赖 `internal/protocol/model`，互不依赖；
+- `storage` → `repository`（后端选择与组装），不反向；
+- `protocol` / `server` / `api` / `client` / `test/client` → `storage.Default()`（持久化仓储）
+  与 `runtime.Default()`（A 类执行现场），二者入口分离；
+- 包外只能通过接口使用内存实现，`*Cache` 等旧名与旧全局入口已全部删除。
+
 
 ---
 
@@ -706,4 +729,47 @@ internal/repository/
 - 仍为全局入口的只剩 §19.1 顺延的未接口化缓存：`GetAlarmCache` / `GetIndustryCache` /
   `GetRegionCatalog` / 各 `GetXxxResponseBroker` / `GetLocationTrackingCache`，
   待后续里程碑接口化时一并收口。
+
+### 19.4 包结构分层（2026-11-01，分支 `dev/p0-baseline`，基线 `cf3e3b3`）
+
+**决策：A 类执行现场与持久化仓储不共用同一套存储接口（成立，已按此重构）**
+
+代码证据：
+
+- `model.Session` 持有 `Conn net.Conn`（活连接，不可序列化）；`Bind`/`Unbind` 在 TCP/UDP server
+  的连接建立/断开路径调用，api 取到 session 后直接写 `session.Conn` 下发。
+- `FragmentAssembler` 以 `(phone, msgID, firstSerial)` 为键、TTL 2min + 容量淘汰，语义是
+  「同一次上报的分片在短时间内凑齐」；`RetransmitTracker` 保存已编码帧供 0x8003/0x8800 重传，
+  TTL 2min / 16MB 上界。两者都无跨进程共享需求，进程重启后丢弃即正确。
+- 4 个 `*ResponseBroker` 是本地 `chan` 配对（请求方等待、应答方投递），超时/取消即释放；
+  `LocationTracking` 是本地临时定时器。均无法持久化，也无法跨节点配对。
+- 拆分未产生循环依赖：`runtime` 与 `repository` 都只依赖 `internal/protocol/model`。
+
+结论：A 类接口归 `internal/runtime`；Alarm/Region/Industry 归 `internal/repository`（业务数据，
+对应 §7 的 `alarms` / `region_items` / `terminal_catalogs`）；Geo 历史仍在 repository，
+其内存 RingBuffer 作为 C 类热读 L1 的拆分留待后续（见 §19.2-4）。
+
+**新包结构**
+
+- `internal/repository`：仅持久化契约与内存实现。`repository.go` 保留
+  `DeviceRepository` / `GeoRepository` / `DeviceParamsRepository`；新增
+  `AlarmRepository` / `RegionRepository` / `IndustryRepository`（接口 + 非导出内存实现 +
+  `NewXxxRepository()`）。不再包含 `Stores` / `Default()`。
+- `internal/runtime`：`ConnectionRegistry` / `FragmentAssembler` / `RetransmitTracker`
+  （`runtime.go`），以及 4 个 ResponseBroker 与 `LocationTracker`；`Stores` 与
+  `runtime.Default()` 只聚合 A 类，不含任何持久化字段。
+- `internal/storage`：只做装配与后端选择，当前为 `NewMemory()` / `Default()`，阶段二在此加入
+  `memory|sqlite|mysql` 后端选择；持久化实现仍位于 `internal/repository`。
+
+**分批提交与验证**（每批 `gofmt` + `go build ./...` + `go vet ./...` + `go test -race ./...` 全绿）
+
+| 批次 | commit | 内容 |
+|---|---|---|
+| B1 | `9047ae3` | `internal/storage` → `internal/repository` 重命名，行为不变 |
+| B2 | `dad95d5` | A 类连接现场/分包重组/下行重传拆到 `internal/runtime`，删除 `repository.Stores` 中的 A 类字段 |
+| B3 | `b71c432` | 报警/行业/区域仓储接口化，4 个 ResponseBroker 与 LocationTracking 归入 runtime，57 处旧全局访问迁移 |
+| B4 | `a5f3213` | 新增 `internal/storage` 装配层，调用点改为 `storage.Default()` / `runtime.Default()` |
+
+**行为保持**：协议输出、错误值、TTL/容量、深拷贝与并发语义均未改变；仅包路径、类型可见性与
+访问入口变化。
 
