@@ -46,9 +46,15 @@ function release() {
 }
 
 function copy_conf() {
+	# 只复制运行时配置文件（yaml/txt），不复制 configs.go，避免构建产物目录
+	# 被 go list ./... 识别成一个额外的 Go 包。
 	conf_dir=$1
 	mkdir -p $conf_dir
-	cp -r $conf_src $conf_dir
+	for f in "$conf_src"*.yaml "$conf_src"*.txt; do
+		if [ -e "$f" ]; then
+			cp "$f" "$conf_dir"/
+		fi
+	done
 }
 
 # target: jt808-server-go / jt808-client-go / jt808-migrate
@@ -57,10 +63,10 @@ project_dir=$(git rev-parse --show-toplevel)
 target_dir="${project_dir}/target"
 time=$(date +'%Y-%m-%dT%H:%M:%S')
 version=$(git rev-parse --short HEAD)
-build_file="main.go"
+build_file="cmd/jt808-server/main.go"
 conf_src="$project_dir/configs/"
 if [[ $target == "jt808-client-go" ]]; then
-	build_file="test/client/main.go"
+	build_file="cmd/jt808-client/main.go"
 	conf_src="$project_dir/test/client/configs/"
 elif [[ $target == "jt808-migrate" ]]; then
 	build_file="cmd/jt808-migrate/main.go"

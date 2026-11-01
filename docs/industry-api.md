@@ -27,7 +27,7 @@ HTTP API 向在线设备下发 JT808 指令。异步命令返回
   `/recorder` 读取最新报告。
 
 客户端模拟器对这些请求返回合成的司机与记录仪数据。
-通过 `go run ./test/client --industry-reports`，它可以在鉴权后发送一条
+通过 `go run ./cmd/jt808-client --industry-reports`，它可以在鉴权后发送一条
 示例司机、CAN、记录仪、多媒体事件和多媒体上传报告。
 
 ## 多媒体

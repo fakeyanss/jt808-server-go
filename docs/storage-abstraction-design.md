@@ -636,7 +636,7 @@ internal/storage/                 # 仅装配：后端选择与初始化
 - `repository`、`runtime` 只依赖 `internal/protocol/model`，互不依赖；
 - `repository/sqlstore` → `repository`（实现其接口与错误值），不反向；
 - `storage` → `repository` / `repository/sqlstore`（后端选择与组装），不反向；
-- `protocol` / `server` / `api` / `client` / `test/client` → `storage.Default()`（持久化仓储）
+- `protocol` / `server` / `api` / `client` / `cmd/jt808-client` → `storage.Default()`（持久化仓储）
   与 `runtime.Default()`（A 类执行现场），二者入口分离；
 - 包外只能通过接口使用内存实现，`*Cache` 等旧名与旧全局入口已全部删除。
 
@@ -766,7 +766,7 @@ internal/storage/                 # 仅装配：后端选择与初始化
 - 迁移按五批提交，每批 `go build ./... && go vet ./... && go test -race ./...` 均通过：
   ① repository 内部与测试（新增临时 `legacy.go` 兼容层承载旧 API，保证中间批次可编译）→
   ② keepalive / packet_codec / 两个 retransmission / pipeline →
-  ③ api → ④ tcp/udp server、server 测试、client、test/client 模拟器 →
+  ③ api → ④ tcp/udp server、server 测试、client、cmd/jt808-client 模拟器 →
   ⑤ msg_processor、msg_processor_test，并删除 `legacy.go`。
 - `HasPlate` / `HasPhone` 的调用点改为 `GetByPlate` / `GetByPhone` 返回 `ErrDeviceNotFound`
   的等价判断；geo 写入统一走 `GeoRepository.Append`，`RingBuffer` 不再暴露到接口。
@@ -776,7 +776,7 @@ internal/storage/                 # 仅装配：后端选择与初始化
 
 **完成后不再有全局访问的位置**
 
-- `internal/server`（tcp/udp server 及测试）、`internal/api`、`internal/client`、`test/client`、
+- `internal/server`（tcp/udp server 及测试）、`internal/api`、`internal/client`、`cmd/jt808-client`、
   `internal/protocol`（keepalive / codec / retransmission / pipeline / msg_processor 及测试）
   对六类仓储只经 `repository.Default()` 显式访问；`internal/repository` 包内测试使用
   `NewStores()` / `NewXxxRepository()` 独立实例，不触碰默认单例。
@@ -985,4 +985,29 @@ internal/storage/                 # 仅装配：后端选择与初始化
 - `gofmt` / `go build ./...` / `go vet ./...` / `go test -race ./...` 全绿。
 - 用例调整：所有 SQLite 测试先显式 `Migrate` 再 `Open`；保留“全新库未迁移则拒绝启动”；
   内存后端 / 未知后端迁移报错；删除 `autoMigrate` 相关断言。
+
+### 19.9 入口统一收拢到 `cmd/`（2026-11-01，分支 `dev/p0-baseline`，基线 `b20b6b3`）
+
+**布局**
+
+| 二进制 | 入口 | 说明 |
+|---|---|---|
+| `jt808-server-go` | `cmd/jt808-server/main.go` | 原仓库根 `main.go` |
+| `jt808-client-go` | `cmd/jt808-client/main.go` | 原 `test/client/main.go`；`test/client/configs` 保留（被 `internal/config` 嵌入为客户端默认配置） |
+| `jt808-migrate` | `cmd/jt808-migrate/main.go` | 独立迁移工具（§19.8） |
+
+**配套更新**
+
+- `scripts/build.sh`：默认 `build_file=cmd/jt808-server/main.go`；客户端改为
+  `cmd/jt808-client/main.go`；迁移工具不变。
+- `scripts/smoke.sh`：冒烟构建改为 `go build ./cmd/jt808-server` 与 `./cmd/jt808-client`。
+- `Makefile`：`run` / `run-client` 的 `go run` 路径同步。
+- `.vscode/launch.json`：调试入口同步。
+- 根目录不再有 Go 入口，`go build .` 不再可用；统一使用 `go build ./cmd/...`、
+  `make compile` / `make compile-client` / `make compile-migrate`。
+
+**验证**
+
+- `gofmt` / `go build ./...` / `go vet ./...` / `go test -race ./...` 全绿；
+  `scripts/smoke.sh` 端到端通过（五个场景全部 PASS）。
 
