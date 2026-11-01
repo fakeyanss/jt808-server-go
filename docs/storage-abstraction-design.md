@@ -1018,7 +1018,7 @@ internal/storage/                 # 仅装配：后端选择与初始化
 - `gofmt` / `go build ./...` / `go vet ./...` / `go test -race ./...` 全绿；
   `scripts/smoke.sh` 端到端通过（五个场景全部 PASS）。
 
-### 19.10 合并迁移版本 + 迁移元数据表 DDL 移入 SQL（2026-11-01，分支 `dev/p0-baseline`，基线 `621f18e`）
+### 19.10 合并迁移版本 + 迁移元数据表 DDL 移入 SQL（2026-11-01，分支 `dev/p0-baseline`，基线 `621f18e`，提交 `0852461`）
 
 **决策**
 
