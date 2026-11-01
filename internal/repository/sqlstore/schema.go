@@ -10,9 +10,10 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
     applied_at BIGINT NOT NULL
 )`
 
-// devices 设备主数据（B 类）。
-// 连接句柄 net.Conn 不可序列化，不入库；session_id/status 等运行时投影按现有
-// DeviceRepository 的快照语义一并持久化，拆分 device_runtime 留待后续里程碑。
+// devices 设备静态主数据（B 类，v1 形态）。
+// 连接句柄 net.Conn 不可序列化，不入库。v3 会把 session_id/trans_proto/
+// last_com_time_ms/status 四个运行时列迁出到 device_runtime，keepalive_ms 是代码
+// 常量（model.NewDevice 固定 1 分钟），作为配置列保留在本表。
 const devicesDDL = `
 CREATE TABLE IF NOT EXISTS devices (
     phone VARCHAR(32) PRIMARY KEY,
@@ -59,6 +60,29 @@ CREATE TABLE IF NOT EXISTS terminal_properties (
     updated_at BIGINT NOT NULL
 )`
 
+// device_runtime 设备运行时投影（B 类），phone 与 devices 同主键。
+// 与 devices 拆表的理由：静态字段来自 0x0100/0x0102 主动上报，运行时列由心跳/位置等
+// 高频消息刷新，二者写频率与生命周期不同。连接标识 session_id 只在进程内有效。
+// last_com_time_ms 仅表示"上次交互时间"，不作为在线判定依据。
+const deviceRuntimeDDL = `
+CREATE TABLE IF NOT EXISTS device_runtime (
+    phone VARCHAR(32) PRIMARY KEY,
+    session_id VARCHAR(128) NOT NULL DEFAULT '',
+    trans_proto VARCHAR(16) NOT NULL DEFAULT '',
+    last_com_time_ms BIGINT NOT NULL DEFAULT 0,
+    status SMALLINT NOT NULL DEFAULT 0,
+    updated_at BIGINT NOT NULL
+)`
+
+// v3 把运行时列从 devices 拆到 device_runtime。存量运行时值（session_id/status）跨进程
+// 本就无意义，迁移不搬运数据；启动时由 Store 统一清空 session_id 并把 status 归 offline。
+const (
+	dropDeviceRuntimeColumnSessionID   = `ALTER TABLE devices DROP COLUMN session_id`
+	dropDeviceRuntimeColumnTransProto  = `ALTER TABLE devices DROP COLUMN trans_proto`
+	dropDeviceRuntimeColumnLastComTime = `ALTER TABLE devices DROP COLUMN last_com_time_ms`
+	dropDeviceRuntimeColumnStatus      = `ALTER TABLE devices DROP COLUMN status`
+)
+
 type migration struct {
 	version int
 	stmts   []string
@@ -67,4 +91,11 @@ type migration struct {
 var migrations = []migration{
 	{version: 1, stmts: []string{devicesDDL, deviceParamsDDL}},
 	{version: 2, stmts: []string{terminalPropertiesDDL}},
+	{version: 3, stmts: []string{
+		deviceRuntimeDDL,
+		dropDeviceRuntimeColumnSessionID,
+		dropDeviceRuntimeColumnTransProto,
+		dropDeviceRuntimeColumnLastComTime,
+		dropDeviceRuntimeColumnStatus,
+	}},
 }

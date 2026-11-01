@@ -59,6 +59,15 @@ func TestSQLitePersistsDeviceAndParamsAcrossReopen(t *testing.T) {
 		},
 	}
 	require.NoError(t, first.DeviceParamsRepository().Replace(ctx, params))
+
+	// 同一进程内读路径合并两表，运行时字段完整可见。
+	inProcess, err := first.DeviceRepository().GetByPhone(ctx, device.Phone)
+	require.NoError(t, err)
+	require.Equal(t, device.SessionID, inProcess.SessionID)
+	require.Equal(t, device.TransProto, inProcess.TransProto)
+	require.Equal(t, device.LastestComTime, inProcess.LastestComTime)
+	require.Equal(t, device.Status, inProcess.Status)
+
 	require.NoError(t, first.Close())
 
 	second, err := Open(Config{Backend: BackendSQLite, Path: dbPath})
@@ -69,11 +78,12 @@ func TestSQLitePersistsDeviceAndParamsAcrossReopen(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, device.ID, got.ID)
 	require.Equal(t, device.Plate, got.Plate)
-	require.Equal(t, device.SessionID, got.SessionID)
+	// 重启后 session_id 清空、status 归 offline；trans_proto 与 last_com_time 保留。
+	require.Empty(t, got.SessionID)
 	require.Equal(t, device.TransProto, got.TransProto)
+	require.Equal(t, model.DeviceStatusOffline, got.Status)
 	require.Equal(t, device.Keepalive, got.Keepalive)
 	require.Equal(t, device.LastestComTime, got.LastestComTime)
-	require.Equal(t, device.Status, got.Status)
 	require.Equal(t, device.VersionDesc, got.VersionDesc)
 	require.Equal(t, device.ProtocolVersion, got.ProtocolVersion)
 	require.Equal(t, device.AuthCode, got.AuthCode)
@@ -239,4 +249,7 @@ func TestMySQLPersistence(t *testing.T) {
 	got, err = reopened.DeviceRepository().GetByPhone(ctx, device.Phone)
 	require.NoError(t, err)
 	require.Equal(t, device.Phone, got.Phone)
+	require.Empty(t, got.SessionID)
+	require.Equal(t, model.DeviceStatusOffline, got.Status)
+	require.Equal(t, device.LastestComTime, got.LastestComTime)
 }

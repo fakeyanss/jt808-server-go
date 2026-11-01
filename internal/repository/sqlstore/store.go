@@ -64,6 +64,13 @@ func Open(cfg Config) (*Store, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("initialize %s schema: %w", cfg.Backend, err)
 	}
+	// 运行时投影不跨进程有效：重启后 session_id 一律为空、status 一律离线。
+	// 单条 UPDATE 完成重置；last_com_time_ms 保留，只作"上次在线时间"展示。
+	if _, err := db.ExecContext(ctx,
+		`UPDATE device_runtime SET session_id = '', status = 0`); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("reset %s device runtime: %w", cfg.Backend, err)
+	}
 	return &Store{db: db, backend: cfg.Backend}, nil
 }
 
