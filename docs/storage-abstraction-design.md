@@ -314,27 +314,40 @@ type Coordinator interface {
 
 | 表 | 用途 | 关键约束/索引 |
 |---|---|---|
-| `devices` | 设备主数据（B） | `phone` PK，`plate` UNIQUE，版本/IMEI/authcode 等列 |
-| `device_runtime` | 耐用的「最后在线」（节流写，见 §11.3） | `phone` PK，`last_com_time`,`last_status`,`last_node` |
+| `devices` | 设备静态主数据（B，来源 0x0100/0x0102 主动上报） | `phone` PK；`plate` 仅普通索引（不加唯一，见 §7.4）；拆分后 10 列，不含运行时投影 |
+| `device_runtime` | 设备运行时投影（B，与设备写入同事务更新） | `phone` PK，`session_id`,`trans_proto`,`last_com_time_ms`,`status`,`updated_at`；启动时清空 `session_id`、`status` 归 offline（见 §7.4） |
 | `device_params` | 终端参数（B） | `phone` PK，参数集合**整体 JSON 单字段**（已定，见 §18-D1；将来需要按参数 ID 服务端查询时再演进为 EAV） |
-| `terminal_properties` | 终端属性档案（B） | `phone` PK，属性 JSON |
-| `region_items` | 区域/路线（B） | 唯一键 `(phone, family, region_id)`，payload JSON，`updated_at` |
-| `terminal_catalogs` | 事件/信息菜单/电话本等下发目录（B） | 唯一键 `(phone, kind, item_id)`，payload JSON |
-| `locations` | 定位历史（B，时序） | 索引 `(phone, ts)`；批量插入；按 `ts` 保留期删除 |
-| `alarms` | 报警历史与确认（B，时序） | 唯一键 `(phone, message_serial)` 去重；`confirmed`；索引 `(phone, ts)` |
-| `command_outbox` | 下行命令（B，幂等可重投） | `command_id` PK，`phone`,`owner`,`state`,`idempotency_key`,`created_at` |
+| `terminal_properties` | 终端属性档案（B，来源 0x0107 查询应答） | `phone` PK，常用属性列化 + `extra_json` 长尾兜底；与 `devices` 不合并（见 §7.4） |
+| `region_items` | 区域/路线（B） | 唯一键 `(phone, family, region_id)`，payload JSON，`updated_at`；**本期非交付项** |
+| `terminal_catalogs` | 事件/信息菜单/电话本等下发目录（B） | 唯一键 `(phone, kind, item_id)`，payload JSON；**本期非交付项** |
+| `locations` | 定位历史（B，时序） | 索引 `(phone, ts)`；批量插入；按 `ts` 保留期删除；**本期明确延后（§7.5）** |
+| `alarms` | 报警历史与确认（B，时序） | 唯一键 `(phone, message_serial)` 去重；`confirmed`；索引 `(phone, ts)`；**本期明确延后（§7.5）** |
+| `command_outbox` | 下行命令（B，幂等可重投） | `command_id` PK，`phone`,`owner`,`state`,`idempotency_key`,`created_at`；**本期非交付项** |
 | `media_metadata` / `waybills` | 媒体/运单元数据（B，**后续独立任务**，不在 M1/M2；见 §18-D3） | 媒体字节外置；元数据按 phone/时间索引 |
 
 大 payload（0x0801 媒体、0x8900/0901 透传压缩字节）**不入关系库**，落文件/对象存储，库里存 URI 与元数据。
 
 ### 7.2 迁移
 
-- `internal/repository/migration/` 存放版本化 `0001_init.sql`、`0002_xxx.sql`，用 `go:embed` 编译进二进制。
-- 启动时由迁移器按 `schema_migrations` 表顺序幂等执行；Store 构造函数只接收已就绪的 `*sql.DB`，
-  不把建表 DDL 耦合进 CRUD。
-- 索引用迁移器保证幂等；MySQL 下避免依赖版本敏感的 `IF NOT EXISTS` 语法边角。
+- 目录：`internal/repository/migration/0001_init.sql`、`0002_terminal_properties.sql`、
+  `0003_device_runtime.sql`，用 `go:embed` 编译进二进制；SQL 文件中不再用 Go 常量拼 DDL。
+  `schema_migrations` 由迁移器自身引导建表（迁移机制自身的元数据，是唯一保留在 Go 里的 DDL）。
+- **显式迁移入口**：`jt808-server -c <config> migrate`（SQLite/MySQL 均可用）；
+  MySQL 场景 DBA 可直接按文件名顺序执行这些 `.sql`。语句均为幂等形式
+  （`CREATE TABLE IF NOT EXISTS` / `ALTER TABLE`），执行前请先备份并核对 `schema_migrations`。
+- **启动只校验不执行**：读取 `MAX(version)` 与期望版本比较。低于期望 → 报错退出并提示执行迁移命令；
+  高于期望 → 报错（库版本高于程序版本），拒绝启动。
+- **SQLite 例外**：嵌入式场景允许自动迁移，配置 `storage.sqlite.autoMigrate`，缺省 `true`；
+  MySQL 无论配置如何都不自动迁移（避免运行时 DDL 被生产权限拒绝）。
+- 执行健壮性：逐版本执行，全部语句成功后才写入 `schema_migrations`；失败时错误信息带版本号与
+  失败语句，已成功版本不会重复应用。
+- **客观限制（MySQL）**：DDL 会隐式提交，无法与"插入版本记录"同事务。若一个版本内多条 DDL
+  中途失败，可能留下"部分表已建、版本未记录"的中间态；应对为重新执行迁移（幂等 DDL 会补齐）
+  或由 DBA 人工核对。SQLite 的 DDL 本可事务化，但为共用同一执行路径，本轮同样按"先 DDL、后记录"。
 
 ### 7.3 保留期与容量（有界）
+
+> 以下保留期为设计草案；`locations` / `alarms` 本期**明确延后**（§7.5），未执行任何 Trim。
 
 ```
 locations: 按时间保留（默认 168h）且每设备上限（默认 10000 条）
@@ -346,17 +359,33 @@ alarms:    按时间保留（默认 720h）且每设备上限（默认 5000 条�
 
 ### 7.4 本期实现与关系模型的差异（2026-11-01）
 
-本期 SQL 后端只覆盖 `DeviceRepository` 与 `DeviceParamsRepository`，据此与 §7.1 的差异如下：
+本轮 SQL 后端覆盖范围扩展为 `DeviceRepository`（含 `device_runtime`）、`DeviceParamsRepository`、
+`TerminalPropertiesRepository`；其余 B 类仓储仍为内存实现。据此与 §7.1 的差异如下：
 
-| 项 | §7.1 设计 | 本期实现 | 原因/建议 |
+| 项 | §7.1 设计 | 本轮实现 | 原因/建议 |
 |---|---|---|---|
-| 设备运行时投影 | 拆 `devices` + `device_runtime` 两表，`last_com_time` 节流写 | 单表 `devices` 含 `session_id`/`trans_proto`/`keepalive_ms`/`last_com_time_ms`/`status` | `DeviceRepository` 契约返回完整 `model.Device` 快照；过早拆表会让每个读路径多一次 JOIN 且需先定义合并语义。建议等 A 类运行时投影独立后再拆表，并引入节流写 |
-| `plate` 唯一性 | `plate` UNIQUE | 未加唯一约束 | 内存实现按 `plate` 覆盖映射、允许空车牌重复，加 UNIQUE 会改变既有行为（多个空车牌或同牌设备会写入失败）。建议业务确认车牌唯一后再加唯一索引 |
+| 设备运行时投影 | 拆 `devices` + `device_runtime` 两表，`last_com_time` 节流写 | 拆为：`devices` 保留 10 列静态/身份字段，`device_runtime` 承载 `session_id`/`trans_proto`/`last_com_time_ms`/`status`/`updated_at`。读用 `LEFT JOIN` 合并回完整 `model.Device`，写在同一事务内按归属分写两表 | `keepalive_ms` 是代码常量（`model.NewDevice` 固定 1 分钟，`device.go:50`），不属运行时观测值，留在 `devices`。**重启语义**：`session_id` 清空（连接现场只在 A 类 `ConnectionRegistry` 有效）、`status` 一律 offline；`last_com_time_ms` 只作"上次交互时间"，不作为在线判定依据。**本轮不改变写入频率**（心跳仍逐条 Upsert）；30~60s 节流写入仅为建议，待确认（§11.3） |
+| `terminal_properties` | `phone` PK，属性 JSON | 新增：`phone` PK + 常用属性列（终端类型/制造商/型号/终端 ID/ICCID/硬件版本/固件版本/GNSS 与通信能力）+ `extra_json` 长尾 | 只由 0x0107 查询应答写入，与 `devices` **不合并**：`devices` 静态字段来自 0x0100/0x0102，属性应答若回写 `devices` 会触发其非主键列全量重写。0x0107 处理为"持久化 + 内存最新值 + broker 投递"三者同时 |
+| `plate` 唯一性 | `plate` UNIQUE | 未加唯一约束 | 内存实现按 `plate` 覆盖映射、允许空车牌重复，加 UNIQUE 会改变既有行为（多个空车牌或同牌设备会写入失败）。设备身份以协议里的终端手机号（`phone`）为准，`plate` 仅用于注册时"车辆已注册"校验；建议保持非唯一 |
 | `devices` 索引 | 未明确 | 仅 `phone` 主键 | 本期查询以 `phone` 为主；`GetByPlate` 走 `plate` 全表扫描，设备量增大后建议补 `(plate)` 普通索引（不加唯一） |
 | `device_params` | 参数集合整体 JSON 单字段 | 一致（`params_json` TEXT） | 遵循 D1；`ParamValue` 的 JSON 数字会以 `float64` 回读，既有 `any2uintX` 编码逻辑已兼容 |
-| `locations` / `alarms` / `region_items` / `terminal_catalogs` / `command_outbox` / `terminal_properties` | B 类持久化 | 仍为内存实现 | 本期不新建业务语义。`AlarmRepository` 无 `ctx`，且含 30 分钟去重、每设备 1000 条上限、10 分钟确认命令过期等行为；直接落库会改变语义，建议后续按 §6.1 接口细化后再实现 |
-| `schema_migrations` | 版本化迁移器 | 已实现（`version` 主键 + `applied_at`） | 启动时幂等执行；建表用 `CREATE TABLE IF NOT EXISTS`，MySQL 不依赖 `CREATE INDEX IF NOT EXISTS` |
+| `locations` / `alarms` | B 类持久化 | 未落地（**明确延后**） | 理由见 §7.5；不是"不需要持久化" |
+| `region_items` / `terminal_catalogs` / `command_outbox` | B 类持久化 | 未落地（本阶段非交付项） | 区域需要事务化 `ReplaceAll`，目录与 outbox 需要幂等/重投语义，均未在本轮定义；媒体/运单按 D3 后置 |
+| `schema_migrations` | 版本化迁移器 | 本轮改造：DDL 位于 `internal/repository/migration/*.sql`（`go:embed`），启动只校验版本，迁移由独立命令执行 | 详见 §7.2；MySQL 的 DDL 隐式提交限制已在该节说明 |
 | 主键类型 | 未指定 | `VARCHAR` 主键 + `BIGINT` 毫秒时间戳 | 同时兼容 SQLite/MySQL；时间用毫秒整数避免时区与解析差异 |
+
+### 7.5 明确延后的持久化决策（2026-11-01 确认）
+
+- **`locations`（定位历史）延后。** ①写量与保留期策略未定（§7.3 的 168h / 每设备 10000 条仍为草案）；
+  ②按 §8 需批量写通道（有界 buffer + 1s/500 条刷库）与优雅退出 flush，尚未实现，直接落库会变成
+  每条 0x0200 同步写；③最新定位查询已由内存 C 类 `GeoRepository.Latest` 满足，历史查询无调用方。
+  **结论：值得持久化，本轮不做，不写成"不需要"。**
+- **`alarms`（报警历史与确认）延后。** 现有 `AlarmRepository` 无 `ctx`，且含 30 分钟去重窗口、
+  每设备 1000 条上限、10 分钟确认命令过期等行为；这些语义与关系库的"唯一键去重 + 过期清理归属"
+  不匹配，需先定口径（去重键、确认状态机、TTL 清理由谁执行），再落库。
+  **结论：值得持久化，本轮不做，不写成"不需要"。**
+- `region_items` / `terminal_catalogs` / `command_outbox` 为本阶段非交付项；
+  `media_metadata` / `waybills` 按 D3 留待独立任务。
 
 ---
 
@@ -482,6 +511,10 @@ GET /api/devices/{phone}
 - **上线 / 离线状态翻转强制写库**；运行中每 30~60s 节流刷 `device_runtime.last_com_time`。
 
 由此：在线读 Redis 秒级实时，离线后页面仍能显示库里的「最后在线于 …」。
+
+> **实施现状（2026-11-01）**：本轮只把运行时列拆到 `device_runtime`，**没有改变写入频率**——
+> 0x0002 心跳仍逐条 `Upsert`（§7.4）。上述 30~60s 节流写与"心跳只刷 Redis"是待确认的建议项，
+> 落地前不改变现有调用频率。
 
 ### 11.4 列表与详情分离
 
@@ -613,10 +646,13 @@ internal/storage/                 # 仅装配：后端选择与初始化
 
 ### M2 — 单机耐用（SQLite + 内存 L1）
 - 升级 Go；引入 `modernc.org/sqlite`；实现 SQL 仓储 + Dialect + 迁移器。
-- 设备/参数/属性/区域/目录 write-through；定位/报警批量写 + 保留期；下行命令 outbox；启动恢复。
-- 支持 `frontCache.enabled=false` 直读直写库模式（§18-D4）。
+- 本期实际落地（见 §19.5 / §19.6）：`devices`（静态字段）+ `device_runtime`（运行时投影）
+  + `device_params` + `terminal_properties`；DDL 文件化与启动版本校验。
+- **定位（`locations`）与报警（`alarms`）历史明确延后**，不属本期交付（§7.5）；
+  区域/目录/命令 outbox 亦不在本期范围。
 - **不含**媒体/运单元数据落库（后续独立任务，§18-D3），该阶段它们仍只留 HotView 最新值。
-- 验收：重启不丢配置与历史；保留期/容量受控；存储失败只告警不阻断协议；内存有界。
+- `frontCache.enabled=false` 直读直写库模式（§18-D4）**尚未实施**，留待后续里程碑。
+- 验收：重启不丢配置（设备/参数/属性）；运行时投影按 §7.4 语义重置；存储失败只告警不阻断协议；内存有界。
 
 ### M3 — 分布式（MySQL + Redis 协调）
 - MySQL 方言复用 SQL 仓储；实现 Coordinator（owner 租约/fencing/presence/命令总线/应答关联/latest）。
@@ -783,7 +819,7 @@ internal/storage/                 # 仅装配：后端选择与初始化
 ### 19.5 SQL 后端（SQLite / MySQL，2026-11-01，基线 `183a33c`）
 
 **范围**：只实现 `DeviceRepository` 与 `DeviceParamsRepository`；其余 B 类仓储仍为内存实现，
-不新建业务语义（与 §7.4 一致）。
+不新建业务语义（与 §7.4 一致）。后续的属性档案、运行时拆分与迁移改造见 §19.6。
 
 **新增依赖**
 
@@ -829,4 +865,25 @@ internal/storage/                 # 仅装配：后端选择与初始化
 2. `VARCHAR(32)` 主键在 `utf8mb4` 下索引长度符合默认 `innodb_large_prefix`（3072 字节）限制。
 3. DSN 未强制 `parseTime`/`loc`，因为时间统一以毫秒整数读写，不依赖驱动时区解析。
 4. 并发写入依赖 InnoDB 行锁与主键冲突语义；未在真实 MySQL 上跑 8 并发用例。
+
+### 19.6 属性档案 / 运行时拆分 / 迁移机制（2026-11-01，分支 `dev/p0-baseline`）
+
+**决策**
+
+1. `locations` / `alarms` 明确延后（理由见 §7.5），不再用"本期不新建业务语义"笼统带过。
+2. 新增 `terminal_properties`：只承载 0x0107 属性应答；与 `devices` 不合并，避免属性应答触发
+   `devices` 静态列全量重写。0x0107 处理为"持久化 + 内存最新值 + broker 投递"。
+3. 拆分 `device_runtime`：`session_id`/`trans_proto`/`last_com_time_ms`/`status` 移出 `devices`；
+   `keepalive_ms` 是代码常量，留在 `devices`。读时合并两表，写时同事务按归属分写；
+   `DeviceRepository` 契约仍返回完整 `model.Device`。
+4. 迁移文件化 + 显式入口 + 启动只校验（§7.2）。
+
+**分批记录**
+
+| 批次 | 内容 |
+|---|---|
+| 1 | 文档决策与缺口修正（本节、§7.1–§7.5、§11.3、§16） |
+| 2 | `terminal_properties` 落库 + 0x0107 三者同时 |
+| 3 | `device_runtime` 拆分与重启语义 |
+| 4 | 迁移机制改造（SQL 文件 + `migrate` 子命令 + 启动校验） |
 
