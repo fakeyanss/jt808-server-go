@@ -15,9 +15,9 @@ return `202 Accepted`; resulting terminal reports can be read from
   of that type; one message supports up to 125 IDs.
 - `POST /device/:phone/regions/query` accepts `queryType` (1 circle, 2 rectangle,
   3 polygon, 4 route) and optional `ids`. It waits up to 10 seconds for `0x0608`.
-  The response envelope is decoded; type-specific variable-length records are
-  currently retained as raw bytes. The simulator currently returns no stored
-  region/route records.
+  The response envelope and the type-specific records (circle, rectangle,
+  polygon, route) are decoded into typed results. The simulator answers from a
+  per-device region/route catalog populated by earlier set/delete commands.
 
 ## Driver, CAN, and driving recorder
 
@@ -49,7 +49,8 @@ The upload handler decodes the 8-byte media descriptor, 28-byte base location
 report, and remaining media fragment bytes. The in-memory cache keeps at most
 100 uploads per device, and ignores a single fragment larger than 1 MiB. Media
 payloads and reports are not persisted yet. `0x8800` packet-ID retransmission
-is implemented in the client simulator for fragmented uploads: it retains sent
-frames and replays requested IDs. Server-side detection of missing media packets
-and request generation still needs implementation. The `0x0802` result decoder
+works in both directions: the client simulator retains sent frames and replays
+requested IDs, and the server detects missing media packets on idle timeout and
+issues `0x8800` requests (falling back to `0x8003` when the first fragment,
+which carries the media ID, is missing). The `0x0802` result decoder
 parses each standard 35-byte media record.

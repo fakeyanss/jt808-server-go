@@ -1,7 +1,9 @@
 # JT808 Project Progress and TODO Roadmap
 
-Last reconciled: 2026-10-29  
-Code baseline: branch `codex/jt808-p0`, commit `ca724ae` (`feat: deepen JT808 media command and search flows`).  
+Last reconciled: 2026-11-01  
+Code baseline: branch `main`, commit `6a79797` (`feat: JT808 P0/P1 protocol stack`).
+The earlier baseline commit `ca724ae` still exists on `origin/p0-region-route-typed`;
+the branch name `codex/jt808-p0` recorded before did not exist and has been corrected.
 Protocol message-by-message matrix: [JT808-2019-coverage.md](JT808-2019-coverage.md).  
 Industry HTTP API notes: [industry-api.md](industry-api.md).
 
@@ -20,10 +22,12 @@ messages have executable paths. The simulator is used in localhost integration
 tests, including media upload, media catalog search, and 0x8800 replay.
 
 The implementation is not yet a complete commercial JT808 server. The largest
-active gaps are typed region/route data and simulator storage, GB/T 19056 record
-block parsing, and complete device-side media command behavior. Multiple caches
-are bounded and in-memory only. The coverage matrix enumerates implemented,
-partial, and missing message IDs; use the prioritized tasks below to plan work.
+active gaps are durable persistence (all caches are bounded and in-memory only),
+message-body encryption (`0x8A00/0x0A00` RSA), JT/T 1078 RTP media streaming,
+and header-level 2011 version detection (2011 is only inferred from the `0x0100`
+body length, not from the message header). The coverage matrix enumerates
+implemented, partial, and missing message IDs; use the prioritized tasks below
+to plan work.
 
 ## Completed work
 
@@ -37,7 +41,7 @@ partial, and missing message IDs; use the prioritized tasks below to plan work.
 | Recorder message envelope | Done | `0x8700/0x8701/0x0700` typed GB/T 19056-2021 data block codecs for `0x31/0x33/0x41/0x56/0x57/0x58` commands and their responses; simulator returns command-specific typed blocks. |
 | Region/route message envelope | Done | Typed circle/rectangle/polygon/route structures with attribute-controlled fields; set/delete/query paths backed by a per-device simulator catalog; structured JSON HTTP input and decoded query responses. |
 | Multimedia base flow | Done | Event/upload/capture/search messages and bounded upload cache; `0x0802` typed 35-byte records searched against cached uploads; `0x9205/0x1205` resource lists backed by the same catalog with channel/type/time filters. |
-| Media command codecs | Done at codec/dispatch level | `0x8803/04/05` have typed layouts, validation and HTTP downlink. Simulator acknowledges them but does not execute the requested upload/recording behavior. |
+| Media command codecs | Done | `0x8803/04/05` have typed layouts, validation and HTTP downlink. The simulator executes them: `0x8803` uploads catalog entries matching type/channel/event/time, `0x8804` toggles a recording flag and emits sample audio frames, `0x8805` replays the requested media item. |
 | Media retransmission | Done | Server detects missing `0x0801` fragments and requests retransmission with `0x8800` (media ID + missing packet IDs); first-fragment loss falls back to `0x8003`. Simulator replays cached frames; server reassembles exactly once. `0x8003` remains for non-media transport fragmentation. |
 | Protocol status documentation | Done as index | `JT808-2019-coverage.md` maps Appendix B message IDs to implementation states and notes. Amendment 1 conformance has not been reviewed. |
 
@@ -47,8 +51,11 @@ partial, and missing message IDs; use the prioritized tasks below to plan work.
 
 #### P0.1 — Typed region and route records; simulator catalog and queries
 
-**Status:** Not done. Current `0x8600/02/04/06` bodies and `0x0608` record area
-are raw bytes. The simulator returns no area or route records.
+**Status:** Done. Typed circle/rectangle/polygon/route models live in
+`internal/protocol/model/region_route_types.go` and `msg_8600.go`; `0x0608`
+responses are typed in `msg_0608.go`. Set/delete/query paths are backed by the
+per-device simulator catalog in `internal/storage/region_catalog.go`, with
+structured JSON HTTP input (`POST /device/:phone/regions/set|delete|query`).
 
 **Work:**
 
@@ -102,8 +109,11 @@ that matches the command. Do not infer field layouts from the JT808 wrapper.
 
 #### P0.3 — Implement stored media upload commands in the simulator
 
-**Status:** Partial. `0x8803/04/05` parse and receive generic acknowledgments;
-they do not cause a terminal to upload stored media or record audio.
+**Status:** Done. `processMsg8803` filters the simulator media catalog by
+type/channel/event/time range and uploads matching `0x0801` records;
+`processMsg8804` toggles the recording flag and emits sample audio frames on
+start; `processMsg8805` replays the catalog item matching the requested media
+ID. All paths are covered by client/server integration tests.
 
 **Work:**
 

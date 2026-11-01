@@ -64,18 +64,18 @@ amendment text has been reviewed.
 | `0x8401` | Set phonebook | Implemented | Typed set type and contact list (flag, GBK phone, GBK name); simulator stores contacts per set type (delete/replace/append/modify) keyed by phone number; HTTP `/device/:phone/phonebook/set` endpoint. |
 | `0x8500` | Vehicle control | Implemented | Typed control flags; simulator stores flags and echoes them in `0x0500`; HTTP `/device/:phone/vehicle/control` endpoint. |
 | `0x0500` | Vehicle control response | Implemented | Decodes control flags; cached per device; platform replies `0x8001`. |
-| `0x8600` | Set circular area | Partial | HTTP downlink accepts a standard message body as hex; area items are transported losslessly but not decoded into typed area records. |
-| `0x8601` | Delete circular area | Partial | Encodes/decodes the standard ID list and supports deletion of all areas; HTTP downlink plus simulator acknowledgement. |
-| `0x8602` | Set rectangular area | Partial | Shared standard-body passthrough endpoint and simulator acknowledgment; no typed rectangle item parser. |
-| `0x8603` | Delete rectangular area | Partial | Shared delete-ID message model, HTTP downlink, and simulator acknowledgement. |
-| `0x8604` | Set polygonal area | Partial | Shared standard-body passthrough endpoint and simulator acknowledgment; no typed polygon item parser. |
-| `0x8605` | Delete polygonal area | Partial | Shared delete-ID message model, HTTP downlink, and simulator acknowledgement. |
-| `0x8606` | Set route | Partial | Shared standard-body passthrough endpoint and simulator acknowledgment; no typed route-point parser. |
-| `0x8607` | Delete route | Partial | Shared delete-ID message model, HTTP downlink, and simulator acknowledgement. |
+| `0x8600` | Set circular area | Implemented | Typed circle area items (attribute-controlled time/speed fields, GBK name) are decoded and applied to the per-device simulator catalog; structured JSON HTTP downlink. |
+| `0x8601` | Delete circular area | Implemented | Encodes/decodes the standard ID list and supports deletion of all areas; applied to the simulator catalog; HTTP downlink plus simulator acknowledgement. |
+| `0x8602` | Set rectangular area | Implemented | Typed rectangle area items decoded and stored in the simulator catalog; structured JSON HTTP downlink. |
+| `0x8603` | Delete rectangular area | Implemented | Shared delete-ID message model, HTTP downlink, catalog deletion and simulator acknowledgement. |
+| `0x8604` | Set polygonal area | Implemented | Typed polygon area items with vertex lists decoded and stored in the simulator catalog; structured JSON HTTP downlink. |
+| `0x8605` | Delete polygonal area | Implemented | Shared delete-ID message model, HTTP downlink, catalog deletion and simulator acknowledgement. |
+| `0x8606` | Set route | Implemented | Typed route items with route points and segment constraints decoded and stored in the simulator catalog; structured JSON HTTP downlink. |
+| `0x8607` | Delete route | Implemented | Shared delete-ID message model, HTTP downlink, catalog deletion and simulator acknowledgement. |
 | `0x8700` | Driving recorder data collection command | Implemented | Typed GB/T 19056 data block codec for commands `0x31`/`0x33`/`0x56`/`0x57`/`0x58`; HTTP downlink available. Simulator returns a typed `0x0700` response block. |
 | `0x0700` | Driving recorder data upload | Implemented | Answer serial, command byte, and typed GB/T 19056 response blocks (`0xB1`/`0xB3`/`0xD6`/`0xD8`) are decoded; data is cached and a generic acknowledgment is sent. |
 | `0x8701` | Driving recorder parameter download | Implemented | Typed `0x41` parameter-setting block (with 16-byte Salt) and `0xC1` response block codec; HTTP downlink available. Simulator sends `0x0001`. |
-| `0x8203` | Manual alarm confirmation | Partial | HTTP command serializes alarm serial/type; matching in-memory alarm events are marked confirmed after terminal `0x0001`; durable storage remains open. |
+| `0x8203` | Manual alarm confirmation | Implemented | HTTP command serializes alarm serial/type; matching in-memory alarm events are marked confirmed after terminal `0x0001`. Durable alarm storage remains tracked under persistence work. |
 | `0x8204` | Server-initiated link detection request | Implemented | Empty-body request is decoded by the client simulator and receives `0x0001`. |
 | `0x8300` | Text information issue | Implemented | Typed flag, text type, and GBK text; simulator acknowledges with `0x0001`; HTTP `/device/:phone/text/issue` endpoint. |
 | `0x0702` | Driver identity information report | Implemented | Decodes IC-card state, BCD time, read result, GBK name/issuer and fixed-width credentials; caches latest report and sends `0x8001`. |
@@ -89,12 +89,12 @@ amendment text has been reviewed.
 | `0x0805` | Camera capture response | Implemented | Decodes result and media IDs, caches latest response, and receives platform `0x8001`. |
 | `0x8802` | Search stored multimedia data | Implemented | Decodes search criteria and HTTP downlink; simulator filters its bounded in-memory `0x0801` catalog by type, channel, event, and capture time, then returns matching records. |
 | `0x0802` | Stored multimedia search response | Implemented | Decodes/encodes each 35-byte result as media ID, media type, channel, event, and typed `0x0200` location fields; response is cached. |
-| `0x8608` | Query region/route data | Partial | Decodes query type and DWORD ID list; HTTP request waits for a matching `0x0608`, but the simulator has no region/route catalog and can only return an empty result. |
-| `0x0608` | Region/route data response | Partial | Query type/count envelope decoded and correlated; variable type-specific records preserved as raw bytes. |
+| `0x8608` | Query region/route data | Implemented | Decodes query type and DWORD ID list; HTTP request waits for a matching `0x0608`; the simulator answers from its per-device region/route catalog (`internal/storage/region_catalog.go`). |
+| `0x0608` | Region/route data response | Implemented | Query type/count envelope plus typed circle/rectangle/polygon/route records are decoded and encoded; responses are correlated to pending queries. |
 | `0x0701` | Electronic waybill upload | Implemented | Decodes GBK waybill content; cached per device; platform replies `0x8001`. |
-| `0x8803` | Stored multimedia upload command | Partial | Typed 16-byte command with media type/channel/event, BCD range and delete flag; HTTP body is validated and simulator sends the generic acknowledgment, but it does not select/upload matching stored media. |
-| `0x8804` | Start audio recording command | Partial | Typed 5-byte start/stop, duration, save and sample-rate fields; simulator acknowledges but does not record or upload audio. |
-| `0x8805` | Single stored multimedia upload command | Partial | Typed media ID and delete flag; HTTP body is validated and simulator acknowledges, but it does not upload the selected media. |
+| `0x8803` | Stored multimedia upload command | Implemented | Typed 16-byte command with media type/channel/event, BCD range and delete flag; HTTP body is validated, and the simulator uploads matching stored media as `0x0801` records. |
+| `0x8804` | Start audio recording command | Implemented | Typed 5-byte start/stop, duration, save and sample-rate fields; the simulator toggles its recording flag and emits sample audio `0x0801` frames on start. |
+| `0x8805` | Single stored multimedia upload command | Implemented | Typed media ID and delete flag; HTTP body is validated and the simulator replays the catalog item matching the requested media ID. |
 | `0x8900` | Data downlink transparent transmission | Implemented | Typed DWORD message type and raw payload bytes; cached per device; terminal acknowledges `0x0001`; HTTP `/device/:phone/transparent/down` endpoint. |
 | `0x0900` | Data uplink transparent transmission | Implemented | Decodes DWORD message type and raw payload bytes; cached per device; platform replies `0x8001`. |
 | `0x0901` | Compressed data report | Implemented | Decodes DWORD length and zlib-compressed body; the inflated payload is stored in `Decompressed` (nil on failure); cached per device; platform replies `0x8001`. |
