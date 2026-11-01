@@ -1,4 +1,4 @@
-package repository
+package runtime
 
 import (
 	"context"
@@ -27,7 +27,11 @@ type mediaSegmentLink struct {
 	updatedAt time.Time
 }
 
-// newMemoryRetransmitTracker 创建独立的下行重传跟踪器。
+// NewRetransmitTracker 创建独立的下行重传跟踪器。
+func NewRetransmitTracker() RetransmitTracker {
+	return newMemoryRetransmitTracker()
+}
+
 func newMemoryRetransmitTracker() *memoryRetransmitTracker {
 	return &memoryRetransmitTracker{entries: make(map[string]*sentSegmentState), media: make(map[string]mediaSegmentLink)}
 }
@@ -36,8 +40,7 @@ func sentSegmentKey(phone string, originalSerial uint16) string {
 	return fmt.Sprintf("%s/%04x", phone, originalSerial)
 }
 
-// LinkMedia links a multimedia ID to the JT808 message serial whose encoded
-// fragments the terminal simulator retained for 0x8800 retransmits.
+// LinkMedia 把多媒体 ID 关联到保留其编码分片的 JT808 消息流水号，供 0x8800 重传。
 func (cache *memoryRetransmitTracker) LinkMedia(_ context.Context, phone string, mediaID uint32, serial uint16) {
 	if phone == "" || mediaID == 0 {
 		return
@@ -47,7 +50,7 @@ func (cache *memoryRetransmitTracker) LinkMedia(_ context.Context, phone string,
 	cache.media[fmt.Sprintf("%s/%08x", phone, mediaID)] = mediaSegmentLink{serial: serial, updatedAt: time.Now()}
 }
 
-// MediaSerial returns the retained serial for a multimedia ID.
+// MediaSerial 返回多媒体 ID 关联的保留流水号。
 func (cache *memoryRetransmitTracker) MediaSerial(_ context.Context, phone string, mediaID uint32) (uint16, bool) {
 	cache.mu.Lock()
 	defer cache.mu.Unlock()
@@ -60,8 +63,7 @@ func (cache *memoryRetransmitTracker) MediaSerial(_ context.Context, phone strin
 	return link.serial, true
 }
 
-// CacheFrame retains simulator frames so a 0x8003 request can retransmit the
-// original encoded fragment verbatim.
+// CacheFrame 保留已发送的编码帧，使 0x8003 请求能原样重传。
 func (cache *memoryRetransmitTracker) CacheFrame(_ context.Context, phone string, originalSerial, index, total uint16, frame []byte) {
 	if phone == "" || total == 0 || total > maxSegmentCount || index == 0 || index > total || len(frame) == 0 || len(frame) > maxSegmentCacheBytes {
 		return
@@ -126,8 +128,7 @@ func (cache *memoryRetransmitTracker) evictOldest(excludeKey string) {
 	delete(cache.entries, oldestKey)
 }
 
-// Frames returns copies in the requested packet ID order.
-// Missing or expired cache entries return nil.
+// Frames 按请求的分片序号顺序返回副本；缺失或已过期的条目返回 nil。
 func (cache *memoryRetransmitTracker) Frames(_ context.Context, phone string, originalSerial uint16, packetIDs []uint16) [][]byte {
 	key := sentSegmentKey(phone, originalSerial)
 	cache.mu.Lock()
@@ -146,3 +147,6 @@ func (cache *memoryRetransmitTracker) Frames(_ context.Context, phone string, or
 	}
 	return frames
 }
+
+// 编译期确认内存实现满足接口。
+var _ RetransmitTracker = (*memoryRetransmitTracker)(nil)

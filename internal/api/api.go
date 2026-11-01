@@ -16,6 +16,7 @@ import (
 	"github.com/fakeyanss/jt808-server-go/internal/config"
 	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
 	"github.com/fakeyanss/jt808-server-go/internal/repository"
+	"github.com/fakeyanss/jt808-server-go/internal/runtime"
 	"github.com/fakeyanss/jt808-server-go/internal/server"
 )
 
@@ -26,7 +27,7 @@ func Run(serv *server.TCPServer, cfg *config.Config) {
 	api := router.Group("/api")
 	devices := repository.Default().Devices
 	geo := repository.Default().Geo
-	connRegistry := repository.Default().Conn
+	connRegistry := runtime.Default().Conn
 
 	api.GET("/device", func(c *gin.Context) {
 		list, err := devices.List(c.Request.Context())

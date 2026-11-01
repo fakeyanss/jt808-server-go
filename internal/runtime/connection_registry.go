@@ -1,4 +1,4 @@
-package repository
+package runtime
 
 import (
 	"context"
@@ -12,6 +12,7 @@ import (
 	"github.com/fakeyanss/jt808-server-go/pkg/routines"
 )
 
+// ErrSessionClosed 表示连接现场不存在，对应连接已关闭或尚未注册。
 var ErrSessionClosed = errors.New("session closed")
 
 const monitorSessionCntInterval = 10 * time.Second
@@ -22,7 +23,11 @@ type memoryConnectionRegistry struct {
 	mutex     *sync.Mutex
 }
 
-// newMemoryConnectionRegistry 创建独立的内存连接注册表，不启动会话数监控。
+// NewConnectionRegistry 创建独立的内存连接注册表，不启动会话数监控。
+func NewConnectionRegistry() ConnectionRegistry {
+	return newMemoryConnectionRegistry()
+}
+
 func newMemoryConnectionRegistry() *memoryConnectionRegistry {
 	return &memoryConnectionRegistry{
 		cacheByID: make(map[string]*model.Session),
@@ -77,3 +82,6 @@ func (cache *memoryConnectionRegistry) Count(_ context.Context) int {
 	defer cache.mutex.Unlock()
 	return len(cache.cacheByID)
 }
+
+// 编译期确认内存实现满足接口。
+var _ ConnectionRegistry = (*memoryConnectionRegistry)(nil)

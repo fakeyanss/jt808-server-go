@@ -12,7 +12,7 @@ import (
 	"github.com/fakeyanss/jt808-server-go/internal/action"
 	"github.com/fakeyanss/jt808-server-go/internal/protocol"
 	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
-	"github.com/fakeyanss/jt808-server-go/internal/repository"
+	"github.com/fakeyanss/jt808-server-go/internal/runtime"
 	"github.com/fakeyanss/jt808-server-go/pkg/routines"
 )
 
@@ -67,7 +67,7 @@ func (s *UDPServer) Start() {
 			conn = newUDPSessionConn(s.listener, remote, func() { s.remove(key) })
 			s.sessions[key] = conn
 			session := &model.Session{ID: key, Conn: conn, Transport: model.UDPProto, AckTimeout: s.ackTimeout, MaxRetries: s.maxRetransmissions}
-			_ = repository.Default().Conn.Bind(context.Background(), session)
+			_ = runtime.Default().Conn.Bind(context.Background(), session)
 			routines.GoSafe(func() { serveSession(session, s.hooks) })
 		}
 		s.mu.Unlock()
@@ -96,7 +96,7 @@ func (s *UDPServer) remove(key string) {
 	s.mu.Lock()
 	delete(s.sessions, key)
 	s.mu.Unlock()
-	repository.Default().Conn.Unbind(context.Background(), key)
+	runtime.Default().Conn.Unbind(context.Background(), key)
 }
 
 type udpSessionConn struct {

@@ -17,6 +17,7 @@ import (
 	"github.com/fakeyanss/jt808-server-go/internal/codec/hex"
 	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
 	"github.com/fakeyanss/jt808-server-go/internal/repository"
+	"github.com/fakeyanss/jt808-server-go/internal/runtime"
 )
 
 var (
@@ -807,7 +808,7 @@ func processMsg8003(ctx context.Context, data *model.ProcessData) error {
 	if !ok || session == nil {
 		return nil
 	}
-	frames := repository.Default().Retrans.Frames(context.Background(), request.Header.PhoneNumber, request.OriginalSerialNumber, request.PacketIDs)
+	frames := runtime.Default().Retrans.Frames(context.Background(), request.Header.PhoneNumber, request.OriginalSerialNumber, request.PacketIDs)
 	if frames == nil {
 		log.Warn().Str("device", request.Header.PhoneNumber).Uint16("original_serial", request.OriginalSerialNumber).Msg("No cached simulator fragments for retransmission request")
 		return nil
@@ -846,7 +847,7 @@ func processMsg8800(ctx context.Context, data *model.ProcessData) error {
 	if !ok || session == nil {
 		return nil
 	}
-	serial, ok := repository.Default().Retrans.MediaSerial(context.Background(), request.Header.PhoneNumber, request.MultiMediaID)
+	serial, ok := runtime.Default().Retrans.MediaSerial(context.Background(), request.Header.PhoneNumber, request.MultiMediaID)
 	if !ok {
 		log.Warn().Str("device", request.Header.PhoneNumber).Uint32("media_id", request.MultiMediaID).Msg("No cached media fragments for retransmission request")
 		return nil
@@ -856,7 +857,7 @@ func processMsg8800(ctx context.Context, data *model.ProcessData) error {
 }
 
 func retransmitCachedSegments(session *model.Session, phone string, originalSerial uint16, packetIDs []uint16) {
-	frames := repository.Default().Retrans.Frames(context.Background(), phone, originalSerial, packetIDs)
+	frames := runtime.Default().Retrans.Frames(context.Background(), phone, originalSerial, packetIDs)
 	if frames == nil {
 		log.Warn().Str("device", phone).Uint16("original_serial", originalSerial).Msg("No cached fragments for retransmission request")
 		return

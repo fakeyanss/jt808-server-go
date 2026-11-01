@@ -11,6 +11,7 @@ import (
 	"github.com/fakeyanss/jt808-server-go/internal/protocol"
 	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
 	"github.com/fakeyanss/jt808-server-go/internal/repository"
+	"github.com/fakeyanss/jt808-server-go/internal/runtime"
 )
 
 // startSimulatorServer brings up a TCP server and a registered client simulator
@@ -55,7 +56,7 @@ func startSimulatorServer(t *testing.T) (*TCPServer, *client.TCPClient, *model.D
 
 func TestRegionRouteSetQueryDeleteRoundTrip(t *testing.T) {
 	server, _, device := startSimulatorServer(t)
-	session, err := repository.Default().Conn.Get(context.Background(), device.SessionID)
+	session, err := runtime.Default().Conn.Get(context.Background(), device.SessionID)
 	require.NoError(t, err)
 
 	catalog := repository.GetRegionCatalog()

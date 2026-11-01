@@ -14,6 +14,7 @@ import (
 	"github.com/fakeyanss/jt808-server-go/internal/protocol"
 	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
 	"github.com/fakeyanss/jt808-server-go/internal/repository"
+	"github.com/fakeyanss/jt808-server-go/internal/runtime"
 	"github.com/stretchr/testify/require"
 )
 
@@ -30,7 +31,7 @@ func TestTCPServerRetransmitsRequestedDownlinkFragments(t *testing.T) {
 	var session *model.Session
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		session, _ = repository.Default().Conn.Get(context.Background(), cli.Session.Conn.LocalAddr().String())
+		session, _ = runtime.Default().Conn.Get(context.Background(), cli.Session.Conn.LocalAddr().String())
 		if session != nil {
 			break
 		}
@@ -166,7 +167,7 @@ func TestTCPServerProcessesJT808Registration(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, model.DeviceStatusOnline, device.Status)
 
-	session, err := repository.Default().Conn.Get(context.Background(), device.SessionID)
+	session, err := runtime.Default().Conn.Get(context.Background(), device.SessionID)
 	require.NoError(t, err)
 	paramSerial := session.GetNextSerialNum()
 	paramResponse, cancelParam, err := repository.GetParamResponseBroker().Register(phone, paramSerial)
@@ -294,7 +295,7 @@ func TestTCPClientSimulatorIndustryMessages(t *testing.T) {
 	require.Equal(t, uint32(0x60000123), industry.CAN(phone).Items[0].CANID)
 	require.Equal(t, []byte{0xaa}, industry.RecordData(phone).Data)
 	require.Equal(t, uint32(71), industry.MediaUploads(phone)[0].MultiMediaID)
-	session, err := repository.Default().Conn.Get(context.Background(), device.SessionID)
+	session, err := runtime.Default().Conn.Get(context.Background(), device.SessionID)
 	require.NoError(t, err)
 	// Exercise media-layer retransmission separately from JT808's 0x8003
 	// transport reassembly: the terminal simulator must replay the original
@@ -420,7 +421,7 @@ func TestSimulatorMediaUploadCommands(t *testing.T) {
 	})
 
 	industry := repository.GetIndustryCache()
-	session, err := repository.Default().Conn.Get(context.Background(), device.SessionID)
+	session, err := runtime.Default().Conn.Get(context.Background(), device.SessionID)
 	require.NoError(t, err)
 
 	// Seed the simulator's stored-media catalog by uploading one image item.
@@ -534,7 +535,7 @@ func TestSimulatorMediaResourceListQuery(t *testing.T) {
 	})
 
 	industry := repository.GetIndustryCache()
-	session, err := repository.Default().Conn.Get(context.Background(), device.SessionID)
+	session, err := runtime.Default().Conn.Get(context.Background(), device.SessionID)
 	require.NoError(t, err)
 
 	// Empty catalog query returns zero items.
@@ -674,7 +675,7 @@ func TestSimulatorTextAndEventMessages(t *testing.T) {
 	})
 
 	industry := repository.GetIndustryCache()
-	session, err := repository.Default().Conn.Get(context.Background(), device.SessionID)
+	session, err := runtime.Default().Conn.Get(context.Background(), device.SessionID)
 	require.NoError(t, err)
 
 	// 0x8300 text issue -> terminal acknowledges with 0x0001 (no observable side effect).
@@ -777,7 +778,7 @@ func TestSimulatorVehicleControl(t *testing.T) {
 	})
 
 	industry := repository.GetIndustryCache()
-	session, err := repository.Default().Conn.Get(context.Background(), device.SessionID)
+	session, err := runtime.Default().Conn.Get(context.Background(), device.SessionID)
 	require.NoError(t, err)
 
 	// 0x8500 lock door (bit0=1) -> terminal stores flags and echoes via 0x0500.
@@ -836,7 +837,7 @@ func TestSimulatorQuestionMenuInfoService(t *testing.T) {
 	})
 
 	industry := repository.GetIndustryCache()
-	session, err := repository.Default().Conn.Get(context.Background(), device.SessionID)
+	session, err := runtime.Default().Conn.Get(context.Background(), device.SessionID)
 	require.NoError(t, err)
 
 	// 0x8302 question issue with two candidates.
@@ -977,7 +978,7 @@ func TestSimulatorPhonebookAndUpgrade(t *testing.T) {
 	})
 
 	industry := repository.GetIndustryCache()
-	session, err := repository.Default().Conn.Get(context.Background(), device.SessionID)
+	session, err := runtime.Default().Conn.Get(context.Background(), device.SessionID)
 	require.NoError(t, err)
 
 	// 0x8400 call callback.
@@ -1100,7 +1101,7 @@ func TestSimulatorTransparentAndCompressed(t *testing.T) {
 	})
 
 	industry := repository.GetIndustryCache()
-	session, err := repository.Default().Conn.Get(context.Background(), device.SessionID)
+	session, err := runtime.Default().Conn.Get(context.Background(), device.SessionID)
 	require.NoError(t, err)
 
 	// 0x8900 downlink transparent transmission.
@@ -1356,7 +1357,7 @@ func TestSimulatorRecorderCommandTypedResponses(t *testing.T) {
 	})
 
 	industry := repository.GetIndustryCache()
-	session, err := repository.Default().Conn.Get(context.Background(), device.SessionID)
+	session, err := runtime.Default().Conn.Get(context.Background(), device.SessionID)
 	require.NoError(t, err)
 
 	// 0x31 collect info -> response should be a typed RecorderInfoResponse.
@@ -1469,7 +1470,7 @@ func TestSimulatorRecorderParamSettingRoundTrip(t *testing.T) {
 		protocol.NewKeepaliveTimer().Cancel(phone)
 	})
 
-	session, err := repository.Default().Conn.Get(context.Background(), device.SessionID)
+	session, err := runtime.Default().Conn.Get(context.Background(), device.SessionID)
 	require.NoError(t, err)
 	// Tighten the reliable-send window so a missing 0x0001 closes the
 	// connection within a few hundred milliseconds.
@@ -1976,7 +1977,7 @@ func TestSimulatorRecorderPositionTestCommands(t *testing.T) {
 	})
 
 	industry := repository.GetIndustryCache()
-	session, err := repository.Default().Conn.Get(context.Background(), device.SessionID)
+	session, err := runtime.Default().Conn.Get(context.Background(), device.SessionID)
 	require.NoError(t, err)
 
 	cases := []struct {

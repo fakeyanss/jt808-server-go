@@ -1,4 +1,4 @@
-package repository
+package runtime
 
 import (
 	"context"
@@ -29,7 +29,11 @@ type memoryFragmentAssembler struct {
 	cachedBytes int
 }
 
-// newMemoryFragmentAssembler 创建独立的内存分包重组器。
+// NewFragmentAssembler 创建独立的内存分包重组器。
+func NewFragmentAssembler() FragmentAssembler {
+	return newMemoryFragmentAssembler()
+}
+
 func newMemoryFragmentAssembler() *memoryFragmentAssembler {
 	return &memoryFragmentAssembler{
 		cacheByKey: make(map[string]*segmentState),
@@ -37,15 +41,14 @@ func newMemoryFragmentAssembler() *memoryFragmentAssembler {
 	}
 }
 
-// CacheSegment stores fragments by device, message ID and original message serial.
-// It returns true only after all distinct fragment indexes have arrived, regardless
-// of their arrival order. Duplicate fragments do not duplicate their payload.
+// CacheSegment 按设备、消息 ID 与原消息流水号缓存分片。
+// 只有全部分片序号都到达时才返回 true，与分片到达顺序无关；重复分片不会重复占用负载。
 func (cache *memoryFragmentAssembler) CacheSegment(_ context.Context, seg *model.Segment, serialNumber uint16) bool {
 	if seg == nil || seg.SegTotal == 0 || seg.SegNo == 0 || seg.SegNo > seg.SegTotal || len(seg.Data) == 0 {
 		return false
 	}
-	// JT808 assigns consecutive serial numbers to fragments. Normalize each
-	// fragment to the first fragment's serial so out-of-order arrivals join.
+	// JT808 为连续分片分配连续流水号。把每个分片归一化到首个分片的流水号，
+	// 使乱序到达的分片也能归入同一个重组槽位。
 	firstSerial := FirstFragmentSerial(serialNumber, seg.SegNo)
 	key := fmt.Sprintf("%s/%04x/%04x", seg.Phone, seg.MsgID, firstSerial)
 	cache.mutex.Lock()
@@ -100,8 +103,7 @@ func (cache *memoryFragmentAssembler) CacheSegment(_ context.Context, seg *model
 	return true
 }
 
-// MissingIndexes returns the 1-based fragment indexes still absent for the
-// segmented message containing seg. It is intended for 0x8003 requests.
+// MissingIndexes 返回该分段消息仍缺失的 1 基分片序号，用于 0x8003 请求。
 func (cache *memoryFragmentAssembler) MissingIndexes(_ context.Context, seg *model.Segment, serialNumber uint16) []uint16 {
 	if seg == nil || seg.SegTotal == 0 || seg.SegNo == 0 || seg.SegNo > seg.SegTotal {
 		return nil
@@ -143,8 +145,7 @@ func (cache *memoryFragmentAssembler) evictOldest(excludeKey string) bool {
 	return true
 }
 
-// FirstFragmentSerial converts a fragment's terminal serial to the original
-// message serial, accounting for JT808's 1..65535 serial-number wraparound.
+// FirstFragmentSerial 把分片流水号换算回原消息流水号，处理 JT808 1..65535 的回绕。
 func FirstFragmentSerial(serialNumber, fragmentIndex uint16) uint16 {
 	for i := uint16(1); i < fragmentIndex; i++ {
 		if serialNumber <= 1 {
@@ -155,3 +156,6 @@ func FirstFragmentSerial(serialNumber, fragmentIndex uint16) uint16 {
 	}
 	return serialNumber
 }
+
+// 编译期确认内存实现满足接口。
+var _ FragmentAssembler = (*memoryFragmentAssembler)(nil)

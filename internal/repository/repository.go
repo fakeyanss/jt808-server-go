@@ -34,28 +34,6 @@ type GeoRepository interface {
 	Delete(ctx context.Context, phone string) error
 }
 
-// ConnectionRegistry 连接现场注册表（A 类，仅进程内存，不持久化）。
-type ConnectionRegistry interface {
-	Get(ctx context.Context, id string) (*model.Session, error)
-	Bind(ctx context.Context, session *model.Session) error
-	Unbind(ctx context.Context, id string)
-	Count(ctx context.Context) int
-}
-
-// FragmentAssembler 终端上行分包重组器（A 类，仅进程内存）。
-type FragmentAssembler interface {
-	CacheSegment(ctx context.Context, seg *model.Segment, serialNumber uint16) bool
-	MissingIndexes(ctx context.Context, seg *model.Segment, serialNumber uint16) []uint16
-}
-
-// RetransmitTracker 平台下行分包重传跟踪器（A 类，仅进程内存）。
-type RetransmitTracker interface {
-	CacheFrame(ctx context.Context, phone string, originalSerial, index, total uint16, frame []byte)
-	Frames(ctx context.Context, phone string, originalSerial uint16, packetIDs []uint16) [][]byte
-	LinkMedia(ctx context.Context, phone string, mediaID uint32, serial uint16)
-	MediaSerial(ctx context.Context, phone string, mediaID uint32) (uint16, bool)
-}
-
 // DeviceParamsRepository 终端参数仓储（B 类）。
 type DeviceParamsRepository interface {
 	Get(ctx context.Context, phone string) (*model.DeviceParams, error)
@@ -63,26 +41,22 @@ type DeviceParamsRepository interface {
 	Delete(ctx context.Context, phone string) error
 }
 
-// Stores 聚合所有仓储接口，作为组件的存储依赖入口。
+// Stores 聚合持久化仓储接口，作为组件的存储依赖入口。
+// 运行时状态（连接现场、分包重组、下行重传）由 runtime.Stores 单独提供，
+// 不挂在这里，避免把「连接在则有效」的状态混入可持久化装配。
 type Stores struct {
-	Devices  DeviceRepository
-	Geo      GeoRepository
-	Conn     ConnectionRegistry
-	Fragment FragmentAssembler
-	Retrans  RetransmitTracker
-	Params   DeviceParamsRepository
+	Devices DeviceRepository
+	Geo     GeoRepository
+	Params  DeviceParamsRepository
 }
 
 // NewStores 创建一组互相独立的内存仓储，供测试与新代码注入。
 // 不传任何参数，返回全新的独立实例，不污染默认入口。
 func NewStores() *Stores {
 	return &Stores{
-		Devices:  NewDeviceRepository(),
-		Geo:      NewGeoRepository(),
-		Conn:     NewConnectionRegistry(),
-		Fragment: NewFragmentAssembler(),
-		Retrans:  NewRetransmitTracker(),
-		Params:   NewDeviceParamsRepository(),
+		Devices: NewDeviceRepository(),
+		Geo:     NewGeoRepository(),
+		Params:  NewDeviceParamsRepository(),
 	}
 }
 
@@ -90,9 +64,6 @@ func NewStores() *Stores {
 var (
 	_ DeviceRepository       = (*memoryDeviceRepository)(nil)
 	_ GeoRepository          = (*memoryGeoRepository)(nil)
-	_ ConnectionRegistry     = (*memoryConnectionRegistry)(nil)
-	_ FragmentAssembler      = (*memoryFragmentAssembler)(nil)
-	_ RetransmitTracker      = (*memoryRetransmitTracker)(nil)
 	_ DeviceParamsRepository = (*memoryDeviceParamsRepository)(nil)
 )
 
@@ -102,33 +73,21 @@ func NewDeviceRepository() DeviceRepository { return newMemoryDeviceRepository()
 // NewGeoRepository 创建独立的内存定位热读仓储。
 func NewGeoRepository() GeoRepository { return newMemoryGeoRepository() }
 
-// NewConnectionRegistry 创建独立的连接现场注册表（不启动会话数监控）。
-func NewConnectionRegistry() ConnectionRegistry { return newMemoryConnectionRegistry() }
-
-// NewFragmentAssembler 创建独立的分包重组器。
-func NewFragmentAssembler() FragmentAssembler { return newMemoryFragmentAssembler() }
-
-// NewRetransmitTracker 创建独立的下行重传跟踪器。
-func NewRetransmitTracker() RetransmitTracker { return newMemoryRetransmitTracker() }
-
 // NewDeviceParamsRepository 创建独立的内存参数仓储。
 func NewDeviceParamsRepository() DeviceParamsRepository { return newMemoryDeviceParamsRepository() }
 
 // Default 返回进程默认 Stores 实例。
 // 保留为全局入口的理由：msg_processor 注册表（initProcessOption）是包级函数，
 // 其返回的 processFunc 签名固定为 (ctx, data) error，无法逐条注入依赖；
-// 改造注册表为接口方法或函数工厂属于更大的结构变更，M2 范围先显式收口为
+// 改造注册表为接口方法或函数工厂属于更大的结构变更，当前范围先显式收口为
 // 单一 Default()，调用点与默认值来源可追溯，后续再渐进迁移。
 // 其余组件（Server、API、test/client）通过构造函数注入 Stores，不访问 Default。
 func Default() *Stores {
 	defaultStoresOnce.Do(func() {
 		defaultStores = &Stores{
-			Devices:  newMemoryDeviceRepository(),
-			Geo:      newMemoryGeoRepository(),
-			Conn:     newDefaultConnectionRegistry(), // 启动会话数监控
-			Fragment: newMemoryFragmentAssembler(),
-			Retrans:  newMemoryRetransmitTracker(),
-			Params:   newMemoryDeviceParamsRepository(),
+			Devices: newMemoryDeviceRepository(),
+			Geo:     newMemoryGeoRepository(),
+			Params:  newMemoryDeviceParamsRepository(),
 		}
 	})
 	return defaultStores
