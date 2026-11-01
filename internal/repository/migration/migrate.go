@@ -2,11 +2,12 @@
 //
 // 约束：
 //   - 不引入迁移框架；只使用 database/sql；
-//   - schema_migrations 由执行器自身引导建表，是唯一保留在 Go 中的 DDL；
+//   - 所有 DDL 都在 .sql 文件里，包括 schema_migrations 的建表（引导脚本，不参与版本编号）；
+//   - 版本号取文件名末尾的日期（<描述>_<YYYYMMDD>.sql），按日期升序执行；
 //   - 启动路径只读版本，不执行 DDL；显式迁移由 sqlstore.Migrate 或 DBA 直接执行文件。
 //
 // MySQL 的 DDL 隐式提交，无法与"插入版本记录"同事务；因此一个版本中途失败时可能留下
-// 部分表已建、版本未记录的中间态。所有语句均为幂等形式，重跑可补齐。
+// 部分表已建、版本未记录的中间态。
 package migration
 
 import (
@@ -24,12 +25,9 @@ import (
 //go:embed *.sql
 var embeddedSQL embed.FS
 
-// bootstrapDDL 建立迁移元数据表；必须先于读取版本执行。
-const bootstrapDDL = `
-CREATE TABLE IF NOT EXISTS schema_migrations (
-    version INTEGER PRIMARY KEY,
-    applied_at BIGINT NOT NULL
-)`
+// bootstrapFileName 建立迁移元数据表，必须先于读取版本执行。
+// 它不参与版本编号：没有这张表就无从记录版本。
+const bootstrapFileName = "bootstrap_schema_migrations.sql"
 
 type versionedMigration struct {
 	version int
@@ -37,7 +35,10 @@ type versionedMigration struct {
 	stmts   []string
 }
 
-var migrations = mustLoadMigrations()
+var (
+	bootstrapStatements = mustLoadBootstrap()
+	migrations          = mustLoadMigrations()
+)
 
 // ExpectedVersion 返回本程序内置的最高迁移版本。
 func ExpectedVersion() int {
@@ -59,11 +60,13 @@ func CurrentVersion(ctx context.Context, db *sql.DB) (int, error) {
 	return current, nil
 }
 
-// Apply 引导 schema_migrations 并按版本顺序执行尚未应用的迁移，返回本次应用的数量。
+// Apply 先执行引导脚本，再按版本顺序执行尚未应用的迁移，返回本次应用的数量。
 // 单个版本内全部语句成功后才写入版本记录；已成功版本不会重复应用。
 func Apply(ctx context.Context, db *sql.DB) (int, error) {
-	if _, err := db.ExecContext(ctx, bootstrapDDL); err != nil {
-		return 0, fmt.Errorf("bootstrap schema_migrations: %w", err)
+	for i, stmt := range bootstrapStatements {
+		if _, err := db.ExecContext(ctx, stmt); err != nil {
+			return 0, fmt.Errorf("bootstrap %s statement %d: %w", bootstrapFileName, i+1, err)
+		}
 	}
 	current, err := CurrentVersion(ctx, db)
 	if err != nil {
@@ -92,24 +95,28 @@ func Apply(ctx context.Context, db *sql.DB) (int, error) {
 	return applied, nil
 }
 
-// mustLoadMigrations 读取内嵌 SQL 文件并按文件名前缀解析版本号。
+// mustLoadBootstrap 读取引导脚本；解析失败说明仓库内容有误，直接 panic。
+func mustLoadBootstrap() []string {
+	content, err := embeddedSQL.ReadFile(bootstrapFileName)
+	if err != nil {
+		panic(fmt.Sprintf("read embedded %s: %v", bootstrapFileName, err))
+	}
+	return splitStatements(string(content))
+}
+
+// mustLoadMigrations 读取内嵌 SQL 文件，跳过引导脚本，并按版本（日期）升序排序。
 // 文件是编译期资产，解析失败说明仓库内容有误，直接 panic 以便构建期尽早暴露。
 func mustLoadMigrations() []versionedMigration {
 	entries, err := fs.ReadDir(embeddedSQL, ".")
 	if err != nil {
 		panic(fmt.Sprintf("read embedded migrations: %v", err))
 	}
-	names := make([]string, 0, len(entries))
+	loaded := make([]versionedMigration, 0, len(entries))
 	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".sql") {
+		name := entry.Name()
+		if entry.IsDir() || !strings.HasSuffix(name, ".sql") || name == bootstrapFileName {
 			continue
 		}
-		names = append(names, entry.Name())
-	}
-	sort.Strings(names)
-
-	loaded := make([]versionedMigration, 0, len(names))
-	for _, name := range names {
 		version, err := parseVersion(name)
 		if err != nil {
 			panic(err.Error())
@@ -124,17 +131,38 @@ func mustLoadMigrations() []versionedMigration {
 			stmts:   splitStatements(string(content)),
 		})
 	}
+	sort.Slice(loaded, func(i, j int) bool {
+		if loaded[i].version != loaded[j].version {
+			return loaded[i].version < loaded[j].version
+		}
+		return loaded[i].name < loaded[j].name
+	})
+	for i := 1; i < len(loaded); i++ {
+		if loaded[i].version == loaded[i-1].version {
+			panic(fmt.Sprintf("duplicate migration date: %s and %s",
+				loaded[i-1].name, loaded[i].name))
+		}
+	}
 	return loaded
 }
 
+// parseVersion 解析文件名末尾的日期：<描述>_<YYYYMMDD>.sql。
 func parseVersion(name string) (int, error) {
-	prefix := name
-	if idx := strings.IndexByte(name, '_'); idx >= 0 {
-		prefix = name[:idx]
+	base := strings.TrimSuffix(name, ".sql")
+	idx := strings.LastIndexByte(base, '_')
+	if idx < 0 {
+		return 0, fmt.Errorf("migration file %s has no <description>_<YYYYMMDD> suffix", name)
 	}
-	version, err := strconv.Atoi(prefix)
+	date := base[idx+1:]
+	if len(date) != 8 {
+		return 0, fmt.Errorf("migration file %s has no 8-digit date suffix", name)
+	}
+	if _, err := time.Parse("20060102", date); err != nil {
+		return 0, fmt.Errorf("migration file %s has invalid date %q: %w", name, date, err)
+	}
+	version, err := strconv.Atoi(date)
 	if err != nil || version <= 0 {
-		return 0, fmt.Errorf("migration file %s has no positive version prefix", name)
+		return 0, fmt.Errorf("migration file %s has no positive version", name)
 	}
 	return version, nil
 }

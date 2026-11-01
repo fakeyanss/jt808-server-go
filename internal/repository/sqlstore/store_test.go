@@ -14,6 +14,7 @@ import (
 
 	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
 	"github.com/fakeyanss/jt808-server-go/internal/repository"
+	"github.com/fakeyanss/jt808-server-go/internal/repository/migration"
 )
 
 func openTestSQLite(t *testing.T) *Store {
@@ -285,7 +286,7 @@ func TestOpenRejectsOutdatedSchemaVersion(t *testing.T) {
 	// 回退版本记录，模拟由旧版本二进制建出的库。
 	db, err := stdsql.Open("sqlite", "file:"+dbPath)
 	require.NoError(t, err)
-	_, err = db.ExecContext(ctx, `DELETE FROM schema_migrations WHERE version > 1`)
+	_, err = db.ExecContext(ctx, `DELETE FROM schema_migrations`)
 	require.NoError(t, err)
 	require.NoError(t, db.Close())
 
@@ -307,7 +308,8 @@ func TestOpenRejectsNewerSchemaVersion(t *testing.T) {
 	db, err := stdsql.Open("sqlite", "file:"+dbPath)
 	require.NoError(t, err)
 	_, err = db.ExecContext(ctx,
-		`INSERT INTO schema_migrations (version, applied_at) VALUES (999, 0)`)
+		`INSERT INTO schema_migrations (version, applied_at) VALUES (?, 0)`,
+		migration.ExpectedVersion()+1)
 	require.NoError(t, err)
 	require.NoError(t, db.Close())
 

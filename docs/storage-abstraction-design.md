@@ -330,17 +330,21 @@ type Coordinator interface {
 
 ### 7.2 迁移
 
-- 目录：`internal/repository/migration/0001_init.sql`、`0002_terminal_properties.sql`、
-  `0003_device_runtime.sql`、`0004_devices_plate_index.sql`，用 `go:embed` 编译进二进制；
-  SQL 文件中不再用 Go 常量拼 DDL。
-  `schema_migrations` 由迁移器自身引导建表（迁移机制自身的元数据，是唯一保留在 Go 里的 DDL）。
+- 目录（`go:embed *.sql` 编译进二进制）：
+  - `bootstrap_schema_migrations.sql`：迁移元数据表建表脚本（引导脚本，不参与版本编号）；
+  - `init_20261101.sql`：当前唯一版本。开发阶段不保留增量迁移，直接给出最终 schema。
+- **版本号取自文件名末尾日期**：`<描述>_<YYYYMMDD>.sql`，迁移按日期升序执行；
+  后续变更追加新文件（如 `add_xxx_20261201.sql`），无需人工维护递增序号。
+- **`schema_migrations` 的 DDL 也在 SQL 文件里**，不在 Go 常量中。它必须先于版本存在
+  （否则无处记录已应用版本），因此单独作为引导脚本；迁移工具在执行任何版本前先执行它，
+  失败会作为普通迁移错误返回。MySQL 与 SQLite 都需要该表，二者共用同一份脚本。
 - **独立迁移工具**：`jt808-migrate -c <config>`，源码位于 `cmd/jt808-migrate/`，与主服务
   **分开编译、分开发布**（`make compile-migrate` / `make release-migrate`）。迁移工具只做连接、
   执行迁移、打印 `applied` 数量，不启动 TCP/UDP/API，也不初始化主服务的运行时。
-  MySQL 场景 DBA 也可直接按文件名顺序执行这些 `.sql`。除索引创建外语句均为幂等形式
-  （`CREATE TABLE IF NOT EXISTS` / `ALTER TABLE IF EXISTS`）；`0004` 的 `CREATE INDEX`
-  在 MySQL 上没有 `IF NOT EXISTS`，重复手工执行会报"索引已存在"，属预期，执行前请先备份并核对
-  `schema_migrations`。
+  MySQL 场景 DBA 可直接执行：先 `bootstrap_schema_migrations.sql`，再按文件名顺序执行版本文件。
+  除索引创建外语句均为幂等形式（`CREATE TABLE IF NOT EXISTS`）；`init_20261101.sql` 末尾的
+  `CREATE INDEX` 在 MySQL 上没有 `IF NOT EXISTS`，重复手工执行会报"索引已存在"，属预期，
+  执行前请先备份并核对 `schema_migrations`。
 - **所有后端一致，启动只校验不执行**：SQLite 与 MySQL 都不在服务启动时执行任何 DDL。
   读取 `MAX(version)` 与期望版本比较：低于期望 → 报错退出并提示执行 `jt808-migrate`；
   高于期望 → 报错（库版本高于程序版本），拒绝启动。入口代码为 `storage.Migrate` /
@@ -372,8 +376,8 @@ alarms:    按时间保留（默认 720h）且每设备上限（默认 5000 条�
 |---|---|---|---|
 | 设备运行时投影 | 拆 `devices` + `device_runtime` 两表，`last_com_time` 节流写 | 拆为：`devices` 保留 10 列静态/身份字段，`device_runtime` 承载 `session_id`/`trans_proto`/`last_com_time_ms`/`status`/`updated_at`。读用 `LEFT JOIN` 合并回完整 `model.Device`，写在同一事务内按归属分写两表 | `keepalive_ms` 是代码常量（`model.NewDevice` 固定 1 分钟，`device.go:50`），不属运行时观测值，留在 `devices`。**重启语义**：不做启动批量重置——单机由优雅停机（SIGINT/SIGTERM）调用 `ResetRuntime` 清空；异常重启残留的 `session_id`/`status` 在读路径按 `last_com_time_ms + keepalive_ms` 的 TTL 判定收敛为 offline 并清空 `session_id`，`last_com_time_ms` 保留作"上次在线时间"。分布式形态以 Redis 运行时缓存的全 TTL + 过期扫描回写替代单机重置。**心跳落库频率可配**：`server.heartbeatPersistIntervalMs`（缺省 `0`，逐条写库；若开启，应小于保活周期，当前保活 1 分钟故建议 ≤30000），被节流时保活判定取进程内 `runtime.Heartbeat` 的实时值（§11.3） |
 | `terminal_properties` | `phone` PK，属性 JSON | 新增：`phone` PK + 常用属性列（终端类型/制造商/型号/终端 ID/ICCID/硬件版本/固件版本/GNSS 与通信能力）+ `extra_json` 长尾 | 只由 0x0107 查询应答写入，与 `devices` **不合并**：`devices` 静态字段来自 0x0100/0x0102，属性应答若回写 `devices` 会触发其非主键列全量重写。0x0107 处理为"持久化 + 内存最新值 + broker 投递"三者同时 |
-| `plate` 唯一性 | `plate` UNIQUE | 未加唯一约束，仅加**非唯一**普通索引 `idx_devices_plate`（迁移 `0004`） | 内存实现按 `plate` 覆盖映射、允许空车牌重复，加 UNIQUE 会改变既有行为（多个空车牌或同牌设备会写入失败）。设备身份以协议里的终端手机号（`phone`）为准，`plate` 仅用于注册时"车辆已注册"校验；保持非唯一 |
-| `devices` 索引 | 未明确 | `phone` 主键 + `idx_devices_plate`（非唯一，迁移 `0004`） | `GetByPlate` 由全表扫描改为索引查找；不加唯一约束，理由见上一行的 `plate` 唯一性 |
+| `plate` 唯一性 | `plate` UNIQUE | 未加唯一约束，仅加**非唯一**普通索引 `idx_devices_plate`（见 `init_20261101.sql`） | 内存实现按 `plate` 覆盖映射、允许空车牌重复，加 UNIQUE 会改变既有行为（多个空车牌或同牌设备会写入失败）。设备身份以协议里的终端手机号（`phone`）为准，`plate` 仅用于注册时"车辆已注册"校验；保持非唯一 |
+| `devices` 索引 | 未明确 | `phone` 主键 + `idx_devices_plate`（非唯一，见 `init_20261101.sql`） | `GetByPlate` 由全表扫描改为索引查找；不加唯一约束，理由见上一行的 `plate` 唯一性 |
 | `device_params` | 参数集合整体 JSON 单字段 | 一致（`params_json` TEXT） | 遵循 D1；`ParamValue` 的 JSON 数字会以 `float64` 回读，既有 `any2uintX` 编码逻辑已兼容 |
 | `locations` / `alarms` | B 类持久化 | 未落地（**明确延后**） | 理由见 §7.5；不是"不需要持久化" |
 | `region_items` / `terminal_catalogs` / `command_outbox` | B 类持久化 | 未落地（本阶段非交付项） | 区域需要事务化 `ReplaceAll`，目录与 outbox 需要幂等/重投语义，均未在本轮定义；媒体/运单按 D3 后置 |
@@ -846,8 +850,9 @@ internal/storage/                 # 仅装配：后端选择与初始化
 
 **建表与迁移**
 
-- `schema_migrations(version INTEGER PRIMARY KEY, applied_at BIGINT NOT NULL)`；
-  启动时按版本幂等执行 `CREATE TABLE IF NOT EXISTS`，不引入迁移框架。
+- `schema_migrations(version INTEGER PRIMARY KEY, applied_at BIGINT NOT NULL)`：
+  DDL 位于内嵌的 `bootstrap_schema_migrations.sql`，由 `jt808-migrate` 在执行版本前创建；
+  服务启动只读该表，缺失即拒绝启动。不引入迁移框架。
 - `devices`：`phone` 主键；字段与 `model.Device` 可序列化部分一一对应，`Conn` 不入库；
   时间统一存毫秒整数；未加 `plate` 唯一约束（原因见 §7.4）。
 - `device_params`：`phone` 主键，`param_cnt` + `params_json`，遵循 D1。
@@ -902,7 +907,8 @@ internal/storage/                 # 仅装配：后端选择与初始化
 
 - 目录：`internal/repository/migration/` 下 `migrate.go` + `0001_init.sql` /
   `0002_terminal_properties.sql` / `0003_device_runtime.sql`；SQL 经 `//go:embed *.sql` 编译进二进制，
-  迁移器只依赖 `database/sql`，未引入框架。
+  迁移器只依赖 `database/sql`，未引入框架。（这些增量文件已在 §19.10 合并为
+  `bootstrap_schema_migrations.sql` + `init_20261101.sql`。）
 - 迁移入口：本批最初复用主服务的 `migrate` 位置参数；**§19.8 起改为独立工具 `jt808-migrate`**，
   SQLite 的启动自动迁移同时取消。DBA 也可按文件名顺序直接执行这些 SQL 文件。
 - 启动校验（当前行为）：所有后端都只比对版本。低于期望报
@@ -959,7 +965,8 @@ internal/storage/                 # 仅装配：后端选择与初始化
   不误判离线；`ResetRuntime` 清空 session/status 且保留静态字段与时间；
   TTL 收敛陈旧读为 offline 且保留 `last_com_time`；迁移 4 个文件且 `idx_devices_plate` 存在。
 - 已知限制：MySQL 下 `0004` 为普通 `CREATE INDEX`，重复手工执行会因索引已存在而失败，
-  迁移器按 `schema_migrations` 版本号避免重复执行。
+  迁移器按 `schema_migrations` 版本号避免重复执行。（迁移文件已在 §19.10 合并为
+  `init_20261101.sql`。）
 
 ### 19.8 独立迁移工具与取消 SQLite 自动迁移（2026-11-01，分支 `dev/p0-baseline`，基线 `bc439b9`，提交 `629c29d`）
 
@@ -1010,4 +1017,40 @@ internal/storage/                 # 仅装配：后端选择与初始化
 
 - `gofmt` / `go build ./...` / `go vet ./...` / `go test -race ./...` 全绿；
   `scripts/smoke.sh` 端到端通过（五个场景全部 PASS）。
+
+### 19.10 合并迁移版本 + 迁移元数据表 DDL 移入 SQL（2026-11-01，分支 `dev/p0-baseline`，基线 `621f18e`）
+
+**决策**
+
+1. **开发阶段只保留一个合并版本**：删除 `0001`–`0004` 四个增量文件，合并为
+   `init_20261101.sql`（最终 schema 形态，`devices` 不再含运行时列）。
+2. **文件名改为 `<描述>_<YYYYMMDD>.sql`**，版本号取文件名末尾日期（如 `20261101`），
+   迁移按日期升序执行；后续变更追加新文件即可，无需人工维护序号。
+3. **`schema_migrations` 的建表 DDL 从 Go 常量移入 SQL**：新增
+   `bootstrap_schema_migrations.sql`，由迁移工具在执行任何版本前先执行。
+   该表是迁移机制自身的元数据，必须先于版本存在，所以作为不参与版本编号的引导脚本；
+   MySQL 与 SQLite 同样需要它，二者共用该脚本。
+
+**原因**
+
+- 开发阶段没有存量库，保留四个增量版本只会增加阅读与维护成本；合并后 schema 一眼可见。
+  已有的本地开发库直接删除重建即可（不承诺从旧 4 个增量版本平滑升级）。
+- 版本按日期而非递增序号，新增迁移不会因为旧序号冲突而需要重排文件。
+- Go 代码中的 DDL 无法与其它 DDL 一起被审阅、被 DBA 直接执行；移入 `bootstrap_*.sql` 后
+  迁移工具与手工执行路径使用同一份语句，失败也会以普通迁移错误返回。
+
+**实现要点**
+
+- `migration.Apply`：先执行 `bootstrapStatements`，再读 `CurrentVersion`，再按日期应用未执行版本；
+  引导脚本失败返回 `bootstrap <file> statement N: ...`。
+- `mustLoadMigrations` 跳过引导脚本；`parseVersion` 改为校验 8 位日期后缀（含
+  `time.Parse("20060102")` 合法性检查），并对同日期文件 panic。
+- 服务启动行为不变：只读 `schema_migrations`，缺失/落后/超前都拒绝启动。
+
+**验证**
+
+- `gofmt` / `go build ./...` / `go vet ./...` / `go test -race ./...` 全绿。
+- 用例更新：`ExpectedVersion=20261101`、仅 1 个迁移文件；日期后缀解析合法/非法；
+  重复执行迁移仍幂等；版本落后（清空记录）与超前（`ExpectedVersion()+1`）均拒绝启动；
+  迁移后四张表与 `idx_devices_plate` 均存在。
 

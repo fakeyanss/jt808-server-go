@@ -20,8 +20,10 @@ func newTestDB(t *testing.T) *sql.DB {
 }
 
 func TestExpectedVersionMatchesEmbeddedFiles(t *testing.T) {
-	require.Len(t, migrations, 4)
-	require.Equal(t, migrations[len(migrations)-1].version, ExpectedVersion())
+	// 开发阶段只保留一个合并版本；引导脚本不参与版本编号。
+	require.Len(t, migrations, 1)
+	require.Equal(t, "init_20261101.sql", migrations[0].name)
+	require.Equal(t, 20261101, ExpectedVersion())
 }
 
 // 同一库重复执行迁移只应用一次，版本记录不重复。
@@ -31,7 +33,7 @@ func TestApplyIsIdempotent(t *testing.T) {
 
 	applied, err := Apply(ctx, db)
 	require.NoError(t, err)
-	require.Equal(t, ExpectedVersion(), applied)
+	require.Equal(t, len(migrations), applied)
 
 	again, err := Apply(ctx, db)
 	require.NoError(t, err)
@@ -39,7 +41,7 @@ func TestApplyIsIdempotent(t *testing.T) {
 
 	var rows int
 	require.NoError(t, db.QueryRowContext(ctx, `SELECT COUNT(*) FROM schema_migrations`).Scan(&rows))
-	require.Equal(t, ExpectedVersion(), rows)
+	require.Equal(t, len(migrations), rows)
 
 	// 迁移后业务表与车牌索引均存在。
 	for _, table := range []string{"devices", "device_params", "terminal_properties", "device_runtime"} {
@@ -86,7 +88,17 @@ INSERT INTO a VALUES ('x;y');
 	require.Equal(t, "INSERT INTO a VALUES ('x;y')", stmts[2])
 }
 
-func TestParseVersionRejectsUnnumberedFile(t *testing.T) {
-	_, err := parseVersion("init.sql")
+func TestParseVersionUsesDateSuffix(t *testing.T) {
+	version, err := parseVersion("init_20261101.sql")
+	require.NoError(t, err)
+	require.Equal(t, 20261101, version)
+
+	_, err = parseVersion("init.sql")
+	require.Error(t, err)
+
+	_, err = parseVersion("init_2026111.sql")
+	require.Error(t, err)
+
+	_, err = parseVersion("init_20261301.sql")
 	require.Error(t, err)
 }
