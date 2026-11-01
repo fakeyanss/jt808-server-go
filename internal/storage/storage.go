@@ -38,12 +38,13 @@ var (
 
 // Stores 聚合持久化仓储，作为业务组件的存储依赖入口。
 type Stores struct {
-	Devices  repository.DeviceRepository
-	Geo      repository.GeoRepository
-	Params   repository.DeviceParamsRepository
-	Alarms   repository.AlarmRepository
-	Regions  repository.RegionRepository
-	Industry repository.IndustryRepository
+	Devices    repository.DeviceRepository
+	Geo        repository.GeoRepository
+	Params     repository.DeviceParamsRepository
+	Properties repository.TerminalPropertiesRepository
+	Alarms     repository.AlarmRepository
+	Regions    repository.RegionRepository
+	Industry   repository.IndustryRepository
 
 	// Backend 记录实际启用的后端，供启动日志与运维排查使用。
 	Backend string
@@ -57,19 +58,20 @@ func NewMemory() *Stores {
 
 func newStores(backend string) *Stores {
 	return &Stores{
-		Devices:  repository.NewDeviceRepository(),
-		Geo:      repository.NewGeoRepository(),
-		Params:   repository.NewDeviceParamsRepository(),
-		Alarms:   repository.NewAlarmRepository(),
-		Regions:  repository.NewRegionRepository(),
-		Industry: repository.NewIndustryRepository(),
-		Backend:  backend,
+		Devices:    repository.NewDeviceRepository(),
+		Geo:        repository.NewGeoRepository(),
+		Params:     repository.NewDeviceParamsRepository(),
+		Properties: repository.NewTerminalPropertiesRepository(),
+		Alarms:     repository.NewAlarmRepository(),
+		Regions:    repository.NewRegionRepository(),
+		Industry:   repository.NewIndustryRepository(),
+		Backend:    backend,
 	}
 }
 
 // Open 按配置装配存储后端。
-// 本期 SQL 后端只覆盖 Device 与 DeviceParams，其余仓储仍使用内存实现，
-// 因此除设备/参数外的数据在进程重启后不保留（与设计文档 M2 范围一致）。
+// SQL 后端覆盖 Device、DeviceParams 与 TerminalProperties，其余仓储仍使用内存实现；
+// 因此除设备/参数/属性外的数据在进程重启后不保留（与设计文档 §7.4 范围一致）。
 func Open(cfg Config) (*Stores, error) {
 	backend := strings.ToLower(strings.TrimSpace(cfg.Type))
 	if backend == "" {
@@ -90,6 +92,7 @@ func Open(cfg Config) (*Stores, error) {
 		stores := newStores(backend)
 		stores.Devices = sqlStore.DeviceRepository()
 		stores.Params = sqlStore.DeviceParamsRepository()
+		stores.Properties = sqlStore.TerminalPropertiesRepository()
 		stores.close = sqlStore.Close
 		return stores, nil
 	default:

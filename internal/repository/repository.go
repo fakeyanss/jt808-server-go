@@ -35,11 +35,20 @@ type DeviceParamsRepository interface {
 	Delete(ctx context.Context, phone string) error
 }
 
+// TerminalPropertiesRepository 终端属性档案仓储（B 类）。
+// 数据只来自 0x0107 查询应答，与 Device 的静态字段独立存储。
+type TerminalPropertiesRepository interface {
+	Get(ctx context.Context, phone string) (*model.TerminalProperties, error)
+	Replace(ctx context.Context, properties *model.TerminalProperties) error
+	Delete(ctx context.Context, phone string) error
+}
+
 // 编译期确认内存实现满足接口。
 var (
-	_ DeviceRepository       = (*memoryDeviceRepository)(nil)
-	_ GeoRepository          = (*memoryGeoRepository)(nil)
-	_ DeviceParamsRepository = (*memoryDeviceParamsRepository)(nil)
+	_ DeviceRepository             = (*memoryDeviceRepository)(nil)
+	_ GeoRepository                = (*memoryGeoRepository)(nil)
+	_ DeviceParamsRepository       = (*memoryDeviceParamsRepository)(nil)
+	_ TerminalPropertiesRepository = (*memoryTerminalPropertiesRepository)(nil)
 )
 
 // NewDeviceRepository 创建独立的内存设备仓储，便于测试与新代码注入。
@@ -50,3 +59,8 @@ func NewGeoRepository() GeoRepository { return newMemoryGeoRepository() }
 
 // NewDeviceParamsRepository 创建独立的内存参数仓储。
 func NewDeviceParamsRepository() DeviceParamsRepository { return newMemoryDeviceParamsRepository() }
+
+// NewTerminalPropertiesRepository 创建独立的内存属性仓储。
+func NewTerminalPropertiesRepository() TerminalPropertiesRepository {
+	return newMemoryTerminalPropertiesRepository()
+}

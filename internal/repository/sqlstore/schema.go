@@ -40,6 +40,25 @@ CREATE TABLE IF NOT EXISTS device_params (
     updated_at BIGINT NOT NULL
 )`
 
+// terminal_properties 终端属性档案（B 类），只承载 0x0107 查询应答。
+// 常用属性列化便于检索；extra_json 兜底协议扩展的长尾字段。
+// 本表与 devices 独立：属性应答不回写 devices，避免触发其非主键列全量重写。
+const terminalPropertiesDDL = `
+CREATE TABLE IF NOT EXISTS terminal_properties (
+    phone VARCHAR(32) PRIMARY KEY,
+    terminal_type INTEGER NOT NULL DEFAULT 0,
+    manufacturer_id VARCHAR(16) NOT NULL DEFAULT '',
+    terminal_model VARCHAR(64) NOT NULL DEFAULT '',
+    terminal_id VARCHAR(64) NOT NULL DEFAULT '',
+    iccid VARCHAR(32) NOT NULL DEFAULT '',
+    hardware_version VARCHAR(255) NOT NULL DEFAULT '',
+    firmware_version VARCHAR(255) NOT NULL DEFAULT '',
+    gnss_properties SMALLINT NOT NULL DEFAULT 0,
+    communication_properties SMALLINT NOT NULL DEFAULT 0,
+    extra_json TEXT NOT NULL DEFAULT '{}',
+    updated_at BIGINT NOT NULL
+)`
+
 type migration struct {
 	version int
 	stmts   []string
@@ -47,4 +66,5 @@ type migration struct {
 
 var migrations = []migration{
 	{version: 1, stmts: []string{devicesDDL, deviceParamsDDL}},
+	{version: 2, stmts: []string{terminalPropertiesDDL}},
 }

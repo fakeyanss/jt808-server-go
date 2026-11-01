@@ -14,6 +14,7 @@ import (
 	_ "github.com/go-sql-driver/mysql"
 	_ "modernc.org/sqlite"
 
+	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
 	"github.com/fakeyanss/jt808-server-go/internal/repository"
 )
 
@@ -85,6 +86,15 @@ func (s *Store) DeviceRepository() repository.DeviceRepository {
 // DeviceParamsRepository 返回终端参数仓储。
 func (s *Store) DeviceParamsRepository() repository.DeviceParamsRepository {
 	return &deviceParamsRepository{store: s}
+}
+
+// TerminalPropertiesRepository 返回终端属性档案仓储。
+// 返回实例内部保留最新值缓存，保证同进程内查询优先命中内存。
+func (s *Store) TerminalPropertiesRepository() repository.TerminalPropertiesRepository {
+	return &terminalPropertiesRepository{
+		store:  s,
+		latest: make(map[string]*model.TerminalProperties),
+	}
 }
 
 // buildDSN 组装驱动名与 DSN。

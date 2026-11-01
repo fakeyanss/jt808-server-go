@@ -683,8 +683,14 @@ func processMsg0104(_ context.Context, data *model.ProcessData) error {
 	return nil
 }
 
+// processMsg0107 将属性应答落成属性档案、更新内存最新值，再投递给等待的查询方。
+// 三者互不阻断：落库失败只告警，不改变协议应答行为。
 func processMsg0107(_ context.Context, data *model.ProcessData) error {
-	runtime.Default().PropertyResponses.Deliver(data.Incoming.(*model.Msg0107))
+	in := data.Incoming.(*model.Msg0107)
+	if err := storage.Default().Properties.Replace(context.Background(), model.NewTerminalProperties(in)); err != nil {
+		log.Warn().Err(err).Str("phone", in.Header.PhoneNumber).Msg("Fail to persist terminal properties")
+	}
+	runtime.Default().PropertyResponses.Deliver(in)
 	return nil
 }
 

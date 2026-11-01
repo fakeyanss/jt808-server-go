@@ -89,6 +89,60 @@ func TestSQLitePersistsDeviceAndParamsAcrossReopen(t *testing.T) {
 	require.Equal(t, "ABCDEFGH", gotParams.Params[1].ParamValue)
 }
 
+// 属性档案：写入后内存可见；关闭再打开同一文件仍可读回；删除后返回既有错误值。
+func TestSQLitePersistsTerminalProperties(t *testing.T) {
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "jt808.db")
+
+	first, err := Open(Config{Backend: BackendSQLite, Path: dbPath})
+	require.NoError(t, err)
+	props := &model.TerminalProperties{
+		Phone:                   "188765400005",
+		TerminalType:            0x1234,
+		ManufacturerID:          "ACME",
+		TerminalModel:           "T-2019",
+		TerminalID:              "TERM-001",
+		ICCID:                   "89860000000000000001",
+		HardwareVersion:         "HW-1.0",
+		FirmwareVersion:         "FW-2.3",
+		GNSSProperties:          0x03,
+		CommunicationProperties: 0x05,
+		Extra:                   map[string]string{"legacy": "value"},
+	}
+	repo := first.TerminalPropertiesRepository()
+	require.NoError(t, repo.Replace(ctx, props))
+
+	// 同进程内直接命中内存最新值，不依赖回源。
+	cached, err := repo.Get(ctx, props.Phone)
+	require.NoError(t, err)
+	require.Equal(t, props.TerminalModel, cached.TerminalModel)
+	cached.Extra["legacy"] = "mutated"
+	again, err := repo.Get(ctx, props.Phone)
+	require.NoError(t, err)
+	require.Equal(t, "value", again.Extra["legacy"])
+
+	require.NoError(t, first.Close())
+	second, err := Open(Config{Backend: BackendSQLite, Path: dbPath})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = second.Close() })
+
+	got, err := second.TerminalPropertiesRepository().Get(ctx, props.Phone)
+	require.NoError(t, err)
+	require.Equal(t, props.TerminalType, got.TerminalType)
+	require.Equal(t, props.ManufacturerID, got.ManufacturerID)
+	require.Equal(t, props.TerminalID, got.TerminalID)
+	require.Equal(t, props.ICCID, got.ICCID)
+	require.Equal(t, props.HardwareVersion, got.HardwareVersion)
+	require.Equal(t, props.FirmwareVersion, got.FirmwareVersion)
+	require.Equal(t, props.GNSSProperties, got.GNSSProperties)
+	require.Equal(t, props.CommunicationProperties, got.CommunicationProperties)
+	require.Equal(t, "value", got.Extra["legacy"])
+
+	require.NoError(t, second.TerminalPropertiesRepository().Delete(ctx, props.Phone))
+	_, err = second.TerminalPropertiesRepository().Get(ctx, props.Phone)
+	require.ErrorIs(t, err, repository.ErrTerminalPropertiesNotFound)
+}
+
 func TestSQLiteNotFoundAndDeleteSemantics(t *testing.T) {
 	ctx := context.Background()
 	store := openTestSQLite(t)

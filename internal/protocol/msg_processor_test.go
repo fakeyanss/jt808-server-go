@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
+	"github.com/fakeyanss/jt808-server-go/internal/runtime"
 	"github.com/fakeyanss/jt808-server-go/internal/storage"
 	"github.com/stretchr/testify/require"
 )
@@ -33,6 +34,43 @@ func TestRegionRouteDeletionProducesGenericAcknowledgement(t *testing.T) {
 			require.Equal(t, messageID, result.Outgoing.(*model.Msg0001).AnswerMessageID)
 		})
 	}
+}
+
+// 0x0107 应答应同时落成属性档案、更新内存最新值并投递 broker。
+func TestProcessMsg0107PersistsAndDeliversTerminalProperties(t *testing.T) {
+	const phone = "188765432107"
+	ctx := context.Background()
+
+	waiter, cancel, err := runtime.Default().PropertyResponses.Register(phone)
+	require.NoError(t, err)
+	defer cancel()
+
+	msg := &model.Msg0107{
+		Header: &model.MsgHeader{
+			MsgID:       0x0107,
+			Attr:        &model.MsgBodyAttr{},
+			PhoneNumber: phone,
+		},
+		ManufacturerID:  "ACME",
+		TerminalModel:   "T-2019",
+		TerminalID:      "TERM-107",
+		FirmwareVersion: "FW-1.0",
+	}
+	require.NoError(t, processMsg0107(ctx, &model.ProcessData{Incoming: msg}))
+
+	select {
+	case got := <-waiter:
+		require.Same(t, msg, got)
+	default:
+		t.Fatal("property response was not delivered")
+	}
+
+	props, err := storage.Default().Properties.Get(ctx, phone)
+	require.NoError(t, err)
+	require.Equal(t, "ACME", props.ManufacturerID)
+	require.Equal(t, "T-2019", props.TerminalModel)
+	require.Equal(t, "FW-1.0", props.FirmwareVersion)
+	require.NoError(t, storage.Default().Properties.Delete(ctx, phone))
 }
 
 func TestSimulatorParameterTemplateDecodes(t *testing.T) {
