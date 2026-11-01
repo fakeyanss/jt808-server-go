@@ -1054,3 +1054,33 @@ internal/storage/                 # 仅装配：后端选择与初始化
   重复执行迁移仍幂等；版本落后（清空记录）与超前（`ExpectedVersion()+1`）均拒绝启动；
   迁移后四张表与 `idx_devices_plate` 均存在。
 
+### 19.11 SQL 方言兼容性核对（2026-11-01，分支 `dev/p0-baseline`，基线 `0852461`）
+
+**结论**：合并后的 `bootstrap_schema_migrations.sql` + `init_20261101.sql` 使用 SQLite 与
+MySQL 都支持的语法；核对中发现并修复一处 MySQL 不兼容：
+
+- `extra_json TEXT NOT NULL DEFAULT '{}'` → `extra_json TEXT NOT NULL`。
+  MySQL 不允许 TEXT/BLOB/JSON 列使用字面量默认值（8.0.13+ 仅支持表达式默认值），
+  SQLite 允许。写入路径 `encodeExtra` 始终提供 `"{}"`，去掉默认值不影响行为。
+
+同时做了两处可移植性加固：
+
+- 主键显式声明 `NOT NULL`：SQLite 对非 `INTEGER` 主键不隐含 `NOT NULL`，而 MySQL 主键必为
+  `NOT NULL`，显式声明后两库语义一致。
+- 文件头补充方言约束注释：不使用 TEXT/BLOB/JSON 默认值、不写 `ENGINE/CHARSET/COLLATE`
+  等 MySQL 专属子句（依赖服务端默认 utf8mb4 + InnoDB）、不使用 `CREATE INDEX IF NOT EXISTS`。
+
+**仍存在的差异（可接受，不额外抽象）**
+
+| 差异 | 影响 |
+|---|---|
+| `CREATE INDEX` 不幂等（MySQL 无 `IF NOT EXISTS`） | 由 `schema_migrations` 版本记录避免重复执行；手工重复执行会报索引已存在 |
+| SQLite 不校验 `VARCHAR(n)` 长度 | 超长数据在 SQLite 能写入、MySQL 会报错；正常协议数据远小于列宽 |
+| MySQL 默认排序规则大小写不敏感 | `phone` 为数字无影响；`plate` 查询在 MySQL 下大小写不敏感，SQLite 区分 |
+| MySQL `TEXT` 上限 64KB | 参数/属性 JSON 远小于该上限 |
+
+**验证**
+
+- SQLite 下迁移工具与相关测试全绿；本机无 Docker/MySQL，MySQL 侧由现有集成测试
+  （按环境变量启用）覆盖，尚未在本机实跑。
+
