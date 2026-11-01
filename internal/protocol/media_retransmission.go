@@ -108,7 +108,7 @@ func requestMissingMediaPackets(key string, state *mediaRetransmissionState) {
 	state.timer = nil
 	mediaRetransmissions.Unlock()
 
-	missing := storage.MissingSegmentIndexes(state.segment, state.firstSerial)
+	missing := storage.Default().Fragment.MissingIndexes(context.Background(), state.segment, state.firstSerial)
 	if len(missing) == 0 {
 		cancelMediaRetransmission(state.session, state.segment.Phone, state.segment.MsgID, state.firstSerial)
 		return

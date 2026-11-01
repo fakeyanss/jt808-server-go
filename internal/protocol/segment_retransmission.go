@@ -86,7 +86,7 @@ func requestMissingSegments(key string, state *segmentRetransmissionState) {
 	state.timer = nil
 	segmentRetransmissions.Unlock()
 
-	missing := storage.MissingSegmentIndexes(state.segment, state.firstSerial)
+	missing := storage.Default().Fragment.MissingIndexes(context.Background(), state.segment, state.firstSerial)
 	if len(missing) == 0 {
 		cancelSegmentRetransmission(state.session, state.segment.Phone, state.segment.MsgID, state.firstSerial)
 		return

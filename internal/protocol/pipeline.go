@@ -181,7 +181,7 @@ func encode() delegateFunc {
 			if err != nil {
 				return nil, err
 			}
-			storage.CacheSentSegmentFrame(header.PhoneNumber, serials[0], uint16(i+1), uint16(total), frames[i])
+			storage.Default().Retrans.CacheFrame(context.Background(), header.PhoneNumber, serials[0], uint16(i+1), uint16(total), frames[i])
 		}
 		return context.WithValue(ctx, model.PacketEncodeCtxKey{}, frames), nil
 	})

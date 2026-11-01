@@ -1,6 +1,7 @@
 package protocol
 
 import (
+	"context"
 	"sync"
 
 	"github.com/pkg/errors"
@@ -86,7 +87,7 @@ func (pc *JT808PacketCodec) Decode(payload []byte) (*model.PacketData, error) {
 	if pd.Header.IsFragmented() {
 		seg := model.NewSegment(pd)
 		firstSerial := pd.Header.SerialNumber - (pd.Header.Frag.Index - 1)
-		pd.SegCompleted = storage.CacheSegment(seg, pd.Header.SerialNumber)
+		pd.SegCompleted = storage.Default().Fragment.CacheSegment(context.Background(), seg, pd.Header.SerialNumber)
 		// 分包接收完成
 		pd.Body = seg.Data
 		if pd.SegCompleted {

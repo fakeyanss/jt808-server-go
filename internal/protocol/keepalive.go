@@ -1,6 +1,7 @@
 package protocol
 
 import (
+	"context"
 	"sync"
 
 	"github.com/fakeyanss/gron"
@@ -29,8 +30,8 @@ func NewKeepaliveTimer() *KeepaliveTimer {
 }
 
 func (t *KeepaliveTimer) Register(devicePhone string) {
-	cache := storage.GetDeviceCache()
-	device, err := cache.GetDeviceByPhone(devicePhone)
+	ctx := context.Background()
+	device, err := storage.Default().Devices.GetByPhone(ctx, devicePhone)
 	if errors.Is(err, storage.ErrDeviceNotFound) {
 		return
 	}
@@ -64,9 +65,9 @@ func (j *CheckDeviceJob) Run() {
 // 2. 当前离线，缓存保留3倍保活时间
 func checkDeviceKeepalive(t *KeepaliveTimer, devicePhone string) {
 	log.Debug().Str("device", devicePhone).Msg("Check device keepalive status")
-	cache := storage.GetDeviceCache()
-	gisCache := storage.GetGeoCache()
-	d, err := cache.GetDeviceByPhone(devicePhone)
+	ctx := context.Background()
+	stores := storage.Default()
+	d, err := stores.Devices.GetByPhone(ctx, devicePhone)
 	if errors.Is(err, storage.ErrDeviceNotFound) {
 		log.Debug().Str("device", devicePhone).Msg("Fail to find device cache")
 		t.Cancel(devicePhone)
@@ -75,12 +76,12 @@ func checkDeviceKeepalive(t *KeepaliveTimer, devicePhone string) {
 	if d.ShouleTurnOffline() {
 		// 保活失效
 		d.Status = model.DeviceStatusOffline
-		cache.CacheDevice(d)
+		_ = stores.Devices.Upsert(ctx, d)
 		log.Debug().Str("device", devicePhone).Msg("Turn offline for device keepalive expired")
 	} else if d.ShouldClear() {
 		d.Conn.Close()
-		cache.DelDeviceByPhone(devicePhone)
-		gisCache.DelGeoByPhone(devicePhone)
+		_ = stores.Devices.DeleteByPhone(ctx, devicePhone)
+		_ = stores.Geo.Delete(ctx, devicePhone)
 		log.Debug().Str("device", d.Phone).Msg("Clear cache and close connection after device being offline for a long time")
 		t.Cancel(devicePhone)
 	}
