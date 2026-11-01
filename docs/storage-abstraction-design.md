@@ -1054,7 +1054,7 @@ internal/storage/                 # 仅装配：后端选择与初始化
   重复执行迁移仍幂等；版本落后（清空记录）与超前（`ExpectedVersion()+1`）均拒绝启动；
   迁移后四张表与 `idx_devices_plate` 均存在。
 
-### 19.11 SQL 方言兼容性核对（2026-11-01，分支 `dev/p0-baseline`，基线 `0852461`）
+### 19.11 SQL 方言兼容性核对（2026-11-01，分支 `dev/p0-baseline`，基线 `0852461`，提交 `e7d4294`）
 
 **结论**：合并后的 `bootstrap_schema_migrations.sql` + `init_20261101.sql` 使用 SQLite 与
 MySQL 都支持的语法；核对中发现并修复一处 MySQL 不兼容：
