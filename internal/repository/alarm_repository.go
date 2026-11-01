@@ -24,17 +24,29 @@ type alarmCommand struct {
 	createdAt   time.Time
 }
 
-type AlarmCache struct {
+// AlarmRepository 报警历史仓储（B 类）：按设备追加报警事件，并支持
+// 报警确认命令下发后的回执关联。内存实现仅保留有界窗口（每设备 1000 条）。
+type AlarmRepository interface {
+	Record(phone string, serial uint16, alarmSign, latitude, longitude uint32, occurredAt string)
+	List(phone string) []AlarmEvent
+	RegisterConfirmation(phone string, commandSerial, alarmSerial uint16, alarmType uint32)
+	ConfirmByCommand(phone string, commandSerial uint16) bool
+}
+
+type memoryAlarmRepository struct {
 	mu       sync.Mutex
 	events   map[string][]*AlarmEvent
 	commands map[string]alarmCommand
 }
 
-var alarmCache = &AlarmCache{events: make(map[string][]*AlarmEvent), commands: make(map[string]alarmCommand)}
+// NewAlarmRepository 创建独立的内存报警仓储。
+func NewAlarmRepository() AlarmRepository { return newMemoryAlarmRepository() }
 
-func GetAlarmCache() *AlarmCache { return alarmCache }
+func newMemoryAlarmRepository() *memoryAlarmRepository {
+	return &memoryAlarmRepository{events: make(map[string][]*AlarmEvent), commands: make(map[string]alarmCommand)}
+}
 
-func (c *AlarmCache) Record(phone string, serial uint16, alarmSign, latitude, longitude uint32, occurredAt string) {
+func (c *memoryAlarmRepository) Record(phone string, serial uint16, alarmSign, latitude, longitude uint32, occurredAt string) {
 	if alarmSign == 0 {
 		return
 	}
@@ -52,7 +64,7 @@ func (c *AlarmCache) Record(phone string, serial uint16, alarmSign, latitude, lo
 	}
 }
 
-func (c *AlarmCache) List(phone string) []AlarmEvent {
+func (c *memoryAlarmRepository) List(phone string) []AlarmEvent {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	out := make([]AlarmEvent, 0, len(c.events[phone]))
@@ -62,7 +74,7 @@ func (c *AlarmCache) List(phone string) []AlarmEvent {
 	return out
 }
 
-func (c *AlarmCache) RegisterConfirmation(phone string, commandSerial, alarmSerial uint16, alarmType uint32) {
+func (c *memoryAlarmRepository) RegisterConfirmation(phone string, commandSerial, alarmSerial uint16, alarmType uint32) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	for key, command := range c.commands {
@@ -73,7 +85,7 @@ func (c *AlarmCache) RegisterConfirmation(phone string, commandSerial, alarmSeri
 	c.commands[alarmCommandKey(phone, commandSerial)] = alarmCommand{phone: phone, alarmSerial: alarmSerial, alarmType: alarmType, createdAt: time.Now()}
 }
 
-func (c *AlarmCache) ConfirmByCommand(phone string, commandSerial uint16) bool {
+func (c *memoryAlarmRepository) ConfirmByCommand(phone string, commandSerial uint16) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	key := alarmCommandKey(phone, commandSerial)
@@ -95,3 +107,6 @@ func (c *AlarmCache) ConfirmByCommand(phone string, commandSerial uint16) bool {
 func alarmCommandKey(phone string, serial uint16) string {
 	return fmt.Sprintf("%s/%04x", phone, serial)
 }
+
+// 编译期确认内存实现满足接口。
+var _ AlarmRepository = (*memoryAlarmRepository)(nil)

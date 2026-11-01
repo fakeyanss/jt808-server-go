@@ -6,10 +6,16 @@ import (
 	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
 )
 
-// RegionCatalog stores the area/route objects that the terminal simulator has
-// accepted through 0x8600/0x8602/0x8604/0x8606 set messages. It backs the
-// 0x0608 query response so that set → query round trips return typed records.
-type RegionCatalog struct {
+// RegionRepository 区域/路线仓储（B 类）：保存终端已接受的圆形、矩形、多边形
+// 与路线对象，支撑 0x0608 查询。内存实现按设备隔离。
+type RegionRepository interface {
+	ApplySet(phone string, set *model.MsgRegionRouteSet)
+	Delete(phone string, typ model.RegionRouteType, ids []uint32)
+	Query(phone string, queryType uint8, ids []uint32) *model.Msg0608
+}
+
+// memoryRegionRepository 是 RegionRepository 的内存实现。
+type memoryRegionRepository struct {
 	mu         sync.RWMutex
 	circles    map[string]map[uint32]model.CircleArea
 	rectangles map[string]map[uint32]model.RectangleArea
@@ -17,16 +23,19 @@ type RegionCatalog struct {
 	routes     map[string]map[uint32]model.Route
 }
 
-var regionCatalog = &RegionCatalog{
-	circles:    map[string]map[uint32]model.CircleArea{},
-	rectangles: map[string]map[uint32]model.RectangleArea{},
-	polygons:   map[string]map[uint32]model.PolygonArea{},
-	routes:     map[string]map[uint32]model.Route{},
+// NewRegionRepository 创建独立的内存区域/路线仓储。
+func NewRegionRepository() RegionRepository { return newMemoryRegionRepository() }
+
+func newMemoryRegionRepository() *memoryRegionRepository {
+	return &memoryRegionRepository{
+		circles:    map[string]map[uint32]model.CircleArea{},
+		rectangles: map[string]map[uint32]model.RectangleArea{},
+		polygons:   map[string]map[uint32]model.PolygonArea{},
+		routes:     map[string]map[uint32]model.Route{},
+	}
 }
 
-func GetRegionCatalog() *RegionCatalog { return regionCatalog }
-
-func (c *RegionCatalog) ensureMaps(phone string) {
+func (c *memoryRegionRepository) ensureMaps(phone string) {
 	if c.circles[phone] == nil {
 		c.circles[phone] = map[uint32]model.CircleArea{}
 	}
@@ -43,7 +52,7 @@ func (c *RegionCatalog) ensureMaps(phone string) {
 
 // ApplySet updates the catalog according to the setting attribute semantics.
 // setting attr bit0=update (replace all), bit1=append, bit2=modify.
-func (c *RegionCatalog) ApplySet(phone string, set *model.MsgRegionRouteSet) {
+func (c *memoryRegionRepository) ApplySet(phone string, set *model.MsgRegionRouteSet) {
 	if set == nil {
 		return
 	}
@@ -87,7 +96,7 @@ func (c *RegionCatalog) ApplySet(phone string, set *model.MsgRegionRouteSet) {
 
 // Delete removes the given IDs for the selected family. An empty id list
 // deletes all objects of that family.
-func (c *RegionCatalog) Delete(phone string, typ model.RegionRouteType, ids []uint32) {
+func (c *memoryRegionRepository) Delete(phone string, typ model.RegionRouteType, ids []uint32) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.ensureMaps(phone)
@@ -145,7 +154,7 @@ func (c *RegionCatalog) Delete(phone string, typ model.RegionRouteType, ids []ui
 }
 
 // Query returns the stored records for a query type, optionally filtered by IDs.
-func (c *RegionCatalog) Query(phone string, queryType uint8, ids []uint32) *model.Msg0608 {
+func (c *memoryRegionRepository) Query(phone string, queryType uint8, ids []uint32) *model.Msg0608 {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	c.ensureMaps(phone)
@@ -183,3 +192,6 @@ func (c *RegionCatalog) Query(phone string, queryType uint8, ids []uint32) *mode
 	}
 	return resp
 }
+
+// 编译期确认内存实现满足接口。
+var _ RegionRepository = (*memoryRegionRepository)(nil)

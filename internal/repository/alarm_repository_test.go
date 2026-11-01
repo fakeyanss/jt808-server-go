@@ -6,8 +6,8 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestAlarmCacheRecordsDeduplicatesAndConfirmsAfterCommandAck(t *testing.T) {
-	cache := &AlarmCache{events: make(map[string][]*AlarmEvent), commands: make(map[string]alarmCommand)}
+func TestAlarmRepositoryRecordsDeduplicatesAndConfirmsAfterCommandAck(t *testing.T) {
+	cache := newMemoryAlarmRepository()
 	cache.Record("phone", 12, 1, 100, 200, "261028204500")
 	cache.Record("phone", 12, 1, 100, 200, "261028204500")
 	events := cache.List("phone")

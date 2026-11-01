@@ -170,7 +170,7 @@ func TestTCPServerProcessesJT808Registration(t *testing.T) {
 	session, err := runtime.Default().Conn.Get(context.Background(), device.SessionID)
 	require.NoError(t, err)
 	paramSerial := session.GetNextSerialNum()
-	paramResponse, cancelParam, err := repository.GetParamResponseBroker().Register(phone, paramSerial)
+	paramResponse, cancelParam, err := runtime.Default().ParamResponses.Register(phone, paramSerial)
 	require.NoError(t, err)
 	defer cancelParam()
 	server.Send(session.ID, &model.Msg8106{Header: model.GenMsgHeader(device, 0x8106, paramSerial), ParamIDs: []uint32{1, 2}})
@@ -181,7 +181,7 @@ func TestTCPServerProcessesJT808Registration(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("client simulator did not answer 0x8106")
 	}
-	propertyResponse, cancelProperty, err := repository.GetPropertyResponseBroker().Register(phone)
+	propertyResponse, cancelProperty, err := runtime.Default().PropertyResponses.Register(phone)
 	require.NoError(t, err)
 	defer cancelProperty()
 	server.Send(session.ID, &model.Msg8107{Header: model.GenMsgHeader(device, 0x8107, session.GetNextSerialNum())})
@@ -201,7 +201,7 @@ func TestTCPServerProcessesJT808Registration(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	locationSerial := session.GetNextSerialNum()
-	locationResponse, cancelLocation, err := repository.GetLocationResponseBroker().Register(phone, locationSerial)
+	locationResponse, cancelLocation, err := runtime.Default().LocationResponses.Register(phone, locationSerial)
 	require.NoError(t, err)
 	defer cancelLocation()
 	server.Send(session.ID, &model.Msg8201{Header: model.GenMsgHeader(device, 0x8201, locationSerial)})
@@ -214,15 +214,15 @@ func TestTCPServerProcessesJT808Registration(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("client simulator did not answer 0x8201")
 	}
-	alarms := repository.GetAlarmCache().List(phone)
+	alarms := repository.Default().Alarms.List(phone)
 	require.NotEmpty(t, alarms)
 	require.Equal(t, report.Header.SerialNumber, alarms[len(alarms)-1].MessageSerial)
 	confirmSerial := session.GetNextSerialNum()
-	repository.GetAlarmCache().RegisterConfirmation(phone, confirmSerial, report.Header.SerialNumber, report.AlarmSign)
+	repository.Default().Alarms.RegisterConfirmation(phone, confirmSerial, report.Header.SerialNumber, report.AlarmSign)
 	server.Send(session.ID, &model.Msg8203{Header: model.GenMsgHeader(device, 0x8203, confirmSerial), AlarmSerial: report.Header.SerialNumber, AlarmType: report.AlarmSign})
 	deadline = time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		alarms = repository.GetAlarmCache().List(phone)
+		alarms = repository.Default().Alarms.List(phone)
 		if len(alarms) > 0 && alarms[len(alarms)-1].Confirmed {
 			break
 		}
@@ -232,16 +232,16 @@ func TestTCPServerProcessesJT808Registration(t *testing.T) {
 	trackSerial := session.GetNextSerialNum()
 	server.Send(session.ID, &model.Msg8202{Header: model.GenMsgHeader(device, 0x8202, trackSerial), TimeInterval: 1, ValidityPeriod: 30})
 	deadline = time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) && repository.GetLocationTrackingCache().Interval(phone, 9*time.Second) != time.Second {
+	for time.Now().Before(deadline) && runtime.Default().Tracking.Interval(phone, 9*time.Second) != time.Second {
 		time.Sleep(10 * time.Millisecond)
 	}
-	require.Equal(t, time.Second, repository.GetLocationTrackingCache().Interval(phone, 9*time.Second))
+	require.Equal(t, time.Second, runtime.Default().Tracking.Interval(phone, 9*time.Second))
 	server.Send(session.ID, &model.Msg8202{Header: model.GenMsgHeader(device, 0x8202, session.GetNextSerialNum()), TimeInterval: 0})
 	deadline = time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) && repository.GetLocationTrackingCache().Interval(phone, 9*time.Second) != 9*time.Second {
+	for time.Now().Before(deadline) && runtime.Default().Tracking.Interval(phone, 9*time.Second) != 9*time.Second {
 		time.Sleep(10 * time.Millisecond)
 	}
-	require.Equal(t, 9*time.Second, repository.GetLocationTrackingCache().Interval(phone, 9*time.Second))
+	require.Equal(t, 9*time.Second, runtime.Default().Tracking.Interval(phone, 9*time.Second))
 	repository.Default().Devices.DeleteByPhone(context.Background(), phone)
 	protocol.NewKeepaliveTimer().Cancel(phone)
 }
@@ -274,7 +274,7 @@ func TestTCPClientSimulatorIndustryMessages(t *testing.T) {
 		protocol.NewKeepaliveTimer().Cancel(phone)
 	})
 
-	industry := repository.GetIndustryCache()
+	industry := repository.Default().Industry
 	for _, msg := range []model.JT808Msg{
 		&model.Msg0702{Header: model.GenMsgHeader(device, 0x0702, 2), State: 1, Time: "261028120000", ReadResult: 0, Name: "模拟司机", QualificationCode: "CERT-01", IssuingAuthority: "交通部门", ValidUntil: "20301231", IdentityNumber: "ID-01"},
 		&model.Msg0705{Header: model.GenMsgHeader(device, 0x0705, 3), FirstTime: "1234567890", Items: []model.CANDataItem{{CANID: 0x60000123, Data: [8]byte{1, 2, 3}}}},
@@ -338,7 +338,7 @@ mediaUploaded:
 	}
 	require.GreaterOrEqual(t, countMedia, 2, "0x8800 should trigger replay of cached media packet fragments")
 
-	responseCh, cancel, err := repository.GetRegionResponseBroker().Register(phone, 1)
+	responseCh, cancel, err := runtime.Default().RegionResponses.Register(phone, 1)
 	require.NoError(t, err)
 	defer cancel()
 	server.Send(session.ID, &model.Msg8608{Header: model.GenMsgHeader(device, 0x8608, session.GetNextSerialNum()), QueryType: 1})
@@ -420,7 +420,7 @@ func TestSimulatorMediaUploadCommands(t *testing.T) {
 		protocol.NewKeepaliveTimer().Cancel(phone)
 	})
 
-	industry := repository.GetIndustryCache()
+	industry := repository.Default().Industry
 	session, err := runtime.Default().Conn.Get(context.Background(), device.SessionID)
 	require.NoError(t, err)
 
@@ -534,7 +534,7 @@ func TestSimulatorMediaResourceListQuery(t *testing.T) {
 		protocol.NewKeepaliveTimer().Cancel(phone)
 	})
 
-	industry := repository.GetIndustryCache()
+	industry := repository.Default().Industry
 	session, err := runtime.Default().Conn.Get(context.Background(), device.SessionID)
 	require.NoError(t, err)
 
@@ -674,7 +674,7 @@ func TestSimulatorTextAndEventMessages(t *testing.T) {
 		protocol.NewKeepaliveTimer().Cancel(phone)
 	})
 
-	industry := repository.GetIndustryCache()
+	industry := repository.Default().Industry
 	session, err := runtime.Default().Conn.Get(context.Background(), device.SessionID)
 	require.NoError(t, err)
 
@@ -777,7 +777,7 @@ func TestSimulatorVehicleControl(t *testing.T) {
 		protocol.NewKeepaliveTimer().Cancel(phone)
 	})
 
-	industry := repository.GetIndustryCache()
+	industry := repository.Default().Industry
 	session, err := runtime.Default().Conn.Get(context.Background(), device.SessionID)
 	require.NoError(t, err)
 
@@ -836,7 +836,7 @@ func TestSimulatorQuestionMenuInfoService(t *testing.T) {
 		protocol.NewKeepaliveTimer().Cancel(phone)
 	})
 
-	industry := repository.GetIndustryCache()
+	industry := repository.Default().Industry
 	session, err := runtime.Default().Conn.Get(context.Background(), device.SessionID)
 	require.NoError(t, err)
 
@@ -977,7 +977,7 @@ func TestSimulatorPhonebookAndUpgrade(t *testing.T) {
 		protocol.NewKeepaliveTimer().Cancel(phone)
 	})
 
-	industry := repository.GetIndustryCache()
+	industry := repository.Default().Industry
 	session, err := runtime.Default().Conn.Get(context.Background(), device.SessionID)
 	require.NoError(t, err)
 
@@ -1100,7 +1100,7 @@ func TestSimulatorTransparentAndCompressed(t *testing.T) {
 		protocol.NewKeepaliveTimer().Cancel(phone)
 	})
 
-	industry := repository.GetIndustryCache()
+	industry := repository.Default().Industry
 	session, err := runtime.Default().Conn.Get(context.Background(), device.SessionID)
 	require.NoError(t, err)
 
@@ -1185,7 +1185,7 @@ func TestSimulatorWaybillAndBatchLocation(t *testing.T) {
 		protocol.NewKeepaliveTimer().Cancel(phone)
 	})
 
-	industry := repository.GetIndustryCache()
+	industry := repository.Default().Industry
 
 	// 0x0701 electronic waybill upload.
 	require.NoError(t, cli.SendWithError(&model.Msg0701{Header: model.GenMsgHeader(device, 0x0701, 3), Content: "运单编号:WB20240101001;发货方:北京A公司;收货方:上海B公司"}))
@@ -1260,7 +1260,7 @@ func TestSimulatorMediaRetransmissionRecoversDroppedPacket(t *testing.T) {
 		protocol.NewKeepaliveTimer().Cancel(phone)
 	})
 
-	industry := repository.GetIndustryCache()
+	industry := repository.Default().Industry
 
 	// Build a 1500-byte media payload split into 5 fragments of 300 bytes.
 	const mediaID = uint32(8801)
@@ -1356,7 +1356,7 @@ func TestSimulatorRecorderCommandTypedResponses(t *testing.T) {
 		protocol.NewKeepaliveTimer().Cancel(phone)
 	})
 
-	industry := repository.GetIndustryCache()
+	industry := repository.Default().Industry
 	session, err := runtime.Default().Conn.Get(context.Background(), device.SessionID)
 	require.NoError(t, err)
 
@@ -1802,7 +1802,7 @@ func TestTCPServerTerminalUplink8500Echoes0500(t *testing.T) {
 	reply := &model.Msg0500{}
 	b.recvInto(t, 3*time.Second, 0x0500, reply)
 	require.Equal(t, uint16(0x0007), reply.ControlFlags)
-	require.Equal(t, uint16(0x0007), repository.GetIndustryCache().VehicleControl(phone))
+	require.Equal(t, uint16(0x0007), repository.Default().Industry.VehicleControl(phone))
 }
 
 func TestTCPServerRejectsDuplicateRegistration(t *testing.T) {
@@ -1976,7 +1976,7 @@ func TestSimulatorRecorderPositionTestCommands(t *testing.T) {
 		protocol.NewKeepaliveTimer().Cancel(phone)
 	})
 
-	industry := repository.GetIndustryCache()
+	industry := repository.Default().Industry
 	session, err := runtime.Default().Conn.Get(context.Background(), device.SessionID)
 	require.NoError(t, err)
 

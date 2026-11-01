@@ -45,18 +45,24 @@ type DeviceParamsRepository interface {
 // 运行时状态（连接现场、分包重组、下行重传）由 runtime.Stores 单独提供，
 // 不挂在这里，避免把「连接在则有效」的状态混入可持久化装配。
 type Stores struct {
-	Devices DeviceRepository
-	Geo     GeoRepository
-	Params  DeviceParamsRepository
+	Devices  DeviceRepository
+	Geo      GeoRepository
+	Params   DeviceParamsRepository
+	Alarms   AlarmRepository
+	Regions  RegionRepository
+	Industry IndustryRepository
 }
 
 // NewStores 创建一组互相独立的内存仓储，供测试与新代码注入。
 // 不传任何参数，返回全新的独立实例，不污染默认入口。
 func NewStores() *Stores {
 	return &Stores{
-		Devices: NewDeviceRepository(),
-		Geo:     NewGeoRepository(),
-		Params:  NewDeviceParamsRepository(),
+		Devices:  NewDeviceRepository(),
+		Geo:      NewGeoRepository(),
+		Params:   NewDeviceParamsRepository(),
+		Alarms:   NewAlarmRepository(),
+		Regions:  NewRegionRepository(),
+		Industry: NewIndustryRepository(),
 	}
 }
 
@@ -85,9 +91,12 @@ func NewDeviceParamsRepository() DeviceParamsRepository { return newMemoryDevice
 func Default() *Stores {
 	defaultStoresOnce.Do(func() {
 		defaultStores = &Stores{
-			Devices: newMemoryDeviceRepository(),
-			Geo:     newMemoryGeoRepository(),
-			Params:  newMemoryDeviceParamsRepository(),
+			Devices:  newMemoryDeviceRepository(),
+			Geo:      newMemoryGeoRepository(),
+			Params:   newMemoryDeviceParamsRepository(),
+			Alarms:   newMemoryAlarmRepository(),
+			Regions:  newMemoryRegionRepository(),
+			Industry: newMemoryIndustryRepository(),
 		}
 	})
 	return defaultStores

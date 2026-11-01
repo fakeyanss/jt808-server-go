@@ -678,12 +678,12 @@ func processMsg0104(_ context.Context, data *model.ProcessData) error {
 	if in.Parameters != nil {
 		_ = repository.Default().Params.Replace(context.Background(), in.Parameters)
 	}
-	repository.GetParamResponseBroker().Deliver(in)
+	runtime.Default().ParamResponses.Deliver(in)
 	return nil
 }
 
 func processMsg0107(_ context.Context, data *model.ProcessData) error {
-	repository.GetPropertyResponseBroker().Deliver(data.Incoming.(*model.Msg0107))
+	runtime.Default().PropertyResponses.Deliver(data.Incoming.(*model.Msg0107))
 	return nil
 }
 
@@ -719,13 +719,13 @@ func processMsg8201(_ context.Context, data *model.ProcessData) error {
 }
 
 func processMsg0201(_ context.Context, data *model.ProcessData) error {
-	repository.GetLocationResponseBroker().Deliver(data.Incoming.(*model.Msg0201))
+	runtime.Default().LocationResponses.Deliver(data.Incoming.(*model.Msg0201))
 	return nil
 }
 
 func processMsg8202(_ context.Context, data *model.ProcessData) error {
 	in := data.Incoming.(*model.Msg8202)
-	repository.GetLocationTrackingCache().Set(in.Header.PhoneNumber, in.TimeInterval, in.ValidityPeriod)
+	runtime.Default().Tracking.Set(in.Header.PhoneNumber, in.TimeInterval, in.ValidityPeriod)
 	return nil
 }
 
@@ -740,7 +740,7 @@ func processMsg0200(_ context.Context, data *model.ProcessData) error {
 	if errors.Is(err, repository.ErrDeviceNotFound) {
 		return errors.Wrapf(err, "Fail to find device cache, phoneNumber=%s", in.Header.PhoneNumber)
 	}
-	repository.GetAlarmCache().Record(in.Header.PhoneNumber, in.Header.SerialNumber, in.AlarmSign, in.Latitude, in.Longitude, in.Time)
+	repository.Default().Alarms.Record(in.Header.PhoneNumber, in.Header.SerialNumber, in.AlarmSign, in.Latitude, in.Longitude, in.Time)
 
 	// 解析状态位编码
 	dg := &model.DeviceGeo{}
@@ -766,7 +766,7 @@ func processMsg0001(ctx context.Context, data *model.ProcessData) error {
 		session.Acknowledge(in.AnswerMessageID, in.AnswerSerialNumber)
 	}
 	if in.AnswerMessageID == 0x8203 {
-		repository.GetAlarmCache().ConfirmByCommand(in.Header.PhoneNumber, in.AnswerSerialNumber)
+		repository.Default().Alarms.ConfirmByCommand(in.Header.PhoneNumber, in.AnswerSerialNumber)
 	}
 	return nil
 }
@@ -1004,7 +1004,7 @@ func processMsg9205(_ context.Context, data *model.ProcessData) error {
 	in := data.Incoming.(*model.Msg9205)
 	out := data.Outgoing.(*model.Msg1205)
 	out.Items = nil
-	for _, media := range repository.GetIndustryCache().MediaUploads(in.Header.PhoneNumber) {
+	for _, media := range repository.Default().Industry.MediaUploads(in.Header.PhoneNumber) {
 		if in.LogicChannelID != 0 && media.LogicChannelID != in.LogicChannelID {
 			continue
 		}
@@ -1072,7 +1072,7 @@ func mediaTimeInRange(t string, start, end *time.Time) bool {
 }
 
 func processIndustryReport(_ context.Context, data *model.ProcessData) error {
-	repository.GetIndustryCache().Record(data.Incoming)
+	repository.Default().Industry.Record(data.Incoming)
 	return nil
 }
 
@@ -1080,14 +1080,14 @@ func processIndustryReport(_ context.Context, data *model.ProcessData) error {
 // event catalog according to the 0x8301 set type.
 func processMsg8301(_ context.Context, data *model.ProcessData) error {
 	in := data.Incoming.(*model.Msg8301)
-	repository.GetIndustryCache().ApplyEventSet(in.Header.PhoneNumber, in.SetType, in.Items)
+	repository.Default().Industry.ApplyEventSet(in.Header.PhoneNumber, in.SetType, in.Items)
 	return nil
 }
 
 // processMsg8302 stores the issued question so the latest question and its
 // candidate answers are available to the terminal simulator.
 func processMsg8302(_ context.Context, data *model.ProcessData) error {
-	repository.GetIndustryCache().Record(data.Incoming)
+	repository.Default().Industry.Record(data.Incoming)
 	return nil
 }
 
@@ -1095,13 +1095,13 @@ func processMsg8302(_ context.Context, data *model.ProcessData) error {
 // catalog according to the 0x8303 set type.
 func processMsg8303(_ context.Context, data *model.ProcessData) error {
 	in := data.Incoming.(*model.Msg8303)
-	repository.GetIndustryCache().ApplyInfoMenuSet(in.Header.PhoneNumber, in.SetType, in.Items)
+	repository.Default().Industry.ApplyInfoMenuSet(in.Header.PhoneNumber, in.SetType, in.Items)
 	return nil
 }
 
 // processMsg8304 stores the latest information-service message for a device.
 func processMsg8304(_ context.Context, data *model.ProcessData) error {
-	repository.GetIndustryCache().Record(data.Incoming)
+	repository.Default().Industry.Record(data.Incoming)
 	return nil
 }
 
@@ -1109,7 +1109,7 @@ func processMsg8304(_ context.Context, data *model.ProcessData) error {
 // 0x8401 set type.
 func processMsg8401(_ context.Context, data *model.ProcessData) error {
 	in := data.Incoming.(*model.Msg8401)
-	repository.GetIndustryCache().ApplyPhonebookSet(in.Header.PhoneNumber, in.SetType, in.Items)
+	repository.Default().Industry.ApplyPhonebookSet(in.Header.PhoneNumber, in.SetType, in.Items)
 	return nil
 }
 
@@ -1117,12 +1117,12 @@ func processMsg8401(_ context.Context, data *model.ProcessData) error {
 // them back to the platform.
 func processMsg8500(_ context.Context, data *model.ProcessData) error {
 	in := data.Incoming.(*model.Msg8500)
-	repository.GetIndustryCache().SetVehicleControl(in.Header.PhoneNumber, in.ControlFlags)
+	repository.Default().Industry.SetVehicleControl(in.Header.PhoneNumber, in.ControlFlags)
 	return nil
 }
 
 func processRegionResponse(_ context.Context, data *model.ProcessData) error {
-	repository.GetRegionResponseBroker().Deliver(data.Incoming.(*model.Msg0608))
+	runtime.Default().RegionResponses.Deliver(data.Incoming.(*model.Msg0608))
 	return nil
 }
 
@@ -1130,7 +1130,7 @@ func processRegionResponse(_ context.Context, data *model.ProcessData) error {
 // simulator's catalog so a subsequent 0x8608 query returns typed records.
 func processRegionRouteSet(_ context.Context, data *model.ProcessData) error {
 	in := data.Incoming.(*model.MsgRegionRouteSet)
-	repository.GetRegionCatalog().ApplySet(in.Header.PhoneNumber, in)
+	repository.Default().Regions.ApplySet(in.Header.PhoneNumber, in)
 	return nil
 }
 
@@ -1141,7 +1141,7 @@ func processRegionRouteDelete(_ context.Context, data *model.ProcessData) error 
 	if !ok {
 		return nil
 	}
-	repository.GetRegionCatalog().Delete(in.Header.PhoneNumber, typ, in.IDs)
+	repository.Default().Regions.Delete(in.Header.PhoneNumber, typ, in.IDs)
 	return nil
 }
 
@@ -1150,7 +1150,7 @@ func processRegionRouteDelete(_ context.Context, data *model.ProcessData) error 
 func processRegionRouteQuery(_ context.Context, data *model.ProcessData) error {
 	query := data.Incoming.(*model.Msg8608)
 	resp := data.Outgoing.(*model.Msg0608)
-	stored := repository.GetRegionCatalog().Query(query.Header.PhoneNumber, query.QueryType, query.IDs)
+	stored := repository.Default().Regions.Query(query.Header.PhoneNumber, query.QueryType, query.IDs)
 	resp.Circles = stored.Circles
 	resp.Rectangles = stored.Rectangles
 	resp.Polygons = stored.Polygons
@@ -1161,7 +1161,7 @@ func processRegionRouteQuery(_ context.Context, data *model.ProcessData) error {
 func processMediaSearchResponse(_ context.Context, data *model.ProcessData) error {
 	query := data.Incoming.(*model.Msg8802)
 	response := data.Outgoing.(*model.Msg0802)
-	for _, media := range repository.GetIndustryCache().MediaUploads(query.Header.PhoneNumber) {
+	for _, media := range repository.Default().Industry.MediaUploads(query.Header.PhoneNumber) {
 		if media.MultiMediaType != query.MediaType || (query.ChannelID != 0 && media.LogicChannelID != query.ChannelID) || (query.EventID != 0 && media.EventID != query.EventID) {
 			continue
 		}
@@ -1227,7 +1227,7 @@ func processMsg8803(ctx context.Context, data *model.ProcessData) error {
 		return nil
 	}
 	phone := cmd.Header.PhoneNumber
-	industry := repository.GetIndustryCache()
+	industry := repository.Default().Industry
 	uploads := industry.MediaUploads(phone)
 	for i := range uploads {
 		media := uploads[i]
@@ -1267,7 +1267,7 @@ func processMsg8804(ctx context.Context, data *model.ProcessData) error {
 	cmd := data.Incoming.(*model.Msg8804)
 	session, _ := ctx.Value(model.SessionCtxKey{}).(*model.Session)
 	phone := cmd.Header.PhoneNumber
-	industry := repository.GetIndustryCache()
+	industry := repository.Default().Industry
 	industry.SetRecording(phone, cmd.Command == 1)
 	if cmd.Command != 1 || session == nil {
 		return nil
@@ -1301,7 +1301,7 @@ func processMsg8805(ctx context.Context, data *model.ProcessData) error {
 		return nil
 	}
 	phone := cmd.Header.PhoneNumber
-	industry := repository.GetIndustryCache()
+	industry := repository.Default().Industry
 	for _, media := range industry.MediaUploads(phone) {
 		if media.MultiMediaID != cmd.MediaID {
 			continue

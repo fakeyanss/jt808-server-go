@@ -1,4 +1,4 @@
-package repository
+package runtime
 
 import (
 	"testing"
@@ -9,7 +9,7 @@ import (
 )
 
 func TestParamResponseBrokerCorrelatesPhoneAndPlatformSerial(t *testing.T) {
-	broker := &ParamResponseBroker{waiters: make(map[paramResponseKey]chan *model.Msg0104)}
+	broker := newMemoryParamResponseBroker()
 	ch, cancel, err := broker.Register("18800000001", 42)
 	require.NoError(t, err)
 	defer cancel()

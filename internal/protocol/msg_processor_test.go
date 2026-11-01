@@ -58,7 +58,7 @@ func locationReportBody(alarmSign uint32) []byte {
 }
 
 // 位置上报写入定位缓存。
-func TestLocationReportWritesGeoCache(t *testing.T) {
+func TestLocationReportWritesGeo(t *testing.T) {
 	const phone = "188765499002"
 	repository.Default().Devices.Upsert(context.Background(), &model.Device{Phone: phone, Keepalive: time.Minute})
 	t.Cleanup(func() {

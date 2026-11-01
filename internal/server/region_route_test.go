@@ -59,7 +59,7 @@ func TestRegionRouteSetQueryDeleteRoundTrip(t *testing.T) {
 	session, err := runtime.Default().Conn.Get(context.Background(), device.SessionID)
 	require.NoError(t, err)
 
-	catalog := repository.GetRegionCatalog()
+	catalog := repository.Default().Regions
 
 	// --- Set a circle area ---
 	setCircle := &model.MsgRegionRouteSet{
@@ -79,7 +79,7 @@ func TestRegionRouteSetQueryDeleteRoundTrip(t *testing.T) {
 	})
 
 	// --- Query circles back through 0x8608/0x0608 ---
-	responseCh, cancel, err := repository.GetRegionResponseBroker().Register(device.Phone, 1)
+	responseCh, cancel, err := runtime.Default().RegionResponses.Register(device.Phone, 1)
 	require.NoError(t, err)
 	server.Send(session.ID, &model.Msg8608{Header: model.GenMsgHeader(device, 0x8608, session.GetNextSerialNum()), QueryType: 1})
 	select {

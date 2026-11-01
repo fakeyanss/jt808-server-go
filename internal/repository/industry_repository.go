@@ -6,9 +6,47 @@ import (
 	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
 )
 
-// IndustryCache retains the latest decoded industry report per device. The
-// cache is intentionally in-memory like the current alarm and location caches.
-type IndustryCache struct {
+// IndustryRepository 行业协议上报数据仓储（B/C 类）。
+// 保留设备最新一次解码结果、下发目录与模拟器接收状态；内存实现按设备隔离，
+// 读取返回深拷贝，避免调用方修改仓储内部状态。后续按设计文档 §6.4 拆分
+// TerminalCatalogRepository / IndustrySnapshotHotView 时保持方法语义不变。
+type IndustryRepository interface {
+	Record(msg model.JT808Msg)
+	Waybill(phone string) *model.Msg0701
+	BatchLocation(phone string) *model.Msg0704
+	SetVehicleControl(phone string, flags uint16)
+	VehicleControl(phone string) uint16
+	ApplyEventSet(phone string, setType uint8, items []model.EventItem)
+	Events(phone string) []model.EventItem
+	EventReport(phone string) *model.Msg0301
+	Question(phone string) *model.Msg8302
+	QuestionResponse(phone string) *model.Msg0302
+	ApplyInfoMenuSet(phone string, setType uint8, items []model.InfoMenuItem)
+	InfoMenu(phone string) []model.InfoMenuItem
+	MenuAction(phone string) *model.Msg0303
+	InfoService(phone string) *model.Msg8304
+	CallBack(phone string) *model.Msg8400
+	ApplyPhonebookSet(phone string, setType uint8, items []model.PhonebookContact)
+	Phonebook(phone string) []model.PhonebookContact
+	Upgrade(phone string) *model.Msg8108
+	UpgradeResult(phone string) *model.Msg0108
+	TransparentDown(phone string) *model.Msg8900
+	TransparentUp(phone string) *model.Msg0900
+	Compressed(phone string) *model.Msg0901
+	Driver(phone string) *model.Msg0702
+	CAN(phone string) *model.Msg0705
+	RecordData(phone string) *model.Msg0700
+	MediaUploads(phone string) []model.Msg0801
+	MediaEvent(phone string) *model.Msg0800
+	Capture(phone string) *model.Msg0805
+	MediaSearch(phone string) *model.Msg0802
+	MediaResourceList(phone string) *model.Msg1205
+	SetRecording(phone string, active bool)
+	IsRecording(phone string) bool
+}
+
+// memoryIndustryRepository 是 IndustryRepository 的内存实现。
+type memoryIndustryRepository struct {
 	mu              sync.RWMutex
 	drivers         map[string]*model.Msg0702
 	cans            map[string]*model.Msg0705
@@ -38,10 +76,14 @@ type IndustryCache struct {
 	recording       map[string]bool
 }
 
-var industryCache = &IndustryCache{drivers: map[string]*model.Msg0702{}, cans: map[string]*model.Msg0705{}, records: map[string]*model.Msg0700{}, mediaEvents: map[string]*model.Msg0800{}, mediaUploads: map[string][]*model.Msg0801{}, captures: map[string]*model.Msg0805{}, mediaSearches: map[string]*model.Msg0802{}, mediaResources: map[string]*model.Msg1205{}, events: map[string]map[uint8]model.EventItem{}, eventReports: map[string]*model.Msg0301{}, questions: map[string]*model.Msg8302{}, questionResps: map[string]*model.Msg0302{}, infoMenus: map[string]map[uint32]model.InfoMenuItem{}, menuActions: map[string]*model.Msg0303{}, infoServices: map[string]*model.Msg8304{}, callbacks: map[string]*model.Msg8400{}, phonebook: map[string]map[string]model.PhonebookContact{}, upgrades: map[string]*model.Msg8108{}, upgradeResults: map[string]*model.Msg0108{}, transparentDown: map[string]*model.Msg8900{}, transparentUp: map[string]*model.Msg0900{}, compressed: map[string]*model.Msg0901{}, vehicleControl: map[string]uint16{}, waybills: map[string]*model.Msg0701{}, batchLocs: map[string]*model.Msg0704{}, recording: map[string]bool{}}
+// NewIndustryRepository 创建独立的内存行业上报仓储。
+func NewIndustryRepository() IndustryRepository { return newMemoryIndustryRepository() }
 
-func GetIndustryCache() *IndustryCache { return industryCache }
-func (c *IndustryCache) Record(msg model.JT808Msg) {
+func newMemoryIndustryRepository() *memoryIndustryRepository {
+	return &memoryIndustryRepository{drivers: map[string]*model.Msg0702{}, cans: map[string]*model.Msg0705{}, records: map[string]*model.Msg0700{}, mediaEvents: map[string]*model.Msg0800{}, mediaUploads: map[string][]*model.Msg0801{}, captures: map[string]*model.Msg0805{}, mediaSearches: map[string]*model.Msg0802{}, mediaResources: map[string]*model.Msg1205{}, events: map[string]map[uint8]model.EventItem{}, eventReports: map[string]*model.Msg0301{}, questions: map[string]*model.Msg8302{}, questionResps: map[string]*model.Msg0302{}, infoMenus: map[string]map[uint32]model.InfoMenuItem{}, menuActions: map[string]*model.Msg0303{}, infoServices: map[string]*model.Msg8304{}, callbacks: map[string]*model.Msg8400{}, phonebook: map[string]map[string]model.PhonebookContact{}, upgrades: map[string]*model.Msg8108{}, upgradeResults: map[string]*model.Msg0108{}, transparentDown: map[string]*model.Msg8900{}, transparentUp: map[string]*model.Msg0900{}, compressed: map[string]*model.Msg0901{}, vehicleControl: map[string]uint16{}, waybills: map[string]*model.Msg0701{}, batchLocs: map[string]*model.Msg0704{}, recording: map[string]bool{}}
+}
+
+func (c *memoryIndustryRepository) Record(msg model.JT808Msg) {
 	if msg == nil || msg.GetHeader() == nil {
 		return
 	}
@@ -140,7 +182,7 @@ func (c *IndustryCache) Record(msg model.JT808Msg) {
 }
 
 // Waybill returns the latest 0x0701 electronic waybill for a device.
-func (c *IndustryCache) Waybill(phone string) *model.Msg0701 {
+func (c *memoryIndustryRepository) Waybill(phone string) *model.Msg0701 {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	m := c.waybills[phone]
@@ -152,7 +194,7 @@ func (c *IndustryCache) Waybill(phone string) *model.Msg0701 {
 }
 
 // BatchLocation returns the latest 0x0704 batch location report for a device.
-func (c *IndustryCache) BatchLocation(phone string) *model.Msg0704 {
+func (c *memoryIndustryRepository) BatchLocation(phone string) *model.Msg0704 {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	m := c.batchLocs[phone]
@@ -165,14 +207,14 @@ func (c *IndustryCache) BatchLocation(phone string) *model.Msg0704 {
 }
 
 // SetVehicleControl stores the latest 0x8500 control flags for a device.
-func (c *IndustryCache) SetVehicleControl(phone string, flags uint16) {
+func (c *memoryIndustryRepository) SetVehicleControl(phone string, flags uint16) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.vehicleControl[phone] = flags
 }
 
 // VehicleControl returns the latest vehicle control flags for a device.
-func (c *IndustryCache) VehicleControl(phone string) uint16 {
+func (c *memoryIndustryRepository) VehicleControl(phone string) uint16 {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return c.vehicleControl[phone]
@@ -180,7 +222,7 @@ func (c *IndustryCache) VehicleControl(phone string) uint16 {
 
 // ApplyEventSet updates the terminal simulator's event catalog according to the
 // 0x8301 set type: 0=delete all, 1=replace, 2=append, 3=modify by ID.
-func (c *IndustryCache) ApplyEventSet(phone string, setType uint8, items []model.EventItem) {
+func (c *memoryIndustryRepository) ApplyEventSet(phone string, setType uint8, items []model.EventItem) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	catalog, ok := c.events[phone]
@@ -208,7 +250,7 @@ func (c *IndustryCache) ApplyEventSet(phone string, setType uint8, items []model
 }
 
 // Events returns the configured event items for a device.
-func (c *IndustryCache) Events(phone string) []model.EventItem {
+func (c *memoryIndustryRepository) Events(phone string) []model.EventItem {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	out := make([]model.EventItem, 0, len(c.events[phone]))
@@ -219,7 +261,7 @@ func (c *IndustryCache) Events(phone string) []model.EventItem {
 }
 
 // EventReport returns the latest 0x0301 event report for a device.
-func (c *IndustryCache) EventReport(phone string) *model.Msg0301 {
+func (c *memoryIndustryRepository) EventReport(phone string) *model.Msg0301 {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	m := c.eventReports[phone]
@@ -231,7 +273,7 @@ func (c *IndustryCache) EventReport(phone string) *model.Msg0301 {
 }
 
 // Question returns the latest 0x8302 question for a device.
-func (c *IndustryCache) Question(phone string) *model.Msg8302 {
+func (c *memoryIndustryRepository) Question(phone string) *model.Msg8302 {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	m := c.questions[phone]
@@ -244,7 +286,7 @@ func (c *IndustryCache) Question(phone string) *model.Msg8302 {
 }
 
 // QuestionResponse returns the latest 0x0302 question response for a device.
-func (c *IndustryCache) QuestionResponse(phone string) *model.Msg0302 {
+func (c *memoryIndustryRepository) QuestionResponse(phone string) *model.Msg0302 {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	m := c.questionResps[phone]
@@ -258,7 +300,7 @@ func (c *IndustryCache) QuestionResponse(phone string) *model.Msg0302 {
 // ApplyInfoMenuSet updates the terminal simulator's information on-demand menu
 // catalog according to the 0x8303 set type: 0=delete all, 1=replace,
 // 2=append, 3=modify by ID.
-func (c *IndustryCache) ApplyInfoMenuSet(phone string, setType uint8, items []model.InfoMenuItem) {
+func (c *memoryIndustryRepository) ApplyInfoMenuSet(phone string, setType uint8, items []model.InfoMenuItem) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	catalog, ok := c.infoMenus[phone]
@@ -282,7 +324,7 @@ func (c *IndustryCache) ApplyInfoMenuSet(phone string, setType uint8, items []mo
 }
 
 // InfoMenu returns the configured information on-demand menu items for a device.
-func (c *IndustryCache) InfoMenu(phone string) []model.InfoMenuItem {
+func (c *memoryIndustryRepository) InfoMenu(phone string) []model.InfoMenuItem {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	out := make([]model.InfoMenuItem, 0, len(c.infoMenus[phone]))
@@ -293,7 +335,7 @@ func (c *IndustryCache) InfoMenu(phone string) []model.InfoMenuItem {
 }
 
 // MenuAction returns the latest 0x0303 on-demand/cancel action for a device.
-func (c *IndustryCache) MenuAction(phone string) *model.Msg0303 {
+func (c *memoryIndustryRepository) MenuAction(phone string) *model.Msg0303 {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	m := c.menuActions[phone]
@@ -305,7 +347,7 @@ func (c *IndustryCache) MenuAction(phone string) *model.Msg0303 {
 }
 
 // InfoService returns the latest 0x8304 information-service message for a device.
-func (c *IndustryCache) InfoService(phone string) *model.Msg8304 {
+func (c *memoryIndustryRepository) InfoService(phone string) *model.Msg8304 {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	m := c.infoServices[phone]
@@ -317,7 +359,7 @@ func (c *IndustryCache) InfoService(phone string) *model.Msg8304 {
 }
 
 // CallBack returns the latest 0x8400 call-callback command for a device.
-func (c *IndustryCache) CallBack(phone string) *model.Msg8400 {
+func (c *memoryIndustryRepository) CallBack(phone string) *model.Msg8400 {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	m := c.callbacks[phone]
@@ -330,7 +372,7 @@ func (c *IndustryCache) CallBack(phone string) *model.Msg8400 {
 
 // ApplyPhonebookSet updates the terminal simulator's phonebook according to the
 // 0x8401 set type: 0=delete all, 1=replace, 2=append, 3=modify by phone number.
-func (c *IndustryCache) ApplyPhonebookSet(phone string, setType uint8, items []model.PhonebookContact) {
+func (c *memoryIndustryRepository) ApplyPhonebookSet(phone string, setType uint8, items []model.PhonebookContact) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	catalog, ok := c.phonebook[phone]
@@ -354,7 +396,7 @@ func (c *IndustryCache) ApplyPhonebookSet(phone string, setType uint8, items []m
 }
 
 // Phonebook returns the configured phonebook contacts for a device.
-func (c *IndustryCache) Phonebook(phone string) []model.PhonebookContact {
+func (c *memoryIndustryRepository) Phonebook(phone string) []model.PhonebookContact {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	out := make([]model.PhonebookContact, 0, len(c.phonebook[phone]))
@@ -365,7 +407,7 @@ func (c *IndustryCache) Phonebook(phone string) []model.PhonebookContact {
 }
 
 // Upgrade returns the latest 0x8108 terminal-upgrade command for a device.
-func (c *IndustryCache) Upgrade(phone string) *model.Msg8108 {
+func (c *memoryIndustryRepository) Upgrade(phone string) *model.Msg8108 {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	m := c.upgrades[phone]
@@ -378,7 +420,7 @@ func (c *IndustryCache) Upgrade(phone string) *model.Msg8108 {
 }
 
 // UpgradeResult returns the latest 0x0108 upgrade-result notification for a device.
-func (c *IndustryCache) UpgradeResult(phone string) *model.Msg0108 {
+func (c *memoryIndustryRepository) UpgradeResult(phone string) *model.Msg0108 {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	m := c.upgradeResults[phone]
@@ -390,7 +432,7 @@ func (c *IndustryCache) UpgradeResult(phone string) *model.Msg0108 {
 }
 
 // TransparentDown returns the latest 0x8900 downlink transparent message for a device.
-func (c *IndustryCache) TransparentDown(phone string) *model.Msg8900 {
+func (c *memoryIndustryRepository) TransparentDown(phone string) *model.Msg8900 {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	m := c.transparentDown[phone]
@@ -403,7 +445,7 @@ func (c *IndustryCache) TransparentDown(phone string) *model.Msg8900 {
 }
 
 // TransparentUp returns the latest 0x0900 uplink transparent message for a device.
-func (c *IndustryCache) TransparentUp(phone string) *model.Msg0900 {
+func (c *memoryIndustryRepository) TransparentUp(phone string) *model.Msg0900 {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	m := c.transparentUp[phone]
@@ -416,7 +458,7 @@ func (c *IndustryCache) TransparentUp(phone string) *model.Msg0900 {
 }
 
 // Compressed returns the latest 0x0901 compressed data report for a device.
-func (c *IndustryCache) Compressed(phone string) *model.Msg0901 {
+func (c *memoryIndustryRepository) Compressed(phone string) *model.Msg0901 {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	m := c.compressed[phone]
@@ -428,7 +470,7 @@ func (c *IndustryCache) Compressed(phone string) *model.Msg0901 {
 	copy.Decompressed = append([]byte(nil), m.Decompressed...)
 	return &copy
 }
-func (c *IndustryCache) Driver(phone string) *model.Msg0702 {
+func (c *memoryIndustryRepository) Driver(phone string) *model.Msg0702 {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	m := c.drivers[phone]
@@ -438,7 +480,7 @@ func (c *IndustryCache) Driver(phone string) *model.Msg0702 {
 	copy := *m
 	return &copy
 }
-func (c *IndustryCache) CAN(phone string) *model.Msg0705 {
+func (c *memoryIndustryRepository) CAN(phone string) *model.Msg0705 {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	m := c.cans[phone]
@@ -449,7 +491,7 @@ func (c *IndustryCache) CAN(phone string) *model.Msg0705 {
 	copy.Items = append([]model.CANDataItem(nil), m.Items...)
 	return &copy
 }
-func (c *IndustryCache) RecordData(phone string) *model.Msg0700 {
+func (c *memoryIndustryRepository) RecordData(phone string) *model.Msg0700 {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	m := c.records[phone]
@@ -460,7 +502,7 @@ func (c *IndustryCache) RecordData(phone string) *model.Msg0700 {
 	copy.Data = append([]byte(nil), m.Data...)
 	return &copy
 }
-func (c *IndustryCache) MediaUploads(phone string) []model.Msg0801 {
+func (c *memoryIndustryRepository) MediaUploads(phone string) []model.Msg0801 {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	out := make([]model.Msg0801, 0, len(c.mediaUploads[phone]))
@@ -470,7 +512,7 @@ func (c *IndustryCache) MediaUploads(phone string) []model.Msg0801 {
 	return out
 }
 
-func (c *IndustryCache) MediaEvent(phone string) *model.Msg0800 {
+func (c *memoryIndustryRepository) MediaEvent(phone string) *model.Msg0800 {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	m := c.mediaEvents[phone]
@@ -481,7 +523,7 @@ func (c *IndustryCache) MediaEvent(phone string) *model.Msg0800 {
 	return &copy
 }
 
-func (c *IndustryCache) Capture(phone string) *model.Msg0805 {
+func (c *memoryIndustryRepository) Capture(phone string) *model.Msg0805 {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	m := c.captures[phone]
@@ -493,7 +535,7 @@ func (c *IndustryCache) Capture(phone string) *model.Msg0805 {
 	return &copy
 }
 
-func (c *IndustryCache) MediaSearch(phone string) *model.Msg0802 {
+func (c *memoryIndustryRepository) MediaSearch(phone string) *model.Msg0802 {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	m := c.mediaSearches[phone]
@@ -507,7 +549,7 @@ func (c *IndustryCache) MediaSearch(phone string) *model.Msg0802 {
 
 // MediaResourceList returns the latest 0x1205 resource list response for a
 // device, or nil if the terminal has not answered a 0x9205 query.
-func (c *IndustryCache) MediaResourceList(phone string) *model.Msg1205 {
+func (c *memoryIndustryRepository) MediaResourceList(phone string) *model.Msg1205 {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	m := c.mediaResources[phone]
@@ -520,15 +562,18 @@ func (c *IndustryCache) MediaResourceList(phone string) *model.Msg1205 {
 }
 
 // SetRecording toggles the terminal simulator's recording flag for a device.
-func (c *IndustryCache) SetRecording(phone string, active bool) {
+func (c *memoryIndustryRepository) SetRecording(phone string, active bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.recording[phone] = active
 }
 
 // IsRecording reports whether the terminal simulator is currently recording.
-func (c *IndustryCache) IsRecording(phone string) bool {
+func (c *memoryIndustryRepository) IsRecording(phone string) bool {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return c.recording[phone]
 }
+
+// 编译期确认内存实现满足接口。
+var _ IndustryRepository = (*memoryIndustryRepository)(nil)

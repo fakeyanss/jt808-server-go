@@ -14,6 +14,7 @@ import (
 	"github.com/fakeyanss/jt808-server-go/internal/config"
 	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
 	"github.com/fakeyanss/jt808-server-go/internal/repository"
+	"github.com/fakeyanss/jt808-server-go/internal/runtime"
 	"github.com/fakeyanss/jt808-server-go/pkg/logger"
 	"github.com/fakeyanss/jt808-server-go/pkg/routines"
 	"github.com/fakeyanss/jt808-server-go/test/datagen"
@@ -90,7 +91,7 @@ func buildDeviceGeo(ctx context.Context) {
 func reportLocation(ctx context.Context, cli *client.TCPClient) {
 	deviceGeoConf := ctx.Value(DeviceGeoConfCtxKey{}).(*config.DeviceGeoConf)
 	geo := repository.Default().Geo
-	tracker := repository.GetLocationTrackingCache()
+	tracker := runtime.Default().Tracking
 	device := getDevice(ctx)
 	fallback := time.Duration(deviceGeoConf.LocationReportInterval) * time.Second
 	sendLocation := func() {
@@ -210,7 +211,7 @@ func dialAndSend(cfg *config.Config, cliWg *sync.WaitGroup, fragmentSize int, re
 					datagen.GenMsg0800(d),                                      // 多媒体事件
 					datagen.GenMsg0801(d),                                      // 多媒体数据
 				} {
-					repository.GetIndustryCache().Record(msg)
+					repository.Default().Industry.Record(msg)
 					cli.Send(msg)
 				}
 			})

@@ -43,17 +43,27 @@ type RetransmitTracker interface {
 // Stores 聚合运行时状态接口，作为组件构造函数的运行时依赖。
 // 它刻意与 storage.Stores（持久化仓储）分离，避免把连接现场混进可持久化的组装。
 type Stores struct {
-	Conn     ConnectionRegistry
-	Fragment FragmentAssembler
-	Retrans  RetransmitTracker
+	Conn              ConnectionRegistry
+	Fragment          FragmentAssembler
+	Retrans           RetransmitTracker
+	ParamResponses    ParamResponseBroker
+	PropertyResponses PropertyResponseBroker
+	LocationResponses LocationResponseBroker
+	RegionResponses   RegionResponseBroker
+	Tracking          LocationTracker
 }
 
 // NewStores 创建一组互相独立的运行时状态实例，供测试与新代码注入。
 func NewStores() *Stores {
 	return &Stores{
-		Conn:     NewConnectionRegistry(),
-		Fragment: NewFragmentAssembler(),
-		Retrans:  NewRetransmitTracker(),
+		Conn:              NewConnectionRegistry(),
+		Fragment:          NewFragmentAssembler(),
+		Retrans:           NewRetransmitTracker(),
+		ParamResponses:    NewParamResponseBroker(),
+		PropertyResponses: NewPropertyResponseBroker(),
+		LocationResponses: NewLocationResponseBroker(),
+		RegionResponses:   NewRegionResponseBroker(),
+		Tracking:          NewLocationTracker(),
 	}
 }
 
@@ -64,9 +74,14 @@ func NewStores() *Stores {
 func Default() *Stores {
 	defaultOnce.Do(func() {
 		defaultStores = &Stores{
-			Conn:     newDefaultConnectionRegistry(),
-			Fragment: NewFragmentAssembler(),
-			Retrans:  NewRetransmitTracker(),
+			Conn:              newDefaultConnectionRegistry(),
+			Fragment:          NewFragmentAssembler(),
+			Retrans:           NewRetransmitTracker(),
+			ParamResponses:    NewParamResponseBroker(),
+			PropertyResponses: NewPropertyResponseBroker(),
+			LocationResponses: NewLocationResponseBroker(),
+			RegionResponses:   NewRegionResponseBroker(),
+			Tracking:          NewLocationTracker(),
 		}
 	})
 	return defaultStores
