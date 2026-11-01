@@ -49,7 +49,7 @@ JT/T 1078 RTP 流媒体，以及消息头层面的 2011 版本判别（2011 目�
 **状态：** 已完成。类型化的圆形/矩形/多边形/路线模型位于
 `internal/protocol/model/region_route_types.go` 和 `msg_8600.go`；`0x0608`
 响应在 `msg_0608.go` 中类型化。设置/删除/查询路径由
-`internal/storage/region_catalog.go` 中的每设备模拟器目录支撑，
+`internal/repository/region_catalog.go` 中的每设备模拟器目录支撑，
 HTTP 侧使用结构化 JSON 输入（`POST /device/:phone/regions/set|delete|query`）。
 
 **工作内容：**

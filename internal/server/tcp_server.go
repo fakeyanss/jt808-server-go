@@ -13,7 +13,7 @@ import (
 	"github.com/fakeyanss/jt808-server-go/internal/action"
 	"github.com/fakeyanss/jt808-server-go/internal/protocol"
 	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
-	"github.com/fakeyanss/jt808-server-go/internal/storage"
+	"github.com/fakeyanss/jt808-server-go/internal/repository"
 	"github.com/fakeyanss/jt808-server-go/pkg/routines"
 )
 
@@ -84,7 +84,7 @@ func (serv *TCPServer) accept(conn net.Conn) *model.Session {
 		MaxRetries: serv.maxRetransmissions,
 	}
 	// serv.sessions[remoteAddr] = session
-	_ = storage.Default().Conn.Bind(context.Background(), session)
+	_ = repository.Default().Conn.Bind(context.Background(), session)
 	serv.mutex.Unlock()
 
 	return session
@@ -95,7 +95,7 @@ func (serv *TCPServer) remove(session *model.Session) {
 	defer serv.mutex.Unlock()
 
 	session.Conn.Close()
-	storage.Default().Conn.Unbind(context.Background(), session.ID)
+	repository.Default().Conn.Unbind(context.Background(), session.ID)
 	// delete(serv.sessions, session.ID)
 
 	log.Debug().Str("id", session.ID).Msg("Closing connection from remote.")
@@ -113,7 +113,7 @@ func serveSession(session *model.Session, hooks action.Hooks) {
 	defer func() {
 		session.ClosePending()
 		session.Conn.Close()
-		storage.Default().Conn.Unbind(context.Background(), session.ID)
+		repository.Default().Conn.Unbind(context.Background(), session.ID)
 		hooks.OnDisconnect(context.Background(), action.DisconnectEvent{SessionID: session.ID, Transport: string(session.GetTransProto())})
 		log.Debug().Str("id", session.ID).Msg("Closing connection from remote.")
 	}()
@@ -136,7 +136,7 @@ func serveSession(session *model.Session, hooks action.Hooks) {
 		log.Error().Err(err).Str("id", session.ID).Msg("Failed to serve session")
 
 		switch {
-		case errors.Is(err, io.EOF), errors.Is(err, io.ErrClosedPipe), errors.Is(err, net.ErrClosed), errors.Is(err, storage.ErrDeviceNotFound), isTimeout(err):
+		case errors.Is(err, io.EOF), errors.Is(err, io.ErrClosedPipe), errors.Is(err, net.ErrClosed), errors.Is(err, repository.ErrDeviceNotFound), isTimeout(err):
 			return // close connection when EOF or closed
 		default:
 			time.Sleep(1 * time.Second)
@@ -152,8 +152,8 @@ func isTimeout(err error) bool {
 // 发送消息到终端设备, 外部调用
 func (serv *TCPServer) Send(id string, msg model.JT808Msg) {
 	// session := serv.sessions[id]
-	session, err := storage.Default().Conn.Get(context.Background(), id)
-	if err != nil && errors.Is(err, storage.ErrSessionClosed) {
+	session, err := repository.Default().Conn.Get(context.Background(), id)
+	if err != nil && errors.Is(err, repository.ErrSessionClosed) {
 		log.Warn().Str("id", id).Msg("Fail to get session from cache, maybe conn was closed.")
 		return
 	}

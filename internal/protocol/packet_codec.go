@@ -8,7 +8,7 @@ import (
 	"github.com/rs/zerolog/log"
 
 	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
-	"github.com/fakeyanss/jt808-server-go/internal/storage"
+	"github.com/fakeyanss/jt808-server-go/internal/repository"
 )
 
 const (
@@ -87,7 +87,7 @@ func (pc *JT808PacketCodec) Decode(payload []byte) (*model.PacketData, error) {
 	if pd.Header.IsFragmented() {
 		seg := model.NewSegment(pd)
 		firstSerial := pd.Header.SerialNumber - (pd.Header.Frag.Index - 1)
-		pd.SegCompleted = storage.Default().Fragment.CacheSegment(context.Background(), seg, pd.Header.SerialNumber)
+		pd.SegCompleted = repository.Default().Fragment.CacheSegment(context.Background(), seg, pd.Header.SerialNumber)
 		// 分包接收完成
 		pd.Body = seg.Data
 		if pd.SegCompleted {

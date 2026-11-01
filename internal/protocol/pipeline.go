@@ -9,7 +9,7 @@ import (
 
 	actionpkg "github.com/fakeyanss/jt808-server-go/internal/action"
 	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
-	"github.com/fakeyanss/jt808-server-go/internal/storage"
+	"github.com/fakeyanss/jt808-server-go/internal/repository"
 )
 
 const maxJT808BodyLength = 1023
@@ -181,7 +181,7 @@ func encode() delegateFunc {
 			if err != nil {
 				return nil, err
 			}
-			storage.Default().Retrans.CacheFrame(context.Background(), header.PhoneNumber, serials[0], uint16(i+1), uint16(total), frames[i])
+			repository.Default().Retrans.CacheFrame(context.Background(), header.PhoneNumber, serials[0], uint16(i+1), uint16(total), frames[i])
 		}
 		return context.WithValue(ctx, model.PacketEncodeCtxKey{}, frames), nil
 	})

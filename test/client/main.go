@@ -13,7 +13,7 @@ import (
 	"github.com/fakeyanss/jt808-server-go/internal/client"
 	"github.com/fakeyanss/jt808-server-go/internal/config"
 	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
-	"github.com/fakeyanss/jt808-server-go/internal/storage"
+	"github.com/fakeyanss/jt808-server-go/internal/repository"
 	"github.com/fakeyanss/jt808-server-go/pkg/logger"
 	"github.com/fakeyanss/jt808-server-go/pkg/routines"
 	"github.com/fakeyanss/jt808-server-go/test/datagen"
@@ -38,13 +38,13 @@ func buildDevice(ctx context.Context, cli *client.TCPClient) *model.Device {
 	device.SessionID = cli.Session.ID
 	device.TransProto = cli.Session.GetTransProto()
 	device.Conn = cli.Session.Conn
-	_ = storage.Default().Devices.Upsert(ctx, device)
+	_ = repository.Default().Devices.Upsert(ctx, device)
 	return device
 }
 
 func getDevice(ctx context.Context) *model.Device {
 	phone := ctx.Value(DevicePhoneCtxKey{}).(string)
-	device, err := storage.Default().Devices.GetByPhone(ctx, phone)
+	device, err := repository.Default().Devices.GetByPhone(ctx, phone)
 	if err != nil {
 		log.Fatal().Err(err).Str("phone", phone).Msg("Fail to find device cache")
 	}
@@ -84,13 +84,13 @@ func buildDeviceGeo(ctx context.Context) {
 	device := getDevice(ctx)
 	deviceGeoConf := ctx.Value(DeviceGeoConfCtxKey{}).(*config.DeviceGeoConf)
 	deivceGeo := datagen.GenDeviceGeo(deviceGeoConf, device)
-	_ = storage.Default().Geo.Append(ctx, deivceGeo)
+	_ = repository.Default().Geo.Append(ctx, deivceGeo)
 }
 
 func reportLocation(ctx context.Context, cli *client.TCPClient) {
 	deviceGeoConf := ctx.Value(DeviceGeoConfCtxKey{}).(*config.DeviceGeoConf)
-	geo := storage.Default().Geo
-	tracker := storage.GetLocationTrackingCache()
+	geo := repository.Default().Geo
+	tracker := repository.GetLocationTrackingCache()
 	device := getDevice(ctx)
 	fallback := time.Duration(deviceGeoConf.LocationReportInterval) * time.Second
 	sendLocation := func() {
@@ -169,7 +169,7 @@ func dialAndSend(cfg *config.Config, cliWg *sync.WaitGroup, fragmentSize int, re
 		routines.GoSafe(func() {
 			// device status checker
 			for {
-				renewDevice, _ := storage.Default().Devices.GetByPhone(ctx, d.Phone)
+				renewDevice, _ := repository.Default().Devices.GetByPhone(ctx, d.Phone)
 				if renewDevice.Status == model.DeviceStatusOnline {
 					wg.Done()
 					return
@@ -210,7 +210,7 @@ func dialAndSend(cfg *config.Config, cliWg *sync.WaitGroup, fragmentSize int, re
 					datagen.GenMsg0800(d),                                      // 多媒体事件
 					datagen.GenMsg0801(d),                                      // 多媒体数据
 				} {
-					storage.GetIndustryCache().Record(msg)
+					repository.GetIndustryCache().Record(msg)
 					cli.Send(msg)
 				}
 			})

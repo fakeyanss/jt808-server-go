@@ -15,7 +15,7 @@
 
 ### 1.1 背景
 
-当前 `internal/storage` 下的所有存储单元都是「**包级单例 + 裸 map + mutex**」：
+当前 `internal/repository` 下的所有存储单元都是「**包级单例 + 裸 map + mutex**」：
 设备、参数、定位环、报警、区域目录、行业上报、会话等全部在内存，重启即丢，也无法替换后端。
 业务层（`internal/protocol`、`internal/api`、`internal/server`）直接调用 `storage.GetXxxCache()`，
 与内存实现强耦合（全仓约 160 处直接调用）。
@@ -296,7 +296,7 @@ type Coordinator interface {
 
 装配与访问方式：
 
-- 启动时由 `storage.NewStore(cfg)`（Registry）构建各 Repository/Registry/HotView/Coordinator；
+- 启动时由 `repository.NewStore(cfg)`（Registry）构建各 Repository/Registry/HotView/Coordinator；
 - 业务层通过**构造函数注入**接口；迁移期可提供一个返回接口（而非具体 `*Cache`）的访问器过渡，
   但名称同步改为接口名，`GetXxxCache` 与 `*Cache` 类型在 M1 完成后不再保留。
 
@@ -327,7 +327,7 @@ type Coordinator interface {
 
 ### 7.2 迁移
 
-- `internal/storage/migration/` 存放版本化 `0001_init.sql`、`0002_xxx.sql`，用 `go:embed` 编译进二进制。
+- `internal/repository/migration/` 存放版本化 `0001_init.sql`、`0002_xxx.sql`，用 `go:embed` 编译进二进制。
 - 启动时由迁移器按 `schema_migrations` 表顺序幂等执行；Store 构造函数只接收已就绪的 `*sql.DB`，
   不把建表 DDL 耦合进 CRUD。
 - 索引用迁移器保证幂等；MySQL 下避免依赖版本敏感的 `IF NOT EXISTS` 语法边角。
@@ -551,7 +551,7 @@ storage:
 ## 15. 建议目录结构
 
 ```
-internal/storage/
+internal/repository/
   repository.go          # 仓储/协调接口、错误、查询与保留期类型
   registry.go            # 按 config 装配实现；SetStoreForTest/Reset
   memory/                # 场景1：内存仓储（含现有 map/ring 逻辑收敛）
@@ -627,7 +627,7 @@ internal/storage/
 
 **已落地**
 
-- 新增 `internal/storage/repository.go`：定义 `DeviceRepository`、`GeoRepository`、`ConnectionRegistry`、
+- 新增 `internal/repository/repository.go`：定义 `DeviceRepository`、`GeoRepository`、`ConnectionRegistry`、
   `FragmentAssembler`、`RetransmitTracker`、`DeviceParamsRepository` 六个接口，并提供
   `NewDeviceRepository` / `NewGeoRepository` / `NewConnectionRegistry` / `NewFragmentAssembler` /
   `NewRetransmitTracker` / `NewDeviceParamsRepository` 构造独立内存实例，供测试与新代码注入。
@@ -652,11 +652,11 @@ internal/storage/
 - `RegionCatalog`：`Delete`/`Query` 与目标接口语义需按 family 重新设计（`ReplaceAll` 事务化），M2 处理。
 - `IndustryCache`：单个结构承载 20+ 类数据，必须先按 §6.4 拆分（配置/凭证/快照/模拟器态）再定义接口。
 - `*_response.go` 与 `LocationTrackingCache`：属 A 类 rendezvous/本地定时器，接口化价值低于上面几类，
-  且 `LocationTrackingCache` 在 `internal/storage` 之外也有直接读，放到 M2/M3 与 Coordinator 一并设计。
+  且 `LocationTrackingCache` 在 `internal/repository` 之外也有直接读，放到 M2/M3 与 Coordinator 一并设计。
 
 ### 19.2 发现但未修改的既有实现问题（仅记录，待单独评审）
 
-1. **`sentSegmentCache.CacheFrame` 容量拒绝路径破坏了字节计数**（`internal/storage/sent_segment_cache.go`）：
+1. **`sentSegmentCache.CacheFrame` 容量拒绝路径破坏了字节计数**（`internal/repository/sent_segment_cache.go`）：
    重写同一分片时先执行 `state.bytes -= len(old)` / `cache.bytes -= len(old)`，随后若
    `cache.bytes+len(frame) > maxSegmentCacheBytes` 直接 `return`，但 `state.frames[idx]` 仍是旧帧。
    结果是旧帧还在、计数却已扣减，后续淘汰会多扣一次，容量上界失真。属既有逻辑，本轮原样保留。
@@ -687,19 +687,21 @@ internal/storage/
   其 `processFunc` 签名固定为 `(ctx, data) error`，无法逐条注入依赖；改造注册表属更大结构变更，
   M2 先显式收口为单一 `Default()`，调用点与默认值来源可追溯（见 `repository.go` 注释）。
 - 迁移按五批提交，每批 `go build ./... && go vet ./... && go test -race ./...` 均通过：
-  ① storage 内部与测试（新增临时 `legacy.go` 兼容层承载旧 API，保证中间批次可编译）→
+  ① repository 内部与测试（新增临时 `legacy.go` 兼容层承载旧 API，保证中间批次可编译）→
   ② keepalive / packet_codec / 两个 retransmission / pipeline →
   ③ api → ④ tcp/udp server、server 测试、client、test/client 模拟器 →
   ⑤ msg_processor、msg_processor_test，并删除 `legacy.go`。
 - `HasPlate` / `HasPhone` 的调用点改为 `GetByPlate` / `GetByPhone` 返回 `ErrDeviceNotFound`
   的等价判断；geo 写入统一走 `GeoRepository.Append`，`RingBuffer` 不再暴露到接口。
 - api `/api/device` 列表因 `List` 接口返回 error 增加 500 分支（内存实现实际不可达）。
+- 包目录由 `internal/storage` 更名为 `internal/repository`，包名同步改为 `repository`；
+  对外符号（接口、构造器、`Stores`、`Default()`）不变，仅导入路径与包限定符变化。
 
 **完成后不再有全局访问的位置**
 
 - `internal/server`（tcp/udp server 及测试）、`internal/api`、`internal/client`、`test/client`、
   `internal/protocol`（keepalive / codec / retransmission / pipeline / msg_processor 及测试）
-  对六类仓储只经 `storage.Default()` 显式访问；`internal/storage` 包内测试使用
+  对六类仓储只经 `repository.Default()` 显式访问；`internal/repository` 包内测试使用
   `NewStores()` / `NewXxxRepository()` 独立实例，不触碰默认单例。
 - 仍为全局入口的只剩 §19.1 顺延的未接口化缓存：`GetAlarmCache` / `GetIndustryCache` /
   `GetRegionCatalog` / 各 `GetXxxResponseBroker` / `GetLocationTrackingCache`，

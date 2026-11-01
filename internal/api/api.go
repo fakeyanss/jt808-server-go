@@ -15,8 +15,8 @@ import (
 
 	"github.com/fakeyanss/jt808-server-go/internal/config"
 	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
+	"github.com/fakeyanss/jt808-server-go/internal/repository"
 	"github.com/fakeyanss/jt808-server-go/internal/server"
-	"github.com/fakeyanss/jt808-server-go/internal/storage"
 )
 
 func Run(serv *server.TCPServer, cfg *config.Config) {
@@ -24,9 +24,9 @@ func Run(serv *server.TCPServer, cfg *config.Config) {
 	gin.SetMode(gin.ReleaseMode)
 	router := gin.Default()
 	api := router.Group("/api")
-	devices := storage.Default().Devices
-	geo := storage.Default().Geo
-	connRegistry := storage.Default().Conn
+	devices := repository.Default().Devices
+	geo := repository.Default().Geo
+	connRegistry := repository.Default().Conn
 
 	api.GET("/device", func(c *gin.Context) {
 		list, err := devices.List(c.Request.Context())
@@ -43,7 +43,7 @@ func Run(serv *server.TCPServer, cfg *config.Config) {
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
 		}
-		industry := storage.GetIndustryCache()
+		industry := repository.GetIndustryCache()
 		var result any
 		switch c.Param("kind") {
 		case "driver":
@@ -108,7 +108,7 @@ func Run(serv *server.TCPServer, cfg *config.Config) {
 			return
 		}
 		serial := session.GetNextSerialNum()
-		responses := storage.GetParamResponseBroker()
+		responses := repository.GetParamResponseBroker()
 		responseCh, cancel, err := responses.Register(phone, serial)
 		if err != nil {
 			c.JSON(http.StatusConflict, gin.H{"err": err.Error()})
@@ -162,7 +162,7 @@ func Run(serv *server.TCPServer, cfg *config.Config) {
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
 		}
-		responses := storage.GetPropertyResponseBroker()
+		responses := repository.GetPropertyResponseBroker()
 		responseCh, cancel, err := responses.Register(phone)
 		if err != nil {
 			c.JSON(http.StatusConflict, gin.H{"err": err.Error()})
@@ -196,7 +196,7 @@ func Run(serv *server.TCPServer, cfg *config.Config) {
 			return
 		}
 		serial := session.GetNextSerialNum()
-		responses := storage.GetLocationResponseBroker()
+		responses := repository.GetLocationResponseBroker()
 		responseCh, cancel, err := responses.Register(phone, serial)
 		if err != nil {
 			c.JSON(http.StatusConflict, gin.H{"err": err.Error()})
@@ -376,7 +376,7 @@ func Run(serv *server.TCPServer, cfg *config.Config) {
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
 		}
-		broker := storage.GetRegionResponseBroker()
+		broker := repository.GetRegionResponseBroker()
 		response, cancel, err := broker.Register(phone, request.QueryType)
 		if err != nil {
 			c.JSON(http.StatusConflict, gin.H{"err": err.Error()})
@@ -881,7 +881,7 @@ func Run(serv *server.TCPServer, cfg *config.Config) {
 			return
 		}
 		msg := &model.Msg8203{Header: model.GenMsgHeader(device, 0x8203, session.GetNextSerialNum()), AlarmSerial: request.AlarmSerial, AlarmType: request.AlarmType}
-		storage.GetAlarmCache().RegisterConfirmation(phone, msg.Header.SerialNumber, request.AlarmSerial, request.AlarmType)
+		repository.GetAlarmCache().RegisterConfirmation(phone, msg.Header.SerialNumber, request.AlarmSerial, request.AlarmType)
 		serv.Send(session.ID, msg)
 		c.JSON(http.StatusAccepted, gin.H{"messageId": "0x8203", "alarmSerial": request.AlarmSerial, "alarmType": request.AlarmType})
 	})
@@ -892,7 +892,7 @@ func Run(serv *server.TCPServer, cfg *config.Config) {
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
 		}
-		c.JSON(http.StatusOK, storage.GetAlarmCache().List(phone))
+		c.JSON(http.StatusOK, repository.GetAlarmCache().List(phone))
 	})
 
 	api.PUT("/device/:phone/params", func(c *gin.Context) {

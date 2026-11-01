@@ -8,7 +8,7 @@
 判断依据来自对以下代码的逐条核对：
 
 - `internal/protocol/msg_processor.go`（消息注册表与处理函数）
-- `internal/storage/`（全部内存缓存与响应协调器）
+- `internal/repository/`（全部内存缓存与响应协调器）
 - `internal/action/`（生命周期钩子与 HTTP 回调示例）
 - `internal/server/`、`internal/protocol/pipeline.go`（会话与传输可靠性）
 - `internal/api/`（单机 HTTP API 对缓存的依赖）
@@ -147,7 +147,7 @@ gateway 需要自行处理的终端上行共 9 个：0x0001、0x0002、0x0003、
 
 ## 3. 存储归属矩阵
 
-`internal/storage` 下共有 14 个缓存/协调器。判定原则：
+`internal/repository` 下共有 14 个缓存/协调器。判定原则：
 **连接现场与传输可靠性保留，业务数据与模拟器目录外发或忽略。**
 
 | 缓存 | 数据结构 | gateway 保留 | 依赖它的流程与补偿方式 | 理由 |
@@ -167,7 +167,7 @@ gateway 需要自行处理的终端上行共 9 个：0x0001、0x0002、0x0003、
 | `LocationResponseBroker`（`location_response.go`） | `map[phone/serial] -> chan *Msg0201` | 不保留 | 原依赖：北向发起 0x8201 后等待 0x0201 | 同上 |
 | `RegionResponseBroker`（`region_response.go`） | `map[phone/queryType] -> chan *Msg0608` | 不保留 | 原依赖：北向发起 0x8608 后等待 0x0608 | 同上 |
 
-另有一个不位于 `internal/storage`、但与连接现场强相关的组件：
+另有一个不位于 `internal/repository`、但与连接现场强相关的组件：
 
 | 组件 | 位置 | gateway 保留 | 说明 |
 |---|---|---|---|
