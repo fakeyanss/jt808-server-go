@@ -6,15 +6,16 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/pkg/errors"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 
+	actionpkg "github.com/fakeyanss/jt808-server-go/internal/action"
 	"github.com/fakeyanss/jt808-server-go/internal/codec/hash"
 	"github.com/fakeyanss/jt808-server-go/internal/codec/hex"
+	"github.com/fakeyanss/jt808-server-go/internal/config"
 	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
 	"github.com/fakeyanss/jt808-server-go/internal/storage"
 )
@@ -38,8 +39,9 @@ type action struct {
 	process func(context.Context, *model.ProcessData) error // 处理消息的逻辑。可以设置消息字段、根据消息做相应处理逻辑
 }
 
-// 表驱动，初始化消息处理方法组
-func initProcessOption() processOptions {
+// 表驱动，初始化消息处理方法组。
+// gateway 模式只保留终端发起的消息（消息ID < 0x8000），并把业务数据写入替换为旁路。
+func initProcessOption(mode config.ServerMode) processOptions {
 	options := make(processOptions)
 	options[0x0001] = &action{ // 通用应答
 		genData: func() *model.ProcessData {
@@ -329,25 +331,76 @@ func initProcessOption() processOptions {
 		process: processMsg9205,
 	}
 
+	if mode == config.ServerModeGateway {
+		filterGatewayOptions(options)
+	}
+
 	return options
+}
+
+// gateway 模式只保留终端发起的消息。0x8xxx 属于平台侧下发/模拟器处理，
+// 接入网关不会收到，注册后也不参与业务回调。
+func filterGatewayOptions(options processOptions) {
+	for msgID := range options {
+		if msgID >= 0x8000 {
+			delete(options, msgID)
+		}
+	}
+	// 仅 standalone 才需要维护的业务缓存，在网关模式改为只保留协议应答。
+	for _, msgID := range gatewayBypassProcessMsgIDs {
+		if act, ok := options[msgID]; ok {
+			act.process = nil
+		}
+	}
+	// 通用应答仍需清理会话在途消息，但不能写报警缓存。
+	if act, ok := options[0x0001]; ok {
+		act.process = gatewayProcessMsg0001
+	}
+	// 位置/报警不写设备、定位、报警缓存，由 dispatchHooks 外发。
+	if act, ok := options[0x0200]; ok {
+		act.process = nil
+	}
+}
+
+// gatewayBypassProcessMsgIDs 列出 gateway 模式不落盘的业务消息。
+// 这些消息仍会生成协议应答，但不再写入 internal/storage。
+var gatewayBypassProcessMsgIDs = []uint16{
+	0x0104, 0x0107, 0x0108,
+	0x0201, 0x0301, 0x0302, 0x0303, 0x0500, 0x0608,
+	0x0700, 0x0701, 0x0702, 0x0704, 0x0705,
+	0x0800, 0x0801, 0x0802, 0x0805,
+	0x0900, 0x0901, 0x1205,
+}
+
+// gatewayProcessMsg0001 只确认会话在途消息，不触碰报警缓存。
+func gatewayProcessMsg0001(ctx context.Context, data *model.ProcessData) error {
+	in := data.Incoming.(*model.Msg0001)
+	if session, ok := ctx.Value(model.SessionCtxKey{}).(*model.Session); ok && session != nil {
+		session.Acknowledge(in.AnswerMessageID, in.AnswerSerialNumber)
+	}
+	return nil
 }
 
 // 处理jt808消息的Handler方法
 type JT808MsgProcessor struct {
+	hooks   actionpkg.Hooks
 	options processOptions
 }
 
-// processor单例
-var jt808MsgProcessorSingleton *JT808MsgProcessor
-var processorInitOnce sync.Once
-
-func NewJT808MsgProcessor() *JT808MsgProcessor {
-	processorInitOnce.Do(func() {
-		jt808MsgProcessorSingleton = &JT808MsgProcessor{
-			options: initProcessOption(),
-		}
-	})
-	return jt808MsgProcessorSingleton
+// NewJT808MsgProcessor 创建消息处理器。
+// mode 为 gateway 时只处理终端发起消息，业务数据通过 hooks 外发；
+// hooks 为 nil 时使用 action.Noop，保证 standalone 行为与历史版本一致。
+func NewJT808MsgProcessor(mode config.ServerMode, hooks actionpkg.Hooks) *JT808MsgProcessor {
+	if mode != config.ServerModeGateway {
+		mode = config.ServerModeStandalone
+	}
+	if hooks == nil {
+		hooks = actionpkg.Noop{}
+	}
+	return &JT808MsgProcessor{
+		hooks:   hooks,
+		options: initProcessOption(mode),
+	}
 }
 
 func (mp *JT808MsgProcessor) Process(ctx context.Context, pkt *model.PacketData) (*model.ProcessData, error) {
@@ -424,17 +477,91 @@ func (mp *JT808MsgProcessor) Process(ctx context.Context, pkt *model.PacketData)
 
 	// 对消息按类别做特殊处理
 	processFunc := act.process
-	if processFunc == nil {
-		return data, nil
+	if processFunc != nil {
+		err = processFunc(ctx, data)
+		if err != nil {
+			return data, errors.Wrap(err, "Fail to process data")
+		}
 	}
-	err = processFunc(ctx, data)
-	if err != nil {
-		return data, errors.Wrap(err, "Fail to process data")
-	}
+
+	// 生命周期钩子只做旁路通知，与是否写入缓存无关。
+	mp.dispatchHooks(ctx, data)
+
 	if data.Outgoing == nil {
 		return nil, nil // 此类型msg不需要回复
 	}
 	return data, nil
+}
+
+// dispatchHooks 在协议处理成功后外发生命周期事件。
+// 事件发送失败由 hooks 实现自行处理，不会改变 Process 的返回值。
+func (mp *JT808MsgProcessor) dispatchHooks(ctx context.Context, data *model.ProcessData) {
+	switch in := data.Incoming.(type) {
+	case *model.Msg0100:
+		event := actionpkg.RegisterEvent{
+			Phone:           in.Header.PhoneNumber,
+			DeviceID:        in.DeviceID,
+			Plate:           in.PlateNumber,
+			ProtocolVersion: in.Header.ProtocolVersion,
+			VersionDesc:     versionDesc(in.Header.Attr.VersionDesc),
+		}
+		if out, ok := data.Outgoing.(*model.Msg8100); ok {
+			event.Result = uint8(out.Result)
+		}
+		mp.hooks.OnRegister(ctx, event)
+	case *model.Msg0102:
+		event := actionpkg.AuthEvent{
+			Phone:           in.Header.PhoneNumber,
+			IMEI:            in.IMEI,
+			SoftwareVersion: in.SoftwareVersion,
+		}
+		if out, ok := data.Outgoing.(*model.Msg8001); ok {
+			event.Success = out.Result == model.ResultSuccess
+		}
+		mp.hooks.OnAuth(ctx, event)
+	case *model.Msg0200:
+		mp.notifyLocation(ctx, in)
+	case *model.Msg0704:
+		for i := range in.Items {
+			mp.notifyLocation(ctx, &in.Items[i].Loc)
+		}
+	}
+}
+
+func versionDesc(v model.VersionType) string {
+	switch v {
+	case model.Version2019:
+		return "2019"
+	case model.Version2013:
+		return "2013"
+	default:
+		return "2011"
+	}
+}
+
+func (mp *JT808MsgProcessor) notifyLocation(ctx context.Context, in *model.Msg0200) {
+	mp.hooks.OnLocation(ctx, actionpkg.LocationEvent{
+		Phone:      in.Header.PhoneNumber,
+		Serial:     in.Header.SerialNumber,
+		AlarmSign:  in.AlarmSign,
+		StatusSign: in.StatusSign,
+		Latitude:   in.Latitude,
+		Longitude:  in.Longitude,
+		Altitude:   in.Altitude,
+		Speed:      in.Speed,
+		Direction:  in.Direction,
+		Time:       in.Time,
+	})
+	if in.AlarmSign != 0 {
+		mp.hooks.OnAlarm(ctx, actionpkg.AlarmEvent{
+			Phone:     in.Header.PhoneNumber,
+			Serial:    in.Header.SerialNumber,
+			AlarmSign: in.AlarmSign,
+			Latitude:  in.Latitude,
+			Longitude: in.Longitude,
+			Time:      in.Time,
+		})
+	}
 }
 
 func redactIncomingForLog(in model.JT808Msg) model.JT808Msg {

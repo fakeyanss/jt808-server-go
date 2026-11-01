@@ -7,6 +7,8 @@ import (
 
 	"github.com/rs/zerolog/log"
 
+	actionpkg "github.com/fakeyanss/jt808-server-go/internal/action"
+	"github.com/fakeyanss/jt808-server-go/internal/config"
 	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
 	"github.com/fakeyanss/jt808-server-go/internal/storage"
 )
@@ -20,11 +22,37 @@ type Pipeline struct {
 	mp *JT808MsgProcessor // MsgHandler instance
 }
 
-func NewPipeline(conn net.Conn) *Pipeline {
+// PipelineOption 配置 Pipeline 的运行角色与钩子。
+type PipelineOption func(*pipelineSettings)
+
+type pipelineSettings struct {
+	mode  config.ServerMode
+	hooks actionpkg.Hooks
+}
+
+// WithMode 指定消息处理模式，默认 standalone。
+func WithMode(mode config.ServerMode) PipelineOption {
+	return func(s *pipelineSettings) {
+		s.mode = mode
+	}
+}
+
+// WithHooks 指定生命周期钩子，默认 action.Noop。
+func WithHooks(hooks actionpkg.Hooks) PipelineOption {
+	return func(s *pipelineSettings) {
+		s.hooks = hooks
+	}
+}
+
+func NewPipeline(conn net.Conn, opts ...PipelineOption) *Pipeline {
+	settings := pipelineSettings{mode: config.ServerModeStandalone}
+	for _, opt := range opts {
+		opt(&settings)
+	}
 	return &Pipeline{
 		fh: NewJT808FrameHandler(conn),
 		pc: NewJT808PacketCodec(),
-		mp: NewJT808MsgProcessor(),
+		mp: NewJT808MsgProcessor(settings.mode, settings.hooks),
 	}
 }
 

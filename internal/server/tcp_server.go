@@ -10,6 +10,8 @@ import (
 	"github.com/pkg/errors"
 	"github.com/rs/zerolog/log"
 
+	"github.com/fakeyanss/jt808-server-go/internal/action"
+	"github.com/fakeyanss/jt808-server-go/internal/config"
 	"github.com/fakeyanss/jt808-server-go/internal/protocol"
 	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
 	"github.com/fakeyanss/jt808-server-go/internal/storage"
@@ -20,9 +22,17 @@ type TCPServer struct {
 	listener           net.Listener
 	ackTimeout         time.Duration
 	maxRetransmissions int
+	mode               config.ServerMode
+	hooks              action.Hooks
 
 	// sessions map[string]*model.Session
 	mutex *sync.Mutex
+}
+
+// SetRole 设置进程运行模式与生命周期钩子。未设置时按 standalone + Noop 运行。
+func (serv *TCPServer) SetRole(mode config.ServerMode, hooks action.Hooks) {
+	serv.mode = mode
+	serv.hooks = hooks
 }
 
 func (serv *TCPServer) SetReliability(ackTimeout time.Duration, maxRetransmissions int) {
@@ -96,18 +106,22 @@ func (serv *TCPServer) remove(session *model.Session) {
 
 // 处理每个session的消息
 func (serv *TCPServer) serve(session *model.Session) {
-	serveSession(session)
+	serveSession(session, serv.mode, serv.hooks)
 }
 
-func serveSession(session *model.Session) {
+func serveSession(session *model.Session, mode config.ServerMode, hooks action.Hooks) {
+	if hooks == nil {
+		hooks = action.Noop{}
+	}
 	defer func() {
 		session.ClosePending()
 		session.Conn.Close()
 		storage.ClearSession(session.ID)
+		hooks.OnDisconnect(context.Background(), action.DisconnectEvent{SessionID: session.ID, Transport: string(session.GetTransProto())})
 		log.Debug().Str("id", session.ID).Msg("Closing connection from remote.")
 	}()
 
-	pg := protocol.NewPipeline(session.Conn)
+	pg := protocol.NewPipeline(session.Conn, protocol.WithMode(mode), protocol.WithHooks(hooks))
 	for {
 		_ = session.Conn.SetReadDeadline(time.Now().Add(2 * time.Minute))
 		// 记录value ctx
@@ -147,7 +161,7 @@ func (serv *TCPServer) Send(id string, msg model.JT808Msg) {
 		return
 	}
 
-	pg := protocol.NewPipeline(session.Conn)
+	pg := protocol.NewPipeline(session.Conn, protocol.WithMode(serv.mode), protocol.WithHooks(serv.hooks))
 
 	// 记录value ctx
 	ctx := context.WithValue(context.Background(), model.SessionCtxKey{}, session)

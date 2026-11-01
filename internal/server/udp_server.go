@@ -8,6 +8,8 @@ import (
 
 	"github.com/rs/zerolog/log"
 
+	"github.com/fakeyanss/jt808-server-go/internal/action"
+	"github.com/fakeyanss/jt808-server-go/internal/config"
 	"github.com/fakeyanss/jt808-server-go/internal/protocol"
 	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
 	"github.com/fakeyanss/jt808-server-go/internal/storage"
@@ -22,10 +24,18 @@ type UDPServer struct {
 	sessions           map[string]*udpSessionConn
 	ackTimeout         time.Duration
 	maxRetransmissions int
+	mode               config.ServerMode
+	hooks              action.Hooks
 }
 
 func NewUDPServer() *UDPServer {
 	return &UDPServer{sessions: make(map[string]*udpSessionConn)}
+}
+
+// SetRole 设置进程运行模式与生命周期钩子。未设置时按 standalone + Noop 运行。
+func (s *UDPServer) SetRole(mode config.ServerMode, hooks action.Hooks) {
+	s.mode = mode
+	s.hooks = hooks
 }
 
 func (s *UDPServer) SetReliability(ackTimeout time.Duration, maxRetransmissions int) {
@@ -60,7 +70,7 @@ func (s *UDPServer) Start() {
 			s.sessions[key] = conn
 			session := &model.Session{ID: key, Conn: conn, Transport: model.UDPProto, AckTimeout: s.ackTimeout, MaxRetries: s.maxRetransmissions}
 			storage.StoreSession(session)
-			routines.GoSafe(func() { serveSession(session) })
+			routines.GoSafe(func() { serveSession(session, s.mode, s.hooks) })
 		}
 		s.mu.Unlock()
 		if !conn.deliver(buf[:n]) {

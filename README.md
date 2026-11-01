@@ -408,6 +408,9 @@ make release
 
 默认开启 TCP `8080`、UDP `8081` 和 HTTP `8008` 监听；将 `server.port.udpPort` 设为空可关闭 UDP。可靠消息的确认超时和最多重发次数可通过 `server.ackTimeoutMs`、`server.maxRetransmissions` 配置。
 
+`server.mode` 控制进程运行角色，默认 `standalone`，保持历史行为：设备、定位、报警等数据全量写入内存缓存，并启动 HTTP API。
+设为 `gateway` 时只保留注册、鉴权、心跳等连接现场，定位/报警等业务数据不再写入 `internal/storage`，改为通过 Action 回调外发，同时不启动 HTTP API。gateway 模式可通过 `server.action.http.url`、`server.action.http.timeoutMs` 配置示例 HTTP 回调；回调失败只记录日志，不影响协议流程。
+
 源码运行：
 ```sh
 make run
