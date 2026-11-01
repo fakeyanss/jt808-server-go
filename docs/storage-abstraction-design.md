@@ -1084,7 +1084,7 @@ MySQL 都支持的语法；核对中发现并修复一处 MySQL 不兼容：
 - SQLite 下迁移工具与相关测试全绿；本机无 Docker/MySQL，MySQL 侧由现有集成测试
   （按环境变量启用）覆盖，尚未在本机实跑。
 
-### 19.12 `test/` 目录更名为 `client/`（2026-11-01，分支 `dev/p0-baseline`，基线 `66be00a`）
+### 19.12 `test/` 目录更名为 `client/`（2026-11-01，分支 `dev/p0-baseline`，基线 `66be00a`，提交 `e205cf0`）
 
 客户端启动入口迁入 `cmd/jt808-client` 后，`test/` 下只剩客户端配套代码，因此整体更名：
 
