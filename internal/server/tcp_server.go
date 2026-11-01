@@ -84,7 +84,7 @@ func (serv *TCPServer) accept(conn net.Conn) *model.Session {
 		MaxRetries: serv.maxRetransmissions,
 	}
 	// serv.sessions[remoteAddr] = session
-	storage.StoreSession(session)
+	_ = storage.Default().Conn.Bind(context.Background(), session)
 	serv.mutex.Unlock()
 
 	return session
@@ -95,7 +95,7 @@ func (serv *TCPServer) remove(session *model.Session) {
 	defer serv.mutex.Unlock()
 
 	session.Conn.Close()
-	storage.ClearSession(session.ID)
+	storage.Default().Conn.Unbind(context.Background(), session.ID)
 	// delete(serv.sessions, session.ID)
 
 	log.Debug().Str("id", session.ID).Msg("Closing connection from remote.")
@@ -113,7 +113,7 @@ func serveSession(session *model.Session, hooks action.Hooks) {
 	defer func() {
 		session.ClosePending()
 		session.Conn.Close()
-		storage.ClearSession(session.ID)
+		storage.Default().Conn.Unbind(context.Background(), session.ID)
 		hooks.OnDisconnect(context.Background(), action.DisconnectEvent{SessionID: session.ID, Transport: string(session.GetTransProto())})
 		log.Debug().Str("id", session.ID).Msg("Closing connection from remote.")
 	}()
@@ -152,7 +152,7 @@ func isTimeout(err error) bool {
 // 发送消息到终端设备, 外部调用
 func (serv *TCPServer) Send(id string, msg model.JT808Msg) {
 	// session := serv.sessions[id]
-	session, err := storage.GetSession(id)
+	session, err := storage.Default().Conn.Get(context.Background(), id)
 	if err != nil && errors.Is(err, storage.ErrSessionClosed) {
 		log.Warn().Str("id", id).Msg("Fail to get session from cache, maybe conn was closed.")
 		return

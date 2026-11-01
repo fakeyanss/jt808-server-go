@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"errors"
 	"net"
 	"sync"
@@ -66,7 +67,7 @@ func (s *UDPServer) Start() {
 			conn = newUDPSessionConn(s.listener, remote, func() { s.remove(key) })
 			s.sessions[key] = conn
 			session := &model.Session{ID: key, Conn: conn, Transport: model.UDPProto, AckTimeout: s.ackTimeout, MaxRetries: s.maxRetransmissions}
-			storage.StoreSession(session)
+			_ = storage.Default().Conn.Bind(context.Background(), session)
 			routines.GoSafe(func() { serveSession(session, s.hooks) })
 		}
 		s.mu.Unlock()
@@ -95,7 +96,7 @@ func (s *UDPServer) remove(key string) {
 	s.mu.Lock()
 	delete(s.sessions, key)
 	s.mu.Unlock()
-	storage.ClearSession(key)
+	storage.Default().Conn.Unbind(context.Background(), key)
 }
 
 type udpSessionConn struct {

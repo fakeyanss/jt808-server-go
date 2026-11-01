@@ -30,7 +30,7 @@ func TestTCPServerRetransmitsRequestedDownlinkFragments(t *testing.T) {
 	var session *model.Session
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		session, _ = storage.GetSession(cli.Session.Conn.LocalAddr().String())
+		session, _ = storage.Default().Conn.Get(context.Background(), cli.Session.Conn.LocalAddr().String())
 		if session != nil {
 			break
 		}
@@ -110,17 +110,17 @@ func TestUDPServerProcessesJT808Registration(t *testing.T) {
 	require.NoError(t, cli.SendFragmentsWithFault(registration, 16, false, total))
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
-		device, err := storage.GetDeviceCache().GetDeviceByPhone(phone)
+		device, err := storage.Default().Devices.GetByPhone(context.Background(), phone)
 		if err == nil && device.Status == model.DeviceStatusOnline {
 			break
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	device, err := storage.GetDeviceCache().GetDeviceByPhone(phone)
+	device, err := storage.Default().Devices.GetByPhone(context.Background(), phone)
 	require.NoError(t, err)
 	require.Equal(t, model.DeviceStatusOnline, device.Status)
 
-	storage.GetDeviceCache().DelDeviceByPhone(phone)
+	storage.Default().Devices.DeleteByPhone(context.Background(), phone)
 	protocol.NewKeepaliveTimer().Cancel(phone)
 }
 
@@ -156,17 +156,17 @@ func TestTCPServerProcessesJT808Registration(t *testing.T) {
 	require.NoError(t, cli.SendFragmentsWithFault(registration, 16, false, total))
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
-		device, err := storage.GetDeviceCache().GetDeviceByPhone(phone)
+		device, err := storage.Default().Devices.GetByPhone(context.Background(), phone)
 		if err == nil && device.Status == model.DeviceStatusOnline {
 			break
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	device, err := storage.GetDeviceCache().GetDeviceByPhone(phone)
+	device, err := storage.Default().Devices.GetByPhone(context.Background(), phone)
 	require.NoError(t, err)
 	require.Equal(t, model.DeviceStatusOnline, device.Status)
 
-	session, err := storage.GetSession(device.SessionID)
+	session, err := storage.Default().Conn.Get(context.Background(), device.SessionID)
 	require.NoError(t, err)
 	paramSerial := session.GetNextSerialNum()
 	paramResponse, cancelParam, err := storage.GetParamResponseBroker().Register(phone, paramSerial)
@@ -194,7 +194,7 @@ func TestTCPServerProcessesJT808Registration(t *testing.T) {
 	require.NoError(t, cli.SendWithError(report))
 	deadline = time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		if _, err := storage.GetGeoCache().GetGeoLatestByPhone(phone); err == nil {
+		if _, err := storage.Default().Geo.Latest(context.Background(), phone); err == nil {
 			break
 		}
 		time.Sleep(10 * time.Millisecond)
@@ -241,7 +241,7 @@ func TestTCPServerProcessesJT808Registration(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	require.Equal(t, 9*time.Second, storage.GetLocationTrackingCache().Interval(phone, 9*time.Second))
-	storage.GetDeviceCache().DelDeviceByPhone(phone)
+	storage.Default().Devices.DeleteByPhone(context.Background(), phone)
 	protocol.NewKeepaliveTimer().Cancel(phone)
 }
 
@@ -260,7 +260,7 @@ func TestTCPClientSimulatorIndustryMessages(t *testing.T) {
 	var device *model.Device
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
-		device, _ = storage.GetDeviceCache().GetDeviceByPhone(phone)
+		device, _ = storage.Default().Devices.GetByPhone(context.Background(), phone)
 		if device != nil && device.Status == model.DeviceStatusOnline {
 			break
 		}
@@ -268,7 +268,10 @@ func TestTCPClientSimulatorIndustryMessages(t *testing.T) {
 	}
 	require.NotNil(t, device)
 	require.Equal(t, model.DeviceStatusOnline, device.Status)
-	t.Cleanup(func() { storage.GetDeviceCache().DelDeviceByPhone(phone); protocol.NewKeepaliveTimer().Cancel(phone) })
+	t.Cleanup(func() {
+		storage.Default().Devices.DeleteByPhone(context.Background(), phone)
+		protocol.NewKeepaliveTimer().Cancel(phone)
+	})
 
 	industry := storage.GetIndustryCache()
 	for _, msg := range []model.JT808Msg{
@@ -291,7 +294,7 @@ func TestTCPClientSimulatorIndustryMessages(t *testing.T) {
 	require.Equal(t, uint32(0x60000123), industry.CAN(phone).Items[0].CANID)
 	require.Equal(t, []byte{0xaa}, industry.RecordData(phone).Data)
 	require.Equal(t, uint32(71), industry.MediaUploads(phone)[0].MultiMediaID)
-	session, err := storage.GetSession(device.SessionID)
+	session, err := storage.Default().Conn.Get(context.Background(), device.SessionID)
 	require.NoError(t, err)
 	// Exercise media-layer retransmission separately from JT808's 0x8003
 	// transport reassembly: the terminal simulator must replay the original
@@ -403,7 +406,7 @@ func TestSimulatorMediaUploadCommands(t *testing.T) {
 	var device *model.Device
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
-		device, _ = storage.GetDeviceCache().GetDeviceByPhone(phone)
+		device, _ = storage.Default().Devices.GetByPhone(context.Background(), phone)
 		if device != nil && device.Status == model.DeviceStatusOnline {
 			break
 		}
@@ -411,10 +414,13 @@ func TestSimulatorMediaUploadCommands(t *testing.T) {
 	}
 	require.NotNil(t, device)
 	require.Equal(t, model.DeviceStatusOnline, device.Status)
-	t.Cleanup(func() { storage.GetDeviceCache().DelDeviceByPhone(phone); protocol.NewKeepaliveTimer().Cancel(phone) })
+	t.Cleanup(func() {
+		storage.Default().Devices.DeleteByPhone(context.Background(), phone)
+		protocol.NewKeepaliveTimer().Cancel(phone)
+	})
 
 	industry := storage.GetIndustryCache()
-	session, err := storage.GetSession(device.SessionID)
+	session, err := storage.Default().Conn.Get(context.Background(), device.SessionID)
 	require.NoError(t, err)
 
 	// Seed the simulator's stored-media catalog by uploading one image item.
@@ -514,7 +520,7 @@ func TestSimulatorMediaResourceListQuery(t *testing.T) {
 	var device *model.Device
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
-		device, _ = storage.GetDeviceCache().GetDeviceByPhone(phone)
+		device, _ = storage.Default().Devices.GetByPhone(context.Background(), phone)
 		if device != nil && device.Status == model.DeviceStatusOnline {
 			break
 		}
@@ -522,10 +528,13 @@ func TestSimulatorMediaResourceListQuery(t *testing.T) {
 	}
 	require.NotNil(t, device)
 	require.Equal(t, model.DeviceStatusOnline, device.Status)
-	t.Cleanup(func() { storage.GetDeviceCache().DelDeviceByPhone(phone); protocol.NewKeepaliveTimer().Cancel(phone) })
+	t.Cleanup(func() {
+		storage.Default().Devices.DeleteByPhone(context.Background(), phone)
+		protocol.NewKeepaliveTimer().Cancel(phone)
+	})
 
 	industry := storage.GetIndustryCache()
-	session, err := storage.GetSession(device.SessionID)
+	session, err := storage.Default().Conn.Get(context.Background(), device.SessionID)
 	require.NoError(t, err)
 
 	// Empty catalog query returns zero items.
@@ -651,7 +660,7 @@ func TestSimulatorTextAndEventMessages(t *testing.T) {
 	var device *model.Device
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
-		device, _ = storage.GetDeviceCache().GetDeviceByPhone(phone)
+		device, _ = storage.Default().Devices.GetByPhone(context.Background(), phone)
 		if device != nil && device.Status == model.DeviceStatusOnline {
 			break
 		}
@@ -659,10 +668,13 @@ func TestSimulatorTextAndEventMessages(t *testing.T) {
 	}
 	require.NotNil(t, device)
 	require.Equal(t, model.DeviceStatusOnline, device.Status)
-	t.Cleanup(func() { storage.GetDeviceCache().DelDeviceByPhone(phone); protocol.NewKeepaliveTimer().Cancel(phone) })
+	t.Cleanup(func() {
+		storage.Default().Devices.DeleteByPhone(context.Background(), phone)
+		protocol.NewKeepaliveTimer().Cancel(phone)
+	})
 
 	industry := storage.GetIndustryCache()
-	session, err := storage.GetSession(device.SessionID)
+	session, err := storage.Default().Conn.Get(context.Background(), device.SessionID)
 	require.NoError(t, err)
 
 	// 0x8300 text issue -> terminal acknowledges with 0x0001 (no observable side effect).
@@ -751,7 +763,7 @@ func TestSimulatorVehicleControl(t *testing.T) {
 	var device *model.Device
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
-		device, _ = storage.GetDeviceCache().GetDeviceByPhone(phone)
+		device, _ = storage.Default().Devices.GetByPhone(context.Background(), phone)
 		if device != nil && device.Status == model.DeviceStatusOnline {
 			break
 		}
@@ -759,10 +771,13 @@ func TestSimulatorVehicleControl(t *testing.T) {
 	}
 	require.NotNil(t, device)
 	require.Equal(t, model.DeviceStatusOnline, device.Status)
-	t.Cleanup(func() { storage.GetDeviceCache().DelDeviceByPhone(phone); protocol.NewKeepaliveTimer().Cancel(phone) })
+	t.Cleanup(func() {
+		storage.Default().Devices.DeleteByPhone(context.Background(), phone)
+		protocol.NewKeepaliveTimer().Cancel(phone)
+	})
 
 	industry := storage.GetIndustryCache()
-	session, err := storage.GetSession(device.SessionID)
+	session, err := storage.Default().Conn.Get(context.Background(), device.SessionID)
 	require.NoError(t, err)
 
 	// 0x8500 lock door (bit0=1) -> terminal stores flags and echoes via 0x0500.
@@ -807,7 +822,7 @@ func TestSimulatorQuestionMenuInfoService(t *testing.T) {
 	var device *model.Device
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
-		device, _ = storage.GetDeviceCache().GetDeviceByPhone(phone)
+		device, _ = storage.Default().Devices.GetByPhone(context.Background(), phone)
 		if device != nil && device.Status == model.DeviceStatusOnline {
 			break
 		}
@@ -815,10 +830,13 @@ func TestSimulatorQuestionMenuInfoService(t *testing.T) {
 	}
 	require.NotNil(t, device)
 	require.Equal(t, model.DeviceStatusOnline, device.Status)
-	t.Cleanup(func() { storage.GetDeviceCache().DelDeviceByPhone(phone); protocol.NewKeepaliveTimer().Cancel(phone) })
+	t.Cleanup(func() {
+		storage.Default().Devices.DeleteByPhone(context.Background(), phone)
+		protocol.NewKeepaliveTimer().Cancel(phone)
+	})
 
 	industry := storage.GetIndustryCache()
-	session, err := storage.GetSession(device.SessionID)
+	session, err := storage.Default().Conn.Get(context.Background(), device.SessionID)
 	require.NoError(t, err)
 
 	// 0x8302 question issue with two candidates.
@@ -945,7 +963,7 @@ func TestSimulatorPhonebookAndUpgrade(t *testing.T) {
 	var device *model.Device
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
-		device, _ = storage.GetDeviceCache().GetDeviceByPhone(phone)
+		device, _ = storage.Default().Devices.GetByPhone(context.Background(), phone)
 		if device != nil && device.Status == model.DeviceStatusOnline {
 			break
 		}
@@ -953,10 +971,13 @@ func TestSimulatorPhonebookAndUpgrade(t *testing.T) {
 	}
 	require.NotNil(t, device)
 	require.Equal(t, model.DeviceStatusOnline, device.Status)
-	t.Cleanup(func() { storage.GetDeviceCache().DelDeviceByPhone(phone); protocol.NewKeepaliveTimer().Cancel(phone) })
+	t.Cleanup(func() {
+		storage.Default().Devices.DeleteByPhone(context.Background(), phone)
+		protocol.NewKeepaliveTimer().Cancel(phone)
+	})
 
 	industry := storage.GetIndustryCache()
-	session, err := storage.GetSession(device.SessionID)
+	session, err := storage.Default().Conn.Get(context.Background(), device.SessionID)
 	require.NoError(t, err)
 
 	// 0x8400 call callback.
@@ -1065,7 +1086,7 @@ func TestSimulatorTransparentAndCompressed(t *testing.T) {
 	var device *model.Device
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
-		device, _ = storage.GetDeviceCache().GetDeviceByPhone(phone)
+		device, _ = storage.Default().Devices.GetByPhone(context.Background(), phone)
 		if device != nil && device.Status == model.DeviceStatusOnline {
 			break
 		}
@@ -1073,10 +1094,13 @@ func TestSimulatorTransparentAndCompressed(t *testing.T) {
 	}
 	require.NotNil(t, device)
 	require.Equal(t, model.DeviceStatusOnline, device.Status)
-	t.Cleanup(func() { storage.GetDeviceCache().DelDeviceByPhone(phone); protocol.NewKeepaliveTimer().Cancel(phone) })
+	t.Cleanup(func() {
+		storage.Default().Devices.DeleteByPhone(context.Background(), phone)
+		protocol.NewKeepaliveTimer().Cancel(phone)
+	})
 
 	industry := storage.GetIndustryCache()
-	session, err := storage.GetSession(device.SessionID)
+	session, err := storage.Default().Conn.Get(context.Background(), device.SessionID)
 	require.NoError(t, err)
 
 	// 0x8900 downlink transparent transmission.
@@ -1147,7 +1171,7 @@ func TestSimulatorWaybillAndBatchLocation(t *testing.T) {
 	var device *model.Device
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
-		device, _ = storage.GetDeviceCache().GetDeviceByPhone(phone)
+		device, _ = storage.Default().Devices.GetByPhone(context.Background(), phone)
 		if device != nil && device.Status == model.DeviceStatusOnline {
 			break
 		}
@@ -1155,7 +1179,10 @@ func TestSimulatorWaybillAndBatchLocation(t *testing.T) {
 	}
 	require.NotNil(t, device)
 	require.Equal(t, model.DeviceStatusOnline, device.Status)
-	t.Cleanup(func() { storage.GetDeviceCache().DelDeviceByPhone(phone); protocol.NewKeepaliveTimer().Cancel(phone) })
+	t.Cleanup(func() {
+		storage.Default().Devices.DeleteByPhone(context.Background(), phone)
+		protocol.NewKeepaliveTimer().Cancel(phone)
+	})
 
 	industry := storage.GetIndustryCache()
 
@@ -1219,7 +1246,7 @@ func TestSimulatorMediaRetransmissionRecoversDroppedPacket(t *testing.T) {
 	var device *model.Device
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
-		device, _ = storage.GetDeviceCache().GetDeviceByPhone(phone)
+		device, _ = storage.Default().Devices.GetByPhone(context.Background(), phone)
 		if device != nil && device.Status == model.DeviceStatusOnline {
 			break
 		}
@@ -1227,7 +1254,10 @@ func TestSimulatorMediaRetransmissionRecoversDroppedPacket(t *testing.T) {
 	}
 	require.NotNil(t, device)
 	require.Equal(t, model.DeviceStatusOnline, device.Status)
-	t.Cleanup(func() { storage.GetDeviceCache().DelDeviceByPhone(phone); protocol.NewKeepaliveTimer().Cancel(phone) })
+	t.Cleanup(func() {
+		storage.Default().Devices.DeleteByPhone(context.Background(), phone)
+		protocol.NewKeepaliveTimer().Cancel(phone)
+	})
 
 	industry := storage.GetIndustryCache()
 
@@ -1312,7 +1342,7 @@ func TestSimulatorRecorderCommandTypedResponses(t *testing.T) {
 	var device *model.Device
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
-		device, _ = storage.GetDeviceCache().GetDeviceByPhone(phone)
+		device, _ = storage.Default().Devices.GetByPhone(context.Background(), phone)
 		if device != nil && device.Status == model.DeviceStatusOnline {
 			break
 		}
@@ -1320,10 +1350,13 @@ func TestSimulatorRecorderCommandTypedResponses(t *testing.T) {
 	}
 	require.NotNil(t, device)
 	require.Equal(t, model.DeviceStatusOnline, device.Status)
-	t.Cleanup(func() { storage.GetDeviceCache().DelDeviceByPhone(phone); protocol.NewKeepaliveTimer().Cancel(phone) })
+	t.Cleanup(func() {
+		storage.Default().Devices.DeleteByPhone(context.Background(), phone)
+		protocol.NewKeepaliveTimer().Cancel(phone)
+	})
 
 	industry := storage.GetIndustryCache()
-	session, err := storage.GetSession(device.SessionID)
+	session, err := storage.Default().Conn.Get(context.Background(), device.SessionID)
 	require.NoError(t, err)
 
 	// 0x31 collect info -> response should be a typed RecorderInfoResponse.
@@ -1423,7 +1456,7 @@ func TestSimulatorRecorderParamSettingRoundTrip(t *testing.T) {
 	var device *model.Device
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
-		device, _ = storage.GetDeviceCache().GetDeviceByPhone(phone)
+		device, _ = storage.Default().Devices.GetByPhone(context.Background(), phone)
 		if device != nil && device.Status == model.DeviceStatusOnline {
 			break
 		}
@@ -1431,9 +1464,12 @@ func TestSimulatorRecorderParamSettingRoundTrip(t *testing.T) {
 	}
 	require.NotNil(t, device)
 	require.Equal(t, model.DeviceStatusOnline, device.Status)
-	t.Cleanup(func() { storage.GetDeviceCache().DelDeviceByPhone(phone); protocol.NewKeepaliveTimer().Cancel(phone) })
+	t.Cleanup(func() {
+		storage.Default().Devices.DeleteByPhone(context.Background(), phone)
+		protocol.NewKeepaliveTimer().Cancel(phone)
+	})
 
-	session, err := storage.GetSession(device.SessionID)
+	session, err := storage.Default().Conn.Get(context.Background(), device.SessionID)
 	require.NoError(t, err)
 	// Tighten the reliable-send window so a missing 0x0001 closes the
 	// connection within a few hundred milliseconds.
@@ -1459,7 +1495,7 @@ func TestSimulatorRecorderParamSettingRoundTrip(t *testing.T) {
 	// Wait well beyond the retransmission window; if the 0x0001 ack was
 	// processed the session stays open, otherwise it gets closed.
 	time.Sleep(300 * time.Millisecond)
-	device, _ = storage.GetDeviceCache().GetDeviceByPhone(phone)
+	device, _ = storage.Default().Devices.GetByPhone(context.Background(), phone)
 	require.NotNil(t, device, "device should still be cached after 0x8701 round-trip")
 	require.Equal(t, model.DeviceStatusOnline, device.Status, "0x8701 should be acknowledged by 0x0001 and keep the device online")
 }
@@ -1496,17 +1532,17 @@ func TestClientFaultFramesDoNotPreventFollowingRegistration(t *testing.T) {
 				require.NoError(t, cli.SendMalformedFrame(registration, fault))
 				deadline := time.Now().Add(6 * time.Second)
 				for time.Now().Before(deadline) {
-					device, err := storage.GetDeviceCache().GetDeviceByPhone(phone)
+					device, err := storage.Default().Devices.GetByPhone(context.Background(), phone)
 					if err == nil && device.Status == model.DeviceStatusOnline {
 						break
 					}
 					time.Sleep(10 * time.Millisecond)
 				}
-				device, err := storage.GetDeviceCache().GetDeviceByPhone(phone)
+				device, err := storage.Default().Devices.GetByPhone(context.Background(), phone)
 				require.NoError(t, err, "valid registration after %s was not processed", fault)
 				require.Equal(t, model.DeviceStatusOnline, device.Status)
 				t.Cleanup(func() {
-					storage.GetDeviceCache().DelDeviceByPhone(phone)
+					storage.Default().Devices.DeleteByPhone(context.Background(), phone)
 					protocol.NewKeepaliveTimer().Cancel(phone)
 				})
 			})
@@ -1550,7 +1586,7 @@ func dialBareTerminal(t *testing.T, addr, phone, plate, deviceID string) *bareTe
 	t.Helper()
 	b := newBareTerminal(t, addr)
 	t.Cleanup(func() {
-		storage.GetDeviceCache().DelDeviceByPhone(phone)
+		storage.Default().Devices.DeleteByPhone(context.Background(), phone)
 		protocol.NewKeepaliveTimer().Cancel(phone)
 	})
 	b.send(t, &model.Msg0100{
@@ -1575,7 +1611,7 @@ func dialBareTerminal(t *testing.T, addr, phone, plate, deviceID string) *bareTe
 
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
-		d, err := storage.GetDeviceCache().GetDeviceByPhone(phone)
+		d, err := storage.Default().Devices.GetByPhone(context.Background(), phone)
 		if err == nil && d.Status == model.DeviceStatusOnline {
 			return b
 		}
@@ -1619,7 +1655,7 @@ func waitDeviceAbsent(t *testing.T, phone string) {
 	t.Helper()
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
-		if _, err := storage.GetDeviceCache().GetDeviceByPhone(phone); err != nil {
+		if _, err := storage.Default().Devices.GetByPhone(context.Background(), phone); err != nil {
 			return
 		}
 		time.Sleep(5 * time.Millisecond)
@@ -1636,13 +1672,13 @@ func TestTCPServerHeartbeatRefreshesDeviceComTime(t *testing.T) {
 	const phone = "188765433221"
 	b := dialBareTerminal(t, server.listener.Addr().String(), phone, "京B00021", "BARE-HB-01")
 
-	cache := storage.GetDeviceCache()
-	device, err := cache.GetDeviceByPhone(phone)
+	devices := storage.Default().Devices
+	device, err := devices.GetByPhone(context.Background(), phone)
 	require.NoError(t, err)
 	// Backdate the last communication time beyond the keepalive window.
 	stale := time.Now().Add(-90 * time.Second)
 	device.LastestComTime = stale
-	cache.CacheDevice(device)
+	devices.Upsert(context.Background(), device)
 
 	b.send(t, &model.Msg0002{Header: uplinkHeader(0x0002, phone, 10)})
 	ack := &model.Msg8001{}
@@ -1650,7 +1686,7 @@ func TestTCPServerHeartbeatRefreshesDeviceComTime(t *testing.T) {
 	require.Equal(t, uint16(0x0002), ack.AnswerMessageID)
 	require.Equal(t, model.ResultSuccess, ack.Result)
 
-	refreshed, err := cache.GetDeviceByPhone(phone)
+	refreshed, err := devices.GetByPhone(context.Background(), phone)
 	require.NoError(t, err)
 	require.True(t, refreshed.LastestComTime.After(stale.Add(80*time.Second)), "heartbeat must refresh LastestComTime")
 	require.WithinDuration(t, time.Now(), refreshed.LastestComTime, 5*time.Second)
@@ -1779,7 +1815,7 @@ func TestTCPServerRejectsDuplicateRegistration(t *testing.T) {
 	const plateA = "京B00036"
 	const plateC = "京B00037"
 	dialBareTerminal(t, server.listener.Addr().String(), phoneA, plateA, "BARE-DUP-A")
-	cache := storage.GetDeviceCache()
+	devices := storage.Default().Devices
 
 	// Same plate, different phone on a new conn -> car already registered.
 	b2 := newBareTerminal(t, server.listener.Addr().String())
@@ -1796,7 +1832,7 @@ func TestTCPServerRejectsDuplicateRegistration(t *testing.T) {
 	carDup := &model.Msg8100{}
 	b2.recvInto(t, 3*time.Second, 0x8100, carDup)
 	require.Equal(t, model.ResCarAlreadyRegister, carDup.Result)
-	_, err := cache.GetDeviceByPhone(phoneB)
+	_, err := devices.GetByPhone(context.Background(), phoneB)
 	require.ErrorIs(t, err, storage.ErrDeviceNotFound)
 
 	// Same phone, different plate on a new conn -> device already registered.
@@ -1814,9 +1850,10 @@ func TestTCPServerRejectsDuplicateRegistration(t *testing.T) {
 	devDup := &model.Msg8100{}
 	b3.recvInto(t, 3*time.Second, 0x8100, devDup)
 	require.Equal(t, model.ResDeviceAlreadyRegister, devDup.Result)
-	require.False(t, cache.HasPlate(plateC), "rejected registration must not cache its plate")
+	_, err = devices.GetByPlate(context.Background(), plateC)
+	require.ErrorIs(t, err, storage.ErrDeviceNotFound, "rejected registration must not cache its plate")
 
-	original, err := cache.GetDeviceByPhone(phoneA)
+	original, err := devices.GetByPhone(context.Background(), phoneA)
 	require.NoError(t, err)
 	require.Equal(t, model.DeviceStatusOnline, original.Status, "original device must stay untouched")
 }
@@ -1830,7 +1867,7 @@ func TestTCPServerRejectsWrongAuthCode(t *testing.T) {
 	const phone = "188765433238"
 	b := newBareTerminal(t, server.listener.Addr().String())
 	t.Cleanup(func() {
-		storage.GetDeviceCache().DelDeviceByPhone(phone)
+		storage.Default().Devices.DeleteByPhone(context.Background(), phone)
 		protocol.NewKeepaliveTimer().Cancel(phone)
 	})
 	b.send(t, &model.Msg0100{
@@ -1902,7 +1939,7 @@ func TestTCPServerMergesTerminalParamsAndAnswers8104(t *testing.T) {
 	require.Equal(t, uint32(0x0002), reply.Parameters.Params[1].ParamID)
 	require.Equal(t, uint32(333), reply.Parameters.Params[1].ParamValue)
 
-	cached, err := storage.GetDeviceParamsCache().GetDeviceParamsByPhone(phone)
+	cached, err := storage.Default().Params.Get(context.Background(), phone)
 	require.NoError(t, err)
 	require.Len(t, cached.Params, 2)
 	require.Equal(t, uint32(222), cached.Params[0].ParamValue)
@@ -1925,7 +1962,7 @@ func TestSimulatorRecorderPositionTestCommands(t *testing.T) {
 	var device *model.Device
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
-		device, _ = storage.GetDeviceCache().GetDeviceByPhone(phone)
+		device, _ = storage.Default().Devices.GetByPhone(context.Background(), phone)
 		if device != nil && device.Status == model.DeviceStatusOnline {
 			break
 		}
@@ -1933,10 +1970,13 @@ func TestSimulatorRecorderPositionTestCommands(t *testing.T) {
 	}
 	require.NotNil(t, device)
 	require.Equal(t, model.DeviceStatusOnline, device.Status)
-	t.Cleanup(func() { storage.GetDeviceCache().DelDeviceByPhone(phone); protocol.NewKeepaliveTimer().Cancel(phone) })
+	t.Cleanup(func() {
+		storage.Default().Devices.DeleteByPhone(context.Background(), phone)
+		protocol.NewKeepaliveTimer().Cancel(phone)
+	})
 
 	industry := storage.GetIndustryCache()
-	session, err := storage.GetSession(device.SessionID)
+	session, err := storage.Default().Conn.Get(context.Background(), device.SessionID)
 	require.NoError(t, err)
 
 	cases := []struct {

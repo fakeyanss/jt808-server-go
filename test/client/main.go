@@ -34,19 +34,17 @@ type (
 
 func buildDevice(ctx context.Context, cli *client.TCPClient) *model.Device {
 	deviceConf := ctx.Value(DeviceConfCtxKey{}).(*config.DeviceConf)
-	cache := storage.GetDeviceCache()
 	device := datagen.GenDevice(deviceConf)
 	device.SessionID = cli.Session.ID
 	device.TransProto = cli.Session.GetTransProto()
 	device.Conn = cli.Session.Conn
-	cache.CacheDevice(device)
+	_ = storage.Default().Devices.Upsert(ctx, device)
 	return device
 }
 
 func getDevice(ctx context.Context) *model.Device {
 	phone := ctx.Value(DevicePhoneCtxKey{}).(string)
-	cache := storage.GetDeviceCache()
-	device, err := cache.GetDeviceByPhone(phone)
+	device, err := storage.Default().Devices.GetByPhone(ctx, phone)
 	if err != nil {
 		log.Fatal().Err(err).Str("phone", phone).Msg("Fail to find device cache")
 	}
@@ -86,19 +84,17 @@ func buildDeviceGeo(ctx context.Context) {
 	device := getDevice(ctx)
 	deviceGeoConf := ctx.Value(DeviceGeoConfCtxKey{}).(*config.DeviceGeoConf)
 	deivceGeo := datagen.GenDeviceGeo(deviceGeoConf, device)
-	geoCache := storage.GetGeoCache()
-	rb := geoCache.GetGeoRingByPhone(device.Phone)
-	rb.Write(deivceGeo)
+	_ = storage.Default().Geo.Append(ctx, deivceGeo)
 }
 
 func reportLocation(ctx context.Context, cli *client.TCPClient) {
 	deviceGeoConf := ctx.Value(DeviceGeoConfCtxKey{}).(*config.DeviceGeoConf)
-	geoCache := storage.GetGeoCache()
+	geo := storage.Default().Geo
 	tracker := storage.GetLocationTrackingCache()
 	device := getDevice(ctx)
 	fallback := time.Duration(deviceGeoConf.LocationReportInterval) * time.Second
 	sendLocation := func() {
-		deviceGeo, err := geoCache.GetGeoLatestByPhone(device.Phone)
+		deviceGeo, err := geo.Latest(ctx, device.Phone)
 		if err == nil {
 			cli.Send(datagen.GenMsg0200(deviceGeoConf, device, deviceGeo))
 		}
@@ -173,8 +169,7 @@ func dialAndSend(cfg *config.Config, cliWg *sync.WaitGroup, fragmentSize int, re
 		routines.GoSafe(func() {
 			// device status checker
 			for {
-				cache := storage.GetDeviceCache()
-				renewDevice, _ := cache.GetDeviceByPhone(d.Phone)
+				renewDevice, _ := storage.Default().Devices.GetByPhone(ctx, d.Phone)
 				if renewDevice.Status == model.DeviceStatusOnline {
 					wg.Done()
 					return
