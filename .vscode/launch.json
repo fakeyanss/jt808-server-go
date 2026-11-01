@@ -19,7 +19,7 @@
             "program": "cmd/jt808-client/main.go",
             // "args": [
             //     "-c",
-            //     "test/client/configs/default.yaml"
+            //     "client/configs/default.yaml"
             // ]
         },
         {

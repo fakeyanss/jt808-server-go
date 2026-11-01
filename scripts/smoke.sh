@@ -59,7 +59,7 @@ sed -E \
   -e "s|(httpPort: \")[0-9]+|\\1$HTTP_PORT|" \
   "$ROOT/configs/default.yaml" >"$WORK/server.yaml"
 sed -E "s|(remoteAddr: \"localhost:)[0-9]+|\\1$TCP_PORT|" \
-  "$ROOT/test/client/configs/default.yaml" >"$WORK/client.yaml"
+  "$ROOT/client/configs/default.yaml" >"$WORK/client.yaml"
 
 SBIN="$WORK/bin/server"
 CBIN="$WORK/bin/client"

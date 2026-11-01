@@ -6,8 +6,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 
+	clientconfigs "github.com/fakeyanss/jt808-server-go/client/configs"
 	serverconfigs "github.com/fakeyanss/jt808-server-go/configs"
-	clientconfigs "github.com/fakeyanss/jt808-server-go/test/client/configs"
 )
 
 func TestLoad(t *testing.T) {

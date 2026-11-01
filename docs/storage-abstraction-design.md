@@ -1000,7 +1000,7 @@ internal/storage/                 # 仅装配：后端选择与初始化
 | 二进制 | 入口 | 说明 |
 |---|---|---|
 | `jt808-server-go` | `cmd/jt808-server/main.go` | 原仓库根 `main.go` |
-| `jt808-client-go` | `cmd/jt808-client/main.go` | 原 `test/client/main.go`；`test/client/configs` 保留（被 `internal/config` 嵌入为客户端默认配置） |
+| `jt808-client-go` | `cmd/jt808-client/main.go` | 原 `test/client/main.go`；默认配置与数据生成器收拢到 `client/`（`client/configs`、`client/datagen`） |
 | `jt808-migrate` | `cmd/jt808-migrate/main.go` | 独立迁移工具（§19.8） |
 
 **配套更新**
@@ -1083,4 +1083,20 @@ MySQL 都支持的语法；核对中发现并修复一处 MySQL 不兼容：
 
 - SQLite 下迁移工具与相关测试全绿；本机无 Docker/MySQL，MySQL 侧由现有集成测试
   （按环境变量启用）覆盖，尚未在本机实跑。
+
+### 19.12 `test/` 目录更名为 `client/`（2026-11-01，分支 `dev/p0-baseline`，基线 `66be00a`）
+
+客户端启动入口迁入 `cmd/jt808-client` 后，`test/` 下只剩客户端配套代码，因此整体更名：
+
+| 原路径 | 新路径 |
+|---|---|
+| `test/client/configs/` | `client/configs/`（`internal/config` 嵌入的客户端默认配置） |
+| `test/datagen/` | `client/datagen/`（客户端模拟上报数据生成器，仅供 `cmd/jt808-client` 使用） |
+
+配套更新：`internal/config` 与 `config_test.go` 的 import、`cmd/jt808-client/main.go` 的
+`datagen` import、`scripts/build.sh`（客户端 `conf_src`）、`scripts/smoke.sh`、`Makefile`
+`run-client`、`.vscode/launch.json` 配置路径。同时删除 `test/datagen/` 下误提交的空文件 `datagen`。
+
+**验证**：`gofmt` / `go build ./...` / `go vet ./...` / `go test -race ./...` 全绿；
+`scripts/smoke.sh` 端到端通过；`make compile-client` 产物仍包含 `client/configs`。
 

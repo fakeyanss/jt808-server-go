@@ -10,9 +10,9 @@ import (
 	"github.com/rs/zerolog"
 	"github.com/spf13/viper"
 
+	clientconfigs "github.com/fakeyanss/jt808-server-go/client/configs"
 	serverconfigs "github.com/fakeyanss/jt808-server-go/configs"
 	"github.com/fakeyanss/jt808-server-go/pkg/logger"
-	clientconfigs "github.com/fakeyanss/jt808-server-go/test/client/configs"
 )
 
 type LogLevelType string

@@ -67,7 +67,7 @@ build_file="cmd/jt808-server/main.go"
 conf_src="$project_dir/configs/"
 if [[ $target == "jt808-client-go" ]]; then
 	build_file="cmd/jt808-client/main.go"
-	conf_src="$project_dir/test/client/configs/"
+	conf_src="$project_dir/client/configs/"
 elif [[ $target == "jt808-migrate" ]]; then
 	build_file="cmd/jt808-migrate/main.go"
 fi

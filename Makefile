@@ -33,7 +33,7 @@ compile-migrate: set-env
 run: set-env
 	go run $(CURDIR)/cmd/jt808-server/main.go -c configs/default.yaml
 run-client: set-env
-	go run $(CURDIR)/cmd/jt808-client/main.go -c $(CURDIR)/test/client/configs/default.yaml
+	go run $(CURDIR)/cmd/jt808-client/main.go -c $(CURDIR)/client/configs/default.yaml
 
 # release 阶段，单独执行交叉编译命令并打包
 release: set-env
