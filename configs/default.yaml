@@ -31,5 +31,8 @@ storage:
   type: "memory"
   sqlite:
     path: "./data/jt808.db"
+    # 仅 SQLite 生效，缺省 true：启动时自动应用迁移。
+    # MySQL 不自动迁移（生产库通常禁止运行时 DDL），需先执行 `jt808-server -c <config> migrate`。
+    autoMigrate: true
   mysql:
     dsn: ""

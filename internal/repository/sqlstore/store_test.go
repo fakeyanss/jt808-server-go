@@ -2,6 +2,7 @@ package sqlstore
 
 import (
 	"context"
+	stdsql "database/sql"
 	"os"
 	"path/filepath"
 	"sync"
@@ -17,7 +18,11 @@ import (
 
 func openTestSQLite(t *testing.T) *Store {
 	t.Helper()
-	store, err := Open(Config{Backend: BackendSQLite, Path: filepath.Join(t.TempDir(), "jt808.db")})
+	store, err := Open(Config{
+		Backend:     BackendSQLite,
+		Path:        filepath.Join(t.TempDir(), "jt808.db"),
+		AutoMigrate: true,
+	})
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = store.Close() })
 	return store
@@ -46,7 +51,7 @@ func TestSQLitePersistsDeviceAndParamsAcrossReopen(t *testing.T) {
 	ctx := context.Background()
 	dbPath := filepath.Join(t.TempDir(), "jt808.db")
 
-	first, err := Open(Config{Backend: BackendSQLite, Path: dbPath})
+	first, err := Open(Config{Backend: BackendSQLite, Path: dbPath, AutoMigrate: true})
 	require.NoError(t, err)
 	device := sampleDevice("188765400001")
 	require.NoError(t, first.DeviceRepository().Upsert(ctx, device))
@@ -70,7 +75,7 @@ func TestSQLitePersistsDeviceAndParamsAcrossReopen(t *testing.T) {
 
 	require.NoError(t, first.Close())
 
-	second, err := Open(Config{Backend: BackendSQLite, Path: dbPath})
+	second, err := Open(Config{Backend: BackendSQLite, Path: dbPath, AutoMigrate: true})
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = second.Close() })
 
@@ -104,7 +109,7 @@ func TestSQLitePersistsTerminalProperties(t *testing.T) {
 	ctx := context.Background()
 	dbPath := filepath.Join(t.TempDir(), "jt808.db")
 
-	first, err := Open(Config{Backend: BackendSQLite, Path: dbPath})
+	first, err := Open(Config{Backend: BackendSQLite, Path: dbPath, AutoMigrate: true})
 	require.NoError(t, err)
 	props := &model.TerminalProperties{
 		Phone:                   "188765400005",
@@ -132,7 +137,7 @@ func TestSQLitePersistsTerminalProperties(t *testing.T) {
 	require.Equal(t, "value", again.Extra["legacy"])
 
 	require.NoError(t, first.Close())
-	second, err := Open(Config{Backend: BackendSQLite, Path: dbPath})
+	second, err := Open(Config{Backend: BackendSQLite, Path: dbPath, AutoMigrate: true})
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = second.Close() })
 
@@ -213,6 +218,85 @@ func TestSQLiteConcurrentDeviceWrites(t *testing.T) {
 	devices, err := store.DeviceRepository().List(ctx)
 	require.NoError(t, err)
 	require.Len(t, devices, workers)
+}
+
+// 未启用自动迁移且库尚未建表时，启动被拒绝并提示执行迁移命令。
+func TestOpenRejectsFreshDatabaseWithoutAutoMigrate(t *testing.T) {
+	_, err := Open(Config{Backend: BackendSQLite, Path: filepath.Join(t.TempDir(), "jt808.db")})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "migrate")
+}
+
+// 版本记录低于程序期望时，启动被拒绝。
+func TestOpenRejectsOutdatedSchemaVersion(t *testing.T) {
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "jt808.db")
+
+	store, err := Open(Config{Backend: BackendSQLite, Path: dbPath, AutoMigrate: true})
+	require.NoError(t, err)
+	require.NoError(t, store.Close())
+
+	// 回退版本记录，模拟由旧版本二进制建出的库。
+	db, err := stdsql.Open("sqlite", "file:"+dbPath)
+	require.NoError(t, err)
+	_, err = db.ExecContext(ctx, `DELETE FROM schema_migrations WHERE version > 1`)
+	require.NoError(t, err)
+	require.NoError(t, db.Close())
+
+	_, err = Open(Config{Backend: BackendSQLite, Path: dbPath})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "behind expected")
+}
+
+// 库版本高于程序内置版本时，启动被拒绝。
+func TestOpenRejectsNewerSchemaVersion(t *testing.T) {
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "jt808.db")
+
+	store, err := Open(Config{Backend: BackendSQLite, Path: dbPath, AutoMigrate: true})
+	require.NoError(t, err)
+	require.NoError(t, store.Close())
+
+	db, err := stdsql.Open("sqlite", "file:"+dbPath)
+	require.NoError(t, err)
+	_, err = db.ExecContext(ctx,
+		`INSERT INTO schema_migrations (version, applied_at) VALUES (999, 0)`)
+	require.NoError(t, err)
+	require.NoError(t, db.Close())
+
+	_, err = Open(Config{Backend: BackendSQLite, Path: dbPath})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "ahead of")
+}
+
+// 版本一致时只校验不执行 DDL，可正常启动。
+func TestOpenAcceptsMatchingSchemaVersion(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "jt808.db")
+
+	store, err := Open(Config{Backend: BackendSQLite, Path: dbPath, AutoMigrate: true})
+	require.NoError(t, err)
+	require.NoError(t, store.Close())
+
+	second, err := Open(Config{Backend: BackendSQLite, Path: dbPath})
+	require.NoError(t, err)
+	require.NoError(t, second.Close())
+}
+
+// 显式迁移可重复执行，第二次不产生新的版本记录。
+func TestMigrateIsRepeatable(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "jt808.db")
+
+	applied, err := Migrate(Config{Backend: BackendSQLite, Path: dbPath})
+	require.NoError(t, err)
+	require.Greater(t, applied, 0)
+
+	again, err := Migrate(Config{Backend: BackendSQLite, Path: dbPath})
+	require.NoError(t, err)
+	require.Zero(t, again)
+
+	store, err := Open(Config{Backend: BackendSQLite, Path: dbPath})
+	require.NoError(t, err)
+	require.NoError(t, store.Close())
 }
 
 // MySQL 需要外部实例；未设置 JT808_TEST_MYSQL_DSN 时跳过。

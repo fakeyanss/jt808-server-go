@@ -29,6 +29,11 @@ type Config struct {
 	Type       string // memory | sqlite | mysql
 	SQLitePath string // type=sqlite 时必填
 	MySQLDSN   string // type=mysql 时必填
+
+	// AutoMigrate 指定启动时是否自动执行迁移。
+	// nil 表示按后端默认：SQLite 自动迁移（嵌入式单文件库，运维无独立迁移通道），
+	// MySQL 不自动迁移（生产环境常禁止运行时 DDL，必须走显式 migrate 命令）。
+	AutoMigrate *bool
 }
 
 var (
@@ -73,19 +78,16 @@ func newStores(backend string) *Stores {
 // SQL 后端覆盖 Device、DeviceParams 与 TerminalProperties，其余仓储仍使用内存实现；
 // 因此除设备/参数/属性外的数据在进程重启后不保留（与设计文档 §7.4 范围一致）。
 func Open(cfg Config) (*Stores, error) {
-	backend := strings.ToLower(strings.TrimSpace(cfg.Type))
-	if backend == "" {
-		backend = BackendMemory
-	}
+	backend := normalizeBackend(cfg.Type)
 	switch backend {
 	case BackendMemory:
 		return newStores(BackendMemory), nil
 	case BackendSQLite, BackendMySQL:
-		sqlStore, err := sqlstore.Open(sqlstore.Config{
-			Backend: sqlstore.Backend(backend),
-			Path:    cfg.SQLitePath,
-			DSN:     cfg.MySQLDSN,
-		})
+		sqlCfg, err := sqlConfig(cfg, backend)
+		if err != nil {
+			return nil, err
+		}
+		sqlStore, err := sqlstore.Open(sqlCfg)
 		if err != nil {
 			return nil, err
 		}
@@ -98,6 +100,53 @@ func Open(cfg Config) (*Stores, error) {
 	default:
 		return nil, fmt.Errorf("unsupported storage backend %q, expected memory|sqlite|mysql", cfg.Type)
 	}
+}
+
+// Migrate 按配置显式执行迁移并返回本次应用的版本数，不初始化进程默认存储。
+// MySQL 场景也可由 DBA 按文件名顺序直接执行 internal/repository/migration 下的 SQL 文件。
+func Migrate(cfg Config) (int, error) {
+	backend := normalizeBackend(cfg.Type)
+	switch backend {
+	case BackendMemory:
+		return 0, fmt.Errorf("memory storage has no schema to migrate")
+	case BackendSQLite, BackendMySQL:
+		sqlCfg, err := sqlConfig(cfg, backend)
+		if err != nil {
+			return 0, err
+		}
+		return sqlstore.Migrate(sqlCfg)
+	default:
+		return 0, fmt.Errorf("unsupported storage backend %q, expected memory|sqlite|mysql", cfg.Type)
+	}
+}
+
+// sqlConfig 将通用配置转换为 SQL 后端配置，并解析自动迁移的有效值。
+func sqlConfig(cfg Config, backend string) (sqlstore.Config, error) {
+	// MySQL 永不自动迁移：生产库的 DDL 权限通常不授予应用账号。
+	// 显式开启视为配置错误，避免用户误以为启动已迁移而实际只校验版本。
+	autoMigrate := backend == BackendSQLite
+	if cfg.AutoMigrate != nil {
+		if backend == BackendMySQL && *cfg.AutoMigrate {
+			return sqlstore.Config{}, fmt.Errorf(
+				"autoMigrate is only supported for sqlite; run `jt808-server -c <config> migrate` for mysql")
+		}
+		autoMigrate = *cfg.AutoMigrate
+	}
+	return sqlstore.Config{
+		Backend:     sqlstore.Backend(backend),
+		Path:        cfg.SQLitePath,
+		DSN:         cfg.MySQLDSN,
+		AutoMigrate: autoMigrate,
+	}, nil
+}
+
+// normalizeBackend 归一化后端名称；空值与 memory 等价。
+func normalizeBackend(name string) string {
+	backend := strings.ToLower(strings.TrimSpace(name))
+	if backend == "" {
+		return BackendMemory
+	}
+	return backend
 }
 
 // Init 按配置初始化进程默认存储，并返回实际后端。

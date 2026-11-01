@@ -73,3 +73,30 @@ func TestOpenSQLitePersistsDevicesAndParams(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "TEST", gotParams.Params[0].ParamValue)
 }
+
+// Migrate 是独立入口，可重复执行且不初始化进程默认存储。
+func TestMigrateSQLiteIsRepeatable(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "jt808.db")
+
+	applied, err := Migrate(Config{Type: BackendSQLite, SQLitePath: dbPath})
+	require.NoError(t, err)
+	require.Greater(t, applied, 0)
+
+	again, err := Migrate(Config{Type: BackendSQLite, SQLitePath: dbPath})
+	require.NoError(t, err)
+	require.Zero(t, again)
+}
+
+// 内存后端没有 schema，迁移命令应给出明确错误；MySQL 不允许自动迁移。
+func TestMigrateRejectsUnsupportedTargets(t *testing.T) {
+	_, err := Migrate(Config{Type: BackendMemory})
+	require.Error(t, err)
+
+	_, err = Migrate(Config{Type: "redis"})
+	require.Error(t, err)
+
+	autoMigrate := true
+	_, err = Open(Config{Type: BackendMySQL, MySQLDSN: "user:pass@tcp(localhost:3306)/jt808", AutoMigrate: &autoMigrate})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "autoMigrate is only supported for sqlite")
+}

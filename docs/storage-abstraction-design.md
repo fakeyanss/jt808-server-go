@@ -338,7 +338,9 @@ type Coordinator interface {
 - **启动只校验不执行**：读取 `MAX(version)` 与期望版本比较。低于期望 → 报错退出并提示执行迁移命令；
   高于期望 → 报错（库版本高于程序版本），拒绝启动。
 - **SQLite 例外**：嵌入式场景允许自动迁移，配置 `storage.sqlite.autoMigrate`，缺省 `true`；
-  MySQL 无论配置如何都不自动迁移（避免运行时 DDL 被生产权限拒绝）。
+  MySQL 无论配置如何都不自动迁移（避免运行时 DDL 被生产权限拒绝）；显式给 MySQL 配 `true`
+  会作为配置错误拒绝启动，以免误判为"启动已迁移"。入口代码为 `storage.Migrate` /
+  `sqlstore.Migrate`，对应 `jt808-server -c <config> migrate`。
 - 执行健壮性：逐版本执行，全部语句成功后才写入 `schema_migrations`；失败时错误信息带版本号与
   失败语句，已成功版本不会重复应用。
 - **客观限制（MySQL）**：DDL 会隐式提交，无法与"插入版本记录"同事务。若一个版本内多条 DDL
@@ -880,10 +882,36 @@ internal/storage/                 # 仅装配：后端选择与初始化
 
 **分批记录**
 
-| 批次 | 内容 |
-|---|---|
-| 1 | 文档决策与缺口修正（本节、§7.1–§7.5、§11.3、§16） |
-| 2 | `terminal_properties` 落库 + 0x0107 三者同时 |
-| 3 | `device_runtime` 拆分与重启语义 |
-| 4 | 迁移机制改造（SQL 文件 + `migrate` 子命令 + 启动校验） |
+| 批次 | commit | 内容 |
+|---|---|---|
+| 1 | `387b9fd` | 文档决策与缺口修正（本节、§7.1–§7.5、§11.3、§16） |
+| 2 | `82aa13d` | `terminal_properties` 落库 + 0x0107 三者同时 |
+| 3 | `8d49dfc` | `device_runtime` 拆分与重启语义 |
+| 4 | 本记录提交 | 迁移机制改造（SQL 文件 + `migrate` 子命令 + 启动校验） |
+
+**迁移机制实现细节**
+
+- 目录：`internal/repository/migration/` 下 `migrate.go` + `0001_init.sql` /
+  `0002_terminal_properties.sql` / `0003_device_runtime.sql`；SQL 经 `//go:embed *.sql` 编译进二进制，
+  迁移器只依赖 `database/sql`，未引入框架。
+- 命令：`jt808-server -c <config> migrate` 执行迁移、打印 `applied` 数量后退出（不走服务启动流程）；
+  未知位置参数返回退出码 2。DBA 也可按文件名顺序直接执行这些 SQL 文件。
+- 启动校验：SQLite 在 `autoMigrate=true`（缺省）时先执行迁移；否则只比对版本。
+  低于期望报 `... is behind expected ... run \`jt808-server -c <config> migrate\``；高于期望报
+  `... is ahead of this program's expected ...`；全新库缺 `schema_migrations` 同样报错并提示迁移。
+  MySQL 显式配置 `autoMigrate=true` 视为配置错误，避免误以为启动时已迁移。
+- 失败处理：逐版本执行，错误带版本号、文件名与语句序号；仅当该版本全部语句成功后才写入
+  `schema_migrations`，已成功版本不会重复应用。
+- MySQL 客观限制：DDL 隐式提交，无法与版本记录同事务；中途失败可能留下"部分表已建、版本未记录"，
+  应对为重跑迁移（幂等 DDL 补齐）或 DBA 人工核对。SQLite 本轮共用同一路径（先 DDL、后记录）。
+- 遗留限制：启动时以单条 `UPDATE device_runtime SET session_id='', status=0` 重置运行时投影；
+  多节点共享同一 MySQL 库时，任一节点重启会覆盖其它节点状态。M3 之前按单节点使用，
+  分布式形态需改为按 owner 重置或运行时投影不入库（见 §10）。
+
+**验证**
+
+- `gofmt` / `go build ./...` / `go vet ./...` / `go test -race ./...` 全绿。
+- 新增用例：迁移幂等（第二次 `applied=0`、版本行不重复）；`devices` 不再含运行时列；
+  SQLite 自动迁移路径；版本落后 / 超前拒绝启动；版本一致正常启动；显式迁移可重复；
+  内存后端迁移报错；MySQL 显式 `autoMigrate` 报配置错误。
 

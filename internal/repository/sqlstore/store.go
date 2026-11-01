@@ -16,6 +16,7 @@ import (
 
 	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
 	"github.com/fakeyanss/jt808-server-go/internal/repository"
+	"github.com/fakeyanss/jt808-server-go/internal/repository/migration"
 )
 
 // Backend 标识 SQL 后端类型。
@@ -31,6 +32,10 @@ type Config struct {
 	Backend Backend
 	Path    string // SQLite 数据库文件路径
 	DSN     string // MySQL DSN，如 user:pass@tcp(host:port)/db
+
+	// AutoMigrate 只对 SQLite 生效：true 时启动自动补齐版本。
+	// MySQL 无论该值如何都只校验版本，避免生产环境的运行时 DDL 被权限拒绝。
+	AutoMigrate bool
 }
 
 // Store 持有连接池，并作为 SQL 仓储的装配入口。
@@ -39,31 +44,27 @@ type Store struct {
 	backend Backend
 }
 
-// Open 打开数据库、校验连通性并执行幂等建表。
+// Open 打开数据库并准备可用的连接池。
+//
+// SQLite 在 AutoMigrate=true 时先补齐迁移再启动；其余情况（以及全部 MySQL）只校验
+// schema_migrations 版本与程序内置版本一致，不执行任何 DDL。
 func Open(cfg Config) (*Store, error) {
-	if cfg.Backend != BackendSQLite && cfg.Backend != BackendMySQL {
-		return nil, fmt.Errorf("unsupported sql storage backend %q", cfg.Backend)
-	}
-	driver, dsn, err := buildDSN(cfg)
+	db, ctx, cancel, err := connect(cfg)
 	if err != nil {
 		return nil, err
 	}
-	db, err := stdsql.Open(driver, dsn)
-	if err != nil {
-		return nil, fmt.Errorf("open %s database: %w", cfg.Backend, err)
-	}
-	tunePool(db, cfg.Backend)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	if err := db.PingContext(ctx); err != nil {
+
+	if cfg.AutoMigrate && cfg.Backend == BackendSQLite {
+		if _, err := migration.Apply(ctx, db); err != nil {
+			_ = db.Close()
+			return nil, fmt.Errorf("apply %s migrations: %w", cfg.Backend, err)
+		}
+	} else if err := validateSchemaVersion(ctx, db, cfg.Backend); err != nil {
 		_ = db.Close()
-		return nil, fmt.Errorf("connect to %s database: %w", cfg.Backend, err)
+		return nil, err
 	}
-	if err := migrate(ctx, db); err != nil {
-		_ = db.Close()
-		return nil, fmt.Errorf("initialize %s schema: %w", cfg.Backend, err)
-	}
+
 	// 运行时投影不跨进程有效：重启后 session_id 一律为空、status 一律离线。
 	// 单条 UPDATE 完成重置；last_com_time_ms 保留，只作"上次在线时间"展示。
 	if _, err := db.ExecContext(ctx,
@@ -72,6 +73,67 @@ func Open(cfg Config) (*Store, error) {
 		return nil, fmt.Errorf("reset %s device runtime: %w", cfg.Backend, err)
 	}
 	return &Store{db: db, backend: cfg.Backend}, nil
+}
+
+// Migrate 显式执行迁移并返回本次应用的版本数，不在成功后启动服务。
+// MySQL 场景也可以由 DBA 直接按文件名顺序执行 *sql 文件。
+func Migrate(cfg Config) (int, error) {
+	db, ctx, cancel, err := connect(cfg)
+	if err != nil {
+		return 0, err
+	}
+	defer cancel()
+	defer func() { _ = db.Close() }()
+
+	applied, err := migration.Apply(ctx, db)
+	if err != nil {
+		return applied, fmt.Errorf("apply %s migrations: %w", cfg.Backend, err)
+	}
+	return applied, nil
+}
+
+// connect 校验后端参数、打开连接池并确认连通性。
+func connect(cfg Config) (*stdsql.DB, context.Context, context.CancelFunc, error) {
+	if cfg.Backend != BackendSQLite && cfg.Backend != BackendMySQL {
+		return nil, nil, nil, fmt.Errorf("unsupported sql storage backend %q", cfg.Backend)
+	}
+	driver, dsn, err := buildDSN(cfg)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	db, err := stdsql.Open(driver, dsn)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("open %s database: %w", cfg.Backend, err)
+	}
+	tunePool(db, cfg.Backend)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	if err := db.PingContext(ctx); err != nil {
+		cancel()
+		_ = db.Close()
+		return nil, nil, nil, fmt.Errorf("connect to %s database: %w", cfg.Backend, err)
+	}
+	return db, ctx, cancel, nil
+}
+
+// validateSchemaVersion 只读取版本并比对，不执行任何 DDL。
+func validateSchemaVersion(ctx context.Context, db *stdsql.DB, backend Backend) error {
+	expected := migration.ExpectedVersion()
+	current, err := migration.CurrentVersion(ctx, db)
+	if err != nil {
+		return fmt.Errorf("read %s schema version (migrate the database first): %w", backend, err)
+	}
+	if current < expected {
+		return fmt.Errorf(
+			"database schema version %d is behind expected %d; run `jt808-server -c <config> migrate`",
+			current, expected)
+	}
+	if current > expected {
+		return fmt.Errorf(
+			"database schema version %d is ahead of this program's expected %d; use the matching binary",
+			current, expected)
+	}
+	return nil
 }
 
 // Close 关闭连接池。
@@ -135,31 +197,4 @@ func tunePool(db *stdsql.DB, backend Backend) {
 		db.SetMaxIdleConns(5)
 		db.SetConnMaxLifetime(30 * time.Minute)
 	}
-}
-
-// migrate 按版本号顺序幂等执行建表语句，并在 schema_migrations 记录已应用版本。
-func migrate(ctx context.Context, db *stdsql.DB) error {
-	if _, err := db.ExecContext(ctx, schemaMigrationsDDL); err != nil {
-		return err
-	}
-	var current int
-	if err := db.QueryRowContext(ctx, "SELECT COALESCE(MAX(version), 0) FROM schema_migrations").Scan(&current); err != nil {
-		return err
-	}
-	for _, m := range migrations {
-		if m.version <= current {
-			continue
-		}
-		for _, stmt := range m.stmts {
-			if _, err := db.ExecContext(ctx, stmt); err != nil {
-				return err
-			}
-		}
-		if _, err := db.ExecContext(ctx,
-			"INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)",
-			m.version, time.Now().UnixMilli()); err != nil {
-			return err
-		}
-	}
-	return nil
 }
