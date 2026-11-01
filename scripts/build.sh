@@ -31,7 +31,7 @@ function release() {
 	os=$1
 	arch=$2
 	package="${target}_${os}_${arch}"
-	output=$target_dir/releases/$package
+	output=$target_dir/release/$package
 
 	echo "build $package..."
 	mkdir -p $output
@@ -46,26 +46,30 @@ function release() {
 }
 
 function copy_conf() {
+	# 只复制运行时配置文件（yaml/txt），不复制 configs.go，避免构建产物目录
+	# 被 go list ./... 识别成一个额外的 Go 包。
 	conf_dir=$1
 	mkdir -p $conf_dir
-	cp -r $conf_src $conf_dir
-
-	echo "compiling default conf to embedded asset.go"
-	$(go env GOPATH)/bin/go-bindata -o internal/config/asset.go -pkg config $conf_asset
+	for f in "$conf_src"*.yaml "$conf_src"*.txt; do
+		if [ -e "$f" ]; then
+			cp "$f" "$conf_dir"/
+		fi
+	done
 }
 
-# target: jt808-server-go / jt808-client-go
+# target: jt808-server-go / jt808-client-go / jt808-migrate
 target=$2
 project_dir=$(git rev-parse --show-toplevel)
 target_dir="${project_dir}/target"
 time=$(date +'%Y-%m-%dT%H:%M:%S')
 version=$(git rev-parse --short HEAD)
-build_file="main.go"
+build_file="cmd/jt808-server/main.go"
 conf_src="$project_dir/configs/"
-conf_asset="configs test/client/configs"
 if [[ $target == "jt808-client-go" ]]; then
-	build_file="test/client/main.go"
-	conf_src="$project_dir/test/client/configs/"
+	build_file="cmd/jt808-client/main.go"
+	conf_src="$project_dir/client/configs/"
+elif [[ $target == "jt808-migrate" ]]; then
+	build_file="cmd/jt808-migrate/main.go"
 fi
 
 ret=0
@@ -77,13 +81,18 @@ compile)
 	compile $2
 	;;
 release)
-	# OS X Mac
-	release darwin amd64
-	release darwin arm64
+	if [[ -n "${3:-}" && -n "${4:-}" ]]; then
+		# 单平台构建，供 Dockerfile 等只需要一个目标的场景使用
+		release "$3" "$4"
+	else
+		# OS X Mac
+		release darwin amd64
+		release darwin arm64
 
-	# Linux
-	release linux amd64
-	release linux arm64
+		# Linux
+		release linux amd64
+		release linux arm64
+	fi
 	;;
 clean)
 	echo "clean test and compile output..."

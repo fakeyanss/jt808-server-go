@@ -10,6 +10,8 @@ import (
 	"github.com/rs/zerolog"
 	"github.com/spf13/viper"
 
+	clientconfigs "github.com/fakeyanss/jt808-server-go/client/configs"
+	serverconfigs "github.com/fakeyanss/jt808-server-go/configs"
 	"github.com/fakeyanss/jt808-server-go/pkg/logger"
 )
 
@@ -25,9 +27,9 @@ const (
 
 const (
 	DefaultServConfKey  string = "embedded-default-server-config"
-	DefaultServConfPath string = "configs/default.yaml"
 	DefaultCliConfKey   string = "embedded-default-client-config"
-	DefaultCliConfPath  string = "test/client/configs/default.yaml"
+	defaultServConfFile string = "default.yaml"
+	defaultCliConfFile  string = "default.yaml"
 )
 
 type logConf struct {
@@ -46,8 +48,22 @@ type serverConf struct {
 	Name               string      `yaml:"name"`
 	Port               *servPort   `yaml:"port"`
 	Banner             *servBanner `yaml:"banner"`
+	Action             *actionConf `yaml:"action"`
 	AckTimeoutMS       int         `yaml:"ackTimeoutMs"`
 	MaxRetransmissions int         `yaml:"maxRetransmissions"`
+	// HeartbeatPersistIntervalMS 心跳落库最小间隔（毫秒）；0 表示逐条写库。
+	// 若开启，应小于保活周期（当前 1 分钟），避免读路径 TTL 判定误判离线。
+	HeartbeatPersistIntervalMS int `yaml:"heartbeatPersistIntervalMs"`
+}
+
+// actionConf 配置业务数据回调。目前仅提供 HTTP 示例实现。
+type actionConf struct {
+	HTTP *httpActionConf `yaml:"http"`
+}
+
+type httpActionConf struct {
+	URL       string `yaml:"url"`
+	TimeoutMS int    `yaml:"timeoutMs"`
 }
 
 type servPort struct {
@@ -134,9 +150,25 @@ type DeviceParamsConf struct {
 }
 
 type Config struct {
-	Log    *logConf    `yaml:"log"`
-	Server *serverConf `yaml:"server"`
-	Client *clientConf `yaml:"client"`
+	Log     *logConf     `yaml:"log"`
+	Server  *serverConf  `yaml:"server"`
+	Client  *clientConf  `yaml:"client"`
+	Storage *storageConf `yaml:"storage"`
+}
+
+// storageConf 配置持久化后端；type 缺省为 memory。
+type storageConf struct {
+	Type   string      `yaml:"type"`
+	SQLite *sqliteConf `yaml:"sqlite"`
+	MySQL  *mysqlConf  `yaml:"mysql"`
+}
+
+type sqliteConf struct {
+	Path string `yaml:"path"`
+}
+
+type mysqlConf struct {
+	DSN string `yaml:"dsn"`
 }
 
 var (
@@ -151,16 +183,14 @@ func Load(confFilePath string) *Config {
 
 		var err error
 		if confFilePath == DefaultServConfKey || confFilePath == DefaultCliConfKey {
-			// replace default embedded conf path
-			if confFilePath == DefaultServConfKey {
-				confFilePath = DefaultServConfPath
-			} else if confFilePath == DefaultCliConfKey {
-				confFilePath = DefaultCliConfPath
-			}
 			var confContent []byte
-			confContent, err = Asset(confFilePath)
+			if confFilePath == DefaultServConfKey {
+				confContent, err = serverconfigs.FS.ReadFile(defaultServConfFile)
+			} else {
+				confContent, err = clientconfigs.FS.ReadFile(defaultCliConfFile)
+			}
 			if err != nil {
-				panic(errors.Wrap(err, "Fail to read default config with bindata"))
+				panic(errors.Wrap(err, "Fail to read embedded default config"))
 			}
 			err = viper.ReadConfig(bytes.NewBuffer(confContent))
 		} else {

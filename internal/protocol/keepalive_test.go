@@ -1,6 +1,7 @@
 package protocol
 
 import (
+	"context"
 	"errors"
 	"io"
 	"net"
@@ -11,6 +12,8 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
+	"github.com/fakeyanss/jt808-server-go/internal/repository"
+	"github.com/fakeyanss/jt808-server-go/internal/runtime"
 	"github.com/fakeyanss/jt808-server-go/internal/storage"
 )
 
@@ -35,6 +38,7 @@ func hasKeepaliveJob(t *testing.T, timer *KeepaliveTimer, phone string) bool {
 // both ends plus all caches when the test finishes.
 func cacheKeepaliveTestDevice(t *testing.T, phone string, status model.DeviceStatus, lastCom time.Time) net.Conn {
 	t.Helper()
+	ctx := context.Background()
 	devEnd, peerEnd := net.Pipe()
 	d := &model.Device{
 		ID:             "KA-" + phone,
@@ -46,10 +50,10 @@ func cacheKeepaliveTestDevice(t *testing.T, phone string, status model.DeviceSta
 		Status:         status,
 		VersionDesc:    model.Version2013,
 	}
-	storage.GetDeviceCache().CacheDevice(d)
+	require.NoError(t, storage.Default().Devices.Upsert(ctx, d))
 	t.Cleanup(func() {
-		storage.GetDeviceCache().DelDeviceByPhone(phone)
-		storage.GetGeoCache().DelGeoByPhone(phone)
+		_ = storage.Default().Devices.DeleteByPhone(ctx, phone)
+		_ = storage.Default().Geo.Delete(ctx, phone)
 		_ = devEnd.Close()
 		_ = peerEnd.Close()
 	})
@@ -82,7 +86,7 @@ func TestCheckDeviceKeepaliveTurnsExpiredOnlineDeviceOffline(t *testing.T) {
 
 	checkDeviceKeepalive(timer, phone)
 
-	d, err := storage.GetDeviceCache().GetDeviceByPhone(phone)
+	d, err := storage.Default().Devices.GetByPhone(context.Background(), phone)
 	require.NoError(t, err)
 	require.Equal(t, model.DeviceStatusOffline, d.Status)
 	require.True(t, hasKeepaliveJob(t, timer, phone), "offline devices keep the cleanup job")
@@ -96,17 +100,18 @@ func TestCheckDeviceKeepaliveTurnsExpiredOnlineDeviceOffline(t *testing.T) {
 
 func TestCheckDeviceKeepaliveClearsStaleOfflineDevice(t *testing.T) {
 	const phone = "188765444003"
+	ctx := context.Background()
 	peer := cacheKeepaliveTestDevice(t, phone, model.DeviceStatusOffline, time.Now().Add(-2*time.Second))
-	storage.GetGeoCache().GetGeoRingByPhone(phone).Write(&model.DeviceGeo{Phone: phone})
+	require.NoError(t, storage.Default().Geo.Append(ctx, &model.DeviceGeo{Phone: phone}))
 	timer := newIdleKeepaliveTimer()
 	timer.Register(phone)
 
 	checkDeviceKeepalive(timer, phone)
 
-	_, err := storage.GetDeviceCache().GetDeviceByPhone(phone)
-	require.ErrorIs(t, err, storage.ErrDeviceNotFound)
-	_, err = storage.GetGeoCache().GetGeoLatestByPhone(phone)
-	require.ErrorIs(t, err, storage.ErrGisNotFound)
+	_, err := storage.Default().Devices.GetByPhone(ctx, phone)
+	require.ErrorIs(t, err, repository.ErrDeviceNotFound)
+	_, err = storage.Default().Geo.Latest(ctx, phone)
+	require.ErrorIs(t, err, repository.ErrGisNotFound)
 	require.False(t, hasKeepaliveJob(t, timer, phone))
 
 	// Closing the cached pipe end unblocks the peer read with an EOF-class
@@ -123,10 +128,28 @@ func TestCheckDeviceKeepaliveFreshDeviceNoop(t *testing.T) {
 
 	checkDeviceKeepalive(timer, phone)
 
-	d, err := storage.GetDeviceCache().GetDeviceByPhone(phone)
+	d, err := storage.Default().Devices.GetByPhone(context.Background(), phone)
 	require.NoError(t, err)
 	require.Equal(t, model.DeviceStatusOnline, d.Status)
 	require.True(t, hasKeepaliveJob(t, timer, phone))
+}
+
+// 心跳落库被节流时，保活判定以进程内最近心跳为准，不误判离线。
+func TestCheckDeviceKeepaliveUsesInProcessHeartbeat(t *testing.T) {
+	const phone = "188765444005"
+	ctx := context.Background()
+	// 库内最后交互时间已过期，但进程内刚收到心跳。
+	cacheKeepaliveTestDevice(t, phone, model.DeviceStatusOnline, time.Now().Add(-2*time.Second))
+	runtime.Default().Heartbeat.Touch(ctx, phone, time.Now())
+	t.Cleanup(func() { runtime.Default().Heartbeat.Remove(ctx, phone) })
+
+	timer := newIdleKeepaliveTimer()
+	timer.Register(phone)
+	checkDeviceKeepalive(timer, phone)
+
+	d, err := storage.Default().Devices.GetByPhone(ctx, phone)
+	require.NoError(t, err)
+	require.Equal(t, model.DeviceStatusOnline, d.Status)
 }
 
 // TestCheckDeviceKeepaliveMissingDeviceIsSafe is a regression test for a nil

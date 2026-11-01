@@ -15,6 +15,7 @@ import (
 
 	"github.com/fakeyanss/jt808-server-go/internal/config"
 	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
+	"github.com/fakeyanss/jt808-server-go/internal/runtime"
 	"github.com/fakeyanss/jt808-server-go/internal/server"
 	"github.com/fakeyanss/jt808-server-go/internal/storage"
 )
@@ -24,20 +25,26 @@ func Run(serv *server.TCPServer, cfg *config.Config) {
 	gin.SetMode(gin.ReleaseMode)
 	router := gin.Default()
 	api := router.Group("/api")
-	cache := storage.GetDeviceCache()
-	geoCache := storage.GetGeoCache()
+	devices := storage.Default().Devices
+	geo := storage.Default().Geo
+	connRegistry := runtime.Default().Conn
 
 	api.GET("/device", func(c *gin.Context) {
-		c.JSON(http.StatusOK, cache.ListDevice())
+		list, err := devices.List(c.Request.Context())
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"err": err.Error()})
+			return
+		}
+		c.JSON(http.StatusOK, list)
 	})
 
 	api.GET("/device/:phone/reports/:kind", func(c *gin.Context) {
 		phone := c.Param("phone")
-		if _, err := cache.GetDeviceByPhone(phone); err != nil {
+		if _, err := devices.GetByPhone(c.Request.Context(), phone); err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
 		}
-		industry := storage.GetIndustryCache()
+		industry := storage.Default().Industry
 		var result any
 		switch c.Param("kind") {
 		case "driver":
@@ -68,7 +75,7 @@ func Run(serv *server.TCPServer, cfg *config.Config) {
 	api.GET("/device/:phone/geo", func(c *gin.Context) {
 		phone := c.Param("phone")
 
-		device, err := cache.GetDeviceByPhone(phone)
+		device, err := devices.GetByPhone(c.Request.Context(), phone)
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
@@ -80,7 +87,7 @@ func Run(serv *server.TCPServer, cfg *config.Config) {
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
 		}
-		gis, err := geoCache.GetGeoLatestByPhone(phone)
+		gis, err := geo.Latest(c.Request.Context(), phone)
 		if err != nil {
 			return
 		}
@@ -91,18 +98,18 @@ func Run(serv *server.TCPServer, cfg *config.Config) {
 
 	api.GET("/device/:phone/params", func(c *gin.Context) {
 		phone := c.Param("phone")
-		device, err := cache.GetDeviceByPhone(phone)
+		device, err := devices.GetByPhone(c.Request.Context(), phone)
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
 		}
-		session, err := storage.GetSession(device.SessionID)
+		session, err := connRegistry.Get(c.Request.Context(), device.SessionID)
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
 		}
 		serial := session.GetNextSerialNum()
-		responses := storage.GetParamResponseBroker()
+		responses := runtime.Default().ParamResponses
 		responseCh, cancel, err := responses.Register(phone, serial)
 		if err != nil {
 			c.JSON(http.StatusConflict, gin.H{"err": err.Error()})
@@ -146,17 +153,17 @@ func Run(serv *server.TCPServer, cfg *config.Config) {
 
 	api.GET("/device/:phone/properties", func(c *gin.Context) {
 		phone := c.Param("phone")
-		device, err := cache.GetDeviceByPhone(phone)
+		device, err := devices.GetByPhone(c.Request.Context(), phone)
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
 		}
-		session, err := storage.GetSession(device.SessionID)
+		session, err := connRegistry.Get(c.Request.Context(), device.SessionID)
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
 		}
-		responses := storage.GetPropertyResponseBroker()
+		responses := runtime.Default().PropertyResponses
 		responseCh, cancel, err := responses.Register(phone)
 		if err != nil {
 			c.JSON(http.StatusConflict, gin.H{"err": err.Error()})
@@ -179,18 +186,18 @@ func Run(serv *server.TCPServer, cfg *config.Config) {
 
 	api.GET("/device/:phone/location", func(c *gin.Context) {
 		phone := c.Param("phone")
-		device, err := cache.GetDeviceByPhone(phone)
+		device, err := devices.GetByPhone(c.Request.Context(), phone)
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
 		}
-		session, err := storage.GetSession(device.SessionID)
+		session, err := connRegistry.Get(c.Request.Context(), device.SessionID)
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
 		}
 		serial := session.GetNextSerialNum()
-		responses := storage.GetLocationResponseBroker()
+		responses := runtime.Default().LocationResponses
 		responseCh, cancel, err := responses.Register(phone, serial)
 		if err != nil {
 			c.JSON(http.StatusConflict, gin.H{"err": err.Error()})
@@ -229,12 +236,12 @@ func Run(serv *server.TCPServer, cfg *config.Config) {
 			return
 		}
 		phone := c.Param("phone")
-		device, err := cache.GetDeviceByPhone(phone)
+		device, err := devices.GetByPhone(c.Request.Context(), phone)
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
 		}
-		session, err := storage.GetSession(device.SessionID)
+		session, err := connRegistry.Get(c.Request.Context(), device.SessionID)
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
@@ -266,12 +273,12 @@ func Run(serv *server.TCPServer, cfg *config.Config) {
 			return
 		}
 		phone := c.Param("phone")
-		device, err := cache.GetDeviceByPhone(phone)
+		device, err := devices.GetByPhone(c.Request.Context(), phone)
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
 		}
-		session, err := storage.GetSession(device.SessionID)
+		session, err := connRegistry.Get(c.Request.Context(), device.SessionID)
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
@@ -300,12 +307,12 @@ func Run(serv *server.TCPServer, cfg *config.Config) {
 			return
 		}
 		phone := c.Param("phone")
-		device, err := cache.GetDeviceByPhone(phone)
+		device, err := devices.GetByPhone(c.Request.Context(), phone)
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
 		}
-		session, err := storage.GetSession(device.SessionID)
+		session, err := connRegistry.Get(c.Request.Context(), device.SessionID)
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
@@ -360,17 +367,17 @@ func Run(serv *server.TCPServer, cfg *config.Config) {
 			return
 		}
 		phone := c.Param("phone")
-		device, err := cache.GetDeviceByPhone(phone)
+		device, err := devices.GetByPhone(c.Request.Context(), phone)
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
 		}
-		session, err := storage.GetSession(device.SessionID)
+		session, err := connRegistry.Get(c.Request.Context(), device.SessionID)
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
 		}
-		broker := storage.GetRegionResponseBroker()
+		broker := runtime.Default().RegionResponses
 		response, cancel, err := broker.Register(phone, request.QueryType)
 		if err != nil {
 			c.JSON(http.StatusConflict, gin.H{"err": err.Error()})
@@ -393,12 +400,12 @@ func Run(serv *server.TCPServer, cfg *config.Config) {
 
 	api.POST("/device/:phone/driver/query", func(c *gin.Context) {
 		phone := c.Param("phone")
-		device, err := cache.GetDeviceByPhone(phone)
+		device, err := devices.GetByPhone(c.Request.Context(), phone)
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
 		}
-		session, err := storage.GetSession(device.SessionID)
+		session, err := connRegistry.Get(c.Request.Context(), device.SessionID)
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
@@ -426,12 +433,12 @@ func Run(serv *server.TCPServer, cfg *config.Config) {
 			return
 		}
 		phone := c.Param("phone")
-		device, err := cache.GetDeviceByPhone(phone)
+		device, err := devices.GetByPhone(c.Request.Context(), phone)
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
 		}
-		session, err := storage.GetSession(device.SessionID)
+		session, err := connRegistry.Get(c.Request.Context(), device.SessionID)
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
@@ -446,12 +453,12 @@ func Run(serv *server.TCPServer, cfg *config.Config) {
 			return
 		}
 		phone := c.Param("phone")
-		device, err := cache.GetDeviceByPhone(phone)
+		device, err := devices.GetByPhone(c.Request.Context(), phone)
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
 		}
-		session, err := storage.GetSession(device.SessionID)
+		session, err := connRegistry.Get(c.Request.Context(), device.SessionID)
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
@@ -471,12 +478,12 @@ func Run(serv *server.TCPServer, cfg *config.Config) {
 			return
 		}
 		phone := c.Param("phone")
-		device, err := cache.GetDeviceByPhone(phone)
+		device, err := devices.GetByPhone(c.Request.Context(), phone)
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
 		}
-		session, err := storage.GetSession(device.SessionID)
+		session, err := connRegistry.Get(c.Request.Context(), device.SessionID)
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
@@ -505,12 +512,12 @@ func Run(serv *server.TCPServer, cfg *config.Config) {
 			return
 		}
 		phone := c.Param("phone")
-		device, err := cache.GetDeviceByPhone(phone)
+		device, err := devices.GetByPhone(c.Request.Context(), phone)
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
 		}
-		session, err := storage.GetSession(device.SessionID)
+		session, err := connRegistry.Get(c.Request.Context(), device.SessionID)
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
@@ -565,12 +572,12 @@ func Run(serv *server.TCPServer, cfg *config.Config) {
 			return
 		}
 		phone := c.Param("phone")
-		device, err := cache.GetDeviceByPhone(phone)
+		device, err := devices.GetByPhone(c.Request.Context(), phone)
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
 		}
-		session, err := storage.GetSession(device.SessionID)
+		session, err := connRegistry.Get(c.Request.Context(), device.SessionID)
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
@@ -601,12 +608,12 @@ func Run(serv *server.TCPServer, cfg *config.Config) {
 			return
 		}
 		phone := c.Param("phone")
-		device, err := cache.GetDeviceByPhone(phone)
+		device, err := devices.GetByPhone(c.Request.Context(), phone)
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
 		}
-		session, err := storage.GetSession(device.SessionID)
+		session, err := connRegistry.Get(c.Request.Context(), device.SessionID)
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
@@ -626,12 +633,12 @@ func Run(serv *server.TCPServer, cfg *config.Config) {
 			return
 		}
 		phone := c.Param("phone")
-		device, err := cache.GetDeviceByPhone(phone)
+		device, err := devices.GetByPhone(c.Request.Context(), phone)
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
 		}
-		session, err := storage.GetSession(device.SessionID)
+		session, err := connRegistry.Get(c.Request.Context(), device.SessionID)
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
@@ -653,12 +660,12 @@ func Run(serv *server.TCPServer, cfg *config.Config) {
 			return
 		}
 		phone := c.Param("phone")
-		device, err := cache.GetDeviceByPhone(phone)
+		device, err := devices.GetByPhone(c.Request.Context(), phone)
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
 		}
-		session, err := storage.GetSession(device.SessionID)
+		session, err := connRegistry.Get(c.Request.Context(), device.SessionID)
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
@@ -679,12 +686,12 @@ func Run(serv *server.TCPServer, cfg *config.Config) {
 			return
 		}
 		phone := c.Param("phone")
-		device, err := cache.GetDeviceByPhone(phone)
+		device, err := devices.GetByPhone(c.Request.Context(), phone)
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
 		}
-		session, err := storage.GetSession(device.SessionID)
+		session, err := connRegistry.Get(c.Request.Context(), device.SessionID)
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
@@ -705,12 +712,12 @@ func Run(serv *server.TCPServer, cfg *config.Config) {
 			return
 		}
 		phone := c.Param("phone")
-		device, err := cache.GetDeviceByPhone(phone)
+		device, err := devices.GetByPhone(c.Request.Context(), phone)
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
 		}
-		session, err := storage.GetSession(device.SessionID)
+		session, err := connRegistry.Get(c.Request.Context(), device.SessionID)
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
@@ -731,12 +738,12 @@ func Run(serv *server.TCPServer, cfg *config.Config) {
 			return
 		}
 		phone := c.Param("phone")
-		device, err := cache.GetDeviceByPhone(phone)
+		device, err := devices.GetByPhone(c.Request.Context(), phone)
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
 		}
-		session, err := storage.GetSession(device.SessionID)
+		session, err := connRegistry.Get(c.Request.Context(), device.SessionID)
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
@@ -757,12 +764,12 @@ func Run(serv *server.TCPServer, cfg *config.Config) {
 			return
 		}
 		phone := c.Param("phone")
-		device, err := cache.GetDeviceByPhone(phone)
+		device, err := devices.GetByPhone(c.Request.Context(), phone)
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
 		}
-		session, err := storage.GetSession(device.SessionID)
+		session, err := connRegistry.Get(c.Request.Context(), device.SessionID)
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
@@ -783,12 +790,12 @@ func Run(serv *server.TCPServer, cfg *config.Config) {
 			return
 		}
 		phone := c.Param("phone")
-		device, err := cache.GetDeviceByPhone(phone)
+		device, err := devices.GetByPhone(c.Request.Context(), phone)
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
 		}
-		session, err := storage.GetSession(device.SessionID)
+		session, err := connRegistry.Get(c.Request.Context(), device.SessionID)
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
@@ -809,12 +816,12 @@ func Run(serv *server.TCPServer, cfg *config.Config) {
 			return
 		}
 		phone := c.Param("phone")
-		device, err := cache.GetDeviceByPhone(phone)
+		device, err := devices.GetByPhone(c.Request.Context(), phone)
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
 		}
-		session, err := storage.GetSession(device.SessionID)
+		session, err := connRegistry.Get(c.Request.Context(), device.SessionID)
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
@@ -835,12 +842,12 @@ func Run(serv *server.TCPServer, cfg *config.Config) {
 			return
 		}
 		phone := c.Param("phone")
-		device, err := cache.GetDeviceByPhone(phone)
+		device, err := devices.GetByPhone(c.Request.Context(), phone)
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
 		}
-		session, err := storage.GetSession(device.SessionID)
+		session, err := connRegistry.Get(c.Request.Context(), device.SessionID)
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
@@ -864,29 +871,29 @@ func Run(serv *server.TCPServer, cfg *config.Config) {
 			return
 		}
 		phone := c.Param("phone")
-		device, err := cache.GetDeviceByPhone(phone)
+		device, err := devices.GetByPhone(c.Request.Context(), phone)
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
 		}
-		session, err := storage.GetSession(device.SessionID)
+		session, err := connRegistry.Get(c.Request.Context(), device.SessionID)
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
 		}
 		msg := &model.Msg8203{Header: model.GenMsgHeader(device, 0x8203, session.GetNextSerialNum()), AlarmSerial: request.AlarmSerial, AlarmType: request.AlarmType}
-		storage.GetAlarmCache().RegisterConfirmation(phone, msg.Header.SerialNumber, request.AlarmSerial, request.AlarmType)
+		storage.Default().Alarms.RegisterConfirmation(phone, msg.Header.SerialNumber, request.AlarmSerial, request.AlarmType)
 		serv.Send(session.ID, msg)
 		c.JSON(http.StatusAccepted, gin.H{"messageId": "0x8203", "alarmSerial": request.AlarmSerial, "alarmType": request.AlarmType})
 	})
 
 	api.GET("/device/:phone/alarms", func(c *gin.Context) {
 		phone := c.Param("phone")
-		if _, err := cache.GetDeviceByPhone(phone); err != nil {
+		if _, err := devices.GetByPhone(c.Request.Context(), phone); err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
 		}
-		c.JSON(http.StatusOK, storage.GetAlarmCache().List(phone))
+		c.JSON(http.StatusOK, storage.Default().Alarms.List(phone))
 	})
 
 	api.PUT("/device/:phone/params", func(c *gin.Context) {
@@ -896,12 +903,12 @@ func Run(serv *server.TCPServer, cfg *config.Config) {
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
 		}
-		device, err := cache.GetDeviceByPhone(phone)
+		device, err := devices.GetByPhone(c.Request.Context(), phone)
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
 		}
-		session, err := storage.GetSession(device.SessionID)
+		session, err := connRegistry.Get(c.Request.Context(), device.SessionID)
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return

@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -9,6 +10,7 @@ import (
 	"github.com/fakeyanss/jt808-server-go/internal/client"
 	"github.com/fakeyanss/jt808-server-go/internal/protocol"
 	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
+	"github.com/fakeyanss/jt808-server-go/internal/runtime"
 	"github.com/fakeyanss/jt808-server-go/internal/storage"
 )
 
@@ -37,7 +39,7 @@ func startSimulatorServer(t *testing.T) (*TCPServer, *client.TCPClient, *model.D
 	var device *model.Device
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
-		device, _ = storage.GetDeviceCache().GetDeviceByPhone(phone)
+		device, _ = storage.Default().Devices.GetByPhone(context.Background(), phone)
 		if device != nil && device.Status == model.DeviceStatusOnline {
 			break
 		}
@@ -45,16 +47,19 @@ func startSimulatorServer(t *testing.T) (*TCPServer, *client.TCPClient, *model.D
 	}
 	require.NotNil(t, device)
 	require.Equal(t, model.DeviceStatusOnline, device.Status)
-	t.Cleanup(func() { storage.GetDeviceCache().DelDeviceByPhone(phone); protocol.NewKeepaliveTimer().Cancel(phone) })
+	t.Cleanup(func() {
+		storage.Default().Devices.DeleteByPhone(context.Background(), phone)
+		protocol.NewKeepaliveTimer().Cancel(phone)
+	})
 	return server, cli, device
 }
 
 func TestRegionRouteSetQueryDeleteRoundTrip(t *testing.T) {
 	server, _, device := startSimulatorServer(t)
-	session, err := storage.GetSession(device.SessionID)
+	session, err := runtime.Default().Conn.Get(context.Background(), device.SessionID)
 	require.NoError(t, err)
 
-	catalog := storage.GetRegionCatalog()
+	catalog := storage.Default().Regions
 
 	// --- Set a circle area ---
 	setCircle := &model.MsgRegionRouteSet{
@@ -74,7 +79,7 @@ func TestRegionRouteSetQueryDeleteRoundTrip(t *testing.T) {
 	})
 
 	// --- Query circles back through 0x8608/0x0608 ---
-	responseCh, cancel, err := storage.GetRegionResponseBroker().Register(device.Phone, 1)
+	responseCh, cancel, err := runtime.Default().RegionResponses.Register(device.Phone, 1)
 	require.NoError(t, err)
 	server.Send(session.ID, &model.Msg8608{Header: model.GenMsgHeader(device, 0x8608, session.GetNextSerialNum()), QueryType: 1})
 	select {

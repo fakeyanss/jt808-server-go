@@ -2,16 +2,20 @@ package protocol
 
 import (
 	"context"
+	"encoding/binary"
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
+	"github.com/fakeyanss/jt808-server-go/internal/runtime"
+	"github.com/fakeyanss/jt808-server-go/internal/storage"
 	"github.com/stretchr/testify/require"
 )
 
 func TestTerminalControlProducesGenericAcknowledgement(t *testing.T) {
 	header := &model.MsgHeader{MsgID: 0x8105, SerialNumber: 17, PhoneNumber: "188765432109", Attr: &model.MsgBodyAttr{}}
-	result, err := NewJT808MsgProcessor().Process(context.Background(), &model.PacketData{Header: header, Body: []byte{2, 'h', 'o', 's', 't'}})
+	result, err := NewJT808MsgProcessor(nil).Process(context.Background(), &model.PacketData{Header: header, Body: []byte{2, 'h', 'o', 's', 't'}})
 	require.NoError(t, err)
 	require.IsType(t, &model.Msg0001{}, result.Outgoing)
 	ack := result.Outgoing.(*model.Msg0001)
@@ -24,12 +28,129 @@ func TestRegionRouteDeletionProducesGenericAcknowledgement(t *testing.T) {
 	for _, messageID := range []uint16{0x8601, 0x8603, 0x8605, 0x8607} {
 		t.Run(fmt.Sprintf("%04x", messageID), func(t *testing.T) {
 			header := &model.MsgHeader{MsgID: messageID, SerialNumber: 18, PhoneNumber: "188765432109", Attr: &model.MsgBodyAttr{}}
-			result, err := NewJT808MsgProcessor().Process(context.Background(), &model.PacketData{Header: header, Body: []byte{0}})
+			result, err := NewJT808MsgProcessor(nil).Process(context.Background(), &model.PacketData{Header: header, Body: []byte{0}})
 			require.NoError(t, err)
 			require.IsType(t, &model.Msg0001{}, result.Outgoing)
 			require.Equal(t, messageID, result.Outgoing.(*model.Msg0001).AnswerMessageID)
 		})
 	}
+}
+
+// 0x0107 应答应同时落成属性档案、更新内存最新值并投递 broker。
+func TestProcessMsg0107PersistsAndDeliversTerminalProperties(t *testing.T) {
+	const phone = "188765432107"
+	ctx := context.Background()
+
+	waiter, cancel, err := runtime.Default().PropertyResponses.Register(phone)
+	require.NoError(t, err)
+	defer cancel()
+
+	msg := &model.Msg0107{
+		Header: &model.MsgHeader{
+			MsgID:       0x0107,
+			Attr:        &model.MsgBodyAttr{},
+			PhoneNumber: phone,
+		},
+		ManufacturerID:  "ACME",
+		TerminalModel:   "T-2019",
+		TerminalID:      "TERM-107",
+		FirmwareVersion: "FW-1.0",
+	}
+	require.NoError(t, processMsg0107(ctx, &model.ProcessData{Incoming: msg}))
+
+	select {
+	case got := <-waiter:
+		require.Same(t, msg, got)
+	default:
+		t.Fatal("property response was not delivered")
+	}
+
+	props, err := storage.Default().Properties.Get(ctx, phone)
+	require.NoError(t, err)
+	require.Equal(t, "ACME", props.ManufacturerID)
+	require.Equal(t, "T-2019", props.TerminalModel)
+	require.Equal(t, "FW-1.0", props.FirmwareVersion)
+	require.NoError(t, storage.Default().Properties.Delete(ctx, phone))
+}
+
+// 心跳落库按配置节流：周期内跳过写库，超过周期后写入；进程内最近心跳始终更新。
+func TestHeartbeatPersistIntervalThrottlesWrites(t *testing.T) {
+	const phone = "188765499004"
+	ctx := context.Background()
+	devices := storage.Default().Devices
+	persistedAt := time.UnixMilli(time.Now().Add(-10 * time.Second).UnixMilli())
+	require.NoError(t, devices.Upsert(ctx, &model.Device{
+		Phone:          phone,
+		Keepalive:      time.Minute,
+		LastestComTime: persistedAt,
+		Status:         model.DeviceStatusOnline,
+	}))
+	t.Cleanup(func() {
+		SetHeartbeatPersistInterval(0)
+		runtime.Default().Heartbeat.Remove(ctx, phone)
+		_ = devices.DeleteByPhone(ctx, phone)
+	})
+
+	SetHeartbeatPersistInterval(30 * time.Second)
+	msg := &model.Msg0002{Header: &model.MsgHeader{MsgID: 0x0002, PhoneNumber: phone, Attr: &model.MsgBodyAttr{}}}
+	require.NoError(t, processMsg0002(ctx, &model.ProcessData{Incoming: msg}))
+
+	stored, err := devices.GetByPhone(ctx, phone)
+	require.NoError(t, err)
+	require.Equal(t, persistedAt, stored.LastestComTime, "heartbeat inside the interval must not hit the store")
+	last, ok := runtime.Default().Heartbeat.Last(ctx, phone)
+	require.True(t, ok)
+	require.WithinDuration(t, time.Now(), last, 5*time.Second)
+
+	// 超过节流周期后应重新落库。
+	stored.LastestComTime = time.UnixMilli(time.Now().Add(-40 * time.Second).UnixMilli())
+	require.NoError(t, devices.Upsert(ctx, stored))
+	require.NoError(t, processMsg0002(ctx, &model.ProcessData{Incoming: msg}))
+	refreshed, err := devices.GetByPhone(ctx, phone)
+	require.NoError(t, err)
+	require.WithinDuration(t, time.Now(), refreshed.LastestComTime, 5*time.Second)
+}
+
+func TestSimulatorParameterTemplateDecodes(t *testing.T) {
+	header := &model.MsgHeader{MsgID: 0x8104, SerialNumber: 20, PhoneNumber: "188765432100", Attr: &model.MsgBodyAttr{}}
+	result, err := NewJT808MsgProcessor(nil).Process(context.Background(), &model.PacketData{Header: header})
+	require.NoError(t, err)
+	reply, ok := result.Outgoing.(*model.Msg0104)
+	require.True(t, ok)
+	require.Equal(t, uint8(39), reply.Parameters.ParamCnt)
+	require.Len(t, reply.Parameters.Params, 39)
+	last := reply.Parameters.Params[38]
+	require.Equal(t, uint32(0x0076), last.ParamID)
+	require.Equal(t, uint8(15), last.ParamLen)
+}
+
+func locationReportBody(alarmSign uint32) []byte {
+	body := make([]byte, 28)
+	binary.BigEndian.PutUint32(body[0:4], alarmSign)
+	binary.BigEndian.PutUint32(body[8:12], 39543265)   // 纬度
+	binary.BigEndian.PutUint32(body[12:16], 116235432) // 经度
+	copy(body[22:28], []byte{0x26, 0x11, 0x01, 0x12, 0x00, 0x00})
+	return body
+}
+
+// 位置上报写入定位缓存。
+func TestLocationReportWritesGeo(t *testing.T) {
+	const phone = "188765499002"
+	storage.Default().Devices.Upsert(context.Background(), &model.Device{Phone: phone, Keepalive: time.Minute})
+	t.Cleanup(func() {
+		storage.Default().Devices.DeleteByPhone(context.Background(), phone)
+		storage.Default().Geo.Delete(context.Background(), phone)
+	})
+
+	processor := NewJT808MsgProcessor(nil)
+	header := &model.MsgHeader{MsgID: 0x0200, SerialNumber: 32, PhoneNumber: phone, Attr: &model.MsgBodyAttr{}}
+	result, err := processor.Process(context.Background(), &model.PacketData{Header: header, Body: locationReportBody(0)})
+	require.NoError(t, err)
+	require.IsType(t, &model.Msg8001{}, result.Outgoing)
+
+	geo, err := storage.Default().Geo.Latest(context.Background(), phone)
+	require.NoError(t, err)
+	require.Equal(t, phone, geo.Phone)
 }
 
 func TestSimulatorRepliesToRegionDriverRecorderAndMultimediaCommands(t *testing.T) {
@@ -51,7 +172,7 @@ func TestSimulatorRepliesToRegionDriverRecorderAndMultimediaCommands(t *testing.
 	for _, tt := range tests {
 		t.Run(fmt.Sprintf("%04x", tt.id), func(t *testing.T) {
 			header := &model.MsgHeader{MsgID: tt.id, SerialNumber: 19, PhoneNumber: "188765432109", Attr: &model.MsgBodyAttr{}}
-			result, err := NewJT808MsgProcessor().Process(context.Background(), &model.PacketData{Header: header, Body: tt.body})
+			result, err := NewJT808MsgProcessor(nil).Process(context.Background(), &model.PacketData{Header: header, Body: tt.body})
 			require.NoError(t, err)
 			require.IsType(t, tt.response, result.Outgoing)
 			if ack, ok := result.Outgoing.(*model.Msg0001); ok {

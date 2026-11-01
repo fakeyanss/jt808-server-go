@@ -12,7 +12,7 @@ import (
 
 	"github.com/fakeyanss/jt808-server-go/internal/protocol"
 	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
-	"github.com/fakeyanss/jt808-server-go/internal/storage"
+	"github.com/fakeyanss/jt808-server-go/internal/runtime"
 )
 
 type TCPClient struct {
@@ -153,7 +153,7 @@ func (cli *TCPClient) SendFragmentsWithFault(msg model.JT808Msg, fragmentSize in
 	codec := protocol.NewJT808PacketCodec()
 	serials := cli.Session.GetNextSerialNums(total)
 	if media, ok := msg.(*model.Msg0801); ok {
-		storage.CacheMediaSegment(header.PhoneNumber, media.MultiMediaID, serials[0])
+		runtime.Default().Retrans.LinkMedia(context.Background(), header.PhoneNumber, media.MultiMediaID, serials[0])
 	}
 	frames := make([][]byte, total)
 	for idx := 0; idx < total; idx++ {
@@ -174,7 +174,7 @@ func (cli *TCPClient) SendFragmentsWithFault(msg model.JT808Msg, fragmentSize in
 			return err
 		}
 		frames[idx] = frame
-		storage.CacheSentSegmentFrame(header.PhoneNumber, serials[0], uint16(idx+1), uint16(total), frame)
+		runtime.Default().Retrans.CacheFrame(context.Background(), header.PhoneNumber, serials[0], uint16(idx+1), uint16(total), frame)
 	}
 	for sent := 0; sent < total; sent++ {
 		idx := sent

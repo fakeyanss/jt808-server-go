@@ -5,6 +5,9 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+
+	clientconfigs "github.com/fakeyanss/jt808-server-go/client/configs"
+	serverconfigs "github.com/fakeyanss/jt808-server-go/configs"
 )
 
 func TestLoad(t *testing.T) {
@@ -57,12 +60,12 @@ func TestLoad(t *testing.T) {
 }
 
 func TestEmbeddedDefaultsMatchCheckedInConfigs(t *testing.T) {
-	server, err := Asset(DefaultServConfPath)
+	server, err := serverconfigs.FS.ReadFile("default.yaml")
 	assert.NoError(t, err)
 	assert.True(t, strings.Contains(string(server), "ackTimeoutMs: 5000"))
 	assert.True(t, strings.Contains(string(server), "udpPort: \"8081\""))
 
-	client, err := Asset(DefaultCliConfPath)
+	client, err := clientconfigs.FS.ReadFile("default.yaml")
 	assert.NoError(t, err)
 	assert.True(t, strings.Contains(string(client), "remoteAddr: \"localhost:8080\""))
 	assert.True(t, strings.Contains(string(client), "maxRetransmissions: 3"))

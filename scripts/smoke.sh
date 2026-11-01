@@ -59,12 +59,12 @@ sed -E \
   -e "s|(httpPort: \")[0-9]+|\\1$HTTP_PORT|" \
   "$ROOT/configs/default.yaml" >"$WORK/server.yaml"
 sed -E "s|(remoteAddr: \"localhost:)[0-9]+|\\1$TCP_PORT|" \
-  "$ROOT/test/client/configs/default.yaml" >"$WORK/client.yaml"
+  "$ROOT/client/configs/default.yaml" >"$WORK/client.yaml"
 
 SBIN="$WORK/bin/server"
 CBIN="$WORK/bin/client"
 echo "smoke: building server and client..."
-( cd "$ROOT" && go build -o "$SBIN" . && go build -o "$CBIN" ./test/client ) || {
+( cd "$ROOT" && go build -o "$SBIN" ./cmd/jt808-server && go build -o "$CBIN" ./cmd/jt808-client ) || {
   echo "smoke: build failed" >&2
   exit 1
 }

@@ -17,7 +17,7 @@
 
 定义版本类型分为 `Version2019 / Version2013 / Version2011`。
 
-由于通过消息头无法区分 2011 和 2013 版本，所以这部分存在硬编码，通过消息长度和字段长度来判断。
+消息头版本标识位只能区分 2019 与非 2019；2011 与 2013 无法从消息头区分，目前仅在 `0x0100` 终端注册消息中按消息体剩余长度做启发式判别，注册/鉴权/终端属性等消息体再按版本使用不同的字段宽度。
 
 目前已知 2011/2013/2019 版本的区别：
 | 区别点             | 2011    | 2013    | 2019    |
@@ -27,27 +27,24 @@
 | 终端 ID 编码长度   | 7 字节  | 7 字节  | 30 字节 |
 | 从业资格证编码长度 | 40 字节 | 20 字节 | 20 字节 |
 
-### 支持 JT1078 协议的音视频传输控制
+### 支持 JT1078 协议的音视频信令（部分）
 
-### 支持常见消息列表 (WIP)
+已实现音视频资源列表查询（`0x9205/0x1205`）与 1078 相关终端参数；RTP 流媒体传输及 `0x9101/0x9201` 等实时流控制指令尚未实现。
 
-| 终端侧                    | 平台侧                    |
-| ------------------------- | ------------------------- |
-| 0x0001 终端通用应答       | 0x8001 平台通用应答       |
-| 0x0002 终端心跳           | 0x8004 查询服务器时间应答 |
-| 0x0003 终端注销           | 0x8100 终端注册应答       |
-| 0x0004 查询服务器时间请求 | 0x8103 设置终端参数       |
-| 0x0100 终端注册           | 0x8104 查询终端参数       |
-| 0x0102 终端鉴权           |                           |
-| 0x0104 查询终端参数应答   |                           |
-| 0x0200 位置信息汇报       |                           |
+### 支持常见消息列表
 
-### 支持 Gateway 模式和 Standalone 模式 (WIP)
+当前已注册处理 70+ 消息 ID，覆盖注册鉴权、心跳、定位/报警、参数/属性、文本/事件/提问、电话回拨/电话本、车辆控制、区域/路线（`0x8600`-`0x8608`/`0x0608`）、记录仪（GB/T 19056）、司机身份/CAN/运单、多媒体事件/上传/检索/资源列表、透传与压缩上报等消息族。
 
-默认 **Gateway** 模式，jt808-server 只作为终端设备接入层，提供协议解析能力，仅缓存设备信息用于信令控制。
+逐消息的逐条实现状态（Implemented / Partial / Missing）见 [docs/JT808-2019-coverage.md](docs/JT808-2019-coverage.md)。
+
+### Gateway 模式和 Standalone 模式（设计目标，代码未实现）
+
+当前实现为单一运行模式：协议接入 + 内存缓存 + HTTP 管理 API。模式拆分、Action Hook 与持久化均尚未落地，完整设计规格见 [docs/gateway-mode-design.md](docs/gateway-mode-design.md)。以下为设计目标：
+
+**Gateway** 模式（规划）：jt808-server 只作为终端设备接入层，提供协议解析能力，仅缓存设备信息用于信令控制。
 可实现 Action 接口对特定消息进行 Hook 操作，方便对接第三方业务平台。
 
-也支持 **Standalone** 模式，jt808-server 持久化存储设备数据，并提供设备、车辆等运维管理 HTTP API。
+**Standalone** 模式（规划）：jt808-server 持久化存储设备数据，并提供设备、车辆等运维管理 HTTP API。
 
 ### 808 终端设备模拟器
 
@@ -55,7 +52,7 @@
 
 ## 系统设计
 
-jt808-server-go 可以作为设备接入网关 (Gateway 模式），解析和回复协议消息，并在特定的消息处理中，回调第三方业务平台，满足业务平台的车辆运营监管功能需求。
+jt808-server-go 的设计目标之一是作为设备接入网关（Gateway 模式，尚未实现），解析和回复协议消息，并在特定的消息处理中，回调第三方业务平台，满足业务平台的车辆运营监管功能需求。
 
 <img src="docs/.asset/system-context-1.png" alt="system context 1" width="800">
 
@@ -80,7 +77,7 @@ Rel_Neighbor(jt808serv, webapp, "Msg Hook", "HTTP")
 ```
 -->
 
-jt808-server-go 也可以作为设备接入和管理系统进行一体化部署（Standalone 模式），提供基础的设备接入和管理能力。
+jt808-server-go 当前以单一形态运行，可视为设备接入和管理系统的一体化部署（对应设计中的 Standalone 模式），提供基础的设备接入和管理能力。
 
 <img src="docs/.asset/system-context-2.png" alt="system context 2" width="800">
 
@@ -377,7 +374,7 @@ end
 
 ## 编译和运行
 
-需要本地有 go 1.19+环境。
+需要本地有 go 1.26+ 环境。
 
 ### 构建 jt808-server-go
 
@@ -394,7 +391,7 @@ make compile
 ```sh
 make release
 
-# 产出在 target/releases：
+# 产出在 target/release：
 # jt808-server-go_darwin_amd64
 # jt808-server-go_darwin_arm64
 # jt808-server-go_linux_amd64
@@ -410,6 +407,8 @@ make release
 默认读取 `jt808-server-go` 同级目录的 `configs/default.yaml` 。
 
 默认开启 TCP `8080`、UDP `8081` 和 HTTP `8008` 监听；将 `server.port.udpPort` 设为空可关闭 UDP。可靠消息的确认超时和最多重发次数可通过 `server.ackTimeoutMs`、`server.maxRetransmissions` 配置。
+
+gateway/standalone 为设计目标，当前代码未实现，规格见 [docs/gateway-mode-design.md](docs/gateway-mode-design.md)。现有行为保持单一形态：设备、定位、报警等数据全量写入内存缓存，并启动 HTTP API。可选的 Action HTTP 回调通过 `server.action.http.url`、`server.action.http.timeoutMs` 配置；回调失败只记录日志，不影响协议流程。
 
 源码运行：
 ```sh
@@ -432,7 +431,7 @@ make compile-client
 ```sh
 make release-client
 
-# 产出在 target/releases：
+# 产出在 target/release：
 # jt808-client-go_darwin_amd64
 # jt808-client-go_darwin_arm64
 # jt808-client-go_linux_amd64

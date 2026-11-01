@@ -1,6 +1,7 @@
 package protocol
 
 import (
+	"context"
 	"sync"
 
 	"github.com/fakeyanss/gron"
@@ -8,6 +9,8 @@ import (
 	"github.com/rs/zerolog/log"
 
 	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
+	"github.com/fakeyanss/jt808-server-go/internal/repository"
+	"github.com/fakeyanss/jt808-server-go/internal/runtime"
 	"github.com/fakeyanss/jt808-server-go/internal/storage"
 )
 
@@ -29,9 +32,9 @@ func NewKeepaliveTimer() *KeepaliveTimer {
 }
 
 func (t *KeepaliveTimer) Register(devicePhone string) {
-	cache := storage.GetDeviceCache()
-	device, err := cache.GetDeviceByPhone(devicePhone)
-	if errors.Is(err, storage.ErrDeviceNotFound) {
+	ctx := context.Background()
+	device, err := storage.Default().Devices.GetByPhone(ctx, devicePhone)
+	if errors.Is(err, repository.ErrDeviceNotFound) {
 		return
 	}
 	job := &CheckDeviceJob{phone: devicePhone}
@@ -64,23 +67,29 @@ func (j *CheckDeviceJob) Run() {
 // 2. 当前离线，缓存保留3倍保活时间
 func checkDeviceKeepalive(t *KeepaliveTimer, devicePhone string) {
 	log.Debug().Str("device", devicePhone).Msg("Check device keepalive status")
-	cache := storage.GetDeviceCache()
-	gisCache := storage.GetGeoCache()
-	d, err := cache.GetDeviceByPhone(devicePhone)
-	if errors.Is(err, storage.ErrDeviceNotFound) {
+	ctx := context.Background()
+	stores := storage.Default()
+	d, err := stores.Devices.GetByPhone(ctx, devicePhone)
+	if errors.Is(err, repository.ErrDeviceNotFound) {
 		log.Debug().Str("device", devicePhone).Msg("Fail to find device cache")
 		t.Cancel(devicePhone)
 		return
 	}
+	// 心跳落库可能被节流，进程内最近心跳更实时；取两者较新值判断保活。
+	if last, ok := runtime.Default().Heartbeat.Last(ctx, devicePhone); ok && last.After(d.LastestComTime) {
+		d.LastestComTime = last
+	}
 	if d.ShouleTurnOffline() {
 		// 保活失效
 		d.Status = model.DeviceStatusOffline
-		cache.CacheDevice(d)
+		_ = stores.Devices.Upsert(ctx, d)
+		runtime.Default().Heartbeat.Remove(ctx, devicePhone)
 		log.Debug().Str("device", devicePhone).Msg("Turn offline for device keepalive expired")
 	} else if d.ShouldClear() {
 		d.Conn.Close()
-		cache.DelDeviceByPhone(devicePhone)
-		gisCache.DelGeoByPhone(devicePhone)
+		_ = stores.Devices.DeleteByPhone(ctx, devicePhone)
+		runtime.Default().Heartbeat.Remove(ctx, devicePhone)
+		_ = stores.Geo.Delete(ctx, devicePhone)
 		log.Debug().Str("device", d.Phone).Msg("Clear cache and close connection after device being offline for a long time")
 		t.Cancel(devicePhone)
 	}

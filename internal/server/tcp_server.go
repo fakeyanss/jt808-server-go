@@ -10,9 +10,11 @@ import (
 	"github.com/pkg/errors"
 	"github.com/rs/zerolog/log"
 
+	"github.com/fakeyanss/jt808-server-go/internal/action"
 	"github.com/fakeyanss/jt808-server-go/internal/protocol"
 	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
-	"github.com/fakeyanss/jt808-server-go/internal/storage"
+	"github.com/fakeyanss/jt808-server-go/internal/repository"
+	"github.com/fakeyanss/jt808-server-go/internal/runtime"
 	"github.com/fakeyanss/jt808-server-go/pkg/routines"
 )
 
@@ -20,9 +22,15 @@ type TCPServer struct {
 	listener           net.Listener
 	ackTimeout         time.Duration
 	maxRetransmissions int
+	hooks              action.Hooks
 
 	// sessions map[string]*model.Session
 	mutex *sync.Mutex
+}
+
+// SetHooks 设置生命周期钩子。未设置时使用 action.Noop。
+func (serv *TCPServer) SetHooks(hooks action.Hooks) {
+	serv.hooks = hooks
 }
 
 func (serv *TCPServer) SetReliability(ackTimeout time.Duration, maxRetransmissions int) {
@@ -77,7 +85,7 @@ func (serv *TCPServer) accept(conn net.Conn) *model.Session {
 		MaxRetries: serv.maxRetransmissions,
 	}
 	// serv.sessions[remoteAddr] = session
-	storage.StoreSession(session)
+	_ = runtime.Default().Conn.Bind(context.Background(), session)
 	serv.mutex.Unlock()
 
 	return session
@@ -88,7 +96,7 @@ func (serv *TCPServer) remove(session *model.Session) {
 	defer serv.mutex.Unlock()
 
 	session.Conn.Close()
-	storage.ClearSession(session.ID)
+	runtime.Default().Conn.Unbind(context.Background(), session.ID)
 	// delete(serv.sessions, session.ID)
 
 	log.Debug().Str("id", session.ID).Msg("Closing connection from remote.")
@@ -96,18 +104,22 @@ func (serv *TCPServer) remove(session *model.Session) {
 
 // 处理每个session的消息
 func (serv *TCPServer) serve(session *model.Session) {
-	serveSession(session)
+	serveSession(session, serv.hooks)
 }
 
-func serveSession(session *model.Session) {
+func serveSession(session *model.Session, hooks action.Hooks) {
+	if hooks == nil {
+		hooks = action.Noop{}
+	}
 	defer func() {
 		session.ClosePending()
 		session.Conn.Close()
-		storage.ClearSession(session.ID)
+		runtime.Default().Conn.Unbind(context.Background(), session.ID)
+		hooks.OnDisconnect(context.Background(), action.DisconnectEvent{SessionID: session.ID, Transport: string(session.GetTransProto())})
 		log.Debug().Str("id", session.ID).Msg("Closing connection from remote.")
 	}()
 
-	pg := protocol.NewPipeline(session.Conn)
+	pg := protocol.NewPipeline(session.Conn, protocol.WithHooks(hooks))
 	for {
 		_ = session.Conn.SetReadDeadline(time.Now().Add(2 * time.Minute))
 		// 记录value ctx
@@ -125,7 +137,7 @@ func serveSession(session *model.Session) {
 		log.Error().Err(err).Str("id", session.ID).Msg("Failed to serve session")
 
 		switch {
-		case errors.Is(err, io.EOF), errors.Is(err, io.ErrClosedPipe), errors.Is(err, net.ErrClosed), errors.Is(err, storage.ErrDeviceNotFound), isTimeout(err):
+		case errors.Is(err, io.EOF), errors.Is(err, io.ErrClosedPipe), errors.Is(err, net.ErrClosed), errors.Is(err, repository.ErrDeviceNotFound), isTimeout(err):
 			return // close connection when EOF or closed
 		default:
 			time.Sleep(1 * time.Second)
@@ -141,13 +153,13 @@ func isTimeout(err error) bool {
 // 发送消息到终端设备, 外部调用
 func (serv *TCPServer) Send(id string, msg model.JT808Msg) {
 	// session := serv.sessions[id]
-	session, err := storage.GetSession(id)
-	if err != nil && errors.Is(err, storage.ErrSessionClosed) {
+	session, err := runtime.Default().Conn.Get(context.Background(), id)
+	if err != nil && errors.Is(err, runtime.ErrSessionClosed) {
 		log.Warn().Str("id", id).Msg("Fail to get session from cache, maybe conn was closed.")
 		return
 	}
 
-	pg := protocol.NewPipeline(session.Conn)
+	pg := protocol.NewPipeline(session.Conn, protocol.WithHooks(serv.hooks))
 
 	// 记录value ctx
 	ctx := context.WithValue(context.Background(), model.SessionCtxKey{}, session)

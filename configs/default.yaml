@@ -13,6 +13,15 @@ server:
   name: "jt808-server-go"
   ackTimeoutMs: 5000
   maxRetransmissions: 3
+  # 心跳落库最小间隔（毫秒）：0 或缺省表示逐条写库；若开启，建议不超过保活周期的一半
+  # （当前保活周期 1 分钟，即建议 30000）。间隔过大时库内 last_com_time 会落后，
+  # 读路径的 TTL 判定可能在心跳恢复落库前把设备短暂判为离线。
+  heartbeatPersistIntervalMs: 0
+  # 业务数据 Action 回调示例；url 为空时不启用
+  action:
+    http:
+      url: ""
+      timeoutMs: 2000
   port:
     tcpPort: "8080"
     udpPort: "8081"
@@ -20,3 +29,14 @@ server:
   banner:
     enable: true
     bannerPath: "configs/banner.txt"
+
+# 持久化后端：memory | sqlite | mysql，缺省 memory（行为与旧版本一致）
+storage:
+  type: "memory"
+  sqlite:
+    path: "./data/jt808.db"
+  mysql:
+    dsn: ""
+    # sqlite / mysql 均不在服务启动时执行迁移；首次部署或升级后先执行独立工具：
+    #   jt808-migrate -c <config file>
+    # 主服务启动只校验 schema 版本，版本不符会拒绝启动。

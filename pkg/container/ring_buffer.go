@@ -6,7 +6,7 @@
 // from the current position and update it.
 package container
 
-import "sync/atomic"
+import "sync"
 
 // RingBuffer Structure
 type RingBuffer struct {
@@ -14,6 +14,10 @@ type RingBuffer struct {
 	Container []any // Array container of objects
 	Reader    int32 // Reader position
 	Writer    int32 // Writer Position
+
+	// mu 保护 Container 元素与读写位置：此前仅位置变量使用 atomic，
+	// 元素读写无同步，并发 Write/Latest 存在数据竞争。
+	mu sync.Mutex
 }
 
 // Create a new RingBuffer of initial size "size"
@@ -29,41 +33,52 @@ func NewRingBuffer(size int32) *RingBuffer {
 
 // Write object into the RingBuffer
 func (r *RingBuffer) Write(v any) {
-	current := atomic.LoadInt32(&r.Writer)
-	r.Container[current] = v
-	next := (current + 1) % r.Size
-	atomic.StoreInt32(&r.Writer, next)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.Container[r.Writer] = v
+	r.Writer = (r.Writer + 1) % r.Size
 }
 
-// Seek position of the reader by delta, delta can be positive as
-// well as negative
+// seekReader 按 delta 移动读位置，delta 可为正或负。
+// 调用前必须持有 r.mu（由 Read 等公开方法进入）。
 func (r *RingBuffer) seekReader(delta int32) {
-	current := atomic.LoadInt32(&r.Reader)
-	expected := (current + delta) % r.Size
-	atomic.StoreInt32(&r.Reader, expected)
+	expected := (r.Reader + delta) % r.Size
+	if expected < 0 {
+		// Go 取模结果符号跟随被除数，负 delta 会得到负索引，需环绕回正区间。
+		expected += r.Size
+	}
+	r.Reader = expected
 }
 
 // Read single object from the RingBuffer
 func (r *RingBuffer) Read() any {
-	defer r.seekReader(1)
-	return r.Container[atomic.LoadInt32(&r.Reader)]
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	v := r.Container[r.Reader]
+	r.seekReader(1)
+	return v
 }
 
 // Returns the latest element in the RingBuffer
 func (r *RingBuffer) Latest() any {
-	w := atomic.LoadInt32(&r.Writer)
-	if w == 0 {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.Writer == 0 {
 		return nil
 	}
-	return r.Container[(w-1)%r.Size]
+	return r.Container[(r.Writer-1)%r.Size]
 }
 
 // Returns the oldest element in RingBuffer
 func (r *RingBuffer) Oldest() any {
-	return r.Container[atomic.LoadInt32(&r.Writer)]
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.Container[r.Writer]
 }
 
 // Overwrites the latest data in RingBuffer
 func (r *RingBuffer) Overwrite(v any) {
-	r.Container[atomic.LoadInt32(&r.Writer)] = v
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.Container[r.Writer] = v
 }

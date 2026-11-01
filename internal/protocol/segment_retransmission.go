@@ -9,7 +9,7 @@ import (
 	"github.com/rs/zerolog/log"
 
 	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
-	"github.com/fakeyanss/jt808-server-go/internal/storage"
+	"github.com/fakeyanss/jt808-server-go/internal/runtime"
 )
 
 const (
@@ -40,7 +40,7 @@ func scheduleSegmentRetransmission(session *model.Session, packet *model.PacketD
 		return
 	}
 	segment := model.NewSegment(packet)
-	firstSerial := storage.FirstFragmentSerial(packet.Header.SerialNumber, segment.SegNo)
+	firstSerial := runtime.FirstFragmentSerial(packet.Header.SerialNumber, segment.SegNo)
 	segment.SegNo = 1
 	segment.Data = nil
 	key := segmentRetransmissionKey(session.ID, segment.Phone, segment.MsgID, firstSerial)
@@ -86,7 +86,7 @@ func requestMissingSegments(key string, state *segmentRetransmissionState) {
 	state.timer = nil
 	segmentRetransmissions.Unlock()
 
-	missing := storage.MissingSegmentIndexes(state.segment, state.firstSerial)
+	missing := runtime.Default().Fragment.MissingIndexes(context.Background(), state.segment, state.firstSerial)
 	if len(missing) == 0 {
 		cancelSegmentRetransmission(state.session, state.segment.Phone, state.segment.MsgID, state.firstSerial)
 		return

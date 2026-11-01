@@ -9,17 +9,17 @@
             "type": "go",
             "request": "launch",
             "mode": "debug",
-            "program": "main.go"
+            "program": "cmd/jt808-server/main.go"
         },
         {
             "name": "Launch Client",
             "type": "go",
             "request": "launch",
             "mode": "debug",
-            "program": "test/client/main.go",
+            "program": "cmd/jt808-client/main.go",
             // "args": [
             //     "-c",
-            //     "test/client/configs/default.yaml"
+            //     "client/configs/default.yaml"
             // ]
         },
         {

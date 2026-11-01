@@ -10,7 +10,7 @@ import (
 
 	"github.com/fakeyanss/jt808-server-go/internal/codec/hex"
 	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
-	"github.com/fakeyanss/jt808-server-go/internal/storage"
+	"github.com/fakeyanss/jt808-server-go/internal/runtime"
 )
 
 const (
@@ -45,7 +45,7 @@ func scheduleMediaRetransmission(session *model.Session, packet *model.PacketDat
 		return
 	}
 	segment := model.NewSegment(packet)
-	firstSerial := storage.FirstFragmentSerial(packet.Header.SerialNumber, segment.SegNo)
+	firstSerial := runtime.FirstFragmentSerial(packet.Header.SerialNumber, segment.SegNo)
 	segment.SegNo = 1
 	segment.Data = nil
 	key := mediaRetransmissionKey(session.ID, segment.Phone, segment.MsgID, firstSerial)
@@ -108,7 +108,7 @@ func requestMissingMediaPackets(key string, state *mediaRetransmissionState) {
 	state.timer = nil
 	mediaRetransmissions.Unlock()
 
-	missing := storage.MissingSegmentIndexes(state.segment, state.firstSerial)
+	missing := runtime.Default().Fragment.MissingIndexes(context.Background(), state.segment, state.firstSerial)
 	if len(missing) == 0 {
 		cancelMediaRetransmission(state.session, state.segment.Phone, state.segment.MsgID, state.firstSerial)
 		return

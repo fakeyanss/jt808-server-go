@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"errors"
 	"net"
 	"sync"
@@ -8,9 +9,10 @@ import (
 
 	"github.com/rs/zerolog/log"
 
+	"github.com/fakeyanss/jt808-server-go/internal/action"
 	"github.com/fakeyanss/jt808-server-go/internal/protocol"
 	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
-	"github.com/fakeyanss/jt808-server-go/internal/storage"
+	"github.com/fakeyanss/jt808-server-go/internal/runtime"
 	"github.com/fakeyanss/jt808-server-go/pkg/routines"
 )
 
@@ -22,10 +24,16 @@ type UDPServer struct {
 	sessions           map[string]*udpSessionConn
 	ackTimeout         time.Duration
 	maxRetransmissions int
+	hooks              action.Hooks
 }
 
 func NewUDPServer() *UDPServer {
 	return &UDPServer{sessions: make(map[string]*udpSessionConn)}
+}
+
+// SetHooks 设置生命周期钩子。未设置时使用 action.Noop。
+func (s *UDPServer) SetHooks(hooks action.Hooks) {
+	s.hooks = hooks
 }
 
 func (s *UDPServer) SetReliability(ackTimeout time.Duration, maxRetransmissions int) {
@@ -59,8 +67,8 @@ func (s *UDPServer) Start() {
 			conn = newUDPSessionConn(s.listener, remote, func() { s.remove(key) })
 			s.sessions[key] = conn
 			session := &model.Session{ID: key, Conn: conn, Transport: model.UDPProto, AckTimeout: s.ackTimeout, MaxRetries: s.maxRetransmissions}
-			storage.StoreSession(session)
-			routines.GoSafe(func() { serveSession(session) })
+			_ = runtime.Default().Conn.Bind(context.Background(), session)
+			routines.GoSafe(func() { serveSession(session, s.hooks) })
 		}
 		s.mu.Unlock()
 		if !conn.deliver(buf[:n]) {
@@ -88,7 +96,7 @@ func (s *UDPServer) remove(key string) {
 	s.mu.Lock()
 	delete(s.sessions, key)
 	s.mu.Unlock()
-	storage.ClearSession(key)
+	runtime.Default().Conn.Unbind(context.Background(), key)
 }
 
 type udpSessionConn struct {

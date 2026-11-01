@@ -13,5 +13,5 @@ jobs:
     - uses: wangyoucao577/go-release-action@v1
       with:
         github_token: ${{ secrets.GITHUB_TOKEN }}
-        goversion: 1.19.4
+        goversion: 1.26.10
         build_command: make release && make release-client

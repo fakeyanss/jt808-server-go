@@ -1,129 +1,127 @@
-# JT/T 808-2019 Message Coverage
+# JT/T 808-2019 消息覆盖矩阵
 
-This matrix compares the implementation in `internal/protocol/model` and
-`internal/protocol/msg_processor.go` with the message ID table in Appendix B,
-Table B.1 of `docs/协议文档/JTT 808-2019.pdf`. Status is based on executable
-code, not the older feature summary in README.
+本矩阵将 `internal/protocol/model` 与
+`internal/protocol/msg_processor.go` 中的实现，与
+`docs/协议文档/JTT 808-2019.pdf` 附录 B 表 B.1 的消息 ID 表逐条对比。
+状态基于可执行代码，而非 README 中较早的功能概述。
 
-For project-wide completed work, prioritized TODOs, dependencies, and
-acceptance criteria, see [JT808-project-roadmap.md](JT808-project-roadmap.md).
+项目级已完成工作、按优先级排列的 TODO、依赖与验收标准见
+[JT808-project-roadmap.md](JT808-project-roadmap.md)。
 
-The 2019 standard's Amendment 1 was published by the Ministry of Transport in
-2021. Its official announcement is recorded at
-<https://xxgk.mot.gov.cn/2020/jigou/kjs/202111/t20211111_3625608.html>. The
-amendment document itself is not included in this repository, so this matrix
-does not claim amendment-specific conformance; it must be updated when the
-amendment text has been reviewed.
+2019 版标准的第 1 号修改单（Amendment 1）由交通运输部于 2021 年发布，
+官方公告见
+<https://xxgk.mot.gov.cn/2020/jigou/kjs/202111/t20211111_3625608.html>。
+修改单文档本身不在本仓库中，因此本矩阵不声称对修改单内容的符合性；
+待修改单文本评审后必须更新本矩阵。
 
-## Status definitions
+## 状态定义
 
-- **Implemented**: message has a model and is connected to a processor path.
-- **Partial**: a model or processor path exists, but business behavior is a
-  stub, hard-coded, or has a documented TODO.
-- **Model only**: a message model exists but is not connected to the processor.
-- **Missing**: no message model or processor path was found.
-- **Reserved/custom**: standard-reserved or vendor-defined ID range; no generic
-  extension dispatch is implemented.
+- **已实现（Implemented）**：消息有模型且已接入处理器路径。
+- **部分实现（Partial）**：模型或处理器路径存在，但业务行为是桩、
+  硬编码，或有记录在案的 TODO。
+- **仅模型（Model only）**：消息模型存在，但未接入处理器。
+- **缺失（Missing）**：未找到消息模型或处理器路径。
+- **保留/自定义（Reserved/custom）**：标准保留或厂商定义的 ID 段；
+  未实现通用的扩展分发。
 
-## Appendix B, Table B.1
+## 附录 B 表 B.1
 
-| ID | Message | Status | Implementation note |
+| ID | 消息 | 状态 | 实现说明 |
 |---|---|---|---|
-| `0x0001` | Terminal general acknowledgment | Implemented | Decodes acknowledgment fields and settles pending messages. |
-| `0x8001` | Platform general acknowledgment | Implemented | Encodes responses and settles pending messages. |
-| `0x0002` | Terminal heartbeat | Implemented | Refreshes device activity and receives `0x8001`. |
-| `0x8003` | Platform retransmission request | Implemented | Server requests missing fragments after an idle interval, retries at most three times, and clears state on completion; the client simulator replays requested frames. |
-| `0x0005` | Terminal retransmission request | Implemented | Oversized platform messages are split into indexed frames and cached; the terminal simulator can request selected frames, which the server replays byte-for-byte. |
-| `0x0100` | Terminal registration | Implemented | Validates duplicate plate/phone and returns `0x8100`. |
-| `0x8100` | Terminal registration response | Implemented | Returns authentication code; client simulator proceeds to authentication. |
-| `0x0003` | Terminal logout | Implemented | Removes device state and cancels keepalive tracking. |
-| `0x0004` | Query server time | Implemented | Responds with a BCD timestamp in `0x8004`. |
-| `0x0102` | Terminal authentication | Implemented | Validates the generated auth code and updates device state. |
-| `0x8103` | Set terminal parameters | Implemented | Decodes and caches provided parameter values. |
-| `0x8104` | Query terminal parameters | Implemented | HTTP query sends a serial-correlated request and returns the terminal response; timeout is 10 seconds. |
-| `0x0104` | Terminal parameters response | Implemented | Validates through normal decoding, caches parameters, and delivers to a waiter keyed by phone and answered platform serial. |
-| `0x8105` | Terminal control | Partial | Model, GBK command parameters, HTTP downlink endpoint, and simulator-side generic acknowledgement are implemented. Command-specific effects remain terminal responsibilities. |
-| `0x8106` | Query specified terminal parameters | Implemented | HTTP `/device/:phone/params?ids=...` sends selected IDs; the response is correlated by phone and platform serial. |
-| `0x8107` | Query terminal properties | Implemented | HTTP `/device/:phone/properties` sends a query and waits up to 10 seconds for the terminal response. |
-| `0x0107` | Terminal properties response | Implemented | Decodes 2011/2013/2019 field widths and delivers the response to the pending phone query. |
-| `0x8108` | Terminal upgrade package | Implemented | Typed upgrade type, 5-byte maker ID, version string, and DWORD-prefixed upgrade data; cached per device; terminal acknowledges `0x0001`; HTTP `/device/:phone/terminal/upgrade` endpoint. |
-| `0x0108` | Terminal upgrade result notification | Implemented | Decodes upgrade type and result code; cached per device; platform replies `0x8001`. |
-| `0x0200` | Location information report | Implemented | Decodes the 28-byte base body plus TLV extended (附加信息) items; caches latest geo data; alarm-bit events are kept in a bounded in-memory history and can be confirmed after terminal acknowledgment. Durable storage remains open. |
-| `0x8201` | Location information query | Implemented | Sends a query to the terminal; HTTP `/device/:phone/location` waits for the serial-correlated response. |
-| `0x0201` | Location information query response | Implemented | Encodes/decodes the answer serial and base location report; delivers responses to pending HTTP queries. |
-| `0x8202` | Temporary location tracking control | Implemented | Client simulator changes its location report interval for the requested validity period and restores the configured interval on stop/expiry; replies with `0x0001`. |
-| `0x8301` | Event setting | Implemented | Typed set type and event item list with GBK content; simulator stores events per set type (delete/replace/append/modify); HTTP `/device/:phone/events/set` endpoint. |
-| `0x0301` | Event report | Implemented | Decodes event ID; cached per device; platform replies `0x8001`. |
-| `0x8302` | Question issue | Implemented | Typed flag, GBK question, and candidate answer list (DWORD ID + GBK content); cached per device; terminal acknowledges `0x0001`; HTTP `/device/:phone/question/issue` endpoint. |
-| `0x0302` | Question response | Implemented | Decodes answer serial and chosen candidate ID; cached per device; platform replies `0x8001`. |
-| `0x8303` | Information menu setting | Implemented | Typed set type and menu item list (DWORD ID + GBK content); simulator stores menu per set type (delete/replace/append/modify); HTTP `/device/:phone/info/menu/set` endpoint. |
-| `0x0303` | Information menu response/cancel | Implemented | Decodes on-demand/cancel action flag and menu ID; cached per device; platform replies `0x8001`. |
-| `0x8304` | Information service | Implemented | Typed info type, WORD length and GBK content; cached per device; terminal acknowledges `0x0001`; HTTP `/device/:phone/info/service` endpoint. |
-| `0x8004` | Query server time response | Implemented | Decodes the server timestamp; the client simulator accepts the response. |
-| `0x8400` | Call callback | Implemented | Typed flag and GBK phone number; cached per device; terminal acknowledges `0x0001`; HTTP `/device/:phone/call/callback` endpoint. |
-| `0x8401` | Set phonebook | Implemented | Typed set type and contact list (flag, GBK phone, GBK name); simulator stores contacts per set type (delete/replace/append/modify) keyed by phone number; HTTP `/device/:phone/phonebook/set` endpoint. |
-| `0x8500` | Vehicle control | Implemented | Typed control flags; simulator stores flags and echoes them in `0x0500`; HTTP `/device/:phone/vehicle/control` endpoint. |
-| `0x0500` | Vehicle control response | Implemented | Decodes control flags; cached per device; platform replies `0x8001`. |
-| `0x8600` | Set circular area | Partial | HTTP downlink accepts a standard message body as hex; area items are transported losslessly but not decoded into typed area records. |
-| `0x8601` | Delete circular area | Partial | Encodes/decodes the standard ID list and supports deletion of all areas; HTTP downlink plus simulator acknowledgement. |
-| `0x8602` | Set rectangular area | Partial | Shared standard-body passthrough endpoint and simulator acknowledgment; no typed rectangle item parser. |
-| `0x8603` | Delete rectangular area | Partial | Shared delete-ID message model, HTTP downlink, and simulator acknowledgement. |
-| `0x8604` | Set polygonal area | Partial | Shared standard-body passthrough endpoint and simulator acknowledgment; no typed polygon item parser. |
-| `0x8605` | Delete polygonal area | Partial | Shared delete-ID message model, HTTP downlink, and simulator acknowledgement. |
-| `0x8606` | Set route | Partial | Shared standard-body passthrough endpoint and simulator acknowledgment; no typed route-point parser. |
-| `0x8607` | Delete route | Partial | Shared delete-ID message model, HTTP downlink, and simulator acknowledgement. |
-| `0x8700` | Driving recorder data collection command | Implemented | Typed GB/T 19056 data block codec for commands `0x31`/`0x33`/`0x56`/`0x57`/`0x58`; HTTP downlink available. Simulator returns a typed `0x0700` response block. |
-| `0x0700` | Driving recorder data upload | Implemented | Answer serial, command byte, and typed GB/T 19056 response blocks (`0xB1`/`0xB3`/`0xD6`/`0xD8`) are decoded; data is cached and a generic acknowledgment is sent. |
-| `0x8701` | Driving recorder parameter download | Implemented | Typed `0x41` parameter-setting block (with 16-byte Salt) and `0xC1` response block codec; HTTP downlink available. Simulator sends `0x0001`. |
-| `0x8203` | Manual alarm confirmation | Partial | HTTP command serializes alarm serial/type; matching in-memory alarm events are marked confirmed after terminal `0x0001`; durable storage remains open. |
-| `0x8204` | Server-initiated link detection request | Implemented | Empty-body request is decoded by the client simulator and receives `0x0001`. |
-| `0x8300` | Text information issue | Implemented | Typed flag, text type, and GBK text; simulator acknowledges with `0x0001`; HTTP `/device/:phone/text/issue` endpoint. |
-| `0x0702` | Driver identity information report | Implemented | Decodes IC-card state, BCD time, read result, GBK name/issuer and fixed-width credentials; caches latest report and sends `0x8001`. |
-| `0x8702` | Driver identity information request | Partial | Empty-body command; simulator returns a synthetic `0x0702`; HTTP downlink is available. |
-| `0x0704` | Batch positioning data upload | Implemented | Decodes item count, data type, and per-item length-prefixed bodies; each body is parsed as a typed `0x0200` location. Cached per device; platform replies `0x8001`. |
-| `0x0705` | CAN bus data upload | Implemented | Decodes the 5-byte BCD timestamp, CAN ID flags and fixed 8-byte data items; caches latest report and sends `0x8001`. |
-| `0x0800` | Multimedia event information upload | Implemented | Decodes and caches the 8-byte event descriptor; sends `0x8001`. |
-| `0x0801` | Multimedia data upload | Implemented | Decodes the media descriptor, fixed 28-byte base location body, and remaining media bytes; bounded in-memory cache, `0x8800` response, and server-side missing-fragment detection via `0x8800` retransmission. Extended location items remain open. |
-| `0x8800` | Multimedia upload response | Implemented | Encodes/decodes media ID and requested packet IDs. Server detects missing `0x0801` fragments and sends `0x8800` with the missing packet IDs; the simulator replays cached frames and the server reassembles exactly once. |
-| `0x8801` | Camera immediate capture command | Implemented | Decodes the 12-byte command; simulator returns `0x0805`. HTTP downlink available. |
-| `0x0805` | Camera capture response | Implemented | Decodes result and media IDs, caches latest response, and receives platform `0x8001`. |
-| `0x8802` | Search stored multimedia data | Implemented | Decodes search criteria and HTTP downlink; simulator filters its bounded in-memory `0x0801` catalog by type, channel, event, and capture time, then returns matching records. |
-| `0x0802` | Stored multimedia search response | Implemented | Decodes/encodes each 35-byte result as media ID, media type, channel, event, and typed `0x0200` location fields; response is cached. |
-| `0x8608` | Query region/route data | Partial | Decodes query type and DWORD ID list; HTTP request waits for a matching `0x0608`, but the simulator has no region/route catalog and can only return an empty result. |
-| `0x0608` | Region/route data response | Partial | Query type/count envelope decoded and correlated; variable type-specific records preserved as raw bytes. |
-| `0x0701` | Electronic waybill upload | Implemented | Decodes GBK waybill content; cached per device; platform replies `0x8001`. |
-| `0x8803` | Stored multimedia upload command | Partial | Typed 16-byte command with media type/channel/event, BCD range and delete flag; HTTP body is validated and simulator sends the generic acknowledgment, but it does not select/upload matching stored media. |
-| `0x8804` | Start audio recording command | Partial | Typed 5-byte start/stop, duration, save and sample-rate fields; simulator acknowledges but does not record or upload audio. |
-| `0x8805` | Single stored multimedia upload command | Partial | Typed media ID and delete flag; HTTP body is validated and simulator acknowledges, but it does not upload the selected media. |
-| `0x8900` | Data downlink transparent transmission | Implemented | Typed DWORD message type and raw payload bytes; cached per device; terminal acknowledges `0x0001`; HTTP `/device/:phone/transparent/down` endpoint. |
-| `0x0900` | Data uplink transparent transmission | Implemented | Decodes DWORD message type and raw payload bytes; cached per device; platform replies `0x8001`. |
-| `0x0901` | Compressed data report | Implemented | Decodes DWORD length and zlib-compressed body; the inflated payload is stored in `Decompressed` (nil on failure); cached per device; platform replies `0x8001`. |
-| `0x8A00` | Platform RSA public key | Missing | RSA public-key exchange and encrypted bodies are unsupported. |
-| `0x0A00` | Terminal RSA public key | Missing | RSA public-key exchange and encrypted bodies are unsupported. |
-| `0x8F00`–`0x8FFF` | Platform-reserved messages | Reserved/custom | No reserved-ID extension handler. |
-| `0x0F00`–`0x0FFF` | Terminal-reserved messages | Reserved/custom | No reserved-ID extension handler. |
-| `0xE000`–`0xEFFF` | Vendor-defined uplink messages | Reserved/custom | No vendor registry or custom handler mechanism. |
-| `0xF000`–`0xFFFF` | Vendor-defined downlink messages | Reserved/custom | No vendor registry or custom handler mechanism. |
+| `0x0001` | 终端通用应答 | 已实现 | 解码应答字段并清算待确认消息。 |
+| `0x8001` | 平台通用应答 | 已实现 | 编码响应并清算待确认消息。 |
+| `0x0002` | 终端心跳 | 已实现 | 刷新设备活跃度并收到 `0x8001`。 |
+| `0x8003` | 平台补传分包请求 | 已实现 | 服务端在空闲间隔后请求缺失分包，最多重试三次，完成后清理状态；客户端模拟器重放被请求的帧。 |
+| `0x0005` | 终端补传分包请求 | 已实现 | 超大平台消息被拆分为带序号的帧并缓存；终端模拟器可请求指定帧，服务端按原始字节重放。 |
+| `0x0100` | 终端注册 | 已实现 | 校验车牌/手机号重复并返回 `0x8100`。 |
+| `0x8100` | 终端注册应答 | 已实现 | 返回鉴权码；客户端模拟器随后进入鉴权。 |
+| `0x0003` | 终端注销 | 已实现 | 移除设备状态并取消保活跟踪。 |
+| `0x0004` | 查询服务器时间请求 | 已实现 | 以 `0x8004` 返回 BCD 时间戳。 |
+| `0x0102` | 终端鉴权 | 已实现 | 校验生成的鉴权码并更新设备状态。 |
+| `0x8103` | 设置终端参数 | 已实现 | 解码并缓存提供的参数值。 |
+| `0x8104` | 查询终端参数 | 已实现 | HTTP 查询发送带流水号关联的请求并返回终端响应；超时 10 秒。 |
+| `0x0104` | 查询终端参数应答 | 已实现 | 正常解码校验，缓存参数，并按手机号与被应答的平台流水号投递给等待方。 |
+| `0x8105` | 终端控制 | 部分实现 | 模型、GBK 命令参数、HTTP 下行端点与模拟器侧通用应答已实现。命令的具体效果属于终端职责。 |
+| `0x8106` | 查询指定终端参数 | 已实现 | HTTP `/device/:phone/params?ids=...` 发送选定的 ID；响应按手机号与平台流水号关联。 |
+| `0x8107` | 查询终端属性 | 已实现 | HTTP `/device/:phone/properties` 发送查询并最多等待 10 秒以获得终端响应。 |
+| `0x0107` | 查询终端属性应答 | 已实现 | 解码 2011/2013/2019 字段宽度，并将响应投递给待处理的手机号查询。 |
+| `0x8108` | 终端升级包 | 已实现 | 类型化的升级类型、5 字节制造商 ID、版本字符串与 DWORD 前缀的升级数据；按设备缓存；终端以 `0x0001` 应答；HTTP `/device/:phone/terminal/upgrade` 端点。 |
+| `0x0108` | 终端升级结果通知 | 已实现 | 解码升级类型与结果码；按设备缓存；平台回复 `0x8001`。 |
+| `0x0200` | 位置信息汇报 | 已实现 | 解码 28 字节基础体加 TLV 扩展（附加信息）项；缓存最新定位数据；报警位事件保存在有界内存历史中，可在终端应答后确认。持久化存储仍未实现。 |
+| `0x8201` | 位置信息查询 | 已实现 | 向终端发送查询；HTTP `/device/:phone/location` 等待流水号关联的响应。 |
+| `0x0201` | 位置信息查询应答 | 已实现 | 编解码应答流水号与基础定位报告；将响应投递给待处理的 HTTP 查询。 |
+| `0x8202` | 临时定位跟踪控制 | 已实现 | 客户端模拟器在请求的有效期内改变定位上报间隔，停止/到期时恢复配置间隔；以 `0x0001` 应答。 |
+| `0x8301` | 事件设置 | 已实现 | 类型化的设置类型与事件项列表（GBK 内容）；模拟器按设置类型存储事件（删除/替换/追加/修改）；HTTP `/device/:phone/events/set` 端点。 |
+| `0x0301` | 事件报告 | 已实现 | 解码事件 ID；按设备缓存；平台回复 `0x8001`。 |
+| `0x8302` | 提问下发 | 已实现 | 类型化的标志、GBK 问题与候选答案列表（DWORD ID + GBK 内容）；按设备缓存；终端以 `0x0001` 应答；HTTP `/device/:phone/question/issue` 端点。 |
+| `0x0302` | 提问应答 | 已实现 | 解码应答流水号与选定的候选 ID；按设备缓存；平台回复 `0x8001`。 |
+| `0x8303` | 信息点播菜单设置 | 已实现 | 类型化的设置类型与菜单项列表（DWORD ID + GBK 内容）；模拟器按设置类型存储菜单（删除/替换/追加/修改）；HTTP `/device/:phone/info/menu/set` 端点。 |
+| `0x0303` | 信息点播/取消 | 已实现 | 解码点播/取消动作标志与菜单 ID；按设备缓存；平台回复 `0x8001`。 |
+| `0x8304` | 信息服务 | 已实现 | 类型化的信息类型、WORD 长度与 GBK 内容；按设备缓存；终端以 `0x0001` 应答；HTTP `/device/:phone/info/service` 端点。 |
+| `0x8004` | 查询服务器时间应答 | 已实现 | 解码服务端时间戳；客户端模拟器接受该响应。 |
+| `0x8400` | 电话回拨 | 已实现 | 类型化的标志与 GBK 电话号码；按设备缓存；终端以 `0x0001` 应答；HTTP `/device/:phone/call/callback` 端点。 |
+| `0x8401` | 设置电话本 | 已实现 | 类型化的设置类型与联系人列表（标志、GBK 电话、GBK 姓名）；模拟器按设置类型以电话号码为键存储联系人（删除/替换/追加/修改）；HTTP `/device/:phone/phonebook/set` 端点。 |
+| `0x8500` | 车辆控制 | 已实现 | 类型化的控制标志；模拟器存储标志并在 `0x0500` 中回显；HTTP `/device/:phone/vehicle/control` 端点。 |
+| `0x0500` | 车辆控制应答 | 已实现 | 解码控制标志；按设备缓存；平台回复 `0x8001`。 |
+| `0x8600` | 设置圆形区域 | 已实现 | 类型化的圆形区域项（属性控制的时间/速度字段、GBK 名称）被解码并写入每设备模拟器目录；结构化 JSON HTTP 下行。 |
+| `0x8601` | 删除圆形区域 | 已实现 | 编解码标准 ID 列表并支持删除全部区域；写入模拟器目录；HTTP 下行加模拟器应答。 |
+| `0x8602` | 设置矩形区域 | 已实现 | 类型化的矩形区域项被解码并存入模拟器目录；结构化 JSON HTTP 下行。 |
+| `0x8603` | 删除矩形区域 | 已实现 | 共享的删除 ID 消息模型、HTTP 下行、目录删除与模拟器应答。 |
+| `0x8604` | 设置多边形区域 | 已实现 | 类型化的多边形区域项（含顶点列表）被解码并存入模拟器目录；结构化 JSON HTTP 下行。 |
+| `0x8605` | 删除多边形区域 | 已实现 | 共享的删除 ID 消息模型、HTTP 下行、目录删除与模拟器应答。 |
+| `0x8606` | 设置路线 | 已实现 | 类型化的路线项（含途经点与路段约束）被解码并存入模拟器目录；结构化 JSON HTTP 下行。 |
+| `0x8607` | 删除路线 | 已实现 | 共享的删除 ID 消息模型、HTTP 下行、目录删除与模拟器应答。 |
+| `0x8700` | 行驶记录仪数据采集命令 | 已实现 | 命令 `0x31`/`0x33`/`0x56`/`0x57`/`0x58` 的 GB/T 19056 数据块类型化编解码；HTTP 下行可用。模拟器返回类型化的 `0x0700` 响应块。 |
+| `0x0700` | 行驶记录仪数据上传 | 已实现 | 应答流水号、命令字与类型化 GB/T 19056 响应块（`0xB1`/`0xB3`/`0xD6`/`0xD8`）被解码；数据被缓存并发送通用应答。 |
+| `0x8701` | 行驶记录仪参数下传 | 已实现 | 类型化的 `0x41` 参数设置块（含 16 字节 Salt）与 `0xC1` 响应块编解码；HTTP 下行可用。模拟器发送 `0x0001`。 |
+| `0x8203` | 人工确认报警消息 | 已实现 | HTTP 命令序列化报警流水号/类型；终端 `0x0001` 后，匹配的内存报警事件被标记为已确认。报警持久化在持久化工作中跟踪。 |
+| `0x8204` | 链路检测请求 | 已实现 | 空消息体请求由客户端模拟器解码并以 `0x0001` 应答。 |
+| `0x8300` | 文本信息下发 | 已实现 | 类型化的标志、文本类型与 GBK 文本；模拟器以 `0x0001` 应答；HTTP `/device/:phone/text/issue` 端点。 |
+| `0x0702` | 驾驶员身份信息上报 | 已实现 | 解码 IC 卡状态、BCD 时间、读取结果、GBK 姓名/发证机构与定长证件字段；缓存最新报告并发送 `0x8001`。 |
+| `0x8702` | 驾驶员身份信息请求 | 部分实现 | 空消息体命令；模拟器返回合成的 `0x0702`；HTTP 下行可用。 |
+| `0x0704` | 定位数据批量上传 | 已实现 | 解码条目数、数据类型与每条带长度前缀的消息体；每条按类型化 `0x0200` 定位解析。按设备缓存；平台回复 `0x8001`。 |
+| `0x0705` | CAN 总线数据上传 | 已实现 | 解码 5 字节 BCD 时间戳、CAN ID 标志与定长 8 字节数据项；缓存最新报告并发送 `0x8001`。 |
+| `0x0800` | 多媒体事件信息上传 | 已实现 | 解码并缓存 8 字节事件描述；发送 `0x8001`。 |
+| `0x0801` | 多媒体数据上传 | 已实现 | 解码媒体描述、定长 28 字节基础定位体与剩余媒体字节；有界内存缓存、`0x8800` 响应，以及服务端基于 `0x8800` 重传的缺失分片检测。扩展定位项仍未实现。 |
+| `0x8800` | 多媒体上传应答 | 已实现 | 编解码媒体 ID 与请求的包 ID。服务端检测缺失的 `0x0801` 分片并发送携带缺失包 ID 的 `0x8800`；模拟器重放缓存帧，服务端恰好重组一次。 |
+| `0x8801` | 摄像头立即拍摄命令 | 已实现 | 解码 12 字节命令；模拟器返回 `0x0805`。HTTP 下行可用。 |
+| `0x0805` | 摄像头立即拍摄应答 | 已实现 | 解码结果与媒体 ID，缓存最新响应，并接收平台 `0x8001`。 |
+| `0x8802` | 存储多媒体数据检索命令 | 已实现 | 解码检索条件与 HTTP 下行；模拟器按类型、通道、事件与拍摄时间过滤其有界的内存 `0x0801` 目录，返回匹配记录。 |
+| `0x0802` | 存储多媒体数据检索应答 | 已实现 | 每条 35 字节结果编解码为媒体 ID、媒体类型、通道、事件与类型化 `0x0200` 定位字段；响应被缓存。 |
+| `0x8608` | 查询区域/路线数据 | 已实现 | 解码查询类型与 DWORD ID 列表；HTTP 请求等待匹配的 `0x0608`；模拟器从每设备区域/路线目录（`internal/repository/region_catalog.go`）应答。 |
+| `0x0608` | 查询区域/路线数据应答 | 已实现 | 查询类型/数量封装及类型化的圆形/矩形/多边形/路线记录被编解码；响应与待处理查询关联。 |
+| `0x0701` | 电子运单上报 | 已实现 | 解码 GBK 运单内容；按设备缓存；平台回复 `0x8001`。 |
+| `0x8803` | 存储多媒体上传命令 | 已实现 | 类型化 16 字节命令，含媒体类型/通道/事件、BCD 时间范围与删除标志；HTTP 请求体被校验，模拟器上传匹配的存量媒体为 `0x0801` 记录。 |
+| `0x8804` | 录音开始命令 | 已实现 | 类型化 5 字节的开始/停止、时长、保存与采样率字段；模拟器切换录音标志并在开始时发出示例音频 `0x0801` 帧。 |
+| `0x8805` | 单条存储多媒体上传命令 | 已实现 | 类型化的媒体 ID 与删除标志；HTTP 请求体被校验，模拟器重放与请求媒体 ID 匹配的目录项。 |
+| `0x8900` | 数据下行透传 | 已实现 | 类型化的 DWORD 消息类型与原始负载字节；按设备缓存；终端以 `0x0001` 应答；HTTP `/device/:phone/transparent/down` 端点。 |
+| `0x0900` | 数据上行透传 | 已实现 | 解码 DWORD 消息类型与原始负载字节；按设备缓存；平台回复 `0x8001`。 |
+| `0x0901` | 数据压缩上报 | 已实现 | 解码 DWORD 长度与 zlib 压缩体；解压后的负载存入 `Decompressed`（失败时为 nil）；按设备缓存；平台回复 `0x8001`。 |
+| `0x8A00` | 平台 RSA 公钥 | 缺失 | 不支持 RSA 公钥交换与加密消息体。 |
+| `0x0A00` | 终端 RSA 公钥 | 缺失 | 不支持 RSA 公钥交换与加密消息体。 |
+| `0x8F00`–`0x8FFF` | 平台保留消息 | 保留/自定义 | 无保留 ID 扩展处理器。 |
+| `0x0F00`–`0x0FFF` | 终端保留消息 | 保留/自定义 | 无保留 ID 扩展处理器。 |
+| `0xE000`–`0xEFFF` | 厂商自定义上行消息 | 保留/自定义 | 无厂商注册表或自定义处理器机制。 |
+| `0xF000`–`0xFFFF` | 厂商自定义下行消息 | 保留/自定义 | 无厂商注册表或自定义处理器机制。 |
 
-## Repository extensions outside Appendix B.1
+## 附录 B.1 之外的仓库扩展
 
-| ID | Message | Status | Implementation note |
+| ID | 消息 | 状态 | 实现说明 |
 |---|---|---|---|
-| `0x9205` | Query terminal audio/video resource list | Implemented | Processor filters the in-memory media catalog by channel, media type, and time range; HTTP `/device/:phone/media/resources` endpoint available. |
-| `0x1205` | Terminal audio/video resource list | Implemented | Typed list of `DeviceMedia` items (28 bytes each) generated from the media catalog; response cached per device. |
+| `0x9205` | 查询终端音视频资源列表 | 已实现 | 处理器按通道、媒体类型与时间范围过滤内存媒体目录；HTTP `/device/:phone/media/resources` 端点可用。 |
+| `0x1205` | 终端音视频资源列表 | 已实现 | 从媒体目录生成的类型化 `DeviceMedia` 条目列表（每条 28 字节）；响应按设备缓存。 |
 
-## Golden protocol vectors
+## 黄金协议向量
 
-`internal/protocol/packet_codec_test.go` contains exact frame-byte vectors for:
+`internal/protocol/packet_codec_test.go` 包含以下精确帧字节向量：
 
-- A 2013-format heartbeat with an empty body.
-- A versioned 2019-format heartbeat.
-- A terminal general acknowledgment with a five-byte body.
-- A fragmented location frame whose body contains both reserved bytes `0x7e`
-  and `0x7d`, verifying escaping, checksum, and fragment-header encoding.
+- 空消息体的 2013 格式心跳。
+- 带版本标识的 2019 格式心跳。
+- 五字节消息体的终端通用应答。
+- 消息体同时包含保留字节 `0x7e` 和 `0x7d` 的分包定位帧，
+  用于验证转义、校验和与分包头编码。
 
-These vectors are independently assembled from the normative header/body
-layouts and escape/checksum rules in clauses 4.3–4.4 and Appendix B. They are
-not copied from a published full-frame example. The local 2019 PDF does not
-include Amendment 1; amendment-specific vectors remain an open item pending
-review of the amendment text.
+这些向量依据第 4.3–4.4 节与附录 B 的规范性头部/消息体布局
+和转义/校验规则独立组装，并非复制自已发布的完整帧示例。
+本地 2019 版 PDF 不含第 1 号修改单；修改单相关向量
+仍是待评审修改单文本之后的开放项。

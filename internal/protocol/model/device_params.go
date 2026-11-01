@@ -39,16 +39,20 @@ func (p *DeviceParams) Decode(phone string, cnt uint8, pkt []byte) error {
 }
 
 func (p *DeviceParams) Encode() (pkt []byte, err error) {
-	pkt = hex.WriteByte(pkt, p.ParamCnt)
+	paramBytes := make([]byte, 0, len(p.Params))
+	cnt := 0
 	for _, arg := range p.Params {
-		paramBytes, err := arg.Encode()
+		encoded, err := arg.Encode()
 		if err != nil {
 			// skip this err
 			log.Error().Err(err).Str("device", p.DevicePhone).Msg("Fail to encode device param")
 			continue
 		}
-		pkt = hex.WriteBytes(pkt, paramBytes)
+		paramBytes = hex.WriteBytes(paramBytes, encoded)
+		cnt++
 	}
+	pkt = hex.WriteByte(pkt, uint8(cnt))
+	pkt = hex.WriteBytes(pkt, paramBytes)
 	return pkt, nil
 }
 
@@ -78,13 +82,28 @@ type ParamData struct {
 }
 
 func (p *ParamData) Decode(pkt []byte, idx *int) error {
+	if *idx+5 > len(pkt) {
+		return ErrDecodeDeviceParams
+	}
 	p.ParamID = hex.ReadDoubleWord(pkt, idx)
 	p.ParamLen = hex.ReadByte(pkt, idx)
+	if *idx+int(p.ParamLen) > len(pkt) {
+		return ErrDecodeDeviceParams
+	}
+	paramValue := pkt[*idx : *idx+int(p.ParamLen)]
+	*idx += int(p.ParamLen)
+
 	fn, ok := argTable[p.ParamID]
 	if !ok {
 		log.Warn().Str("ParamID", fmt.Sprintf("0x%04x", p.ParamID)).Err(ErrParamIDNotSupportted).Msg("skip it")
+		p.ParamValue = append([]byte(nil), paramValue...)
+		return nil
 	}
-	p.ParamValue = fn.decode(pkt, idx, int(p.ParamLen))
+	value, err := fn.decode(paramValue)
+	if err != nil {
+		return err
+	}
+	p.ParamValue = value
 	return nil
 }
 
@@ -101,7 +120,7 @@ func (p *ParamData) Encode() (pkt []byte, err error) {
 }
 
 type paramFn struct {
-	decode func([]byte, *int, int) any
+	decode func([]byte) (any, error)
 	encode func(any) (pkt []byte)
 }
 
@@ -150,18 +169,42 @@ func writeDoubleWordAny(pkt []byte, num any) []byte {
 }
 
 var (
-	decodeByte       = func(b []byte, idx *int, paramLen int) any { return hex.ReadByte(b, idx) }
-	encodeByte       = func(a any) (pkt []byte) { return writeByteAny(pkt, a) }
-	decodeWord       = func(b []byte, idx *int, paramLen int) any { return hex.ReadWord(b, idx) }
+	decodeByte = func(b []byte) (any, error) {
+		if len(b) < 1 {
+			return nil, ErrDecodeDeviceParams
+		}
+		idx := 0
+		return hex.ReadByte(b, &idx), nil
+	}
+	encodeByte = func(a any) (pkt []byte) { return writeByteAny(pkt, a) }
+	decodeWord = func(b []byte) (any, error) {
+		if len(b) < 2 {
+			return nil, ErrDecodeDeviceParams
+		}
+		idx := 0
+		return hex.ReadWord(b, &idx), nil
+	}
 	encodeWord       = func(a any) (pkt []byte) { return writeWordAny(pkt, a) }
-	decodeDoubleWord = func(b []byte, idx *int, paramLen int) any { return hex.ReadDoubleWord(b, idx) }
+	decodeDoubleWord = func(b []byte) (any, error) {
+		if len(b) < 4 {
+			return nil, ErrDecodeDeviceParams
+		}
+		idx := 0
+		return hex.ReadDoubleWord(b, &idx), nil
+	}
 	encodeDoubleWord = func(a any) (pkt []byte) { return writeDoubleWordAny(pkt, a) }
-	decodeBytes      = func(b []byte, idx *int, paramLen int) any { return hex.ReadBCD(b, idx, paramLen) } // transform bytes to string
-	encodeBytes      = func(a any) (pkt []byte) { return hex.WriteBCD(pkt, a.(string)) }                   // transform string to bytes
-	decodeString     = func(b []byte, idx *int, paramLen int) any { return hex.ReadString(b, idx, paramLen) }
-	encodeString     = func(a any) (pkt []byte) { return hex.WriteString(pkt, a.(string)) }
-	decodeGBK        = func(b []byte, idx *int, paramLen int) any { return hex.ReadGBK(b, idx, paramLen) }
-	encodeGBK        = func(a any) (pkt []byte) { return hex.WriteGBK(pkt, a.(string)) }
+	decodeBytes      = func(b []byte) (any, error) {
+		idx := 0
+		return hex.ReadBCD(b, &idx, len(b)), nil // transform bytes to string
+	}
+	encodeBytes  = func(a any) (pkt []byte) { return hex.WriteBCD(pkt, a.(string)) } // transform string to bytes
+	decodeString = func(b []byte) (any, error) { return string(b), nil }
+	encodeString = func(a any) (pkt []byte) { return hex.WriteString(pkt, a.(string)) }
+	decodeGBK    = func(b []byte) (any, error) {
+		idx := 0
+		return hex.ReadGBK(b, &idx, len(b)), nil
+	}
+	encodeGBK = func(a any) (pkt []byte) { return hex.WriteGBK(pkt, a.(string)) }
 )
 
 var argTable = map[uint32]*paramFn{

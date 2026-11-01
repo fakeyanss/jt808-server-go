@@ -15,7 +15,7 @@
 
 ### 1.1 背景
 
-当前 `internal/storage` 下的所有存储单元都是「**包级单例 + 裸 map + mutex**」：
+当前 `internal/repository` 下的所有存储单元都是「**包级单例 + 裸 map + mutex**」：
 设备、参数、定位环、报警、区域目录、行业上报、会话等全部在内存，重启即丢，也无法替换后端。
 业务层（`internal/protocol`、`internal/api`、`internal/server`）直接调用 `storage.GetXxxCache()`，
 与内存实现强耦合（全仓约 160 处直接调用）。
@@ -129,7 +129,8 @@ DeviceRecord（B，可持久化）          DeviceRuntime（A，仅内存）
    共用同一套表结构与仓储 SQL，方言差异收敛到一个薄 `Dialect`。放弃 bbolt
    （bbolt 仅在「终态也是 KV」时占优；终态是 MySQL 时会导致仓储写两套，详见 §13）。
 2. **DAL 手写 SQL + `database/sql`**，不引入 ORM；SQL 集中在仓储层，配小 `Dialect` 与 scan helper。
-3. **迁移**：`go:embed` 内嵌 `.sql` + 极简幂等迁移器（启动建表，DDL 与 Store 解耦）。
+3. **迁移**：`go:embed` 内嵌 `.sql` + 极简版本化迁移器（DDL 与 Store 解耦，启动只校验版本，
+   迁移由独立工具 `jt808-migrate` 执行，见 §7.2）。
 4. **Go 工具链升级到当前最新稳定版**（Go 官方无 LTS 概念，实施时以当时 latest stable 为准），
    以满足纯 Go SQLite 驱动与 go-redis 的最低版本要求；预期业务代码零改动。
 
@@ -296,9 +297,15 @@ type Coordinator interface {
 
 装配与访问方式：
 
-- 启动时由 `storage.NewStore(cfg)`（Registry）构建各 Repository/Registry/HotView/Coordinator；
+- 启动时由 `repository.NewStore(cfg)`（Registry）构建各 Repository/Registry/HotView/Coordinator；
 - 业务层通过**构造函数注入**接口；迁移期可提供一个返回接口（而非具体 `*Cache`）的访问器过渡，
   但名称同步改为接口名，`GetXxxCache` 与 `*Cache` 类型在 M1 完成后不再保留。
+
+> 实施状态（M2 与包结构分层已完成，见 §19.3 / §19.4）：`GetXxxCache` 与 `*Cache` 旧名已全部删除，
+> 调用点统一迁移到接口方法命名。落地分层为 **`repository`（持久化契约 + 内存实现）/
+> `runtime`（A 类执行现场与本地 rendezvous）/ `storage`（仅装配与后端选择）** 三包：
+> `repository.go` 只保留持久化接口与错误值，A 类接口在 `runtime/runtime.go`，
+> `Stores` 聚合、`NewStores()`/`Default()` 在 `internal/storage`。上表"现有（文件）"列保留为历史对照。
 
 ---
 
@@ -308,27 +315,49 @@ type Coordinator interface {
 
 | 表 | 用途 | 关键约束/索引 |
 |---|---|---|
-| `devices` | 设备主数据（B） | `phone` PK，`plate` UNIQUE，版本/IMEI/authcode 等列 |
-| `device_runtime` | 耐用的「最后在线」（节流写，见 §11.3） | `phone` PK，`last_com_time`,`last_status`,`last_node` |
+| `devices` | 设备静态主数据（B，来源 0x0100/0x0102 主动上报） | `phone` PK；`plate` 仅普通索引（不加唯一，见 §7.4）；拆分后 10 列，不含运行时投影 |
+| `device_runtime` | 设备运行时投影（B，与设备写入同事务更新） | `phone` PK，`session_id`,`trans_proto`,`last_com_time_ms`,`status`,`updated_at`；**不在启动时批量重置**：单机由优雅停机清空，异常重启的残留由读路径 TTL 判定收敛为离线（见 §7.4） |
 | `device_params` | 终端参数（B） | `phone` PK，参数集合**整体 JSON 单字段**（已定，见 §18-D1；将来需要按参数 ID 服务端查询时再演进为 EAV） |
-| `terminal_properties` | 终端属性档案（B） | `phone` PK，属性 JSON |
-| `region_items` | 区域/路线（B） | 唯一键 `(phone, family, region_id)`，payload JSON，`updated_at` |
-| `terminal_catalogs` | 事件/信息菜单/电话本等下发目录（B） | 唯一键 `(phone, kind, item_id)`，payload JSON |
-| `locations` | 定位历史（B，时序） | 索引 `(phone, ts)`；批量插入；按 `ts` 保留期删除 |
-| `alarms` | 报警历史与确认（B，时序） | 唯一键 `(phone, message_serial)` 去重；`confirmed`；索引 `(phone, ts)` |
-| `command_outbox` | 下行命令（B，幂等可重投） | `command_id` PK，`phone`,`owner`,`state`,`idempotency_key`,`created_at` |
+| `terminal_properties` | 终端属性档案（B，来源 0x0107 查询应答） | `phone` PK，常用属性列化 + `extra_json` 长尾兜底；与 `devices` 不合并（见 §7.4） |
+| `region_items` | 区域/路线（B） | 唯一键 `(phone, family, region_id)`，payload JSON，`updated_at`；**本期非交付项** |
+| `terminal_catalogs` | 事件/信息菜单/电话本等下发目录（B） | 唯一键 `(phone, kind, item_id)`，payload JSON；**本期非交付项** |
+| `locations` | 定位历史（B，时序） | 索引 `(phone, ts)`；批量插入；按 `ts` 保留期删除；**本期明确延后（§7.5）** |
+| `alarms` | 报警历史与确认（B，时序） | 唯一键 `(phone, message_serial)` 去重；`confirmed`；索引 `(phone, ts)`；**本期明确延后（§7.5）** |
+| `command_outbox` | 下行命令（B，幂等可重投） | `command_id` PK，`phone`,`owner`,`state`,`idempotency_key`,`created_at`；**本期非交付项** |
 | `media_metadata` / `waybills` | 媒体/运单元数据（B，**后续独立任务**，不在 M1/M2；见 §18-D3） | 媒体字节外置；元数据按 phone/时间索引 |
 
 大 payload（0x0801 媒体、0x8900/0901 透传压缩字节）**不入关系库**，落文件/对象存储，库里存 URI 与元数据。
 
 ### 7.2 迁移
 
-- `internal/storage/migration/` 存放版本化 `0001_init.sql`、`0002_xxx.sql`，用 `go:embed` 编译进二进制。
-- 启动时由迁移器按 `schema_migrations` 表顺序幂等执行；Store 构造函数只接收已就绪的 `*sql.DB`，
-  不把建表 DDL 耦合进 CRUD。
-- 索引用迁移器保证幂等；MySQL 下避免依赖版本敏感的 `IF NOT EXISTS` 语法边角。
+- 目录（`go:embed *.sql` 编译进二进制）：
+  - `bootstrap_schema_migrations.sql`：迁移元数据表建表脚本（引导脚本，不参与版本编号）；
+  - `init_20261101.sql`：当前唯一版本。开发阶段不保留增量迁移，直接给出最终 schema。
+- **版本号取自文件名末尾日期**：`<描述>_<YYYYMMDD>.sql`，迁移按日期升序执行；
+  后续变更追加新文件（如 `add_xxx_20261201.sql`），无需人工维护递增序号。
+- **`schema_migrations` 的 DDL 也在 SQL 文件里**，不在 Go 常量中。它必须先于版本存在
+  （否则无处记录已应用版本），因此单独作为引导脚本；迁移工具在执行任何版本前先执行它，
+  失败会作为普通迁移错误返回。MySQL 与 SQLite 都需要该表，二者共用同一份脚本。
+- **独立迁移工具**：`jt808-migrate -c <config>`，源码位于 `cmd/jt808-migrate/`，与主服务
+  **分开编译、分开发布**（`make compile-migrate` / `make release-migrate`）。迁移工具只做连接、
+  执行迁移、打印 `applied` 数量，不启动 TCP/UDP/API，也不初始化主服务的运行时。
+  MySQL 场景 DBA 可直接执行：先 `bootstrap_schema_migrations.sql`，再按文件名顺序执行版本文件。
+  除索引创建外语句均为幂等形式（`CREATE TABLE IF NOT EXISTS`）；`init_20261101.sql` 末尾的
+  `CREATE INDEX` 在 MySQL 上没有 `IF NOT EXISTS`，重复手工执行会报"索引已存在"，属预期，
+  执行前请先备份并核对 `schema_migrations`。
+- **所有后端一致，启动只校验不执行**：SQLite 与 MySQL 都不在服务启动时执行任何 DDL。
+  读取 `MAX(version)` 与期望版本比较：低于期望 → 报错退出并提示执行 `jt808-migrate`；
+  高于期望 → 报错（库版本高于程序版本），拒绝启动。入口代码为 `storage.Migrate` /
+  `sqlstore.Migrate`，仅被迁移工具调用。
+- 执行健壮性：逐版本执行，全部语句成功后才写入 `schema_migrations`；失败时错误信息带版本号与
+  失败语句，已成功版本不会重复应用。
+- **客观限制（MySQL）**：DDL 会隐式提交，无法与"插入版本记录"同事务。若一个版本内多条 DDL
+  中途失败，可能留下"部分表已建、版本未记录"的中间态；应对为重新执行迁移（幂等 DDL 会补齐）
+  或由 DBA 人工核对。SQLite 的 DDL 本可事务化，但为共用同一执行路径，本轮同样按"先 DDL、后记录"。
 
 ### 7.3 保留期与容量（有界）
+
+> 以下保留期为设计草案；`locations` / `alarms` 本期**明确延后**（§7.5），未执行任何 Trim。
 
 ```
 locations: 按时间保留（默认 168h）且每设备上限（默认 10000 条）
@@ -337,6 +366,36 @@ alarms:    按时间保留（默认 720h）且每设备上限（默认 5000 条�
 
 - 定时（如每 10 分钟）+ 写入时惰性触发 `Trim`；删除走时间索引，分批 `DELETE ... LIMIT`，避免大事务。
 - 内存 L1 维持现有 RingBuffer/切片上界，作为热读与抗抖动层，不再是唯一副本。
+
+### 7.4 本期实现与关系模型的差异（2026-11-01）
+
+本轮 SQL 后端覆盖范围扩展为 `DeviceRepository`（含 `device_runtime`）、`DeviceParamsRepository`、
+`TerminalPropertiesRepository`；其余 B 类仓储仍为内存实现。据此与 §7.1 的差异如下：
+
+| 项 | §7.1 设计 | 本轮实现 | 原因/建议 |
+|---|---|---|---|
+| 设备运行时投影 | 拆 `devices` + `device_runtime` 两表，`last_com_time` 节流写 | 拆为：`devices` 保留 10 列静态/身份字段，`device_runtime` 承载 `session_id`/`trans_proto`/`last_com_time_ms`/`status`/`updated_at`。读用 `LEFT JOIN` 合并回完整 `model.Device`，写在同一事务内按归属分写两表 | `keepalive_ms` 是代码常量（`model.NewDevice` 固定 1 分钟，`device.go:50`），不属运行时观测值，留在 `devices`。**重启语义**：不做启动批量重置——单机由优雅停机（SIGINT/SIGTERM）调用 `ResetRuntime` 清空；异常重启残留的 `session_id`/`status` 在读路径按 `last_com_time_ms + keepalive_ms` 的 TTL 判定收敛为 offline 并清空 `session_id`，`last_com_time_ms` 保留作"上次在线时间"。分布式形态以 Redis 运行时缓存的全 TTL + 过期扫描回写替代单机重置。**心跳落库频率可配**：`server.heartbeatPersistIntervalMs`（缺省 `0`，逐条写库；若开启，应小于保活周期，当前保活 1 分钟故建议 ≤30000），被节流时保活判定取进程内 `runtime.Heartbeat` 的实时值（§11.3） |
+| `terminal_properties` | `phone` PK，属性 JSON | 新增：`phone` PK + 常用属性列（终端类型/制造商/型号/终端 ID/ICCID/硬件版本/固件版本/GNSS 与通信能力）+ `extra_json` 长尾 | 只由 0x0107 查询应答写入，与 `devices` **不合并**：`devices` 静态字段来自 0x0100/0x0102，属性应答若回写 `devices` 会触发其非主键列全量重写。0x0107 处理为"持久化 + 内存最新值 + broker 投递"三者同时 |
+| `plate` 唯一性 | `plate` UNIQUE | 未加唯一约束，仅加**非唯一**普通索引 `idx_devices_plate`（见 `init_20261101.sql`） | 内存实现按 `plate` 覆盖映射、允许空车牌重复，加 UNIQUE 会改变既有行为（多个空车牌或同牌设备会写入失败）。设备身份以协议里的终端手机号（`phone`）为准，`plate` 仅用于注册时"车辆已注册"校验；保持非唯一 |
+| `devices` 索引 | 未明确 | `phone` 主键 + `idx_devices_plate`（非唯一，见 `init_20261101.sql`） | `GetByPlate` 由全表扫描改为索引查找；不加唯一约束，理由见上一行的 `plate` 唯一性 |
+| `device_params` | 参数集合整体 JSON 单字段 | 一致（`params_json` TEXT） | 遵循 D1；`ParamValue` 的 JSON 数字会以 `float64` 回读，既有 `any2uintX` 编码逻辑已兼容 |
+| `locations` / `alarms` | B 类持久化 | 未落地（**明确延后**） | 理由见 §7.5；不是"不需要持久化" |
+| `region_items` / `terminal_catalogs` / `command_outbox` | B 类持久化 | 未落地（本阶段非交付项） | 区域需要事务化 `ReplaceAll`，目录与 outbox 需要幂等/重投语义，均未在本轮定义；媒体/运单按 D3 后置 |
+| `schema_migrations` | 版本化迁移器 | DDL 位于 `internal/repository/migration/*.sql`（`go:embed`），启动只校验版本，迁移由独立工具 `jt808-migrate` 执行 | 详见 §7.2；MySQL 的 DDL 隐式提交限制已在该节说明 |
+| 主键类型 | 未指定 | `VARCHAR` 主键 + `BIGINT` 毫秒时间戳 | 同时兼容 SQLite/MySQL；时间用毫秒整数避免时区与解析差异 |
+
+### 7.5 明确延后的持久化决策（2026-11-01 确认）
+
+- **`locations`（定位历史）延后。** ①写量与保留期策略未定（§7.3 的 168h / 每设备 10000 条仍为草案）；
+  ②按 §8 需批量写通道（有界 buffer + 1s/500 条刷库）与优雅退出 flush，尚未实现，直接落库会变成
+  每条 0x0200 同步写；③最新定位查询已由内存 C 类 `GeoRepository.Latest` 满足，历史查询无调用方。
+  **结论：值得持久化，本轮不做，不写成"不需要"。**
+- **`alarms`（报警历史与确认）延后。** 现有 `AlarmRepository` 无 `ctx`，且含 30 分钟去重窗口、
+  每设备 1000 条上限、10 分钟确认命令过期等行为；这些语义与关系库的"唯一键去重 + 过期清理归属"
+  不匹配，需先定口径（去重键、确认状态机、TTL 清理由谁执行），再落库。
+  **结论：值得持久化，本轮不做，不写成"不需要"。**
+- `region_items` / `terminal_catalogs` / `command_outbox` 为本阶段非交付项；
+  `media_metadata` / `waybills` 按 D3 留待独立任务。
 
 ---
 
@@ -463,6 +522,15 @@ GET /api/devices/{phone}
 
 由此：在线读 Redis 秒级实时，离线后页面仍能显示库里的「最后在线于 …」。
 
+> **实施现状（2026-11-01）**：
+> - **默认仍逐条写库**（`server.heartbeatPersistIntervalMs: 0`），与拆分前行为一致；
+> - 需要时配置若干毫秒（如 30000）即可开启节流，但必须小于保活周期（当前 1 分钟），
+>   否则库内 `last_com_time` 落后会让读路径 TTL 在下次落库前短暂判离线。被节流跳过的心跳仍逐条
+>   记入进程内 `runtime.Heartbeat`，保活判定（`keepalive`）取"库内 `last_com_time` 与进程内心跳的较新值"，
+>   因此节流不会把在线设备误判为离线；进程重启后进程内记录清空，回落为以库值判定。
+> - 上线 / 离线状态翻转仍强制写库；设备注销（0x0003）与鉴权失败清理会同时移除进程内心跳记录。
+> - "心跳只刷 Redis"属分布式形态，单机不适用；分布式方案见 §11.2 与 §19.6 的 Redis 运行时缓存规划。
+
 ### 11.4 列表与详情分离
 
 - 列表/分页/多条件筛选：走 MySQL（`devices` + 准实时 `device_runtime`），不用 `SCAN presence:*` 凑数；
@@ -518,50 +586,64 @@ GET /api/devices/{phone}
 
 ```yaml
 storage:
-  driver: memory          # memory | sqlite | mysql
-  dsn: "./data/jt808.db"  # sqlite: 文件路径；mysql: DSN；memory: 忽略
-  coordinator:
-    enabled: false        # 场景3 置 true
-    redisAddr: "127.0.0.1:6379"
-    redisDB: 0
-    ownerTTLSeconds: 90            # ≈3×keepalive
-    offlineGraceSeconds: 12
-  frontCache:
-    enabled: true         # 进程内 L1 热缓存开关；单机/分布式均可关（关后配置类直读直写库、latest 回源库/Redis），默认开
-  write:
-    historyIntervalMs: 1000
-    historyBatchSize: 500
-    runtimeFlushSeconds: 45
-  retention:
-    locationHours: 168
-    alarmHours: 720
-    maxLocationsPerDevice: 10000
-    maxAlarmsPerDevice: 5000
-  strict: false           # true 时管理 API 对耐用写失败返回错误
+  type: memory            # memory | sqlite | mysql（缺省 memory）
+  sqlite:
+    path: "./data/jt808.db"   # type=sqlite 时必填
+  mysql:
+    dsn: ""                    # type=mysql 时必填，如 user:pass@tcp(host:port)/db
 ```
 
 `config.Config` 增加 `Storage *storageConf`，沿用现有 viper Unmarshal 流程。
+启动时由 `storage.Init(Config)` 选择后端并完成建表；非法 `type`、缺失 `path`/`dsn` 直接报错退出，
+启动日志打印 `backend=<实际后端>`。`coordinator` / `frontCache` / `write` / `retention` / `strict`
+等字段属 M3 及后续范围，本期未实现，避免配置出现但无效果的误导。
 
 ---
 
-## 15. 建议目录结构
+## 15. 目录结构（已落地）
 
 ```
-internal/storage/
-  repository.go          # 仓储/协调接口、错误、查询与保留期类型
-  registry.go            # 按 config 装配实现；SetStoreForTest/Reset
-  memory/                # 场景1：内存仓储（含现有 map/ring 逻辑收敛）
-  sql/
-    store.go             # *sql.DB 装配、UnitOfWork
-    dialect.go           # sqlite/mysql 方言
-    device_repo.go params_repo.go region_repo.go
-    location_repo.go alarm_repo.go outbox_repo.go ...
-    migration/           # go:embed 的版本化 *.sql + 迁移器
-  coord/
-    coordinator.go       # 接口 + noop（单机）
-    redis/               # 场景3：owner/presence/bus/reply
-  *_cache.go             # M1 起按 §6.4 正名/拆分（→ repository / registry / hotview），旧 *Cache 名在 M1 收敛删除
+internal/repository/              # 持久化契约 + 内存实现；只依赖 model
+  repository.go                   # DeviceRepository / GeoRepository / DeviceParamsRepository + 错误值
+  device_repository_memory.go     # 内存实现（非导出类型，包外只能经接口使用）
+  geo_repository_memory.go
+  params_repository.go
+  alarm_repository.go             # AlarmRepository（报警历史 + 确认关联）
+  region_repository.go            # RegionRepository（圆/矩形/多边形/路线目录）
+  industry_repository.go          # IndustryRepository（行业上报/下发目录快照）
+  sqlstore/                       # SQL 实现（SQLite / MySQL 共用，已实现 device/params）
+    store.go                      # 连接池、DSN、schema_migrations 迁移执行
+    schema.go                     # 建表 DDL 与版本列表
+    device_repository.go          # DeviceRepository（含最小 upsert 方言差异）
+    params_repository.go          # DeviceParamsRepository（参数 JSON 单字段）
+    store_test.go                 # 临时文件真实读写、并发、重开验证
+
+internal/runtime/                 # A 类执行现场：生命周期绑定连接/进程，多实例不可共享
+  runtime.go                      # ConnectionRegistry / FragmentAssembler / RetransmitTracker
+                                  # + Stores 聚合 + Default()
+  connection_registry.go          # 连接现场（session + 在线态）
+  fragment_assembler.go           # 分包重组（TTL 2min / 容量淘汰）
+  retransmit_tracker.go           # 下行重传（0x8003/0x8800 帧缓存）
+  param_response_broker.go        # 本地 chan rendezvous
+  property_response_broker.go
+  location_response_broker.go
+  region_response_broker.go
+  location_tracking.go            # 临时跟踪定时器
+  *_test.go
+
+internal/storage/                 # 仅装配：后端选择与初始化
+  storage.go                      # Stores 聚合 + NewMemory() + Default()
 ```
+
+依赖方向（编译期约束）：
+
+- `repository`、`runtime` 只依赖 `internal/protocol/model`，互不依赖；
+- `repository/sqlstore` → `repository`（实现其接口与错误值），不反向；
+- `storage` → `repository` / `repository/sqlstore`（后端选择与组装），不反向；
+- `protocol` / `server` / `api` / `client` / `cmd/jt808-client` → `storage.Default()`（持久化仓储）
+  与 `runtime.Default()`（A 类执行现场），二者入口分离；
+- 包外只能通过接口使用内存实现，`*Cache` 等旧名与旧全局入口已全部删除。
+
 
 ---
 
@@ -579,10 +661,13 @@ internal/storage/
 
 ### M2 — 单机耐用（SQLite + 内存 L1）
 - 升级 Go；引入 `modernc.org/sqlite`；实现 SQL 仓储 + Dialect + 迁移器。
-- 设备/参数/属性/区域/目录 write-through；定位/报警批量写 + 保留期；下行命令 outbox；启动恢复。
-- 支持 `frontCache.enabled=false` 直读直写库模式（§18-D4）。
+- 本期实际落地（见 §19.5 / §19.6）：`devices`（静态字段）+ `device_runtime`（运行时投影）
+  + `device_params` + `terminal_properties`；DDL 文件化与启动版本校验。
+- **定位（`locations`）与报警（`alarms`）历史明确延后**，不属本期交付（§7.5）；
+  区域/目录/命令 outbox 亦不在本期范围。
 - **不含**媒体/运单元数据落库（后续独立任务，§18-D3），该阶段它们仍只留 HotView 最新值。
-- 验收：重启不丢配置与历史；保留期/容量受控；存储失败只告警不阻断协议；内存有界。
+- `frontCache.enabled=false` 直读直写库模式（§18-D4）**尚未实施**，留待后续里程碑。
+- 验收：重启不丢配置（设备/参数/属性）；运行时投影按 §7.4 语义重置；存储失败只告警不阻断协议；内存有界。
 
 ### M3 — 分布式（MySQL + Redis 协调）
 - MySQL 方言复用 SQL 仓储；实现 Coordinator（owner 租约/fencing/presence/命令总线/应答关联/latest）。
@@ -614,3 +699,404 @@ internal/storage/
 | **D3** | 媒体（0x0801/0x1205）/运单（0x0701）等 B 类元数据何时落库 | **后续独立任务开发，不放入 M1/M2**。这两阶段只在 HotView 留最新值；`WaybillRepository`/`MediaMetadataRepository` 与对应建表在独立里程碑实现 | §3.1、§6.4、§7.1、M2 |
 | **D4** | 单机是否支持「关闭内存 L1 / 直读直写库」模式（超低资源设备） | **支持**。提供 `storage.frontCache.enabled` 开关（单机/分布式均生效，默认开）；关闭后配置类直读直写库、latest 回源库或 Redis | §8、§14 |
 | **D5** | API 鉴权 / 多租户 / 存储隔离 | **需求尚不明确，后续专题讨论**（与路线图 P2.2 运维就绪一并考虑）；本期存储设计不做多租户假设，表结构预留 `phone` 维度即可 | P2.2 |
+
+---
+
+## 19. 实施记录
+
+### 19.1 M1（2026-11-01，分支 `dev/p0-baseline`，基线 `84b888a`）
+
+**已落地**
+
+- 新增 `internal/repository/repository.go`：定义 `DeviceRepository`、`GeoRepository`、`ConnectionRegistry`、
+  `FragmentAssembler`、`RetransmitTracker`、`DeviceParamsRepository` 六个接口，并提供
+  `NewDeviceRepository` / `NewGeoRepository` / `NewConnectionRegistry` / `NewFragmentAssembler` /
+  `NewRetransmitTracker` / `NewDeviceParamsRepository` 构造独立内存实例，供测试与新代码注入。
+- 现有 `*_cache.go` 的具体类型即内存实现（map + mutex 逻辑未搬家，避免破坏既有测试对包内状态的访问），
+  通过编译期断言确认其满足接口；包级函数与 `GetXxxCache()` 保留为薄 wrapper，转发默认实例，
+  既有调用点零改动。
+- 每个仓储新增业务语义方法（`GetByPhone`/`Upsert`/`DeleteByPhone`/`Append`/`Bind`/`Unbind`/`CacheSegment` 等），
+  原方法（`GetDeviceByPhone`/`CacheDevice`/`StoreSession`/`MissingSegmentIndexes` 等）改为一行转发。
+- 新增单元测试：`device_repository_test.go`、`session_registry_test.go`、`segment_assembler_test.go`、
+  `geo_repository_test.go`，覆盖错误值、快照语义、并发写入/读取。
+
+**与 §6.4 的偏差（需在 M2 收口）**
+
+§6.4 要求 M1 完成后删除 `GetXxxCache()` 与 `*Cache` 旧名。本轮按任务范围先保留旧入口作为过渡 wrapper，
+原因：① 本轮明确不做全量调用点迁移；② 既有测试直接访问 `getSegmentCache()` 的包内字段。
+因此"删除旧名"顺延到 M2，与调用点 DI 迁移一起完成。
+
+**本轮未接口化（按优先级顺延）**
+
+- `AlarmCache`：现有 `Record`/`List`/`RegisterConfirmation`/`ConfirmByCommand` 与目标接口方法名冲突，
+  需要先决定接口命名或拆分"事件存储 / 确认命令路由"（后者属协调态），留待 M2。
+- `RegionCatalog`：`Delete`/`Query` 与目标接口语义需按 family 重新设计（`ReplaceAll` 事务化），M2 处理。
+- `IndustryCache`：单个结构承载 20+ 类数据，必须先按 §6.4 拆分（配置/凭证/快照/模拟器态）再定义接口。
+- `*_response.go` 与 `LocationTrackingCache`：属 A 类 rendezvous/本地定时器，接口化价值低于上面几类，
+  且 `LocationTrackingCache` 在 `internal/repository` 之外也有直接读，放到 M2/M3 与 Coordinator 一并设计。
+
+### 19.2 发现但未修改的既有实现问题（仅记录，待单独评审）
+
+1. **`sentSegmentCache.CacheFrame` 容量拒绝路径破坏了字节计数**（`internal/repository/sent_segment_cache.go`）：
+   重写同一分片时先执行 `state.bytes -= len(old)` / `cache.bytes -= len(old)`，随后若
+   `cache.bytes+len(frame) > maxSegmentCacheBytes` 直接 `return`，但 `state.frames[idx]` 仍是旧帧。
+   结果是旧帧还在、计数却已扣减，后续淘汰会多扣一次，容量上界失真。属既有逻辑，本轮原样保留。
+2. **`container.RingBuffer` 的并发读写未同步**（`pkg/container/ring_buffer.go`）：
+   `Write` 直接写 `r.Container[current]`，`Latest` 直接读 `r.Container[(w-1)%r.Size]`，
+   仅位置变量使用 atomic；定位上报与 API 详情并发访问时存在数据竞争的理论风险。
+   `go test -race ./...` 当前未触发，因为单测未构造该并发组合。本轮未改动。
+3. **`RingBuffer.seekReader` 的负数取模**：`(current+delta)%r.Size` 在 delta 为负时可能得到负索引；
+   `Read` 路径潜在越界。定位流程只用 `Write`/`Latest`，暂未触发。本轮未改动。
+4. `GeoRepository.Latest` 与既有 `GetGeoLatestByPhone` 一样返回缓冲区内的对象指针（非快照），
+   调用方若修改会影响后续读取；这是既有语义，M1 为保持行为一致未改为深拷贝。
+
+### 19.3 M2（2026-11-01，分支 `dev/p0-baseline`，基线 `a170c1a`）
+
+**已落地**
+
+- 旧名全部删除：`GetDeviceCache` / `GetGeoCache` / `GetDeviceParamsCache` 及 `DeviceCache` /
+  `GeoCache` / `SessionCache` / `SegmentCache` / `sentSegmentCache` / `DeviceParamsCache` 类型；
+  包级函数 `GetSession` / `StoreSession` / `ClearSession` / `CacheSegment` / `MissingSegmentIndexes` /
+  `CacheMediaSegment` / `GetMediaSegmentSerial` / `CacheSentSegmentFrame` / `GetSentSegmentFrames`；
+  过渡方法 `GeoRepository.Ring` 与便捷方法 `HasPlate` / `HasPhone`。
+- 内存实现类型全部非导出：`memoryDeviceRepository` / `memoryGeoRepository` /
+  `memoryConnectionRegistry` / `memoryFragmentAssembler` / `memoryRetransmitTracker` /
+  `memoryDeviceParamsRepository`，包外只能通过接口使用。
+- 对外只保留 `repository.go`：六个接口、`NewXxxRepository` 构造器、`Stores` 聚合结构、
+  `NewStores()` 独立实例入口与 `Default()` 进程默认入口。
+- `Default()` 是唯一保留的全局入口。理由：msg_processor 注册表（`initProcessOption`）是包级函数，
+  其 `processFunc` 签名固定为 `(ctx, data) error`，无法逐条注入依赖；改造注册表属更大结构变更，
+  M2 先显式收口为单一 `Default()`，调用点与默认值来源可追溯（见 `repository.go` 注释）。
+- 迁移按五批提交，每批 `go build ./... && go vet ./... && go test -race ./...` 均通过：
+  ① repository 内部与测试（新增临时 `legacy.go` 兼容层承载旧 API，保证中间批次可编译）→
+  ② keepalive / packet_codec / 两个 retransmission / pipeline →
+  ③ api → ④ tcp/udp server、server 测试、client、cmd/jt808-client 模拟器 →
+  ⑤ msg_processor、msg_processor_test，并删除 `legacy.go`。
+- `HasPlate` / `HasPhone` 的调用点改为 `GetByPlate` / `GetByPhone` 返回 `ErrDeviceNotFound`
+  的等价判断；geo 写入统一走 `GeoRepository.Append`，`RingBuffer` 不再暴露到接口。
+- api `/api/device` 列表因 `List` 接口返回 error 增加 500 分支（内存实现实际不可达）。
+- 包目录由 `internal/storage` 更名为 `internal/repository`，包名同步改为 `repository`；
+  对外符号（接口、构造器、`Stores`、`Default()`）不变，仅导入路径与包限定符变化。
+
+**完成后不再有全局访问的位置**
+
+- `internal/server`（tcp/udp server 及测试）、`internal/api`、`internal/client`、`cmd/jt808-client`、
+  `internal/protocol`（keepalive / codec / retransmission / pipeline / msg_processor 及测试）
+  对六类仓储只经 `repository.Default()` 显式访问；`internal/repository` 包内测试使用
+  `NewStores()` / `NewXxxRepository()` 独立实例，不触碰默认单例。
+- 仍为全局入口的只剩 §19.1 顺延的未接口化缓存：`GetAlarmCache` / `GetIndustryCache` /
+  `GetRegionCatalog` / 各 `GetXxxResponseBroker` / `GetLocationTrackingCache`，
+  待后续里程碑接口化时一并收口。
+
+### 19.4 包结构分层（2026-11-01，分支 `dev/p0-baseline`，基线 `cf3e3b3`）
+
+**决策：A 类执行现场与持久化仓储不共用同一套存储接口（成立，已按此重构）**
+
+代码证据：
+
+- `model.Session` 持有 `Conn net.Conn`（活连接，不可序列化）；`Bind`/`Unbind` 在 TCP/UDP server
+  的连接建立/断开路径调用，api 取到 session 后直接写 `session.Conn` 下发。
+- `FragmentAssembler` 以 `(phone, msgID, firstSerial)` 为键、TTL 2min + 容量淘汰，语义是
+  「同一次上报的分片在短时间内凑齐」；`RetransmitTracker` 保存已编码帧供 0x8003/0x8800 重传，
+  TTL 2min / 16MB 上界。两者都无跨进程共享需求，进程重启后丢弃即正确。
+- 4 个 `*ResponseBroker` 是本地 `chan` 配对（请求方等待、应答方投递），超时/取消即释放；
+  `LocationTracking` 是本地临时定时器。均无法持久化，也无法跨节点配对。
+- 拆分未产生循环依赖：`runtime` 与 `repository` 都只依赖 `internal/protocol/model`。
+
+结论：A 类接口归 `internal/runtime`；Alarm/Region/Industry 归 `internal/repository`（业务数据，
+对应 §7 的 `alarms` / `region_items` / `terminal_catalogs`）；Geo 历史仍在 repository，
+其内存 RingBuffer 作为 C 类热读 L1 的拆分留待后续（见 §19.2-4）。
+
+**新包结构**
+
+- `internal/repository`：仅持久化契约与内存实现。`repository.go` 保留
+  `DeviceRepository` / `GeoRepository` / `DeviceParamsRepository`；新增
+  `AlarmRepository` / `RegionRepository` / `IndustryRepository`（接口 + 非导出内存实现 +
+  `NewXxxRepository()`）。不再包含 `Stores` / `Default()`。
+- `internal/runtime`：`ConnectionRegistry` / `FragmentAssembler` / `RetransmitTracker`
+  （`runtime.go`），以及 4 个 ResponseBroker 与 `LocationTracker`；`Stores` 与
+  `runtime.Default()` 只聚合 A 类，不含任何持久化字段。
+- `internal/storage`：只做装配与后端选择，当前为 `NewMemory()` / `Default()`，阶段二在此加入
+  `memory|sqlite|mysql` 后端选择；持久化实现仍位于 `internal/repository`。
+
+**分批提交与验证**（每批 `gofmt` + `go build ./...` + `go vet ./...` + `go test -race ./...` 全绿）
+
+| 批次 | commit | 内容 |
+|---|---|---|
+| B1 | `9047ae3` | `internal/storage` → `internal/repository` 重命名，行为不变 |
+| B2 | `dad95d5` | A 类连接现场/分包重组/下行重传拆到 `internal/runtime`，删除 `repository.Stores` 中的 A 类字段 |
+| B3 | `b71c432` | 报警/行业/区域仓储接口化，4 个 ResponseBroker 与 LocationTracking 归入 runtime，57 处旧全局访问迁移 |
+| B4 | `a5f3213` | 新增 `internal/storage` 装配层，调用点改为 `storage.Default()` / `runtime.Default()` |
+
+**行为保持**：协议输出、错误值、TTL/容量、深拷贝与并发语义均未改变；仅包路径、类型可见性与
+访问入口变化。
+
+### 19.5 SQL 后端（SQLite / MySQL，2026-11-01，基线 `183a33c`）
+
+**范围**：只实现 `DeviceRepository` 与 `DeviceParamsRepository`；其余 B 类仓储仍为内存实现，
+不新建业务语义（与 §7.4 一致）。后续的属性档案、运行时拆分与迁移改造见 §19.6。
+
+**新增依赖**
+
+- `modernc.org/sqlite v1.58.0`：纯 Go，无 cgo，`CGO_ENABLED=0 go build ./...` 已验证通过。
+  未选 `mattn/go-sqlite3` 以避免 Docker/CI 交叉编译依赖 C 工具链。
+- `github.com/go-sql-driver/mysql v1.10.1`：官方生态常用 MySQL 驱动。
+- 为兼容本机 `goenv`（仅安装 `1.26`），将 `modernc.org/libc` 固定为 `v1.75.6`、
+  `golang.org/x/sys` 固定为 `v0.47.0`（其上游版本声明 `go 1.26.0`，会导致 `go.mod` 被抬到
+  未安装的补丁工具链）。
+
+**实现位置**：`internal/repository/sqlstore`（持久化实现下沉 repository，
+`internal/storage` 只负责后端选择与装配）。
+
+**建表与迁移**
+
+- `schema_migrations(version INTEGER PRIMARY KEY, applied_at BIGINT NOT NULL)`：
+  DDL 位于内嵌的 `bootstrap_schema_migrations.sql`，由 `jt808-migrate` 在执行版本前创建；
+  服务启动只读该表，缺失即拒绝启动。不引入迁移框架。
+- `devices`：`phone` 主键；字段与 `model.Device` 可序列化部分一一对应，`Conn` 不入库；
+  时间统一存毫秒整数；未加 `plate` 唯一约束（原因见 §7.4）。
+- `device_params`：`phone` 主键，`param_cnt` + `params_json`，遵循 D1。
+
+**连接池与事务边界**
+
+- SQLite：`SetMaxOpenConns(1)`，DSN 带 `busy_timeout(5000)` 与 `journal_mode(WAL)`，
+  单写者模型下避免 `SQLITE_BUSY`。
+- MySQL：`MaxOpenConns=10`、`MaxIdleConns=5`、`ConnMaxLifetime=30m`。
+- 本期 Device/Params 的写操作均为单语句，使用隐式事务；区域「清空+重设」等后续多步操作
+  再引入显式 `UnitOfWork`。
+
+**验证**
+
+- SQLite：临时文件真实读写；关闭后重新打开同一 db 可读到设备与参数；8 并发写 + 并发读
+  `go test -race` 通过；不存在数据返回既有错误值 `ErrDeviceNotFound` / `ErrDeviceParamsNotFound`。
+- 启动冒烟：`type=sqlite` 能建库并打印 `backend=sqlite`；`type=redis` 启动报错退出（exit=1）。
+- MySQL：仓库内测试通过 `JT808_TEST_MYSQL_DSN` 环境变量启用，本地无实例时跳过；
+  未验证假设见下。
+- 默认 `storage.type=memory` 时既有测试全部不变。
+
+**MySQL 未验证假设**
+
+1. `ON DUPLICATE KEY UPDATE ... VALUES(col)` 在 MySQL 8.0.20+ 会产生弃用告警但语义正确；
+   若目标版本更高，可迁移到 `INSERT ... AS new ON DUPLICATE KEY UPDATE`。
+2. `VARCHAR(32)` 主键在 `utf8mb4` 下索引长度符合默认 `innodb_large_prefix`（3072 字节）限制。
+3. DSN 未强制 `parseTime`/`loc`，因为时间统一以毫秒整数读写，不依赖驱动时区解析。
+4. 并发写入依赖 InnoDB 行锁与主键冲突语义；未在真实 MySQL 上跑 8 并发用例。
+
+### 19.6 属性档案 / 运行时拆分 / 迁移机制（2026-11-01，分支 `dev/p0-baseline`）
+
+**决策**
+
+1. `locations` / `alarms` 明确延后（理由见 §7.5），不再用"本期不新建业务语义"笼统带过。
+2. 新增 `terminal_properties`：只承载 0x0107 属性应答；与 `devices` 不合并，避免属性应答触发
+   `devices` 静态列全量重写。0x0107 处理为"持久化 + 内存最新值 + broker 投递"。
+3. 拆分 `device_runtime`：`session_id`/`trans_proto`/`last_com_time_ms`/`status` 移出 `devices`；
+   `keepalive_ms` 是代码常量，留在 `devices`。读时合并两表，写时同事务按归属分写；
+   `DeviceRepository` 契约仍返回完整 `model.Device`。
+4. 迁移文件化 + 显式入口 + 启动只校验（§7.2）。
+
+**分批记录**
+
+| 批次 | commit | 内容 |
+|---|---|---|
+| 1 | `387b9fd` | 文档决策与缺口修正（本节、§7.1–§7.5、§11.3、§16） |
+| 2 | `82aa13d` | `terminal_properties` 落库 + 0x0107 三者同时 |
+| 3 | `8d49dfc` | `device_runtime` 拆分与重启语义 |
+| 4 | 本记录提交 | 迁移机制改造（SQL 文件 + 启动校验；迁移入口后续独立为 `jt808-migrate`，见 §19.8） |
+
+**迁移机制实现细节**
+
+- 目录：`internal/repository/migration/` 下 `migrate.go` + `0001_init.sql` /
+  `0002_terminal_properties.sql` / `0003_device_runtime.sql`；SQL 经 `//go:embed *.sql` 编译进二进制，
+  迁移器只依赖 `database/sql`，未引入框架。（这些增量文件已在 §19.10 合并为
+  `bootstrap_schema_migrations.sql` + `init_20261101.sql`。）
+- 迁移入口：本批最初复用主服务的 `migrate` 位置参数；**§19.8 起改为独立工具 `jt808-migrate`**，
+  SQLite 的启动自动迁移同时取消。DBA 也可按文件名顺序直接执行这些 SQL 文件。
+- 启动校验（当前行为）：所有后端都只比对版本。低于期望报
+  `... is behind expected ... run \`jt808-migrate -c <config>\``；高于期望报
+  `... is ahead of this program's expected ...`；全新库缺 `schema_migrations` 同样报错并提示迁移。
+  原 `storage.sqlite.autoMigrate` 配置项已删除（§19.8）。
+- 失败处理：逐版本执行，错误带版本号、文件名与语句序号；仅当该版本全部语句成功后才写入
+  `schema_migrations`，已成功版本不会重复应用。
+- MySQL 客观限制：DDL 隐式提交，无法与版本记录同事务；中途失败可能留下"部分表已建、版本未记录"，
+  应对为重跑迁移（幂等 DDL 补齐）或 DBA 人工核对。SQLite 本轮共用同一路径（先 DDL、后记录）。
+- 重启语义（本轮修正，见 §19.7）：**移除**了启动时单条
+  `UPDATE device_runtime SET session_id='', status=0` 的批量重置——多节点共享同一 MySQL 库时，
+  任一节点启动都会覆盖其它节点的在线状态。替代方案为：
+  1. **单机**：`main` 监听 SIGINT/SIGTERM，退出前调用 `storage.ResetRuntime` 再 `storage.Close`；
+  2. **异常重启**：读路径按 `last_com_time_ms + keepalive_ms` 的 TTL 收敛为 offline 并清空
+     `session_id`，`last_com_time_ms` 保留作"上次在线时间"；
+  3. **分布式（规划）**：运行时投影另存一份带全 TTL 的 Redis 缓存，各实例定期兜底扫描过期条目
+     并回写持久化状态，不再依赖任何节点启动时的批量操作。
+
+**验证**
+
+- `gofmt` / `go build ./...` / `go vet ./...` / `go test -race ./...` 全绿。
+- 新增用例：迁移幂等（第二次 `applied=0`、版本行不重复）；`devices` 不再含运行时列；
+  版本落后 / 超前拒绝启动；版本一致正常启动；显式迁移可重复；内存后端迁移报错。
+  （SQLite 自动迁移路径的用例在 §19.8 随该行为取消而删除。）
+
+### 19.7 心跳节流 / 车牌索引 / 重启语义修正（2026-11-01，分支 `dev/p0-baseline`，基线 `af0dff4`，提交 `cbde5aa`）
+
+**决策**
+
+1. **心跳落库可配节流，默认逐条**：新增 `server.heartbeatPersistIntervalMs`（缺省 `0`）。
+   取值大于 0 时，距上次落库不足该间隔的心跳跳过写库；缺省行为与之前完全一致。
+2. **`plate` 加非唯一索引入库**：迁移 `0004_devices_plate_index.sql` 创建 `idx_devices_plate`；
+   不加唯一约束，理由见 §7.4。
+3. **移除启动批量重置运行时投影**：单机改为优雅停机重置，异常重启残留由读路径 TTL 收敛；
+   分布式改由 Redis 运行时缓存的全 TTL + 过期扫描回写（规划项，§11.2 / §11.5）。
+
+**实现要点**
+
+- `runtime.HeartbeatRegistry`（A 类，仅进程内存）：`processMsg0002` 逐条 `Touch`，
+  被节流跳过时保活判定仍能拿到实时心跳；0x0003 注销与鉴权失败清理同时 `Remove`。
+- `keepalive` 判定前把 `Heartbeat.Last` 与库内 `last_com_time` 取较新值，避免节流把在线设备判离线。
+- `sqlstore.Open` 不再执行任何重置；新增 `Store.ResetRuntime`（`UPDATE device_runtime SET session_id='', status=0`）
+  由 `main` 在收到 SIGINT/SIGTERM 后调用（5s 超时），随后 `storage.Close`。
+- `deviceRow.device()` 读取时按 TTL 收敛：`status != offline` 且 `now > last_com_time_ms + keepalive_ms`
+  → 置 offline 并清空 `session_id`，`last_com_time_ms` 与 `trans_proto` 保留。
+- 迁移数量变为 4（`ExpectedVersion=4`），SQLite/MySQL 共用同一 `.sql`（普通 `CREATE INDEX`，
+  未使用 MySQL 不支持的 `IF NOT EXISTS`）。
+
+**验证**
+
+- `gofmt` / `go build ./...` / `go vet ./...` / `go test -race ./...` 全绿。
+- 新增用例：心跳节流跳过写库但保留进程内心跳、超过间隔后恢复落库；保活使用进程内心跳
+  不误判离线；`ResetRuntime` 清空 session/status 且保留静态字段与时间；
+  TTL 收敛陈旧读为 offline 且保留 `last_com_time`；迁移 4 个文件且 `idx_devices_plate` 存在。
+- 已知限制：MySQL 下 `0004` 为普通 `CREATE INDEX`，重复手工执行会因索引已存在而失败，
+  迁移器按 `schema_migrations` 版本号避免重复执行。（迁移文件已在 §19.10 合并为
+  `init_20261101.sql`。）
+
+### 19.8 独立迁移工具与取消 SQLite 自动迁移（2026-11-01，分支 `dev/p0-baseline`，基线 `bc439b9`，提交 `629c29d`）
+
+**决策**
+
+1. **迁移不再复用主服务二进制**：新增 `cmd/jt808-migrate`，单独编译、单独发布为 `jt808-migrate`。
+2. **取消 SQLite 启动自动迁移**（原 `storage.sqlite.autoMigrate`，缺省 `true`）。所有后端一致：
+   启动只校验版本，任何 DDL 只能由迁移工具或 DBA 执行。
+3. **主服务删除 `migrate` 位置参数**，避免一个二进制同时承担在线服务与运维动作。
+
+**实现要点**
+
+- `cmd/jt808-migrate/main.go`：仅接受 `-c <config>`，调用 `storage.Migrate(storage.FromConfig(cfg))`，
+  打印 `applied` 后退出；不启动 TCP/UDP/API。
+- 新增 `storage.FromConfig`，主服务与迁移工具共用配置映射，避免两处漂移（主服务原 `storageConfig` 删除）。
+- `sqlstore.Open` 只保留版本校验；`sqlstore.Config`、`storage.Config`、`config.sqliteConf`
+  删除 `AutoMigrate` 字段。
+- 构建：`scripts/build.sh` 增加 `jt808-migrate` 目标（`cmd/jt808-migrate/main.go`）；
+  `make compile-migrate` / `make release-migrate`；Dockerfile 同时构建并拷贝迁移工具。
+
+**验证**
+
+- `gofmt` / `go build ./...` / `go vet ./...` / `go test -race ./...` 全绿。
+- 用例调整：所有 SQLite 测试先显式 `Migrate` 再 `Open`；保留“全新库未迁移则拒绝启动”；
+  内存后端 / 未知后端迁移报错；删除 `autoMigrate` 相关断言。
+
+### 19.9 入口统一收拢到 `cmd/`（2026-11-01，分支 `dev/p0-baseline`，基线 `b20b6b3`，提交 `621f18e`）
+
+**布局**
+
+| 二进制 | 入口 | 说明 |
+|---|---|---|
+| `jt808-server-go` | `cmd/jt808-server/main.go` | 原仓库根 `main.go` |
+| `jt808-client-go` | `cmd/jt808-client/main.go` | 原 `test/client/main.go`；默认配置与数据生成器收拢到 `client/`（`client/configs`、`client/datagen`） |
+| `jt808-migrate` | `cmd/jt808-migrate/main.go` | 独立迁移工具（§19.8） |
+
+**配套更新**
+
+- `scripts/build.sh`：默认 `build_file=cmd/jt808-server/main.go`；客户端改为
+  `cmd/jt808-client/main.go`；迁移工具不变。
+- `scripts/smoke.sh`：冒烟构建改为 `go build ./cmd/jt808-server` 与 `./cmd/jt808-client`。
+- `Makefile`：`run` / `run-client` 的 `go run` 路径同步。
+- `.vscode/launch.json`：调试入口同步。
+- 根目录不再有 Go 入口，`go build .` 不再可用；统一使用 `go build ./cmd/...`、
+  `make compile` / `make compile-client` / `make compile-migrate`。
+
+**验证**
+
+- `gofmt` / `go build ./...` / `go vet ./...` / `go test -race ./...` 全绿；
+  `scripts/smoke.sh` 端到端通过（五个场景全部 PASS）。
+
+### 19.10 合并迁移版本 + 迁移元数据表 DDL 移入 SQL（2026-11-01，分支 `dev/p0-baseline`，基线 `621f18e`，提交 `0852461`）
+
+**决策**
+
+1. **开发阶段只保留一个合并版本**：删除 `0001`–`0004` 四个增量文件，合并为
+   `init_20261101.sql`（最终 schema 形态，`devices` 不再含运行时列）。
+2. **文件名改为 `<描述>_<YYYYMMDD>.sql`**，版本号取文件名末尾日期（如 `20261101`），
+   迁移按日期升序执行；后续变更追加新文件即可，无需人工维护序号。
+3. **`schema_migrations` 的建表 DDL 从 Go 常量移入 SQL**：新增
+   `bootstrap_schema_migrations.sql`，由迁移工具在执行任何版本前先执行。
+   该表是迁移机制自身的元数据，必须先于版本存在，所以作为不参与版本编号的引导脚本；
+   MySQL 与 SQLite 同样需要它，二者共用该脚本。
+
+**原因**
+
+- 开发阶段没有存量库，保留四个增量版本只会增加阅读与维护成本；合并后 schema 一眼可见。
+  已有的本地开发库直接删除重建即可（不承诺从旧 4 个增量版本平滑升级）。
+- 版本按日期而非递增序号，新增迁移不会因为旧序号冲突而需要重排文件。
+- Go 代码中的 DDL 无法与其它 DDL 一起被审阅、被 DBA 直接执行；移入 `bootstrap_*.sql` 后
+  迁移工具与手工执行路径使用同一份语句，失败也会以普通迁移错误返回。
+
+**实现要点**
+
+- `migration.Apply`：先执行 `bootstrapStatements`，再读 `CurrentVersion`，再按日期应用未执行版本；
+  引导脚本失败返回 `bootstrap <file> statement N: ...`。
+- `mustLoadMigrations` 跳过引导脚本；`parseVersion` 改为校验 8 位日期后缀（含
+  `time.Parse("20060102")` 合法性检查），并对同日期文件 panic。
+- 服务启动行为不变：只读 `schema_migrations`，缺失/落后/超前都拒绝启动。
+
+**验证**
+
+- `gofmt` / `go build ./...` / `go vet ./...` / `go test -race ./...` 全绿。
+- 用例更新：`ExpectedVersion=20261101`、仅 1 个迁移文件；日期后缀解析合法/非法；
+  重复执行迁移仍幂等；版本落后（清空记录）与超前（`ExpectedVersion()+1`）均拒绝启动；
+  迁移后四张表与 `idx_devices_plate` 均存在。
+
+### 19.11 SQL 方言兼容性核对（2026-11-01，分支 `dev/p0-baseline`，基线 `0852461`，提交 `e7d4294`）
+
+**结论**：合并后的 `bootstrap_schema_migrations.sql` + `init_20261101.sql` 使用 SQLite 与
+MySQL 都支持的语法；核对中发现并修复一处 MySQL 不兼容：
+
+- `extra_json TEXT NOT NULL DEFAULT '{}'` → `extra_json TEXT NOT NULL`。
+  MySQL 不允许 TEXT/BLOB/JSON 列使用字面量默认值（8.0.13+ 仅支持表达式默认值），
+  SQLite 允许。写入路径 `encodeExtra` 始终提供 `"{}"`，去掉默认值不影响行为。
+
+同时做了两处可移植性加固：
+
+- 主键显式声明 `NOT NULL`：SQLite 对非 `INTEGER` 主键不隐含 `NOT NULL`，而 MySQL 主键必为
+  `NOT NULL`，显式声明后两库语义一致。
+- 文件头补充方言约束注释：不使用 TEXT/BLOB/JSON 默认值、不写 `ENGINE/CHARSET/COLLATE`
+  等 MySQL 专属子句（依赖服务端默认 utf8mb4 + InnoDB）、不使用 `CREATE INDEX IF NOT EXISTS`。
+
+**仍存在的差异（可接受，不额外抽象）**
+
+| 差异 | 影响 |
+|---|---|
+| `CREATE INDEX` 不幂等（MySQL 无 `IF NOT EXISTS`） | 由 `schema_migrations` 版本记录避免重复执行；手工重复执行会报索引已存在 |
+| SQLite 不校验 `VARCHAR(n)` 长度 | 超长数据在 SQLite 能写入、MySQL 会报错；正常协议数据远小于列宽 |
+| MySQL 默认排序规则大小写不敏感 | `phone` 为数字无影响；`plate` 查询在 MySQL 下大小写不敏感，SQLite 区分 |
+| MySQL `TEXT` 上限 64KB | 参数/属性 JSON 远小于该上限 |
+
+**验证**
+
+- SQLite 下迁移工具与相关测试全绿；本机无 Docker/MySQL，MySQL 侧由现有集成测试
+  （按环境变量启用）覆盖，尚未在本机实跑。
+
+### 19.12 `test/` 目录更名为 `client/`（2026-11-01，分支 `dev/p0-baseline`，基线 `66be00a`，提交 `e205cf0`）
+
+客户端启动入口迁入 `cmd/jt808-client` 后，`test/` 下只剩客户端配套代码，因此整体更名：
+
+| 原路径 | 新路径 |
+|---|---|
+| `test/client/configs/` | `client/configs/`（`internal/config` 嵌入的客户端默认配置） |
+| `test/datagen/` | `client/datagen/`（客户端模拟上报数据生成器，仅供 `cmd/jt808-client` 使用） |
+
+配套更新：`internal/config` 与 `config_test.go` 的 import、`cmd/jt808-client/main.go` 的
+`datagen` import、`scripts/build.sh`（客户端 `conf_src`）、`scripts/smoke.sh`、`Makefile`
+`run-client`、`.vscode/launch.json` 配置路径。同时删除 `test/datagen/` 下误提交的空文件 `datagen`。
+
+**验证**：`gofmt` / `go build ./...` / `go vet ./...` / `go test -race ./...` 全绿；
+`scripts/smoke.sh` 端到端通过；`make compile-client` 产物仍包含 `client/configs`。
+

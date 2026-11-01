@@ -7,8 +7,11 @@
 package container
 
 import (
+	"context"
 	"reflect"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 )
@@ -227,4 +230,63 @@ func TestMultipleValues(t *testing.T) {
 	if a != 4 || b != 3 {
 		t.Errorf("Error Manipulating RingBuffer")
 	}
+}
+
+// 并发写入与读取必须无数据竞争（在 -race 下运行生效）。
+// 修复前该测试会报 DATA RACE：Write 直接写 Container 元素，
+// Latest/Read/Oldest 无同步地读同一数组。
+func TestRingBufferConcurrentWriteRead(t *testing.T) {
+	rb := NewRingBuffer(64)
+	ctx, cancel := context.WithCancel(context.Background())
+	var wg sync.WaitGroup
+	for w := 0; w < 4; w++ {
+		wg.Add(1)
+		go func(id int) {
+			defer wg.Done()
+			for i := 0; ; i++ {
+				select {
+				case <-ctx.Done():
+					return
+				default:
+					rb.Write(id<<20 + i)
+				}
+			}
+		}(w)
+	}
+	for r := 0; r < 2; r++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				default:
+					_ = rb.Latest()
+					_ = rb.Read()
+					_ = rb.Oldest()
+				}
+			}
+		}()
+	}
+	time.Sleep(200 * time.Millisecond)
+	cancel()
+	wg.Wait()
+}
+
+// 负 delta 寻址必须环绕到正索引，不得产生负下标导致越界 panic。
+func TestRingBufferSeekReaderNegativeDelta(t *testing.T) {
+	rb := NewRingBuffer(5)
+	for i := 0; i < 5; i++ {
+		rb.Write(i)
+	}
+	rb.seekReader(1)  // Reader: 0 → 1
+	rb.seekReader(-3) // 1-3=-2，修复后环绕为 3
+	require.Equal(t, int32(3), rb.Reader)
+	require.Equal(t, 3, rb.Read()) // 读 Container[3]，Reader 推进到 4
+	require.Equal(t, int32(4), rb.Reader)
+	rb.seekReader(-6) // 4-6=-2，环绕为 3
+	require.Equal(t, int32(3), rb.Reader)
+	rb.seekReader(-8) // 3-8=-5，-5%5=0
+	require.Equal(t, int32(0), rb.Reader)
 }
