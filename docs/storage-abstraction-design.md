@@ -961,7 +961,7 @@ internal/storage/                 # 仅装配：后端选择与初始化
 - 已知限制：MySQL 下 `0004` 为普通 `CREATE INDEX`，重复手工执行会因索引已存在而失败，
   迁移器按 `schema_migrations` 版本号避免重复执行。
 
-### 19.8 独立迁移工具与取消 SQLite 自动迁移（2026-11-01，分支 `dev/p0-baseline`，基线 `bc439b9`）
+### 19.8 独立迁移工具与取消 SQLite 自动迁移（2026-11-01，分支 `dev/p0-baseline`，基线 `bc439b9`，提交 `629c29d`）
 
 **决策**
 
