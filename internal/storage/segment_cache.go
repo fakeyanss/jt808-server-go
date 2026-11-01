@@ -22,35 +22,25 @@ type segmentState struct {
 	updatedAt time.Time
 }
 
-// SegmentCache 是 FragmentAssembler 的内存实现。
-type SegmentCache struct {
+// memoryFragmentAssembler 是 FragmentAssembler 的内存实现。
+type memoryFragmentAssembler struct {
 	cacheByKey  map[string]*segmentState
 	mutex       *sync.Mutex
 	cachedBytes int
 }
 
-var segmentCacheSingleton *SegmentCache
-var segmentCacheInitOnce sync.Once
-
-// NewSegmentCache 创建独立的内存分包重组器。
-func NewSegmentCache() *SegmentCache {
-	return &SegmentCache{
+// newMemoryFragmentAssembler 创建独立的内存分包重组器。
+func newMemoryFragmentAssembler() *memoryFragmentAssembler {
+	return &memoryFragmentAssembler{
 		cacheByKey: make(map[string]*segmentState),
 		mutex:      &sync.Mutex{},
 	}
 }
 
-func getSegmentCache() *SegmentCache {
-	segmentCacheInitOnce.Do(func() {
-		segmentCacheSingleton = NewSegmentCache()
-	})
-	return segmentCacheSingleton
-}
-
 // CacheSegment stores fragments by device, message ID and original message serial.
 // It returns true only after all distinct fragment indexes have arrived, regardless
 // of their arrival order. Duplicate fragments do not duplicate their payload.
-func (cache *SegmentCache) CacheSegment(_ context.Context, seg *model.Segment, serialNumber uint16) bool {
+func (cache *memoryFragmentAssembler) CacheSegment(_ context.Context, seg *model.Segment, serialNumber uint16) bool {
 	if seg == nil || seg.SegTotal == 0 || seg.SegNo == 0 || seg.SegNo > seg.SegTotal || len(seg.Data) == 0 {
 		return false
 	}
@@ -112,7 +102,7 @@ func (cache *SegmentCache) CacheSegment(_ context.Context, seg *model.Segment, s
 
 // MissingIndexes returns the 1-based fragment indexes still absent for the
 // segmented message containing seg. It is intended for 0x8003 requests.
-func (cache *SegmentCache) MissingIndexes(_ context.Context, seg *model.Segment, serialNumber uint16) []uint16 {
+func (cache *memoryFragmentAssembler) MissingIndexes(_ context.Context, seg *model.Segment, serialNumber uint16) []uint16 {
 	if seg == nil || seg.SegTotal == 0 || seg.SegNo == 0 || seg.SegNo > seg.SegTotal {
 		return nil
 	}
@@ -133,7 +123,7 @@ func (cache *SegmentCache) MissingIndexes(_ context.Context, seg *model.Segment,
 	return missing
 }
 
-func (cache *SegmentCache) evictOldest(excludeKey string) bool {
+func (cache *memoryFragmentAssembler) evictOldest(excludeKey string) bool {
 	var oldestKey string
 	var oldest time.Time
 	for key, state := range cache.cacheByKey {
@@ -164,16 +154,4 @@ func FirstFragmentSerial(serialNumber, fragmentIndex uint16) uint16 {
 		}
 	}
 	return serialNumber
-}
-
-// 以下为兼容既有调用点的包级薄封装。
-
-// CacheSegment 缓存上行分包，完整时返回 true 并回填 seg.Data。
-func CacheSegment(seg *model.Segment, serialNumber uint16) bool {
-	return getSegmentCache().CacheSegment(context.Background(), seg, serialNumber)
-}
-
-// MissingSegmentIndexes 返回尚未到达的分包序号，用于 0x8003 请求。
-func MissingSegmentIndexes(seg *model.Segment, serialNumber uint16) []uint16 {
-	return getSegmentCache().MissingIndexes(context.Background(), seg, serialNumber)
 }

@@ -14,8 +14,8 @@ type sentSegmentState struct {
 	updatedAt time.Time
 }
 
-// sentSegmentCache 是 RetransmitTracker 的内存实现。
-type sentSegmentCache struct {
+// memoryRetransmitTracker 是 RetransmitTracker 的内存实现。
+type memoryRetransmitTracker struct {
 	mu      sync.Mutex
 	entries map[string]*sentSegmentState
 	media   map[string]mediaSegmentLink
@@ -27,10 +27,9 @@ type mediaSegmentLink struct {
 	updatedAt time.Time
 }
 
-var sentSegments = newSentSegmentCache()
-
-func newSentSegmentCache() *sentSegmentCache {
-	return &sentSegmentCache{entries: make(map[string]*sentSegmentState), media: make(map[string]mediaSegmentLink)}
+// newMemoryRetransmitTracker 创建独立的下行重传跟踪器。
+func newMemoryRetransmitTracker() *memoryRetransmitTracker {
+	return &memoryRetransmitTracker{entries: make(map[string]*sentSegmentState), media: make(map[string]mediaSegmentLink)}
 }
 
 func sentSegmentKey(phone string, originalSerial uint16) string {
@@ -39,7 +38,7 @@ func sentSegmentKey(phone string, originalSerial uint16) string {
 
 // LinkMedia links a multimedia ID to the JT808 message serial whose encoded
 // fragments the terminal simulator retained for 0x8800 retransmits.
-func (cache *sentSegmentCache) LinkMedia(_ context.Context, phone string, mediaID uint32, serial uint16) {
+func (cache *memoryRetransmitTracker) LinkMedia(_ context.Context, phone string, mediaID uint32, serial uint16) {
 	if phone == "" || mediaID == 0 {
 		return
 	}
@@ -49,7 +48,7 @@ func (cache *sentSegmentCache) LinkMedia(_ context.Context, phone string, mediaI
 }
 
 // MediaSerial returns the retained serial for a multimedia ID.
-func (cache *sentSegmentCache) MediaSerial(_ context.Context, phone string, mediaID uint32) (uint16, bool) {
+func (cache *memoryRetransmitTracker) MediaSerial(_ context.Context, phone string, mediaID uint32) (uint16, bool) {
 	cache.mu.Lock()
 	defer cache.mu.Unlock()
 	key := fmt.Sprintf("%s/%08x", phone, mediaID)
@@ -63,7 +62,7 @@ func (cache *sentSegmentCache) MediaSerial(_ context.Context, phone string, medi
 
 // CacheFrame retains simulator frames so a 0x8003 request can retransmit the
 // original encoded fragment verbatim.
-func (cache *sentSegmentCache) CacheFrame(_ context.Context, phone string, originalSerial, index, total uint16, frame []byte) {
+func (cache *memoryRetransmitTracker) CacheFrame(_ context.Context, phone string, originalSerial, index, total uint16, frame []byte) {
 	if phone == "" || total == 0 || total > maxSegmentCount || index == 0 || index > total || len(frame) == 0 || len(frame) > maxSegmentCacheBytes {
 		return
 	}
@@ -102,7 +101,7 @@ func (cache *sentSegmentCache) CacheFrame(_ context.Context, phone string, origi
 	state.updatedAt = now
 }
 
-func (cache *sentSegmentCache) evictOldest(excludeKey string) {
+func (cache *memoryRetransmitTracker) evictOldest(excludeKey string) {
 	var oldestKey string
 	var oldest time.Time
 	for key, state := range cache.entries {
@@ -123,7 +122,7 @@ func (cache *sentSegmentCache) evictOldest(excludeKey string) {
 
 // Frames returns copies in the requested packet ID order.
 // Missing or expired cache entries return nil.
-func (cache *sentSegmentCache) Frames(_ context.Context, phone string, originalSerial uint16, packetIDs []uint16) [][]byte {
+func (cache *memoryRetransmitTracker) Frames(_ context.Context, phone string, originalSerial uint16, packetIDs []uint16) [][]byte {
 	key := sentSegmentKey(phone, originalSerial)
 	cache.mu.Lock()
 	defer cache.mu.Unlock()
@@ -140,26 +139,4 @@ func (cache *sentSegmentCache) Frames(_ context.Context, phone string, originalS
 		frames = append(frames, append([]byte(nil), state.frames[id-1]...))
 	}
 	return frames
-}
-
-// 以下为兼容既有调用点的包级薄封装。
-
-// CacheMediaSegment 关联多媒体 ID 与分片消息流水号。
-func CacheMediaSegment(phone string, mediaID uint32, serial uint16) {
-	sentSegments.LinkMedia(context.Background(), phone, mediaID, serial)
-}
-
-// GetMediaSegmentSerial 查询多媒体 ID 关联的消息流水号。
-func GetMediaSegmentSerial(phone string, mediaID uint32) (uint16, bool) {
-	return sentSegments.MediaSerial(context.Background(), phone, mediaID)
-}
-
-// CacheSentSegmentFrame 保留已发送的分片帧，供 0x8003 原样重传。
-func CacheSentSegmentFrame(phone string, originalSerial, index, total uint16, frame []byte) {
-	sentSegments.CacheFrame(context.Background(), phone, originalSerial, index, total, frame)
-}
-
-// GetSentSegmentFrames 按请求序号返回分片帧副本。
-func GetSentSegmentFrames(phone string, originalSerial uint16, packetIDs []uint16) [][]byte {
-	return sentSegments.Frames(context.Background(), phone, originalSerial, packetIDs)
 }

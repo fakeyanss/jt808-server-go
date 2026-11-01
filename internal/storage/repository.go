@@ -2,15 +2,19 @@ package storage
 
 import (
 	"context"
+	"sync"
 
 	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
-	"github.com/fakeyanss/jt808-server-go/pkg/container"
 )
 
-// 本文件定义存储边界的业务契约（M1）。
-// 现有 *_cache.go 中的具体类型即为内存实现；业务调用点仍通过既有入口访问默认实例，
-// M2 起按文件逐步改为构造函数注入。
+var (
+	defaultStores     *Stores
+	defaultStoresOnce sync.Once
+)
+
+// 本文件定义存储边界的业务契约与统一入口。
 // 分类沿用 docs/storage-abstraction-design.md：A 执行现场、B 耐用态、C 派生投影。
+// 具体实现均为非导出的内存实现，业务层只依赖接口。
 
 // DeviceRepository 设备主数据仓储（B 类）。
 // 实现必须返回快照，调用方修改返回值不得影响仓储内部状态。
@@ -24,11 +28,9 @@ type DeviceRepository interface {
 }
 
 // GeoRepository 定位热读仓储（C 类，派生最新值）。
-// Ring 是过渡方法，保留既有的 RingBuffer 写入口；M2 把调用点迁移到 Append 后可移除。
 type GeoRepository interface {
 	Append(ctx context.Context, geo *model.DeviceGeo) error
 	Latest(ctx context.Context, phone string) (*model.DeviceGeo, error)
-	Ring(ctx context.Context, phone string) *container.RingBuffer
 	Delete(ctx context.Context, phone string) error
 }
 
@@ -61,30 +63,73 @@ type DeviceParamsRepository interface {
 	Delete(ctx context.Context, phone string) error
 }
 
-// 编译期确认现有内存实现满足接口。
+// Stores 聚合所有仓储接口，作为组件的存储依赖入口。
+type Stores struct {
+	Devices  DeviceRepository
+	Geo      GeoRepository
+	Conn     ConnectionRegistry
+	Fragment FragmentAssembler
+	Retrans  RetransmitTracker
+	Params   DeviceParamsRepository
+}
+
+// NewStores 创建一组互相独立的内存仓储，供测试与新代码注入。
+// 不传任何参数，返回全新的独立实例，不污染默认入口。
+func NewStores() *Stores {
+	return &Stores{
+		Devices:  NewDeviceRepository(),
+		Geo:      NewGeoRepository(),
+		Conn:     NewConnectionRegistry(),
+		Fragment: NewFragmentAssembler(),
+		Retrans:  NewRetransmitTracker(),
+		Params:   NewDeviceParamsRepository(),
+	}
+}
+
+// 编译期确认内存实现满足接口。
 var (
-	_ DeviceRepository       = (*DeviceCache)(nil)
-	_ GeoRepository          = (*GeoCache)(nil)
-	_ ConnectionRegistry     = (*SessionCache)(nil)
-	_ FragmentAssembler      = (*SegmentCache)(nil)
-	_ RetransmitTracker      = (*sentSegmentCache)(nil)
-	_ DeviceParamsRepository = (*DeviceParamsCache)(nil)
+	_ DeviceRepository       = (*memoryDeviceRepository)(nil)
+	_ GeoRepository          = (*memoryGeoRepository)(nil)
+	_ ConnectionRegistry     = (*memoryConnectionRegistry)(nil)
+	_ FragmentAssembler      = (*memoryFragmentAssembler)(nil)
+	_ RetransmitTracker      = (*memoryRetransmitTracker)(nil)
+	_ DeviceParamsRepository = (*memoryDeviceParamsRepository)(nil)
 )
 
 // NewDeviceRepository 创建独立的内存设备仓储，便于测试与新代码注入。
-func NewDeviceRepository() DeviceRepository { return NewDeviceCache() }
+func NewDeviceRepository() DeviceRepository { return newMemoryDeviceRepository() }
 
 // NewGeoRepository 创建独立的内存定位热读仓储。
-func NewGeoRepository() GeoRepository { return NewGeoCache() }
+func NewGeoRepository() GeoRepository { return newMemoryGeoRepository() }
 
 // NewConnectionRegistry 创建独立的连接现场注册表（不启动会话数监控）。
-func NewConnectionRegistry() ConnectionRegistry { return newSessionCache() }
+func NewConnectionRegistry() ConnectionRegistry { return newMemoryConnectionRegistry() }
 
 // NewFragmentAssembler 创建独立的分包重组器。
-func NewFragmentAssembler() FragmentAssembler { return NewSegmentCache() }
+func NewFragmentAssembler() FragmentAssembler { return newMemoryFragmentAssembler() }
 
 // NewRetransmitTracker 创建独立的下行重传跟踪器。
-func NewRetransmitTracker() RetransmitTracker { return newSentSegmentCache() }
+func NewRetransmitTracker() RetransmitTracker { return newMemoryRetransmitTracker() }
 
 // NewDeviceParamsRepository 创建独立的内存参数仓储。
-func NewDeviceParamsRepository() DeviceParamsRepository { return NewDeviceParamsCache() }
+func NewDeviceParamsRepository() DeviceParamsRepository { return newMemoryDeviceParamsRepository() }
+
+// Default 返回进程默认 Stores 实例。
+// 保留为全局入口的理由：msg_processor 注册表（initProcessOption）是包级函数，
+// 其返回的 processFunc 签名固定为 (ctx, data) error，无法逐条注入依赖；
+// 改造注册表为接口方法或函数工厂属于更大的结构变更，M2 范围先显式收口为
+// 单一 Default()，调用点与默认值来源可追溯，后续再渐进迁移。
+// 其余组件（Server、API、test/client）通过构造函数注入 Stores，不访问 Default。
+func Default() *Stores {
+	defaultStoresOnce.Do(func() {
+		defaultStores = &Stores{
+			Devices:  newMemoryDeviceRepository(),
+			Geo:      newMemoryGeoRepository(),
+			Conn:     newDefaultConnectionRegistry(), // 启动会话数监控
+			Fragment: newMemoryFragmentAssembler(),
+			Retrans:  newMemoryRetransmitTracker(),
+			Params:   newMemoryDeviceParamsRepository(),
+		}
+	})
+	return defaultStores
+}

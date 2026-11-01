@@ -12,34 +12,24 @@ import (
 
 var ErrDeviceNotFound = errors.New("device not found")
 
-// DeviceCache 是 DeviceRepository 的内存实现。
-type DeviceCache struct {
+// memoryDeviceRepository 是 DeviceRepository 的内存实现。
+type memoryDeviceRepository struct {
 	cacheByPlate map[string]*model.Device
 	cacheByPhone map[string]*model.Device
 	mutex        *sync.Mutex
 }
 
-var deviceCacheSingleton *DeviceCache
-var deviceCacheInitOnce sync.Once
-
-// NewDeviceCache 创建独立的内存设备仓储。
-func NewDeviceCache() *DeviceCache {
-	return &DeviceCache{
+// newMemoryDeviceRepository 创建独立的内存设备仓储。
+func newMemoryDeviceRepository() *memoryDeviceRepository {
+	return &memoryDeviceRepository{
 		cacheByPlate: make(map[string]*model.Device),
 		cacheByPhone: make(map[string]*model.Device),
 		mutex:        &sync.Mutex{},
 	}
 }
 
-func GetDeviceCache() *DeviceCache {
-	deviceCacheInitOnce.Do(func() {
-		deviceCacheSingleton = NewDeviceCache()
-	})
-	return deviceCacheSingleton
-}
-
 // List 返回全量设备快照。
-func (cache *DeviceCache) List(_ context.Context) ([]*model.Device, error) {
+func (cache *memoryDeviceRepository) List(_ context.Context) ([]*model.Device, error) {
 	cache.mutex.Lock()
 	defer cache.mutex.Unlock()
 	devices := maps.Values(cache.cacheByPhone)
@@ -50,7 +40,7 @@ func (cache *DeviceCache) List(_ context.Context) ([]*model.Device, error) {
 }
 
 // GetByPlate 按车牌查询设备快照。
-func (cache *DeviceCache) GetByPlate(_ context.Context, carPlate string) (*model.Device, error) {
+func (cache *memoryDeviceRepository) GetByPlate(_ context.Context, carPlate string) (*model.Device, error) {
 	cache.mutex.Lock()
 	defer cache.mutex.Unlock()
 	if d, ok := cache.cacheByPlate[carPlate]; ok {
@@ -60,7 +50,7 @@ func (cache *DeviceCache) GetByPlate(_ context.Context, carPlate string) (*model
 }
 
 // GetByPhone 按手机号查询设备快照。
-func (cache *DeviceCache) GetByPhone(_ context.Context, phone string) (*model.Device, error) {
+func (cache *memoryDeviceRepository) GetByPhone(_ context.Context, phone string) (*model.Device, error) {
 	cache.mutex.Lock()
 	defer cache.mutex.Unlock()
 	if d, ok := cache.cacheByPhone[phone]; ok {
@@ -70,7 +60,7 @@ func (cache *DeviceCache) GetByPhone(_ context.Context, phone string) (*model.De
 }
 
 // Upsert 写入设备，同时维护车牌与手机号索引。
-func (cache *DeviceCache) Upsert(_ context.Context, d *model.Device) error {
+func (cache *memoryDeviceRepository) Upsert(_ context.Context, d *model.Device) error {
 	cache.mutex.Lock()
 	defer cache.mutex.Unlock()
 	copy := cloneDevice(d)
@@ -80,7 +70,7 @@ func (cache *DeviceCache) Upsert(_ context.Context, d *model.Device) error {
 }
 
 // DeleteByPhone 按手机号删除设备及其车牌索引。
-func (cache *DeviceCache) DeleteByPhone(_ context.Context, phone string) error {
+func (cache *memoryDeviceRepository) DeleteByPhone(_ context.Context, phone string) error {
 	cache.mutex.Lock()
 	defer cache.mutex.Unlock()
 	d, ok := cache.cacheByPhone[phone]
@@ -93,7 +83,7 @@ func (cache *DeviceCache) DeleteByPhone(_ context.Context, phone string) error {
 }
 
 // DeleteByPlate 按车牌删除设备及其手机号索引。
-func (cache *DeviceCache) DeleteByPlate(_ context.Context, carPlate string) error {
+func (cache *memoryDeviceRepository) DeleteByPlate(_ context.Context, carPlate string) error {
 	cache.mutex.Lock()
 	defer cache.mutex.Unlock()
 	d, ok := cache.cacheByPlate[carPlate]
@@ -114,41 +104,4 @@ func cloneDevice(device *model.Device) *model.Device {
 	}
 	copy := *device
 	return &copy
-}
-
-// 以下为兼容既有调用点的薄封装，内部转发到仓储语义方法。
-
-func (cache *DeviceCache) ListDevice() []*model.Device {
-	devices, _ := cache.List(context.Background())
-	return devices
-}
-
-func (cache *DeviceCache) GetDeviceByPlate(carPlate string) (*model.Device, error) {
-	return cache.GetByPlate(context.Background(), carPlate)
-}
-
-func (cache *DeviceCache) HasPlate(carPlate string) bool {
-	d, err := cache.GetDeviceByPlate(carPlate)
-	return d != nil && err == nil
-}
-
-func (cache *DeviceCache) GetDeviceByPhone(phone string) (*model.Device, error) {
-	return cache.GetByPhone(context.Background(), phone)
-}
-
-func (cache *DeviceCache) HasPhone(phone string) bool {
-	d, err := cache.GetDeviceByPhone(phone)
-	return d != nil && err == nil
-}
-
-func (cache *DeviceCache) CacheDevice(d *model.Device) {
-	_ = cache.Upsert(context.Background(), d)
-}
-
-func (cache *DeviceCache) DelDeviceByCarPlate(carPlate string) {
-	_ = cache.DeleteByPlate(context.Background(), carPlate)
-}
-
-func (cache *DeviceCache) DelDeviceByPhone(phone string) {
-	_ = cache.DeleteByPhone(context.Background(), phone)
 }
