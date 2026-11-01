@@ -1,280 +1,259 @@
-# JT808 Project Progress and TODO Roadmap
+# JT808 项目进展与 TODO 路线图
 
-Last reconciled: 2026-11-01  
-Code baseline: branch `main`, commit `6a79797` (`feat: JT808 P0/P1 protocol stack`).
-The earlier baseline commit `ca724ae` still exists on `origin/p0-region-route-typed`;
-the branch name `codex/jt808-p0` recorded before did not exist and has been corrected.
-Protocol message-by-message matrix: [JT808-2019-coverage.md](JT808-2019-coverage.md).  
-Industry HTTP API notes: [industry-api.md](industry-api.md).
+最近对齐时间：2026-11-01  
+代码基线：分支 `main`，提交 `6a79797`（`feat: JT808 P0/P1 protocol stack`）。
+此前记录的基线提交 `ca724ae` 仍存在于 `origin/p0-region-route-typed` 分支上；
+之前记录的分支名 `codex/jt808-p0` 并不存在，已更正。
+逐条协议消息矩阵见 [JT808-2019-coverage.md](JT808-2019-coverage.md)。  
+行业 HTTP API 说明见 [industry-api.md](industry-api.md)。
 
-This file tracks project-level work, implementation depth, dependencies, and
-acceptance criteria. The coverage matrix remains the detailed Appendix B
-message index. “Done” means present in the code and verified at the indicated
-level; a codec or acknowledgment by itself does not mean the device-side
-business flow is complete.
+本文件跟踪项目级工作、实现深度、依赖关系与验收标准。覆盖矩阵仍是
+附录 B 的逐消息索引。"已完成"表示代码中存在并在标注层级上验证过；
+仅有编解码或应答并不代表终端侧业务流程完整。
 
-## Project status
+## 项目现状
 
-The project has a working JT808 server and a TCP/UDP client simulator. Core
-registration, authentication, heartbeat, location, acknowledgments, parameter
-flows, message fragmentation/retransmission, alarms, and several industry
-messages have executable paths. The simulator is used in localhost integration
-tests, including media upload, media catalog search, and 0x8800 replay.
+本项目已有一个可工作的 JT808 服务端和 TCP/UDP 客户端模拟器。注册、鉴权、
+心跳、定位、应答、参数流程、消息分包/重传、报警以及若干行业消息均有
+可执行路径。模拟器用于本机集成测试，覆盖媒体上传、媒体目录检索和
+0x8800 重放等场景。
 
-The implementation is not yet a complete commercial JT808 server. The largest
-active gaps are durable persistence (all caches are bounded and in-memory only),
-message-body encryption (`0x8A00/0x0A00` RSA), JT/T 1078 RTP media streaming,
-and header-level 2011 version detection (2011 is only inferred from the `0x0100`
-body length, not from the message header). The coverage matrix enumerates
-implemented, partial, and missing message IDs; use the prioritized tasks below
-to plan work.
+当前实现还不是一个完整的商用 JT808 服务端。最大的现存缺口是持久化
+（所有缓存均有界且仅存内存）、消息体加密（`0x8A00/0x0A00` RSA）、
+JT/T 1078 RTP 流媒体，以及消息头层面的 2011 版本判别（2011 目前只能从
+`0x0100` 消息体长度推断，而非从消息头识别）。覆盖矩阵列出了已实现、
+部分实现和缺失的消息 ID；请按下方的优先级任务规划工作。
 
-## Completed work
+## 已完成工作
 
-| Area | Status | What is in place |
+| 领域 | 状态 | 现有内容 |
 |---|---|---|
-| JT808 framing and sessions | Done | Message headers, BCD/GBK fields, escaping/checksum, TCP/UDP sessions, acknowledgments, keepalive and retransmission handling. |
-| Client simulator and protocol tests | Done | Registration/authentication, reports, downlink handling, synthetic industry messages, malformed-frame and fragmentation scenarios; localhost client/server tests are part of `go test ./...`. |
-| Location and alarms | Done for current scope | Location reports/cache with TLV extended items, location query response flow, alarm history in bounded memory, and manual alarm confirmation flow. Durable history remains open. |
-| Parameters and terminal properties | Done for current scope | Set/query/specified-query/property flows with serial-correlated response handling. |
-| Driver identity and CAN | Done for current scope | Typed `0x0702`, `0x0705`, driver query command, in-memory latest-report access and simulator reports. |
-| Recorder message envelope | Done | `0x8700/0x8701/0x0700` typed GB/T 19056-2021 data block codecs for `0x31/0x33/0x41/0x56/0x57/0x58` commands and their responses; simulator returns command-specific typed blocks. |
-| Region/route message envelope | Done | Typed circle/rectangle/polygon/route structures with attribute-controlled fields; set/delete/query paths backed by a per-device simulator catalog; structured JSON HTTP input and decoded query responses. |
-| Multimedia base flow | Done | Event/upload/capture/search messages and bounded upload cache; `0x0802` typed 35-byte records searched against cached uploads; `0x9205/0x1205` resource lists backed by the same catalog with channel/type/time filters. |
-| Media command codecs | Done | `0x8803/04/05` have typed layouts, validation and HTTP downlink. The simulator executes them: `0x8803` uploads catalog entries matching type/channel/event/time, `0x8804` toggles a recording flag and emits sample audio frames, `0x8805` replays the requested media item. |
-| Media retransmission | Done | Server detects missing `0x0801` fragments and requests retransmission with `0x8800` (media ID + missing packet IDs); first-fragment loss falls back to `0x8003`. Simulator replays cached frames; server reassembles exactly once. `0x8003` remains for non-media transport fragmentation. |
-| Protocol status documentation | Done as index | `JT808-2019-coverage.md` maps Appendix B message IDs to implementation states and notes. Amendment 1 conformance has not been reviewed. |
+| JT808 组帧与会话 | 已完成 | 消息头、BCD/GBK 字段、转义/校验、TCP/UDP 会话、应答、保活与重传处理。 |
+| 客户端模拟器与协议测试 | 已完成 | 注册/鉴权、上报、下行处理、合成行业消息、坏帧与分包场景；本机客户端/服务端测试属于 `go test ./...` 的一部分。 |
+| 定位与报警 | 当前范围内已完成 | 带 TLV 扩展项的定位上报/缓存、定位查询应答流程、有界内存中的报警历史、人工报警确认流程。持久化历史仍未实现。 |
+| 参数与终端属性 | 当前范围内已完成 | 设置/查询/指定查询/属性流程，带流水号关联的应答处理。 |
+| 司机身份与 CAN | 当前范围内已完成 | 类型化的 `0x0702`、`0x0705`、司机查询命令、内存中最新报告读取与模拟器上报。 |
+| 记录仪消息封装 | 已完成 | `0x8700/0x8701/0x0700` 的 GB/T 19056-2021 数据块编解码，覆盖 `0x31/0x33/0x41/0x56/0x57/0x58` 命令及其响应；模拟器按命令返回对应的类型化数据块。 |
+| 区域/路线消息封装 | 已完成 | 类型化的圆形/矩形/多边形/路线结构，含属性控制字段；设置/删除/查询路径由每设备模拟器目录支撑；结构化 JSON HTTP 输入与解码后的查询响应。 |
+| 多媒体基础流程 | 已完成 | 事件/上传/拍摄/检索消息与有界上传缓存；`0x0802` 类型化 35 字节记录可对缓存的上传记录检索；`0x9205/0x1205` 资源列表基于同一目录，支持通道/类型/时间过滤。 |
+| 媒体命令编解码 | 已完成 | `0x8803/04/05` 具有类型化结构、校验和 HTTP 下行。模拟器会实际执行：`0x8803` 上传匹配类型/通道/事件/时间的目录条目，`0x8804` 切换录音标志并发出示例音频帧，`0x8805` 重放被请求的媒体项。 |
+| 媒体重传 | 已完成 | 服务端检测缺失的 `0x0801` 分片并用 `0x8800`（媒体 ID + 缺失包 ID）请求重传；首片丢失时降级为 `0x8003`。模拟器重放缓存帧；服务端恰好重组一次。非媒体类传输分包仍使用 `0x8003`。 |
+| 协议状态文档 | 已完成（作为索引） | `JT808-2019-coverage.md` 将附录 B 消息 ID 映射到实现状态与备注。第 1 号修改单的符合性尚未评审。 |
 
-## Prioritized TODO
+## 按优先级排列的 TODO
 
-### P0 — Complete the protocol flows already exposed by the API
+### P0 —— 补齐 API 已暴露的协议流程
 
-#### P0.1 — Typed region and route records; simulator catalog and queries
+#### P0.1 —— 类型化区域与路线记录；模拟器目录与查询
 
-**Status:** Done. Typed circle/rectangle/polygon/route models live in
-`internal/protocol/model/region_route_types.go` and `msg_8600.go`; `0x0608`
-responses are typed in `msg_0608.go`. Set/delete/query paths are backed by the
-per-device simulator catalog in `internal/storage/region_catalog.go`, with
-structured JSON HTTP input (`POST /device/:phone/regions/set|delete|query`).
+**状态：** 已完成。类型化的圆形/矩形/多边形/路线模型位于
+`internal/protocol/model/region_route_types.go` 和 `msg_8600.go`；`0x0608`
+响应在 `msg_0608.go` 中类型化。设置/删除/查询路径由
+`internal/storage/region_catalog.go` 中的每设备模拟器目录支撑，
+HTTP 侧使用结构化 JSON 输入（`POST /device/:phone/regions/set|delete|query`）。
 
-**Work:**
+**工作内容：**
 
-- Add typed circle, rectangle, polygon, route, and route-point structures,
-  including attribute-controlled time/speed fields, 2019 night-speed fields,
-  names, polygon vertices, and route segment constraints.
-- Parse and encode set messages and variable-length `0x0608` records with
-  strict count, length, attribute, ID, coordinate and GBK-name validation.
-- Back simulator behavior with per-device maps. Apply replace/append/update
-  semantics, deletion-by-ID/delete-all semantics, and query-by-type/ID.
-- Replace or supplement the HTTP `bodyHex` API with structured JSON input and
-  return decoded query records. Preserve a raw escape hatch only if needed for
-  forward compatibility.
-- Keep set/delete and query test cases at codec level and exercise set → query,
-  update, append, delete-one, delete-all, and malformed record cases through the
-  client/server simulator.
+- 新增类型化的圆形、矩形、多边形、路线与路线途经点结构，
+  包括属性控制的时间/速度字段、2019 版夜间速度字段、
+  名称、多边形顶点与路段约束。
+- 解析并编码设置消息与变长 `0x0608` 记录，
+  严格校验数量、长度、属性、ID、坐标与 GBK 名称。
+- 用每设备 map 支撑模拟器行为。实现替换/追加/更新语义、
+  按 ID 删除/删除全部语义，以及按类型/ID 查询。
+- 用结构化 JSON 输入替换或补充 HTTP `bodyHex` API，
+  并返回解码后的查询记录。仅为前向兼容保留原始字节兜底入口。
+- 在编解码层保持设置/删除与查询的测试用例，并通过客户端/服务端
+  模拟器覆盖设置 → 查询、更新、追加、删单个、删全部与畸形记录场景。
 
-**Acceptance:** Set a circle, rectangle, polygon, and route through an actual
-server downlink; query each back from the simulator and compare typed fields;
-all malformed lengths/counts are rejected; full suite passes.
+**验收：** 通过真实的服务端下行设置圆形、矩形、多边形和路线；
+从模拟器逐一查询回来并比对类型化字段；
+所有畸形长度/数量都被拒绝；全部测试通过。
 
-**Dependencies:** None. Confirm each conditional field against the repository's
-JT/T 808-2019 PDF and note any 2011/2013 compatibility behavior explicitly.
+**依赖：** 无。每个条件字段都需对照仓库中的
+JT/T 808-2019 PDF 确认，并显式注明 2011/2013 兼容行为。
 
-#### P0.2 — GB/T 19056 record command and data block decoding
+#### P0.2 —— GB/T 19056 记录命令与数据块解码
 
-**Status:** Done. GB/T 19056-2021 data blocks for `0x31`/`0x33`/`0x41`/`0x56`/`0x57`/`0x58`
-commands and their responses are typed-encoded/decoded. The simulator returns
-command-specific typed response blocks. Unsupported commands fall back to raw
-data passthrough.
+**状态：** 已完成。`0x31`/`0x33`/`0x41`/`0x56`/`0x57`/`0x58`
+命令及其响应的 GB/T 19056-2021 数据块已实现类型化编解码。
+模拟器按命令返回对应的类型化响应块。
+不支持的命令回退为原始数据透传。
 
-**Work:**
+**工作内容：**
 
-- Identify the required GB/T 19056 edition and obtain/record the applicable
-  normative data command table, record block layouts, checksums, and field
-  encodings before implementing decoders.
-- Model supported command codes and their typed request/response data blocks;
-  validate fixed/variable lengths, BCD dates, checksums and reserved values.
-- Preserve raw blocks for unsupported commands and vendor extensions, while
-  reporting the command and parse status separately.
-- Make simulator responses vary by requested supported command, rather than
-  returning the same sample block for every command.
-- Test known vectors from the standard and end-to-end `0x8700 → 0x0700`, plus
-  `0x8701 → 0x0001` and the expected device result.
+- 确定所需的 GB/T 19056 版本，并在实现解码器之前获取/记录适用的
+  规范性数据命令表、记录块布局、校验和与字段编码。
+- 为支持的命令码建模类型化的请求/响应数据块；
+  校验定长/变长、BCD 日期、校验和与保留值。
+- 为不支持的命令与厂商扩展保留原始数据块，
+  同时分别上报命令字与解析状态。
+- 让模拟器按所请求的支持命令返回不同响应，
+  而不是对任何命令都返回同一个示例块。
+- 用标准中的已知向量测试，以及端到端 `0x8700 → 0x0700`、
+  `0x8701 → 0x0001` 与预期设备结果。
 
-**Acceptance:** Every implemented command has a standard-backed typed codec,
-at least one known vector, negative validation cases, and simulator behavior
-that matches the command. Do not infer field layouts from the JT808 wrapper.
+**验收：** 每个已实现的命令都有标准支撑的类型化编解码、
+至少一个已知向量、负向校验用例，以及与命令匹配的模拟器行为。
+不要从 JT808 外层封装推断字段布局。
 
-**Dependency:** Confirm and add the applicable GB/T 19056 document/version.
+**依赖：** 确认并补充适用的 GB/T 19056 文档/版本。
 
-#### P0.3 — Implement stored media upload commands in the simulator
+#### P0.3 —— 在模拟器中实现存量媒体上传命令
 
-**Status:** Done. `processMsg8803` filters the simulator media catalog by
-type/channel/event/time range and uploads matching `0x0801` records;
-`processMsg8804` toggles the recording flag and emits sample audio frames on
-start; `processMsg8805` replays the catalog item matching the requested media
-ID. All paths are covered by client/server integration tests.
+**状态：** 已完成。`processMsg8803` 按类型/通道/事件/时间范围过滤
+模拟器媒体目录并上传匹配的 `0x0801` 记录；`processMsg8804` 切换录音
+标志并在启动时发出示例音频帧；`processMsg8805` 重放与请求媒体 ID
+匹配的目录项。所有路径均有客户端/服务端集成测试覆盖。
 
-**Work:**
+**工作内容：**
 
-- Give the simulator a bounded per-device media catalog populated by generated
-  and explicitly seeded samples.
-- For `0x8803`, select by type/channel/event/time and apply the protocol delete
-  behavior; return the generic acknowledgment and upload matching `0x0801`
-  records.
-- For `0x8805`, locate the media ID, honor the delete flag and upload that one
-  item or report the standard failure case.
-- For `0x8804`, simulate start/stop recording and saved versus real-time upload
-  semantics with deterministic test media. Model only behavior represented by
-  the command fields; do not claim real microphone capture.
-- Add full TCP client/server tests that verify acknowledgments, actual uploads,
-  catalog searches afterward, deletion behavior, and missing-item results.
+- 为模拟器提供有界的每设备媒体目录，由生成的样本和显式播种的样本填充。
+- 对 `0x8803`，按类型/通道/事件/时间选择并应用协议删除行为；
+  返回通用应答并上传匹配的 `0x0801` 记录。
+- 对 `0x8805`，定位媒体 ID，遵循删除标志并上传该单个条目，
+  或上报标准规定的失败情形。
+- 对 `0x8804`，用确定性测试媒体模拟开始/停止录音以及保存与实时
+  上传语义。只建模命令字段所表达的行为；不声称真实麦克风采集。
+- 增加完整 TCP 客户端/服务端测试，验证应答、实际上传、
+  事后的目录检索、删除行为与条目缺失的结果。
 
-**Acceptance:** `0x8803` and `0x8805` cause observable matching media uploads;
-`0x8804` changes simulator recording state and reports outcomes; `0x0802`
-search reflects the resulting catalog.
+**验收：** `0x8803` 和 `0x8805` 能产生可观测的匹配媒体上传；
+`0x8804` 会改变模拟器录音状态并上报结果；
+`0x0802` 检索反映结果目录内容。
 
-#### P0.4 — Server-side missing media packet detection and `0x8800` requests
+#### P0.4 —— 服务端缺失媒体包检测与 `0x8800` 请求
 
-**Status:** Done. The server tracks in-progress `0x0801` fragments by device and
-original serial, extracts the `MultiMediaID` from the first fragment, and on idle
-timeout sends `0x8800` listing the missing packet IDs. The simulator replays the
-cached frames; the server reassembles the media exactly once and releases state.
-If the first fragment (which carries the media ID) is missing, the server falls
-back to `0x8003` for that recovery only; non-media messages keep using `0x8003`
-exclusively.
+**状态：** 已完成。服务端按设备和原始流水号跟踪进行中的 `0x0801`
+分片，从首个分片提取 `MultiMediaID`，并在空闲超时后发送列出缺失包 ID
+的 `0x8800`。模拟器重放缓存的帧；服务端恰好重组一次媒体并释放状态。
+如果首个分片（携带媒体 ID）缺失，服务端仅对该次恢复降级为 `0x8003`；
+非媒体消息继续只使用 `0x8003`。
 
-**Work:**
+**工作内容：**
 
-- Define the media packet/fragment identity and timeout semantics from JT/T 808
-  and applicable JT/T 1078 rules; distinguish media packet IDs from JT808
-  transport fragment IDs.
-- Retain bounded receive state keyed by device/media ID and track expected,
-  received, duplicate and missing packet IDs.
-- At completion or timeout, send `0x8800` with exact missing packet IDs, retry
-  within a bounded policy, and finalize or expire the media record.
-- Ensure `0x8003` remains transport-level fragmentation recovery and has no
-  accidental interaction with media-level retransmission.
-- Test dropped, duplicated, reordered and expired media packets over the
-  simulator, including successful finalization after retransmission.
+- 依据 JT/T 808 与适用的 JT/T 1078 规则定义媒体包/分片的标识与超时
+  语义；区分媒体包 ID 与 JT808 传输分包 ID。
+- 保留按设备/媒体 ID 键控的有界接收状态，跟踪期望、已收、
+  重复与缺失的包 ID。
+- 在完成或超时后，发送携带精确缺失包 ID 的 `0x8800`，
+  在有界策略内重试，并完成或过期该媒体记录。
+- 确保 `0x8003` 仍是传输层分包恢复机制，
+  不与媒体层重传发生意外相互影响。
+- 通过模拟器测试媒体包的丢失、重复、乱序与过期，
+  包括重传后成功完成的场景。
 
-**Acceptance:** Dropping a media packet leads the server to request its media
-packet ID using `0x8800`; the simulator replays it; the server reconstructs
-the media exactly once and releases bounded state after completion/timeout.
+**验收：** 丢弃一个媒体包后，服务端会用 `0x8800` 请求其媒体包 ID；
+模拟器重放；服务端恰好重建该媒体一次，并在完成/超时后释放有界状态。
 
-**Dependency:** Verify media packet framing/IDs in the applicable standard
-before choosing a receive-state design.
+**依赖：** 在选择接收状态设计前，先在适用标准中核实媒体包组帧/ID。
 
-### P1 — Commercial protocol coverage and data correctness
+### P1 —— 商用协议覆盖与数据正确性
 
-#### P1.1 — Finish multimedia resource and location support
+#### P1.1 —— 补齐多媒体资源与定位支持
 
-**Status:** Done. `0x0200` decodes the 28-byte base body plus TLV extended
-(附加信息) items. `0x9205/0x1205` are backed by the same in-memory media catalog
-as `0x0802` search, with channel/media-type/time-range filters and serial
-correlation. HTTP `/device/:phone/media/resources` endpoint available.
+**状态：** 已完成。`0x0200` 解码 28 字节基础体加 TLV 扩展（附加信息）项。
+`0x9205/0x1205` 与 `0x0802` 检索共用同一内存媒体目录，
+支持通道/媒体类型/时间范围过滤和流水号关联。
+HTTP `/device/:phone/media/resources` 端点可用。
 
-**Work:**
+**工作内容：**
 
-- Decode `0x0200` TLV extended items (ID + 2-byte length + data) after the
-  28-byte base body; encode them back on serialization.
-- Refactor `0x1205` to carry a typed list of `DeviceMedia` items (28 bytes
-  each) instead of a single hard-coded record.
-- Back `processMsg9205` with `IndustryCache.MediaUploads`, filtering by logic
-  channel, media type (0=all/1=audio/2=video/3=video-or-av), and BCD time
-  range. Zero time boundaries mean no constraint.
-- Store the latest `0x1205` response per device and expose it via
-  `IndustryCache.MediaResourceList`.
+- 在 28 字节基础体之后解码 `0x0200` 的 TLV 扩展项（ID + 2 字节长度 + 数据）；
+  序列化时将其编码回去。
+- 重构 `0x1205`，携带类型化的 `DeviceMedia` 条目列表（每条 28 字节），
+  替代单条硬编码记录。
+- 用 `IndustryCache.MediaUploads` 支撑 `processMsg9205`，按逻辑通道、
+  媒体类型（0=全部/1=音频/2=视频/3=音视频）和 BCD 时间范围过滤。
+  全零时间边界表示无约束。
+- 按设备存储最新的 `0x1205` 响应，并通过
+  `IndustryCache.MediaResourceList` 暴露。
 
-**Acceptance:** `0x9205` queries return the same media items that `0x0802`
-search can retrieve; filters for channel, media type, and time range are
-verified end-to-end; empty catalog returns zero items; answer serial matches
-the query serial.
+**验收：** `0x9205` 查询返回的媒体项与 `0x0802` 检索结果一致；
+通道、媒体类型、时间范围的过滤均经端到端验证；
+空目录返回零条目；应答流水号与查询流水号一致。
 
-#### P1.2 — Implement high-value missing message families
+#### P1.2 —— 实现高价值的缺失消息族
 
-**Status:** All six sub-groups implemented end-to-end (typed models,
-processor, simulator storage, HTTP endpoints, e2e tests).
+**状态：** 全部六个子组均已端到端实现（类型化模型、
+处理器、模拟器存储、HTTP 端点、端到端测试）。
 
-**Recommended order:**
+**推荐顺序：**
 
-1. **Done** Text issue `0x8300` and event set/report `0x8301/0x0301`.
-2. **Done** Vehicle control `0x8500/0x0500` with explicit simulator-side safe test effects.
-3. **Done** Electronic waybill `0x0701` and batch positioning `0x0704`.
-4. **Done** Information question/menu/service `0x8302/0x0302`, `0x8303/0x0303`,
-   `0x8304`.
-5. **Done** Phone callback/phonebook `0x8400/0x8401` and terminal upgrade
-   `0x8108/0x0108` where target deployments require them.
-6. **Done** Transparent transmission `0x8900/0x0900` and compressed report
-   `0x0901` (with zlib decompression) for integrations that need them.
+1. **已完成** 文本下发 `0x8300` 与事件设置/上报 `0x8301/0x0301`。
+2. **已完成** 车辆控制 `0x8500/0x0500`，带明确的模拟器侧安全测试效果。
+3. **已完成** 电子运单 `0x0701` 与批量定位 `0x0704`。
+4. **已完成** 信息提问/菜单/服务 `0x8302/0x0302`、`0x8303/0x0303`、
+   `0x8304`。
+5. **已完成** 电话回拨/电话本 `0x8400/0x8401` 与终端升级
+   `0x8108/0x0108`（目标部署需要时）。
+6. **已完成** 透传 `0x8900/0x0900` 与压缩上报
+   `0x0901`（含 zlib 解压），供需要的集成使用。
 
-For each selected family, add typed models, bounds/encoding validation,
-processor/API behavior, simulator response or report behavior, and full flow
-tests. Prioritize by target industry and deployment contract; do not treat every
-Appendix B message as mandatory for every product.
+对每个选定的消息族，添加类型化模型、边界/编码校验、
+处理器/API 行为、模拟器响应或上报行为，以及完整流程测试。
+按目标行业和部署合同确定优先级；不要把附录 B 中的每条消息
+都当作每个产品的必选项。
 
-#### P1.3 — Review JT/T 808-2019 Amendment 1 and version compatibility
+#### P1.3 —— 评审 JT/T 808-2019 第 1 号修改单与版本兼容性
 
-**Status:** Not reviewed. The coverage document notes that the amendment text
-is not in the repository.
+**状态：** 未评审。覆盖文档注明修改单文本不在本仓库中。
 
-**Work:** Obtain the official amendment, list affected clauses/messages, update
-models and golden vectors, then document support by protocol version.
+**工作内容：** 获取官方修改单，列出受影响条款/消息，更新
+模型与黄金测试向量，然后按协议版本记录支持情况。
 
-**Acceptance:** A reviewed clause-to-code checklist and protocol vectors cover
-each amendment change in scope.
+**验收：** 一份评审过的条款到代码核对清单，
+以及覆盖范围内每项修改单变更的协议向量。
 
-### P2 — Persistence and production operation
+### P2 —— 持久化与生产运维
 
-#### P2.1 — Add a persistence abstraction and durable storage
+#### P2.1 —— 增加持久化抽象与持久存储
 
-**Status:** Not done. Device/session data and recent locations, alarms, regions,
-driver/CAN/recorder reports, media reports and uploads are held in memory;
-some caches are bounded and disappear on restart.
+**状态：** 未完成。设备/会话数据与最近的定位、报警、区域、
+司机/CAN/记录仪报告、媒体报告与上传都保存在内存中；
+部分缓存有界，重启即丢失。
 
-**Work:** Define repository interfaces, retention/TTL policies and migrations;
-implement durable storage for devices as needed, location history, alarm
-history/confirmation, region/route catalog, industry reports and media metadata.
-Store large media payloads separately from metadata (filesystem/object storage)
-and enforce size/retention limits. Add startup recovery and cleanup.
+**工作内容：** 定义仓储（Repository）接口、保留/TTL 策略与迁移；
+按需为设备实现持久存储，覆盖定位历史、报警历史/确认、
+区域/路线目录、行业报告与媒体元数据。
+大体积媒体负载与元数据分开存储（文件系统/对象存储），
+并执行大小/保留限制。增加启动恢复与清理。
 
-**Acceptance:** Restart does not lose configured durable records; retention and
-size policies are tested; storage failures surface through logs/API behavior;
-memory stays bounded under sustained load.
+**验收：** 重启不丢失配置的持久记录；保留与大小策略有测试；
+存储故障能通过日志/API 行为暴露；
+持续压力下内存保持有界。
 
-#### P2.2 — Operational readiness
+#### P2.2 —— 运维就绪度
 
-**Status:** Not comprehensively assessed.
+**状态：** 尚未全面评估。
 
-**Work:** Review authentication/authorization on HTTP control endpoints,
-configuration/secrets, rate and payload limits, structured metrics/logging,
-graceful shutdown, reconnect behavior, session/device concurrency, and
-deployment guidance. Add load and fault-injection tests after agreed targets
-are defined.
+**工作内容：** 评审 HTTP 控制端点的认证/授权、配置/密钥、
+速率与负载限制、结构化指标/日志、优雅停机、重连行为、
+会话/设备并发，以及部署指引。在约定目标之后增加
+负载与故障注入测试。
 
-**Acceptance:** Document operational assumptions and limits; exercise shutdown,
-reconnect, concurrent devices, oversized reports and storage/network failures.
+**验收：** 文档化运维假设与限制；演练停机、重连、并发设备、
+超大上报与存储/网络故障。
 
-## Deferred / deployment-dependent
+## 暂缓 / 依赖部署形态
 
-- RSA key exchange and encrypted bodies (`0x8A00/0x0A00`): defer until target
-  terminals require them and key-management requirements are agreed.
-- Vendor-reserved IDs and vendor-specific extensions: implement through an
-  explicit registry only when a device integration requires a defined format.
-- Durable alarm persistence was explicitly deferred earlier for a unified
-  persistence phase; it remains tracked under P2.1.
-- `JT/T 1078` media streaming is a separate protocol layer. This roadmap covers
-  JT808 media metadata/control and retransmission; it does not claim a complete
-  JT1078 RTP/media-stream implementation.
+- RSA 密钥交换与加密消息体（`0x8A00/0x0A00`）：暂缓，
+  直到目标终端需要且密钥管理需求达成一致。
+- 厂商保留 ID 与厂商私有扩展：仅当设备集成需要明确的格式时，
+  才通过显式注册表实现。
+- 报警持久化此前已明确暂缓，等待统一的持久化阶段；
+  仍在 P2.1 下跟踪。
+- `JT/T 1078` 媒体流是独立的协议层。本路线图覆盖
+  JT808 媒体元数据/控制与重传；不声称实现完整的
+  JT1078 RTP/媒体流。
 
-## How to maintain this record
+## 如何维护本记录
 
-- Update the status, code baseline and acceptance notes when a task lands.
-- Keep message-ID state and implementation notes in
-  [JT808-2019-coverage.md](JT808-2019-coverage.md); keep project tasks/dependencies
-  here. Both documents should agree on partial versus complete behavior.
-- A feature is complete only when codecs, processor/business behavior,
-  simulator behavior where applicable, and tests/documentation are all updated.
-- Record protocol edition/source when an implementation depends on external
-  standards; do not mark a standards-dependent parser complete without its
-  normative field definitions.
+- 任务落地时更新状态、代码基线与验收备注。
+- 消息 ID 状态与实现备注维护在
+  [JT808-2019-coverage.md](JT808-2019-coverage.md)；项目任务/依赖维护在本文件。
+  两份文档在"部分实现"与"完整实现"的认定上应保持一致。
+- 只有当编解码、处理器/业务行为、（适用时）模拟器行为、
+  测试/文档全部更新时，一个特性才算完成。
+- 实现依赖外部标准时记录协议版本/来源；
+  没有规范性字段定义时，不要把依赖标准的解析器标为完成。
