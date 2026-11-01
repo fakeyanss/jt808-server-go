@@ -300,6 +300,10 @@ type Coordinator interface {
 - 业务层通过**构造函数注入**接口；迁移期可提供一个返回接口（而非具体 `*Cache`）的访问器过渡，
   但名称同步改为接口名，`GetXxxCache` 与 `*Cache` 类型在 M1 完成后不再保留。
 
+> 实施状态（M2 已完成，见 §19.3）：`GetXxxCache` 与 `*Cache` 旧名已全部删除，调用点统一迁移到
+> 接口方法命名；对外只保留 `repository.go` 的接口、`NewXxxRepository` 构造器、`Stores` 聚合与
+> `Default()` 默认入口。上表"现有（文件）"列保留为历史对照。
+
 ---
 
 ## 7. 关系模型与迁移
@@ -664,4 +668,40 @@ internal/storage/
    `Read` 路径潜在越界。定位流程只用 `Write`/`Latest`，暂未触发。本轮未改动。
 4. `GeoRepository.Latest` 与既有 `GetGeoLatestByPhone` 一样返回缓冲区内的对象指针（非快照），
    调用方若修改会影响后续读取；这是既有语义，M1 为保持行为一致未改为深拷贝。
+
+### 19.3 M2（2026-11-01，分支 `dev/p0-baseline`，基线 `a170c1a`）
+
+**已落地**
+
+- 旧名全部删除：`GetDeviceCache` / `GetGeoCache` / `GetDeviceParamsCache` 及 `DeviceCache` /
+  `GeoCache` / `SessionCache` / `SegmentCache` / `sentSegmentCache` / `DeviceParamsCache` 类型；
+  包级函数 `GetSession` / `StoreSession` / `ClearSession` / `CacheSegment` / `MissingSegmentIndexes` /
+  `CacheMediaSegment` / `GetMediaSegmentSerial` / `CacheSentSegmentFrame` / `GetSentSegmentFrames`；
+  过渡方法 `GeoRepository.Ring` 与便捷方法 `HasPlate` / `HasPhone`。
+- 内存实现类型全部非导出：`memoryDeviceRepository` / `memoryGeoRepository` /
+  `memoryConnectionRegistry` / `memoryFragmentAssembler` / `memoryRetransmitTracker` /
+  `memoryDeviceParamsRepository`，包外只能通过接口使用。
+- 对外只保留 `repository.go`：六个接口、`NewXxxRepository` 构造器、`Stores` 聚合结构、
+  `NewStores()` 独立实例入口与 `Default()` 进程默认入口。
+- `Default()` 是唯一保留的全局入口。理由：msg_processor 注册表（`initProcessOption`）是包级函数，
+  其 `processFunc` 签名固定为 `(ctx, data) error`，无法逐条注入依赖；改造注册表属更大结构变更，
+  M2 先显式收口为单一 `Default()`，调用点与默认值来源可追溯（见 `repository.go` 注释）。
+- 迁移按五批提交，每批 `go build ./... && go vet ./... && go test -race ./...` 均通过：
+  ① storage 内部与测试（新增临时 `legacy.go` 兼容层承载旧 API，保证中间批次可编译）→
+  ② keepalive / packet_codec / 两个 retransmission / pipeline →
+  ③ api → ④ tcp/udp server、server 测试、client、test/client 模拟器 →
+  ⑤ msg_processor、msg_processor_test，并删除 `legacy.go`。
+- `HasPlate` / `HasPhone` 的调用点改为 `GetByPlate` / `GetByPhone` 返回 `ErrDeviceNotFound`
+  的等价判断；geo 写入统一走 `GeoRepository.Append`，`RingBuffer` 不再暴露到接口。
+- api `/api/device` 列表因 `List` 接口返回 error 增加 500 分支（内存实现实际不可达）。
+
+**完成后不再有全局访问的位置**
+
+- `internal/server`（tcp/udp server 及测试）、`internal/api`、`internal/client`、`test/client`、
+  `internal/protocol`（keepalive / codec / retransmission / pipeline / msg_processor 及测试）
+  对六类仓储只经 `storage.Default()` 显式访问；`internal/storage` 包内测试使用
+  `NewStores()` / `NewXxxRepository()` 独立实例，不触碰默认单例。
+- 仍为全局入口的只剩 §19.1 顺延的未接口化缓存：`GetAlarmCache` / `GetIndustryCache` /
+  `GetRegionCatalog` / 各 `GetXxxResponseBroker` / `GetLocationTrackingCache`，
+  待后续里程碑接口化时一并收口。
 

@@ -563,8 +563,9 @@ func processSegmentPacket(ctx context.Context, pkt *model.PacketData) (*model.Pr
 
 // 收到心跳，应刷新终端缓存有效期
 func processMsg0002(_ context.Context, data *model.ProcessData) error {
-	cache := storage.GetDeviceCache()
-	device, err := cache.GetDeviceByPhone(data.Incoming.GetHeader().PhoneNumber)
+	ctx := context.Background()
+	devices := storage.Default().Devices
+	device, err := devices.GetByPhone(ctx, data.Incoming.GetHeader().PhoneNumber)
 
 	// 缓存不存在，说明设备不合法，需要返回错误，让服务层处理关闭
 	if errors.Is(err, storage.ErrDeviceNotFound) {
@@ -572,15 +573,16 @@ func processMsg0002(_ context.Context, data *model.ProcessData) error {
 	}
 
 	device.LastestComTime = time.Now()
-	cache.CacheDevice(device)
+	_ = devices.Upsert(ctx, device)
 
 	return nil
 }
 
 // 收到注销，应清除缓存，断开连接。
 func processMsg0003(_ context.Context, data *model.ProcessData) error {
-	cache := storage.GetDeviceCache()
-	device, err := cache.GetDeviceByPhone(data.Incoming.GetHeader().PhoneNumber)
+	ctx := context.Background()
+	devices := storage.Default().Devices
+	device, err := devices.GetByPhone(ctx, data.Incoming.GetHeader().PhoneNumber)
 	// 缓存不存在，说明设备不合法，需要返回错误，让服务层处理关闭
 	if errors.Is(err, storage.ErrDeviceNotFound) {
 		return errors.Wrapf(err, "Fail to find device cache, phoneNumber=%s", data.Incoming.GetHeader().PhoneNumber)
@@ -589,7 +591,7 @@ func processMsg0003(_ context.Context, data *model.ProcessData) error {
 	timer := NewKeepaliveTimer()
 	timer.Cancel(device.Phone)
 	// 清楚缓存
-	cache.DelDeviceByPhone(device.Phone)
+	_ = devices.DeleteByPhone(ctx, device.Phone)
 	// 为避免连接TIMEWAIT，应等待对方主动关闭
 	return nil
 }
@@ -598,16 +600,16 @@ func processMsg0003(_ context.Context, data *model.ProcessData) error {
 func processMsg0100(ctx context.Context, data *model.ProcessData) error {
 	in := data.Incoming.(*model.Msg0100)
 
-	cache := storage.GetDeviceCache()
+	devices := storage.Default().Devices
 	// 校验注册逻辑
 	out := data.Outgoing.(*model.Msg8100)
 	// 车辆已被注册
-	if cache.HasPlate(in.PlateNumber) {
+	if _, err := devices.GetByPlate(ctx, in.PlateNumber); err == nil {
 		out.Result = model.ResCarAlreadyRegister
 		return nil
 	}
 	// 终端已被注册
-	if cache.HasPhone(in.Header.PhoneNumber) {
+	if _, err := devices.GetByPhone(ctx, in.Header.PhoneNumber); err == nil {
 		out.Result = model.ResDeviceAlreadyRegister
 		return nil
 	}
@@ -616,7 +618,7 @@ func processMsg0100(ctx context.Context, data *model.ProcessData) error {
 	device := model.NewDevice(in, session)
 	out.AuthCode = genAuthCode(device) // 设置鉴权码
 
-	cache.CacheDevice(device)
+	_ = devices.Upsert(ctx, device)
 
 	timer := NewKeepaliveTimer()
 	timer.Register(device.Phone)
@@ -627,8 +629,9 @@ func processMsg0100(ctx context.Context, data *model.ProcessData) error {
 func processMsg0102(_ context.Context, data *model.ProcessData) error {
 	in := data.Incoming.(*model.Msg0102)
 
-	cache := storage.GetDeviceCache()
-	device, err := cache.GetDeviceByPhone(in.Header.PhoneNumber)
+	ctx := context.Background()
+	devices := storage.Default().Devices
+	device, err := devices.GetByPhone(ctx, in.Header.PhoneNumber)
 	// 缓存不存在，说明设备不合法，需要返回错误，让服务层处理关闭
 	if errors.Is(err, storage.ErrDeviceNotFound) {
 		return errors.Wrapf(err, "Fail to find device cache, phoneNumber=%s", in.Header.PhoneNumber)
@@ -642,7 +645,7 @@ func processMsg0102(_ context.Context, data *model.ProcessData) error {
 		timer := NewKeepaliveTimer()
 		timer.Cancel(device.Phone)
 		// 删除设备缓存
-		cache.DelDeviceByPhone(device.Phone)
+		_ = devices.DeleteByPhone(ctx, device.Phone)
 	} else {
 		// 鉴权通过
 		device.Status = model.DeviceStatusOnline
@@ -650,7 +653,7 @@ func processMsg0102(_ context.Context, data *model.ProcessData) error {
 		device.AuthCode = in.AuthCode
 		device.IMEI = in.IMEI
 		device.SoftwareVersion = in.SoftwareVersion
-		cache.CacheDevice(device)
+		_ = devices.Upsert(ctx, device)
 	}
 
 	return nil
@@ -672,7 +675,7 @@ func genAuthCode(d *model.Device) string {
 func processMsg0104(_ context.Context, data *model.ProcessData) error {
 	in := data.Incoming.(*model.Msg0104)
 	if in.Parameters != nil {
-		storage.GetDeviceParamsCache().CacheDeviceParams(in.Parameters)
+		_ = storage.Default().Params.Replace(context.Background(), in.Parameters)
 	}
 	storage.GetParamResponseBroker().Deliver(in)
 	return nil
@@ -686,7 +689,7 @@ func processMsg0107(_ context.Context, data *model.ProcessData) error {
 func processMsg8201(_ context.Context, data *model.ProcessData) error {
 	in := data.Incoming.(*model.Msg8201)
 	out := data.Outgoing.(*model.Msg0201)
-	geo, err := storage.GetGeoCache().GetGeoLatestByPhone(in.Header.PhoneNumber)
+	geo, err := storage.Default().Geo.Latest(context.Background(), in.Header.PhoneNumber)
 	if err != nil {
 		return err
 	}
@@ -729,8 +732,9 @@ func processMsg8202(_ context.Context, data *model.ProcessData) error {
 func processMsg0200(_ context.Context, data *model.ProcessData) error {
 	in := data.Incoming.(*model.Msg0200)
 
-	cache := storage.GetDeviceCache()
-	device, err := cache.GetDeviceByPhone(in.Header.PhoneNumber)
+	ctx := context.Background()
+	devices := storage.Default().Devices
+	device, err := devices.GetByPhone(ctx, in.Header.PhoneNumber)
 	// 缓存不存在，说明设备不合法，需要返回错误，让服务层处理关闭
 	if errors.Is(err, storage.ErrDeviceNotFound) {
 		return errors.Wrapf(err, "Fail to find device cache, phoneNumber=%s", in.Header.PhoneNumber)
@@ -747,12 +751,10 @@ func processMsg0200(_ context.Context, data *model.ProcessData) error {
 	if dg.Geo.ACCStatus == 0 { // ACC关闭，设备休眠
 		device.Status = model.DeviceStatusSleeping
 		device.LastestComTime = time.Now()
-		cache.CacheDevice(device)
+		_ = devices.Upsert(ctx, device)
 	}
 
-	geoCache := storage.GetGeoCache()
-	rb := geoCache.GetGeoRingByPhone(device.Phone)
-	rb.Write(dg)
+	_ = storage.Default().Geo.Append(ctx, dg)
 
 	return nil
 }
@@ -779,8 +781,8 @@ func processMsg8001(ctx context.Context, data *model.ProcessData) error {
 	// 收到8001消息，说明此时是作为终端设备
 	if in.Result == model.ResultSuccess {
 		// 回复成功，说明之前注册成功，为方便后续处理，将设备状态改为Online并缓存
-		cache := storage.GetDeviceCache()
-		device, err := cache.GetDeviceByPhone(in.Header.PhoneNumber)
+		devices := storage.Default().Devices
+		device, err := devices.GetByPhone(context.Background(), in.Header.PhoneNumber)
 		if errors.Is(err, storage.ErrDeviceNotFound) {
 			return nil
 		}
@@ -791,7 +793,7 @@ func processMsg8001(ctx context.Context, data *model.ProcessData) error {
 		// 仅在未注册成功时执行一次
 		device.Status = model.DeviceStatusOnline
 		device.LastestComTime = time.Now()
-		cache.CacheDevice(device)
+		_ = devices.Upsert(context.Background(), device)
 	}
 
 	return nil
@@ -805,7 +807,7 @@ func processMsg8003(ctx context.Context, data *model.ProcessData) error {
 	if !ok || session == nil {
 		return nil
 	}
-	frames := storage.GetSentSegmentFrames(request.Header.PhoneNumber, request.OriginalSerialNumber, request.PacketIDs)
+	frames := storage.Default().Retrans.Frames(context.Background(), request.Header.PhoneNumber, request.OriginalSerialNumber, request.PacketIDs)
 	if frames == nil {
 		log.Warn().Str("device", request.Header.PhoneNumber).Uint16("original_serial", request.OriginalSerialNumber).Msg("No cached simulator fragments for retransmission request")
 		return nil
@@ -844,7 +846,7 @@ func processMsg8800(ctx context.Context, data *model.ProcessData) error {
 	if !ok || session == nil {
 		return nil
 	}
-	serial, ok := storage.GetMediaSegmentSerial(request.Header.PhoneNumber, request.MultiMediaID)
+	serial, ok := storage.Default().Retrans.MediaSerial(context.Background(), request.Header.PhoneNumber, request.MultiMediaID)
 	if !ok {
 		log.Warn().Str("device", request.Header.PhoneNumber).Uint32("media_id", request.MultiMediaID).Msg("No cached media fragments for retransmission request")
 		return nil
@@ -854,7 +856,7 @@ func processMsg8800(ctx context.Context, data *model.ProcessData) error {
 }
 
 func retransmitCachedSegments(session *model.Session, phone string, originalSerial uint16, packetIDs []uint16) {
-	frames := storage.GetSentSegmentFrames(phone, originalSerial, packetIDs)
+	frames := storage.Default().Retrans.Frames(context.Background(), phone, originalSerial, packetIDs)
 	if frames == nil {
 		log.Warn().Str("device", phone).Uint16("original_serial", originalSerial).Msg("No cached fragments for retransmission request")
 		return
@@ -876,8 +878,7 @@ func processMsg8100(_ context.Context, data *model.ProcessData) error {
 	in := data.Incoming.(*model.Msg8100)
 	out := data.Outgoing.(*model.Msg0102)
 
-	cache := storage.GetDeviceCache()
-	device, err := cache.GetDeviceByPhone(in.Header.PhoneNumber)
+	device, err := storage.Default().Devices.GetByPhone(context.Background(), in.Header.PhoneNumber)
 	if errors.Is(err, storage.ErrDeviceNotFound) {
 		// JT808 2013 registration responses carry the auth code in the response.
 		// A simulator that does not keep a local device cache can still continue
@@ -894,14 +895,15 @@ func processMsg8100(_ context.Context, data *model.ProcessData) error {
 // 收到设置终端参数请求，回复通用应答
 func processMsg8103(_ context.Context, data *model.ProcessData) error {
 	in := data.Incoming.(*model.Msg8103)
-	paramCache := storage.GetDeviceParamsCache()
-	params, err := paramCache.GetDeviceParamsByPhone(in.GetHeader().PhoneNumber)
+	ctx := context.Background()
+	paramsRepo := storage.Default().Params
+	params, err := paramsRepo.Get(ctx, in.GetHeader().PhoneNumber)
 	if errors.Is(err, storage.ErrDeviceParamsNotFound) {
 		params = in.Parameters
 	} else {
 		params.Update(in.Parameters)
 	}
-	paramCache.CacheDeviceParams(params)
+	_ = paramsRepo.Replace(ctx, params)
 
 	return nil
 }
@@ -910,8 +912,7 @@ func processMsg8103(_ context.Context, data *model.ProcessData) error {
 func processMsg8104(_ context.Context, data *model.ProcessData) error {
 	// todo: generate by config
 	out := data.Outgoing.(*model.Msg0104)
-	paramCache := storage.GetDeviceParamsCache()
-	params, err := paramCache.GetDeviceParamsByPhone(out.GetHeader().PhoneNumber)
+	params, err := storage.Default().Params.Get(context.Background(), out.GetHeader().PhoneNumber)
 	if errors.Is(err, storage.ErrDeviceParamsNotFound) {
 		out.Parameters = &model.DeviceParams{}
 		// 模拟一个固定的参数
@@ -956,7 +957,7 @@ func processMsg8104(_ context.Context, data *model.ProcessData) error {
 		if err := out.Parameters.Decode(out.Header.PhoneNumber, uint8(paramCnt), hex.Str2Byte(paramByteStr)); err != nil {
 			return err
 		}
-		paramCache.CacheDeviceParams(out.Parameters)
+		_ = storage.Default().Params.Replace(context.Background(), out.Parameters)
 	} else {
 		out.Parameters = params
 	}

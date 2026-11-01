@@ -60,10 +60,10 @@ func locationReportBody(alarmSign uint32) []byte {
 // 位置上报写入定位缓存。
 func TestLocationReportWritesGeoCache(t *testing.T) {
 	const phone = "188765499002"
-	storage.GetDeviceCache().CacheDevice(&model.Device{Phone: phone, Keepalive: time.Minute})
+	storage.Default().Devices.Upsert(context.Background(), &model.Device{Phone: phone, Keepalive: time.Minute})
 	t.Cleanup(func() {
-		storage.GetDeviceCache().DelDeviceByPhone(phone)
-		storage.GetGeoCache().DelGeoByPhone(phone)
+		storage.Default().Devices.DeleteByPhone(context.Background(), phone)
+		storage.Default().Geo.Delete(context.Background(), phone)
 	})
 
 	processor := NewJT808MsgProcessor(nil)
@@ -72,7 +72,7 @@ func TestLocationReportWritesGeoCache(t *testing.T) {
 	require.NoError(t, err)
 	require.IsType(t, &model.Msg8001{}, result.Outgoing)
 
-	geo, err := storage.GetGeoCache().GetGeoLatestByPhone(phone)
+	geo, err := storage.Default().Geo.Latest(context.Background(), phone)
 	require.NoError(t, err)
 	require.Equal(t, phone, geo.Phone)
 }
