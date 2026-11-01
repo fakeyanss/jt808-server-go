@@ -45,12 +45,12 @@ func (r *deviceParamsRepository) Get(ctx context.Context, phone string) (*model.
 		return nil, repository.ErrDeviceParamsNotFound
 	}
 	if err != nil {
-		return nil, fmt.Errorf("查询终端参数 %s 失败: %w", phone, err)
+		return nil, fmt.Errorf("get device params %s: %w", phone, err)
 	}
 
 	params := &model.DeviceParams{DevicePhone: phone, ParamCnt: uint8(paramCnt)}
 	if err := json.Unmarshal(paramsJSON, &params.Params); err != nil {
-		return nil, fmt.Errorf("解析终端参数 %s 失败: %w", phone, err)
+		return nil, fmt.Errorf("decode device params %s: %w", phone, err)
 	}
 	return params, nil
 }
@@ -58,7 +58,7 @@ func (r *deviceParamsRepository) Get(ctx context.Context, phone string) (*model.
 func (r *deviceParamsRepository) Replace(ctx context.Context, params *model.DeviceParams) error {
 	payload, err := json.Marshal(params.Params)
 	if err != nil {
-		return fmt.Errorf("序列化终端参数 %s 失败: %w", params.DevicePhone, err)
+		return fmt.Errorf("encode device params %s: %w", params.DevicePhone, err)
 	}
 	stmt := paramsUpsertSQLite
 	if r.store.backend == BackendMySQL {
@@ -66,14 +66,14 @@ func (r *deviceParamsRepository) Replace(ctx context.Context, params *model.Devi
 	}
 	if _, err := r.store.db.ExecContext(ctx, stmt,
 		params.DevicePhone, int16(params.ParamCnt), payload, time.Now().UnixMilli()); err != nil {
-		return fmt.Errorf("写入终端参数 %s 失败: %w", params.DevicePhone, err)
+		return fmt.Errorf("replace device params %s: %w", params.DevicePhone, err)
 	}
 	return nil
 }
 
 func (r *deviceParamsRepository) Delete(ctx context.Context, phone string) error {
 	if _, err := r.store.db.ExecContext(ctx, `DELETE FROM device_params WHERE phone = ?`, phone); err != nil {
-		return fmt.Errorf("删除终端参数 %s 失败: %w", phone, err)
+		return fmt.Errorf("delete device params %s: %w", phone, err)
 	}
 	return nil
 }

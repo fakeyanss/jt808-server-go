@@ -93,7 +93,7 @@ func Open(cfg Config) (*Stores, error) {
 		stores.close = sqlStore.Close
 		return stores, nil
 	default:
-		return nil, fmt.Errorf("非法的存储后端类型 %q，可选 memory|sqlite|mysql", cfg.Type)
+		return nil, fmt.Errorf("unsupported storage backend %q, expected memory|sqlite|mysql", cfg.Type)
 	}
 }
 

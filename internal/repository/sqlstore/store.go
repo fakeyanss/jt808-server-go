@@ -41,7 +41,7 @@ type Store struct {
 // Open 打开数据库、校验连通性并执行幂等建表。
 func Open(cfg Config) (*Store, error) {
 	if cfg.Backend != BackendSQLite && cfg.Backend != BackendMySQL {
-		return nil, fmt.Errorf("不支持的 SQL 存储后端: %q", cfg.Backend)
+		return nil, fmt.Errorf("unsupported sql storage backend %q", cfg.Backend)
 	}
 	driver, dsn, err := buildDSN(cfg)
 	if err != nil {
@@ -49,7 +49,7 @@ func Open(cfg Config) (*Store, error) {
 	}
 	db, err := stdsql.Open(driver, dsn)
 	if err != nil {
-		return nil, fmt.Errorf("打开 %s 数据库失败: %w", cfg.Backend, err)
+		return nil, fmt.Errorf("open %s database: %w", cfg.Backend, err)
 	}
 	tunePool(db, cfg.Backend)
 
@@ -57,11 +57,11 @@ func Open(cfg Config) (*Store, error) {
 	defer cancel()
 	if err := db.PingContext(ctx); err != nil {
 		_ = db.Close()
-		return nil, fmt.Errorf("连接 %s 数据库失败: %w", cfg.Backend, err)
+		return nil, fmt.Errorf("connect to %s database: %w", cfg.Backend, err)
 	}
 	if err := migrate(ctx, db); err != nil {
 		_ = db.Close()
-		return nil, fmt.Errorf("初始化 %s 表结构失败: %w", cfg.Backend, err)
+		return nil, fmt.Errorf("initialize %s schema: %w", cfg.Backend, err)
 	}
 	return &Store{db: db, backend: cfg.Backend}, nil
 }
@@ -93,16 +93,16 @@ func buildDSN(cfg Config) (string, string, error) {
 	switch cfg.Backend {
 	case BackendSQLite:
 		if strings.TrimSpace(cfg.Path) == "" {
-			return "", "", fmt.Errorf("sqlite 存储缺少 path 配置")
+			return "", "", fmt.Errorf("sqlite storage requires a path")
 		}
 		return "sqlite", "file:" + cfg.Path + "?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)", nil
 	case BackendMySQL:
 		if strings.TrimSpace(cfg.DSN) == "" {
-			return "", "", fmt.Errorf("mysql 存储缺少 dsn 配置")
+			return "", "", fmt.Errorf("mysql storage requires a dsn")
 		}
 		return "mysql", cfg.DSN, nil
 	default:
-		return "", "", fmt.Errorf("不支持的 SQL 存储后端: %q", cfg.Backend)
+		return "", "", fmt.Errorf("unsupported sql storage backend %q", cfg.Backend)
 	}
 }
 

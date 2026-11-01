@@ -23,7 +23,7 @@ func TestConnectionRegistryBindGetUnbind(t *testing.T) {
 
 	got, err := registry.Get(ctx, session.ID)
 	require.NoError(t, err)
-	require.Same(t, session, got, "连接现场按引用保存，不返回副本")
+	require.Same(t, session, got, "connection registry must keep the same reference and not return a copy")
 	require.Equal(t, 1, registry.Count(ctx))
 
 	registry.Unbind(ctx, session.ID)

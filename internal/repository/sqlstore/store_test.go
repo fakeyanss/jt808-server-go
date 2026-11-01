@@ -155,7 +155,7 @@ func TestSQLiteConcurrentDeviceWrites(t *testing.T) {
 func TestMySQLPersistence(t *testing.T) {
 	dsn := os.Getenv("JT808_TEST_MYSQL_DSN")
 	if dsn == "" {
-		t.Skip("未设置 JT808_TEST_MYSQL_DSN，跳过 MySQL 集成测试")
+		t.Skip("JT808_TEST_MYSQL_DSN is not set; skipping MySQL integration test")
 	}
 	ctx := context.Background()
 	store, err := Open(Config{Backend: BackendMySQL, DSN: dsn})

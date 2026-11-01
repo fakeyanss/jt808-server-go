@@ -135,7 +135,7 @@ func (r *deviceRepository) GetByPhone(ctx context.Context, phone string) (*model
 		return nil, repository.ErrDeviceNotFound
 	}
 	if err != nil {
-		return nil, fmt.Errorf("查询设备 %s 失败: %w", phone, err)
+		return nil, fmt.Errorf("get device %s: %w", phone, err)
 	}
 	return device, nil
 }
@@ -149,7 +149,7 @@ func (r *deviceRepository) GetByPlate(ctx context.Context, plate string) (*model
 		return nil, repository.ErrDeviceNotFound
 	}
 	if err != nil {
-		return nil, fmt.Errorf("查询车牌 %s 失败: %w", plate, err)
+		return nil, fmt.Errorf("get device by plate %s: %w", plate, err)
 	}
 	return device, nil
 }
@@ -157,7 +157,7 @@ func (r *deviceRepository) GetByPlate(ctx context.Context, plate string) (*model
 func (r *deviceRepository) List(ctx context.Context) ([]*model.Device, error) {
 	rows, err := r.store.db.QueryContext(ctx, `SELECT `+deviceColumns+` FROM devices ORDER BY phone ASC`)
 	if err != nil {
-		return nil, fmt.Errorf("查询设备列表失败: %w", err)
+		return nil, fmt.Errorf("list devices: %w", err)
 	}
 	defer rows.Close()
 
@@ -165,12 +165,12 @@ func (r *deviceRepository) List(ctx context.Context) ([]*model.Device, error) {
 	for rows.Next() {
 		device, err := scanDeviceRow(rows)
 		if err != nil {
-			return nil, fmt.Errorf("扫描设备行失败: %w", err)
+			return nil, fmt.Errorf("scan device row: %w", err)
 		}
 		devices = append(devices, device)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("遍历设备列表失败: %w", err)
+		return nil, fmt.Errorf("iterate device rows: %w", err)
 	}
 	return devices, nil
 }
@@ -181,21 +181,21 @@ func (r *deviceRepository) Upsert(ctx context.Context, device *model.Device) err
 		stmt = deviceUpsertMySQL
 	}
 	if _, err := r.store.db.ExecContext(ctx, stmt, newDeviceRow(device).args()...); err != nil {
-		return fmt.Errorf("写入设备 %s 失败: %w", device.Phone, err)
+		return fmt.Errorf("upsert device %s: %w", device.Phone, err)
 	}
 	return nil
 }
 
 func (r *deviceRepository) DeleteByPhone(ctx context.Context, phone string) error {
 	if _, err := r.store.db.ExecContext(ctx, `DELETE FROM devices WHERE phone = ?`, phone); err != nil {
-		return fmt.Errorf("删除设备 %s 失败: %w", phone, err)
+		return fmt.Errorf("delete device %s: %w", phone, err)
 	}
 	return nil
 }
 
 func (r *deviceRepository) DeleteByPlate(ctx context.Context, plate string) error {
 	if _, err := r.store.db.ExecContext(ctx, `DELETE FROM devices WHERE plate = ?`, plate); err != nil {
-		return fmt.Errorf("删除车牌 %s 失败: %w", plate, err)
+		return fmt.Errorf("delete devices by plate %s: %w", plate, err)
 	}
 	return nil
 }
