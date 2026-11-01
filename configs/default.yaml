@@ -25,3 +25,11 @@ server:
   banner:
     enable: true
     bannerPath: "configs/banner.txt"
+
+# 持久化后端：memory | sqlite | mysql，缺省 memory（行为与旧版本一致）
+storage:
+  type: "memory"
+  sqlite:
+    path: "./data/jt808.db"
+  mysql:
+    dsn: ""

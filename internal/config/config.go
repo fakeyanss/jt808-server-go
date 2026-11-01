@@ -147,9 +147,25 @@ type DeviceParamsConf struct {
 }
 
 type Config struct {
-	Log    *logConf    `yaml:"log"`
-	Server *serverConf `yaml:"server"`
-	Client *clientConf `yaml:"client"`
+	Log     *logConf     `yaml:"log"`
+	Server  *serverConf  `yaml:"server"`
+	Client  *clientConf  `yaml:"client"`
+	Storage *storageConf `yaml:"storage"`
+}
+
+// storageConf 配置持久化后端；type 缺省为 memory。
+type storageConf struct {
+	Type   string      `yaml:"type"`
+	SQLite *sqliteConf `yaml:"sqlite"`
+	MySQL  *mysqlConf  `yaml:"mysql"`
+}
+
+type sqliteConf struct {
+	Path string `yaml:"path"`
+}
+
+type mysqlConf struct {
+	DSN string `yaml:"dsn"`
 }
 
 var (

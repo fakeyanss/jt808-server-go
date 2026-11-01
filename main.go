@@ -12,6 +12,7 @@ import (
 	"github.com/fakeyanss/jt808-server-go/internal/api"
 	"github.com/fakeyanss/jt808-server-go/internal/config"
 	"github.com/fakeyanss/jt808-server-go/internal/server"
+	"github.com/fakeyanss/jt808-server-go/internal/storage"
 	"github.com/fakeyanss/jt808-server-go/pkg/logger"
 	"github.com/fakeyanss/jt808-server-go/pkg/routines"
 )
@@ -27,6 +28,23 @@ func main() {
 
 	logConfig := cfg.ParseLogConf()
 	log.Logger = *logger.Configure(logConfig).Logger
+
+	storageCfg := storage.Config{}
+	if cfg.Storage != nil {
+		storageCfg.Type = cfg.Storage.Type
+		if cfg.Storage.SQLite != nil {
+			storageCfg.SQLitePath = cfg.Storage.SQLite.Path
+		}
+		if cfg.Storage.MySQL != nil {
+			storageCfg.MySQLDSN = cfg.Storage.MySQL.DSN
+		}
+	}
+	backend, storageErr := storage.Init(storageCfg)
+	if storageErr != nil {
+		log.Error().Err(storageErr).Msg("Fail to initialize storage backend")
+		os.Exit(1)
+	}
+	log.Info().Str("backend", backend).Msg("Storage backend initialized")
 
 	var hooks action.Hooks = action.Noop{}
 	if cfg.Server.Action != nil && cfg.Server.Action.HTTP != nil && cfg.Server.Action.HTTP.URL != "" {

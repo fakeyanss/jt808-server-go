@@ -344,6 +344,20 @@ alarms:    按时间保留（默认 720h）且每设备上限（默认 5000 条�
 - 定时（如每 10 分钟）+ 写入时惰性触发 `Trim`；删除走时间索引，分批 `DELETE ... LIMIT`，避免大事务。
 - 内存 L1 维持现有 RingBuffer/切片上界，作为热读与抗抖动层，不再是唯一副本。
 
+### 7.4 本期实现与关系模型的差异（2026-11-01）
+
+本期 SQL 后端只覆盖 `DeviceRepository` 与 `DeviceParamsRepository`，据此与 §7.1 的差异如下：
+
+| 项 | §7.1 设计 | 本期实现 | 原因/建议 |
+|---|---|---|---|
+| 设备运行时投影 | 拆 `devices` + `device_runtime` 两表，`last_com_time` 节流写 | 单表 `devices` 含 `session_id`/`trans_proto`/`keepalive_ms`/`last_com_time_ms`/`status` | `DeviceRepository` 契约返回完整 `model.Device` 快照；过早拆表会让每个读路径多一次 JOIN 且需先定义合并语义。建议等 A 类运行时投影独立后再拆表，并引入节流写 |
+| `plate` 唯一性 | `plate` UNIQUE | 未加唯一约束 | 内存实现按 `plate` 覆盖映射、允许空车牌重复，加 UNIQUE 会改变既有行为（多个空车牌或同牌设备会写入失败）。建议业务确认车牌唯一后再加唯一索引 |
+| `devices` 索引 | 未明确 | 仅 `phone` 主键 | 本期查询以 `phone` 为主；`GetByPlate` 走 `plate` 全表扫描，设备量增大后建议补 `(plate)` 普通索引（不加唯一） |
+| `device_params` | 参数集合整体 JSON 单字段 | 一致（`params_json` TEXT） | 遵循 D1；`ParamValue` 的 JSON 数字会以 `float64` 回读，既有 `any2uintX` 编码逻辑已兼容 |
+| `locations` / `alarms` / `region_items` / `terminal_catalogs` / `command_outbox` / `terminal_properties` | B 类持久化 | 仍为内存实现 | 本期不新建业务语义。`AlarmRepository` 无 `ctx`，且含 30 分钟去重、每设备 1000 条上限、10 分钟确认命令过期等行为；直接落库会改变语义，建议后续按 §6.1 接口细化后再实现 |
+| `schema_migrations` | 版本化迁移器 | 已实现（`version` 主键 + `applied_at`） | 启动时幂等执行；建表用 `CREATE TABLE IF NOT EXISTS`，MySQL 不依赖 `CREATE INDEX IF NOT EXISTS` |
+| 主键类型 | 未指定 | `VARCHAR` 主键 + `BIGINT` 毫秒时间戳 | 同时兼容 SQLite/MySQL；时间用毫秒整数避免时区与解析差异 |
+
 ---
 
 ## 8. 内存层与写策略
@@ -524,29 +538,17 @@ GET /api/devices/{phone}
 
 ```yaml
 storage:
-  driver: memory          # memory | sqlite | mysql
-  dsn: "./data/jt808.db"  # sqlite: 文件路径；mysql: DSN；memory: 忽略
-  coordinator:
-    enabled: false        # 场景3 置 true
-    redisAddr: "127.0.0.1:6379"
-    redisDB: 0
-    ownerTTLSeconds: 90            # ≈3×keepalive
-    offlineGraceSeconds: 12
-  frontCache:
-    enabled: true         # 进程内 L1 热缓存开关；单机/分布式均可关（关后配置类直读直写库、latest 回源库/Redis），默认开
-  write:
-    historyIntervalMs: 1000
-    historyBatchSize: 500
-    runtimeFlushSeconds: 45
-  retention:
-    locationHours: 168
-    alarmHours: 720
-    maxLocationsPerDevice: 10000
-    maxAlarmsPerDevice: 5000
-  strict: false           # true 时管理 API 对耐用写失败返回错误
+  type: memory            # memory | sqlite | mysql（缺省 memory）
+  sqlite:
+    path: "./data/jt808.db"   # type=sqlite 时必填
+  mysql:
+    dsn: ""                    # type=mysql 时必填，如 user:pass@tcp(host:port)/db
 ```
 
 `config.Config` 增加 `Storage *storageConf`，沿用现有 viper Unmarshal 流程。
+启动时由 `storage.Init(Config)` 选择后端并完成建表；非法 `type`、缺失 `path`/`dsn` 直接报错退出，
+启动日志打印 `backend=<实际后端>`。`coordinator` / `frontCache` / `write` / `retention` / `strict`
+等字段属 M3 及后续范围，本期未实现，避免配置出现但无效果的误导。
 
 ---
 
@@ -561,8 +563,12 @@ internal/repository/              # 持久化契约 + 内存实现；只依赖 m
   alarm_repository.go             # AlarmRepository（报警历史 + 确认关联）
   region_repository.go            # RegionRepository（圆/矩形/多边形/路线目录）
   industry_repository.go          # IndustryRepository（行业上报/下发目录快照）
-  sql/                            # M2：SQL 实现（device/params + 迁移器），待实现
-  migration/                      # go:embed 的版本化 *.sql + 迁移器
+  sqlstore/                       # SQL 实现（SQLite / MySQL 共用，已实现 device/params）
+    store.go                      # 连接池、DSN、schema_migrations 迁移执行
+    schema.go                     # 建表 DDL 与版本列表
+    device_repository.go          # DeviceRepository（含最小 upsert 方言差异）
+    params_repository.go          # DeviceParamsRepository（参数 JSON 单字段）
+    store_test.go                 # 临时文件真实读写、并发、重开验证
 
 internal/runtime/                 # A 类执行现场：生命周期绑定连接/进程，多实例不可共享
   runtime.go                      # ConnectionRegistry / FragmentAssembler / RetransmitTracker
@@ -584,7 +590,8 @@ internal/storage/                 # 仅装配：后端选择与初始化
 依赖方向（编译期约束）：
 
 - `repository`、`runtime` 只依赖 `internal/protocol/model`，互不依赖；
-- `storage` → `repository`（后端选择与组装），不反向；
+- `repository/sqlstore` → `repository`（实现其接口与错误值），不反向；
+- `storage` → `repository` / `repository/sqlstore`（后端选择与组装），不反向；
 - `protocol` / `server` / `api` / `client` / `test/client` → `storage.Default()`（持久化仓储）
   与 `runtime.Default()`（A 类执行现场），二者入口分离；
 - 包外只能通过接口使用内存实现，`*Cache` 等旧名与旧全局入口已全部删除。
@@ -772,4 +779,54 @@ internal/storage/                 # 仅装配：后端选择与初始化
 
 **行为保持**：协议输出、错误值、TTL/容量、深拷贝与并发语义均未改变；仅包路径、类型可见性与
 访问入口变化。
+
+### 19.5 SQL 后端（SQLite / MySQL，2026-11-01，基线 `183a33c`）
+
+**范围**：只实现 `DeviceRepository` 与 `DeviceParamsRepository`；其余 B 类仓储仍为内存实现，
+不新建业务语义（与 §7.4 一致）。
+
+**新增依赖**
+
+- `modernc.org/sqlite v1.58.0`：纯 Go，无 cgo，`CGO_ENABLED=0 go build ./...` 已验证通过。
+  未选 `mattn/go-sqlite3` 以避免 Docker/CI 交叉编译依赖 C 工具链。
+- `github.com/go-sql-driver/mysql v1.10.1`：官方生态常用 MySQL 驱动。
+- 为兼容本机 `goenv`（仅安装 `1.26`），将 `modernc.org/libc` 固定为 `v1.75.6`、
+  `golang.org/x/sys` 固定为 `v0.47.0`（其上游版本声明 `go 1.26.0`，会导致 `go.mod` 被抬到
+  未安装的补丁工具链）。
+
+**实现位置**：`internal/repository/sqlstore`（持久化实现下沉 repository，
+`internal/storage` 只负责后端选择与装配）。
+
+**建表与迁移**
+
+- `schema_migrations(version INTEGER PRIMARY KEY, applied_at BIGINT NOT NULL)`；
+  启动时按版本幂等执行 `CREATE TABLE IF NOT EXISTS`，不引入迁移框架。
+- `devices`：`phone` 主键；字段与 `model.Device` 可序列化部分一一对应，`Conn` 不入库；
+  时间统一存毫秒整数；未加 `plate` 唯一约束（原因见 §7.4）。
+- `device_params`：`phone` 主键，`param_cnt` + `params_json`，遵循 D1。
+
+**连接池与事务边界**
+
+- SQLite：`SetMaxOpenConns(1)`，DSN 带 `busy_timeout(5000)` 与 `journal_mode(WAL)`，
+  单写者模型下避免 `SQLITE_BUSY`。
+- MySQL：`MaxOpenConns=10`、`MaxIdleConns=5`、`ConnMaxLifetime=30m`。
+- 本期 Device/Params 的写操作均为单语句，使用隐式事务；区域「清空+重设」等后续多步操作
+  再引入显式 `UnitOfWork`。
+
+**验证**
+
+- SQLite：临时文件真实读写；关闭后重新打开同一 db 可读到设备与参数；8 并发写 + 并发读
+  `go test -race` 通过；不存在数据返回既有错误值 `ErrDeviceNotFound` / `ErrDeviceParamsNotFound`。
+- 启动冒烟：`type=sqlite` 能建库并打印 `backend=sqlite`；`type=redis` 启动报错退出（exit=1）。
+- MySQL：仓库内测试通过 `JT808_TEST_MYSQL_DSN` 环境变量启用，本地无实例时跳过；
+  未验证假设见下。
+- 默认 `storage.type=memory` 时既有测试全部不变。
+
+**MySQL 未验证假设**
+
+1. `ON DUPLICATE KEY UPDATE ... VALUES(col)` 在 MySQL 8.0.20+ 会产生弃用告警但语义正确；
+   若目标版本更高，可迁移到 `INSERT ... AS new ON DUPLICATE KEY UPDATE`。
+2. `VARCHAR(32)` 主键在 `utf8mb4` 下索引长度符合默认 `innodb_large_prefix`（3072 字节）限制。
+3. DSN 未强制 `parseTime`/`loc`，因为时间统一以毫秒整数读写，不依赖驱动时区解析。
+4. 并发写入依赖 InnoDB 行锁与主键冲突语义；未在真实 MySQL 上跑 8 并发用例。
 
