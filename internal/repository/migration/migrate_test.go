@@ -20,7 +20,7 @@ func newTestDB(t *testing.T) *sql.DB {
 }
 
 func TestExpectedVersionMatchesEmbeddedFiles(t *testing.T) {
-	require.Len(t, migrations, 3)
+	require.Len(t, migrations, 4)
 	require.Equal(t, migrations[len(migrations)-1].version, ExpectedVersion())
 }
 
@@ -41,12 +41,16 @@ func TestApplyIsIdempotent(t *testing.T) {
 	require.NoError(t, db.QueryRowContext(ctx, `SELECT COUNT(*) FROM schema_migrations`).Scan(&rows))
 	require.Equal(t, ExpectedVersion(), rows)
 
-	// 迁移后三张业务表均存在。
+	// 迁移后业务表与车牌索引均存在。
 	for _, table := range []string{"devices", "device_params", "terminal_properties", "device_runtime"} {
 		var name string
 		err := db.QueryRowContext(ctx, `SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?`, table).Scan(&name)
 		require.NoError(t, err, "table %s should exist", table)
 	}
+	var index string
+	require.NoError(t, db.QueryRowContext(ctx,
+		`SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_devices_plate'`).Scan(&index))
+	require.Equal(t, "idx_devices_plate", index)
 }
 
 // 设备表已不含运行时列，运行时列集中在 device_runtime。

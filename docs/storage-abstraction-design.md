@@ -129,7 +129,8 @@ DeviceRecord（B，可持久化）          DeviceRuntime（A，仅内存）
    共用同一套表结构与仓储 SQL，方言差异收敛到一个薄 `Dialect`。放弃 bbolt
    （bbolt 仅在「终态也是 KV」时占优；终态是 MySQL 时会导致仓储写两套，详见 §13）。
 2. **DAL 手写 SQL + `database/sql`**，不引入 ORM；SQL 集中在仓储层，配小 `Dialect` 与 scan helper。
-3. **迁移**：`go:embed` 内嵌 `.sql` + 极简幂等迁移器（启动建表，DDL 与 Store 解耦）。
+3. **迁移**：`go:embed` 内嵌 `.sql` + 极简版本化迁移器（DDL 与 Store 解耦，启动只校验版本，
+   迁移由 `migrate` 子命令执行，见 §7.2）。
 4. **Go 工具链升级到当前最新稳定版**（Go 官方无 LTS 概念，实施时以当时 latest stable 为准），
    以满足纯 Go SQLite 驱动与 go-redis 的最低版本要求；预期业务代码零改动。
 
@@ -315,7 +316,7 @@ type Coordinator interface {
 | 表 | 用途 | 关键约束/索引 |
 |---|---|---|
 | `devices` | 设备静态主数据（B，来源 0x0100/0x0102 主动上报） | `phone` PK；`plate` 仅普通索引（不加唯一，见 §7.4）；拆分后 10 列，不含运行时投影 |
-| `device_runtime` | 设备运行时投影（B，与设备写入同事务更新） | `phone` PK，`session_id`,`trans_proto`,`last_com_time_ms`,`status`,`updated_at`；启动时清空 `session_id`、`status` 归 offline（见 §7.4） |
+| `device_runtime` | 设备运行时投影（B，与设备写入同事务更新） | `phone` PK，`session_id`,`trans_proto`,`last_com_time_ms`,`status`,`updated_at`；**不在启动时批量重置**：单机由优雅停机清空，异常重启的残留由读路径 TTL 判定收敛为离线（见 §7.4） |
 | `device_params` | 终端参数（B） | `phone` PK，参数集合**整体 JSON 单字段**（已定，见 §18-D1；将来需要按参数 ID 服务端查询时再演进为 EAV） |
 | `terminal_properties` | 终端属性档案（B，来源 0x0107 查询应答） | `phone` PK，常用属性列化 + `extra_json` 长尾兜底；与 `devices` 不合并（见 §7.4） |
 | `region_items` | 区域/路线（B） | 唯一键 `(phone, family, region_id)`，payload JSON，`updated_at`；**本期非交付项** |
@@ -330,11 +331,14 @@ type Coordinator interface {
 ### 7.2 迁移
 
 - 目录：`internal/repository/migration/0001_init.sql`、`0002_terminal_properties.sql`、
-  `0003_device_runtime.sql`，用 `go:embed` 编译进二进制；SQL 文件中不再用 Go 常量拼 DDL。
+  `0003_device_runtime.sql`、`0004_devices_plate_index.sql`，用 `go:embed` 编译进二进制；
+  SQL 文件中不再用 Go 常量拼 DDL。
   `schema_migrations` 由迁移器自身引导建表（迁移机制自身的元数据，是唯一保留在 Go 里的 DDL）。
 - **显式迁移入口**：`jt808-server -c <config> migrate`（SQLite/MySQL 均可用）；
-  MySQL 场景 DBA 可直接按文件名顺序执行这些 `.sql`。语句均为幂等形式
-  （`CREATE TABLE IF NOT EXISTS` / `ALTER TABLE`），执行前请先备份并核对 `schema_migrations`。
+  MySQL 场景 DBA 可直接按文件名顺序执行这些 `.sql`。除索引创建外语句均为幂等形式
+  （`CREATE TABLE IF NOT EXISTS` / `ALTER TABLE IF EXISTS`）；`0004` 的 `CREATE INDEX`
+  在 MySQL 上没有 `IF NOT EXISTS`，重复手工执行会报"索引已存在"，属预期，执行前请先备份并核对
+  `schema_migrations`。
 - **启动只校验不执行**：读取 `MAX(version)` 与期望版本比较。低于期望 → 报错退出并提示执行迁移命令；
   高于期望 → 报错（库版本高于程序版本），拒绝启动。
 - **SQLite 例外**：嵌入式场景允许自动迁移，配置 `storage.sqlite.autoMigrate`，缺省 `true`；
@@ -366,10 +370,10 @@ alarms:    按时间保留（默认 720h）且每设备上限（默认 5000 条�
 
 | 项 | §7.1 设计 | 本轮实现 | 原因/建议 |
 |---|---|---|---|
-| 设备运行时投影 | 拆 `devices` + `device_runtime` 两表，`last_com_time` 节流写 | 拆为：`devices` 保留 10 列静态/身份字段，`device_runtime` 承载 `session_id`/`trans_proto`/`last_com_time_ms`/`status`/`updated_at`。读用 `LEFT JOIN` 合并回完整 `model.Device`，写在同一事务内按归属分写两表 | `keepalive_ms` 是代码常量（`model.NewDevice` 固定 1 分钟，`device.go:50`），不属运行时观测值，留在 `devices`。**重启语义**：`session_id` 清空（连接现场只在 A 类 `ConnectionRegistry` 有效）、`status` 一律 offline；`last_com_time_ms` 只作"上次交互时间"，不作为在线判定依据。**本轮不改变写入频率**（心跳仍逐条 Upsert）；30~60s 节流写入仅为建议，待确认（§11.3） |
+| 设备运行时投影 | 拆 `devices` + `device_runtime` 两表，`last_com_time` 节流写 | 拆为：`devices` 保留 10 列静态/身份字段，`device_runtime` 承载 `session_id`/`trans_proto`/`last_com_time_ms`/`status`/`updated_at`。读用 `LEFT JOIN` 合并回完整 `model.Device`，写在同一事务内按归属分写两表 | `keepalive_ms` 是代码常量（`model.NewDevice` 固定 1 分钟，`device.go:50`），不属运行时观测值，留在 `devices`。**重启语义**：不做启动批量重置——单机由优雅停机（SIGINT/SIGTERM）调用 `ResetRuntime` 清空；异常重启残留的 `session_id`/`status` 在读路径按 `last_com_time_ms + keepalive_ms` 的 TTL 判定收敛为 offline 并清空 `session_id`，`last_com_time_ms` 保留作"上次在线时间"。分布式形态以 Redis 运行时缓存的全 TTL + 过期扫描回写替代单机重置。**心跳落库频率可配**：`server.heartbeatPersistIntervalMs`（缺省 `0`，逐条写库；若开启，应小于保活周期，当前保活 1 分钟故建议 ≤30000），被节流时保活判定取进程内 `runtime.Heartbeat` 的实时值（§11.3） |
 | `terminal_properties` | `phone` PK，属性 JSON | 新增：`phone` PK + 常用属性列（终端类型/制造商/型号/终端 ID/ICCID/硬件版本/固件版本/GNSS 与通信能力）+ `extra_json` 长尾 | 只由 0x0107 查询应答写入，与 `devices` **不合并**：`devices` 静态字段来自 0x0100/0x0102，属性应答若回写 `devices` 会触发其非主键列全量重写。0x0107 处理为"持久化 + 内存最新值 + broker 投递"三者同时 |
-| `plate` 唯一性 | `plate` UNIQUE | 未加唯一约束 | 内存实现按 `plate` 覆盖映射、允许空车牌重复，加 UNIQUE 会改变既有行为（多个空车牌或同牌设备会写入失败）。设备身份以协议里的终端手机号（`phone`）为准，`plate` 仅用于注册时"车辆已注册"校验；建议保持非唯一 |
-| `devices` 索引 | 未明确 | 仅 `phone` 主键 | 本期查询以 `phone` 为主；`GetByPlate` 走 `plate` 全表扫描，设备量增大后建议补 `(plate)` 普通索引（不加唯一） |
+| `plate` 唯一性 | `plate` UNIQUE | 未加唯一约束，仅加**非唯一**普通索引 `idx_devices_plate`（迁移 `0004`） | 内存实现按 `plate` 覆盖映射、允许空车牌重复，加 UNIQUE 会改变既有行为（多个空车牌或同牌设备会写入失败）。设备身份以协议里的终端手机号（`phone`）为准，`plate` 仅用于注册时"车辆已注册"校验；保持非唯一 |
+| `devices` 索引 | 未明确 | `phone` 主键 + `idx_devices_plate`（非唯一，迁移 `0004`） | `GetByPlate` 由全表扫描改为索引查找；不加唯一约束，理由见上一行的 `plate` 唯一性 |
 | `device_params` | 参数集合整体 JSON 单字段 | 一致（`params_json` TEXT） | 遵循 D1；`ParamValue` 的 JSON 数字会以 `float64` 回读，既有 `any2uintX` 编码逻辑已兼容 |
 | `locations` / `alarms` | B 类持久化 | 未落地（**明确延后**） | 理由见 §7.5；不是"不需要持久化" |
 | `region_items` / `terminal_catalogs` / `command_outbox` | B 类持久化 | 未落地（本阶段非交付项） | 区域需要事务化 `ReplaceAll`，目录与 outbox 需要幂等/重投语义，均未在本轮定义；媒体/运单按 D3 后置 |
@@ -514,9 +518,14 @@ GET /api/devices/{phone}
 
 由此：在线读 Redis 秒级实时，离线后页面仍能显示库里的「最后在线于 …」。
 
-> **实施现状（2026-11-01）**：本轮只把运行时列拆到 `device_runtime`，**没有改变写入频率**——
-> 0x0002 心跳仍逐条 `Upsert`（§7.4）。上述 30~60s 节流写与"心跳只刷 Redis"是待确认的建议项，
-> 落地前不改变现有调用频率。
+> **实施现状（2026-11-01）**：
+> - **默认仍逐条写库**（`server.heartbeatPersistIntervalMs: 0`），与拆分前行为一致；
+> - 需要时配置若干毫秒（如 30000）即可开启节流，但必须小于保活周期（当前 1 分钟），
+>   否则库内 `last_com_time` 落后会让读路径 TTL 在下次落库前短暂判离线。被节流跳过的心跳仍逐条
+>   记入进程内 `runtime.Heartbeat`，保活判定（`keepalive`）取"库内 `last_com_time` 与进程内心跳的较新值"，
+>   因此节流不会把在线设备误判为离线；进程重启后进程内记录清空，回落为以库值判定。
+> - 上线 / 离线状态翻转仍强制写库；设备注销（0x0003）与鉴权失败清理会同时移除进程内心跳记录。
+> - "心跳只刷 Redis"属分布式形态，单机不适用；分布式方案见 §11.2 与 §19.6 的 Redis 运行时缓存规划。
 
 ### 11.4 列表与详情分离
 
@@ -904,9 +913,14 @@ internal/storage/                 # 仅装配：后端选择与初始化
   `schema_migrations`，已成功版本不会重复应用。
 - MySQL 客观限制：DDL 隐式提交，无法与版本记录同事务；中途失败可能留下"部分表已建、版本未记录"，
   应对为重跑迁移（幂等 DDL 补齐）或 DBA 人工核对。SQLite 本轮共用同一路径（先 DDL、后记录）。
-- 遗留限制：启动时以单条 `UPDATE device_runtime SET session_id='', status=0` 重置运行时投影；
-  多节点共享同一 MySQL 库时，任一节点重启会覆盖其它节点状态。M3 之前按单节点使用，
-  分布式形态需改为按 owner 重置或运行时投影不入库（见 §10）。
+- 重启语义（本轮修正，见 §19.7）：**移除**了启动时单条
+  `UPDATE device_runtime SET session_id='', status=0` 的批量重置——多节点共享同一 MySQL 库时，
+  任一节点启动都会覆盖其它节点的在线状态。替代方案为：
+  1. **单机**：`main` 监听 SIGINT/SIGTERM，退出前调用 `storage.ResetRuntime` 再 `storage.Close`；
+  2. **异常重启**：读路径按 `last_com_time_ms + keepalive_ms` 的 TTL 收敛为 offline 并清空
+     `session_id`，`last_com_time_ms` 保留作"上次在线时间"；
+  3. **分布式（规划）**：运行时投影另存一份带全 TTL 的 Redis 缓存，各实例定期兜底扫描过期条目
+     并回写持久化状态，不再依赖任何节点启动时的批量操作。
 
 **验证**
 
@@ -914,4 +928,36 @@ internal/storage/                 # 仅装配：后端选择与初始化
 - 新增用例：迁移幂等（第二次 `applied=0`、版本行不重复）；`devices` 不再含运行时列；
   SQLite 自动迁移路径；版本落后 / 超前拒绝启动；版本一致正常启动；显式迁移可重复；
   内存后端迁移报错；MySQL 显式 `autoMigrate` 报配置错误。
+
+### 19.7 心跳节流 / 车牌索引 / 重启语义修正（2026-11-01，分支 `dev/p0-baseline`，基线 `af0dff4`）
+
+**决策**
+
+1. **心跳落库可配节流，默认逐条**：新增 `server.heartbeatPersistIntervalMs`（缺省 `0`）。
+   取值大于 0 时，距上次落库不足该间隔的心跳跳过写库；缺省行为与之前完全一致。
+2. **`plate` 加非唯一索引入库**：迁移 `0004_devices_plate_index.sql` 创建 `idx_devices_plate`；
+   不加唯一约束，理由见 §7.4。
+3. **移除启动批量重置运行时投影**：单机改为优雅停机重置，异常重启残留由读路径 TTL 收敛；
+   分布式改由 Redis 运行时缓存的全 TTL + 过期扫描回写（规划项，§11.2 / §11.5）。
+
+**实现要点**
+
+- `runtime.HeartbeatRegistry`（A 类，仅进程内存）：`processMsg0002` 逐条 `Touch`，
+  被节流跳过时保活判定仍能拿到实时心跳；0x0003 注销与鉴权失败清理同时 `Remove`。
+- `keepalive` 判定前把 `Heartbeat.Last` 与库内 `last_com_time` 取较新值，避免节流把在线设备判离线。
+- `sqlstore.Open` 不再执行任何重置；新增 `Store.ResetRuntime`（`UPDATE device_runtime SET session_id='', status=0`）
+  由 `main` 在收到 SIGINT/SIGTERM 后调用（5s 超时），随后 `storage.Close`。
+- `deviceRow.device()` 读取时按 TTL 收敛：`status != offline` 且 `now > last_com_time_ms + keepalive_ms`
+  → 置 offline 并清空 `session_id`，`last_com_time_ms` 与 `trans_proto` 保留。
+- 迁移数量变为 4（`ExpectedVersion=4`），SQLite/MySQL 共用同一 `.sql`（普通 `CREATE INDEX`，
+  未使用 MySQL 不支持的 `IF NOT EXISTS`）。
+
+**验证**
+
+- `gofmt` / `go build ./...` / `go vet ./...` / `go test -race ./...` 全绿。
+- 新增用例：心跳节流跳过写库但保留进程内心跳、超过间隔后恢复落库；保活使用进程内心跳
+  不误判离线；`ResetRuntime` 清空 session/status 且保留静态字段与时间；
+  TTL 收敛陈旧读为 offline 且保留 `last_com_time`；迁移 4 个文件且 `idx_devices_plate` 存在。
+- 已知限制：MySQL 下 `0004` 为普通 `CREATE INDEX`，重复手工执行会因索引已存在而失败，
+  迁移器按 `schema_migrations` 版本号避免重复执行。
 

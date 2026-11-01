@@ -9,6 +9,7 @@
 package storage
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"sync"
@@ -54,6 +55,10 @@ type Stores struct {
 	// Backend 记录实际启用的后端，供启动日志与运维排查使用。
 	Backend string
 	close   func() error
+
+	// resetRuntime 清空运行时投影；内存后端为空操作。
+	// 仅用于单机优雅停机，分布式形态不能整体重置（见 design §7.4）。
+	resetRuntime func(context.Context) error
 }
 
 // NewMemory 创建一组互相独立的内存仓储，供测试与新代码注入。
@@ -96,6 +101,7 @@ func Open(cfg Config) (*Stores, error) {
 		stores.Params = sqlStore.DeviceParamsRepository()
 		stores.Properties = sqlStore.TerminalPropertiesRepository()
 		stores.close = sqlStore.Close
+		stores.resetRuntime = sqlStore.ResetRuntime
 		return stores, nil
 	default:
 		return nil, fmt.Errorf("unsupported storage backend %q, expected memory|sqlite|mysql", cfg.Type)
@@ -188,6 +194,22 @@ func (s *Stores) Close() error {
 		return nil
 	}
 	return s.close()
+}
+
+// ResetRuntime 清空运行时投影，供单机优雅停机时调用（内存后端为空操作）。
+func (s *Stores) ResetRuntime(ctx context.Context) error {
+	if s == nil || s.resetRuntime == nil {
+		return nil
+	}
+	return s.resetRuntime(ctx)
+}
+
+// ResetRuntime 清空默认存储的运行时投影；应在 Close 之前调用。
+func ResetRuntime(ctx context.Context) error {
+	defaultMu.RLock()
+	stores := defaultStores
+	defaultMu.RUnlock()
+	return stores.ResetRuntime(ctx)
 }
 
 // Close 关闭默认存储持有的资源（当前仅 SQL 后端需要）。

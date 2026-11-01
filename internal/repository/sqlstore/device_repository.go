@@ -124,7 +124,7 @@ func (r deviceRow) device() *model.Device {
 	if r.lastComTimeMS != 0 {
 		lastCom = time.UnixMilli(r.lastComTimeMS)
 	}
-	return &model.Device{
+	d := &model.Device{
 		ID:              r.id,
 		Plate:           r.plate,
 		Phone:           r.phone,
@@ -139,6 +139,15 @@ func (r deviceRow) device() *model.Device {
 		IMEI:            r.imei,
 		SoftwareVersion: r.softwareVersion,
 	}
+	// 运行时投影带 TTL：非离线但已超过 keepalive + last_com_time 的残留行，
+	// 在读取时收敛为离线并清空 session_id，避免崩溃重启后把死连接当成在线。
+	// last_com_time 本身保留，只作"上次在线时间"展示。
+	if d.Status != model.DeviceStatusOffline &&
+		time.Now().UnixMilli() > r.lastComTimeMS+r.keepaliveMS {
+		d.Status = model.DeviceStatusOffline
+		d.SessionID = ""
+	}
+	return d
 }
 
 func scanDeviceRow(scanner interface{ Scan(...any) error }) (*model.Device, error) {

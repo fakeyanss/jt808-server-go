@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/pkg/errors"
@@ -563,18 +564,42 @@ func processSegmentPacket(ctx context.Context, pkt *model.PacketData) (*model.Pr
 	return &model.ProcessData{Outgoing: outgoingMsg}, nil
 }
 
-// 收到心跳，应刷新终端缓存有效期
+// heartbeatPersistInterval 是心跳落库的最小间隔（纳秒）；0 表示逐条写库（缺省）。
+// 只影响落库频率，进程内的最近心跳仍由 runtime.Heartbeat 逐条记录，供保活判定使用。
+var heartbeatPersistInterval atomic.Int64
+
+// SetHeartbeatPersistInterval 设置心跳落库节流间隔；0 或负数表示逐条写库。
+func SetHeartbeatPersistInterval(interval time.Duration) {
+	if interval < 0 {
+		interval = 0
+	}
+	heartbeatPersistInterval.Store(int64(interval))
+}
+
+// 收到心跳，应刷新终端缓存有效期。
+// 进程内最近心跳逐条记录（供保活判定），落库则按配置节流，缺省逐条写库。
 func processMsg0002(_ context.Context, data *model.ProcessData) error {
 	ctx := context.Background()
+	phone := data.Incoming.GetHeader().PhoneNumber
 	devices := storage.Default().Devices
-	device, err := devices.GetByPhone(ctx, data.Incoming.GetHeader().PhoneNumber)
+	device, err := devices.GetByPhone(ctx, phone)
 
 	// 缓存不存在，说明设备不合法，需要返回错误，让服务层处理关闭
 	if errors.Is(err, repository.ErrDeviceNotFound) {
-		return errors.Wrapf(err, "Fail to find device cache, phoneNumber=%s", data.Incoming.GetHeader().PhoneNumber)
+		return errors.Wrapf(err, "Fail to find device cache, phoneNumber=%s", phone)
 	}
 
-	device.LastestComTime = time.Now()
+	now := time.Now()
+	runtime.Default().Heartbeat.Touch(ctx, phone, now)
+
+	// 距上次落库不足一个节流周期则跳过写库；LastComTime 仍会在保活判定中从
+	// runtime.Heartbeat 取到实时值。
+	if interval := time.Duration(heartbeatPersistInterval.Load()); interval > 0 &&
+		now.Sub(device.LastestComTime) < interval {
+		return nil
+	}
+
+	device.LastestComTime = now
 	_ = devices.Upsert(ctx, device)
 
 	return nil
@@ -594,6 +619,7 @@ func processMsg0003(_ context.Context, data *model.ProcessData) error {
 	timer.Cancel(device.Phone)
 	// 清楚缓存
 	_ = devices.DeleteByPhone(ctx, device.Phone)
+	runtime.Default().Heartbeat.Remove(ctx, device.Phone)
 	// 为避免连接TIMEWAIT，应等待对方主动关闭
 	return nil
 }
@@ -648,6 +674,7 @@ func processMsg0102(_ context.Context, data *model.ProcessData) error {
 		timer.Cancel(device.Phone)
 		// 删除设备缓存
 		_ = devices.DeleteByPhone(ctx, device.Phone)
+		runtime.Default().Heartbeat.Remove(ctx, device.Phone)
 	} else {
 		// 鉴权通过
 		device.Status = model.DeviceStatusOnline

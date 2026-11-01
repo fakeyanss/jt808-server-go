@@ -51,6 +51,9 @@ type serverConf struct {
 	Action             *actionConf `yaml:"action"`
 	AckTimeoutMS       int         `yaml:"ackTimeoutMs"`
 	MaxRetransmissions int         `yaml:"maxRetransmissions"`
+	// HeartbeatPersistIntervalMS 心跳落库最小间隔（毫秒）；0 表示逐条写库。
+	// 若开启，应小于保活周期（当前 1 分钟），避免读路径 TTL 判定误判离线。
+	HeartbeatPersistIntervalMS int `yaml:"heartbeatPersistIntervalMs"`
 }
 
 // actionConf 配置业务数据回调。目前仅提供 HTTP 示例实现。

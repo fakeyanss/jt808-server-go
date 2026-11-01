@@ -36,7 +36,7 @@ func sampleDevice(phone string) *model.Device {
 		SessionID:       "session-" + phone,
 		TransProto:      model.TCPProto,
 		Keepalive:       90 * time.Second,
-		LastestComTime:  time.UnixMilli(1761700000123),
+		LastestComTime:  time.UnixMilli(time.Now().UnixMilli()),
 		Status:          model.DeviceStatusOnline,
 		VersionDesc:     model.Version2019,
 		ProtocolVersion: 1,
@@ -73,6 +73,8 @@ func TestSQLitePersistsDeviceAndParamsAcrossReopen(t *testing.T) {
 	require.Equal(t, device.LastestComTime, inProcess.LastestComTime)
 	require.Equal(t, device.Status, inProcess.Status)
 
+	// 优雅停机路径：先清空运行时投影，再关闭连接。
+	require.NoError(t, first.ResetRuntime(ctx))
 	require.NoError(t, first.Close())
 
 	second, err := Open(Config{Backend: BackendSQLite, Path: dbPath, AutoMigrate: true})
@@ -102,6 +104,42 @@ func TestSQLitePersistsDeviceAndParamsAcrossReopen(t *testing.T) {
 	require.Len(t, gotParams.Params, 2)
 	require.Equal(t, uint32(0x0001), gotParams.Params[0].ParamID)
 	require.Equal(t, "ABCDEFGH", gotParams.Params[1].ParamValue)
+}
+
+// ResetRuntime 清空 session 与 status，静态字段与最后在线时间保留。
+func TestSQLiteResetRuntimeClearsProjection(t *testing.T) {
+	ctx := context.Background()
+	store := openTestSQLite(t)
+
+	device := sampleDevice("188765400006")
+	require.NoError(t, store.DeviceRepository().Upsert(ctx, device))
+	require.NoError(t, store.ResetRuntime(ctx))
+
+	got, err := store.DeviceRepository().GetByPhone(ctx, device.Phone)
+	require.NoError(t, err)
+	require.Empty(t, got.SessionID)
+	require.Equal(t, model.DeviceStatusOffline, got.Status)
+	require.Equal(t, device.Plate, got.Plate)
+	require.Equal(t, device.LastestComTime, got.LastestComTime)
+}
+
+// 崩溃重启后残留的 online/session 不整体重置；读取时按 keepalive TTL 收敛为离线。
+func TestSQLiteRuntimeTTLNormalizesStaleRead(t *testing.T) {
+	ctx := context.Background()
+	store := openTestSQLite(t)
+
+	device := sampleDevice("188765400007")
+	device.Keepalive = 90 * time.Second
+	device.LastestComTime = time.UnixMilli(time.Now().Add(-3 * time.Minute).UnixMilli())
+	require.NoError(t, store.DeviceRepository().Upsert(ctx, device))
+
+	got, err := store.DeviceRepository().GetByPhone(ctx, device.Phone)
+	require.NoError(t, err)
+	require.Empty(t, got.SessionID)
+	require.Equal(t, model.DeviceStatusOffline, got.Status)
+	// 时间字段保留，仅作"上次在线时间"展示。
+	require.Equal(t, device.LastestComTime, got.LastestComTime)
+	require.Equal(t, device.TransProto, got.TransProto)
 }
 
 // 属性档案：写入后内存可见；关闭再打开同一文件仍可读回；删除后返回既有错误值。
@@ -326,6 +364,8 @@ func TestMySQLPersistence(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "WXYZ", gotParams.Params[0].ParamValue)
 
+	// 优雅停机路径：清空运行时投影后关闭，重开时 session/status 已归零。
+	require.NoError(t, store.ResetRuntime(ctx))
 	require.NoError(t, store.Close())
 	reopened, err := Open(Config{Backend: BackendMySQL, DSN: dsn})
 	require.NoError(t, err)

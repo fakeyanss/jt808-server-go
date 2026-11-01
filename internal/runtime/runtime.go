@@ -46,6 +46,7 @@ type Stores struct {
 	Conn              ConnectionRegistry
 	Fragment          FragmentAssembler
 	Retrans           RetransmitTracker
+	Heartbeat         HeartbeatRegistry
 	ParamResponses    ParamResponseBroker
 	PropertyResponses PropertyResponseBroker
 	LocationResponses LocationResponseBroker
@@ -59,6 +60,7 @@ func NewStores() *Stores {
 		Conn:              NewConnectionRegistry(),
 		Fragment:          NewFragmentAssembler(),
 		Retrans:           NewRetransmitTracker(),
+		Heartbeat:         NewHeartbeatRegistry(),
 		ParamResponses:    NewParamResponseBroker(),
 		PropertyResponses: NewPropertyResponseBroker(),
 		LocationResponses: NewLocationResponseBroker(),
@@ -77,6 +79,7 @@ func Default() *Stores {
 			Conn:              newDefaultConnectionRegistry(),
 			Fragment:          NewFragmentAssembler(),
 			Retrans:           NewRetransmitTracker(),
+			Heartbeat:         NewHeartbeatRegistry(),
 			ParamResponses:    NewParamResponseBroker(),
 			PropertyResponses: NewPropertyResponseBroker(),
 			LocationResponses: NewLocationResponseBroker(),

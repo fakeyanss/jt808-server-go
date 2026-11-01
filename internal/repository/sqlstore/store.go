@@ -65,13 +65,9 @@ func Open(cfg Config) (*Store, error) {
 		return nil, err
 	}
 
-	// 运行时投影不跨进程有效：重启后 session_id 一律为空、status 一律离线。
-	// 单条 UPDATE 完成重置；last_com_time_ms 保留，只作"上次在线时间"展示。
-	if _, err := db.ExecContext(ctx,
-		`UPDATE device_runtime SET session_id = '', status = 0`); err != nil {
-		_ = db.Close()
-		return nil, fmt.Errorf("reset %s device runtime: %w", cfg.Backend, err)
-	}
+	// 不在启动时批量重置 device_runtime：多节点共享同一库时，任一节点启动都会
+	// 覆盖其它节点的状态。单机由优雅停机调用 ResetRuntime；异常重启后残留的
+	// online/session 由读路径的 TTL 判定收敛为离线（见 deviceRow.device）。
 	return &Store{db: db, backend: cfg.Backend}, nil
 }
 
@@ -132,6 +128,18 @@ func validateSchemaVersion(ctx context.Context, db *stdsql.DB, backend Backend) 
 		return fmt.Errorf(
 			"database schema version %d is ahead of this program's expected %d; use the matching binary",
 			current, expected)
+	}
+	return nil
+}
+
+// ResetRuntime 清空运行时投影（session_id 与 status），供单机优雅停机时调用。
+//
+// 分布式部署下不能直接调用：共享库会被一个节点的停机重置掉其它节点的在线状态，
+// 应由 Redis 运行时缓存的全 TTL + 过期扫描回写替代（设计见 §7.4 / §19.6）。
+func (s *Store) ResetRuntime(ctx context.Context) error {
+	if _, err := s.db.ExecContext(ctx,
+		`UPDATE device_runtime SET session_id = '', status = 0`); err != nil {
+		return fmt.Errorf("reset %s device runtime: %w", s.backend, err)
 	}
 	return nil
 }

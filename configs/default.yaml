@@ -13,6 +13,10 @@ server:
   name: "jt808-server-go"
   ackTimeoutMs: 5000
   maxRetransmissions: 3
+  # 心跳落库最小间隔（毫秒）：0 或缺省表示逐条写库；若开启，建议不超过保活周期的一半
+  # （当前保活周期 1 分钟，即建议 30000）。间隔过大时库内 last_com_time 会落后，
+  # 读路径的 TTL 判定可能在心跳恢复落库前把设备短暂判为离线。
+  heartbeatPersistIntervalMs: 0
   # 业务数据 Action 回调示例；url 为空时不启用
   action:
     http:

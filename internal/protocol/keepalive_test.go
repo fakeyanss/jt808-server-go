@@ -13,6 +13,7 @@ import (
 
 	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
 	"github.com/fakeyanss/jt808-server-go/internal/repository"
+	"github.com/fakeyanss/jt808-server-go/internal/runtime"
 	"github.com/fakeyanss/jt808-server-go/internal/storage"
 )
 
@@ -131,6 +132,24 @@ func TestCheckDeviceKeepaliveFreshDeviceNoop(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, model.DeviceStatusOnline, d.Status)
 	require.True(t, hasKeepaliveJob(t, timer, phone))
+}
+
+// 心跳落库被节流时，保活判定以进程内最近心跳为准，不误判离线。
+func TestCheckDeviceKeepaliveUsesInProcessHeartbeat(t *testing.T) {
+	const phone = "188765444005"
+	ctx := context.Background()
+	// 库内最后交互时间已过期，但进程内刚收到心跳。
+	cacheKeepaliveTestDevice(t, phone, model.DeviceStatusOnline, time.Now().Add(-2*time.Second))
+	runtime.Default().Heartbeat.Touch(ctx, phone, time.Now())
+	t.Cleanup(func() { runtime.Default().Heartbeat.Remove(ctx, phone) })
+
+	timer := newIdleKeepaliveTimer()
+	timer.Register(phone)
+	checkDeviceKeepalive(timer, phone)
+
+	d, err := storage.Default().Devices.GetByPhone(ctx, phone)
+	require.NoError(t, err)
+	require.Equal(t, model.DeviceStatusOnline, d.Status)
 }
 
 // TestCheckDeviceKeepaliveMissingDeviceIsSafe is a regression test for a nil

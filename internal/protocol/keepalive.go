@@ -10,6 +10,7 @@ import (
 
 	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
 	"github.com/fakeyanss/jt808-server-go/internal/repository"
+	"github.com/fakeyanss/jt808-server-go/internal/runtime"
 	"github.com/fakeyanss/jt808-server-go/internal/storage"
 )
 
@@ -74,14 +75,20 @@ func checkDeviceKeepalive(t *KeepaliveTimer, devicePhone string) {
 		t.Cancel(devicePhone)
 		return
 	}
+	// 心跳落库可能被节流，进程内最近心跳更实时；取两者较新值判断保活。
+	if last, ok := runtime.Default().Heartbeat.Last(ctx, devicePhone); ok && last.After(d.LastestComTime) {
+		d.LastestComTime = last
+	}
 	if d.ShouleTurnOffline() {
 		// 保活失效
 		d.Status = model.DeviceStatusOffline
 		_ = stores.Devices.Upsert(ctx, d)
+		runtime.Default().Heartbeat.Remove(ctx, devicePhone)
 		log.Debug().Str("device", devicePhone).Msg("Turn offline for device keepalive expired")
 	} else if d.ShouldClear() {
 		d.Conn.Close()
 		_ = stores.Devices.DeleteByPhone(ctx, devicePhone)
+		runtime.Default().Heartbeat.Remove(ctx, devicePhone)
 		_ = stores.Geo.Delete(ctx, devicePhone)
 		log.Debug().Str("device", d.Phone).Msg("Clear cache and close connection after device being offline for a long time")
 		t.Cancel(devicePhone)
