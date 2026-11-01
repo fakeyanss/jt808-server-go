@@ -32,10 +32,6 @@ type Config struct {
 	Backend Backend
 	Path    string // SQLite 数据库文件路径
 	DSN     string // MySQL DSN，如 user:pass@tcp(host:port)/db
-
-	// AutoMigrate 只对 SQLite 生效：true 时启动自动补齐版本。
-	// MySQL 无论该值如何都只校验版本，避免生产环境的运行时 DDL 被权限拒绝。
-	AutoMigrate bool
 }
 
 // Store 持有连接池，并作为 SQL 仓储的装配入口。
@@ -46,8 +42,8 @@ type Store struct {
 
 // Open 打开数据库并准备可用的连接池。
 //
-// SQLite 在 AutoMigrate=true 时先补齐迁移再启动；其余情况（以及全部 MySQL）只校验
-// schema_migrations 版本与程序内置版本一致，不执行任何 DDL。
+// 启动只校验 schema_migrations 版本与程序内置版本一致，不执行任何 DDL；
+// 迁移由独立工具 jt808-migrate 显式执行（见 Migrate）。
 func Open(cfg Config) (*Store, error) {
 	db, ctx, cancel, err := connect(cfg)
 	if err != nil {
@@ -55,12 +51,7 @@ func Open(cfg Config) (*Store, error) {
 	}
 	defer cancel()
 
-	if cfg.AutoMigrate && cfg.Backend == BackendSQLite {
-		if _, err := migration.Apply(ctx, db); err != nil {
-			_ = db.Close()
-			return nil, fmt.Errorf("apply %s migrations: %w", cfg.Backend, err)
-		}
-	} else if err := validateSchemaVersion(ctx, db, cfg.Backend); err != nil {
+	if err := validateSchemaVersion(ctx, db, cfg.Backend); err != nil {
 		_ = db.Close()
 		return nil, err
 	}
@@ -121,7 +112,7 @@ func validateSchemaVersion(ctx context.Context, db *stdsql.DB, backend Backend) 
 	}
 	if current < expected {
 		return fmt.Errorf(
-			"database schema version %d is behind expected %d; run `jt808-server -c <config> migrate`",
+			"database schema version %d is behind expected %d; run `jt808-migrate -c <config>`",
 			current, expected)
 	}
 	if current > expected {

@@ -33,18 +33,7 @@ func main() {
 	logConfig := cfg.ParseLogConf()
 	log.Logger = *logger.Configure(logConfig).Logger
 
-	// 位置参数用于选择一次性管理动作；缺省为空即启动服务。
-	switch command := flag.Arg(0); command {
-	case "":
-	case "migrate":
-		runMigrate(cfg)
-		return
-	default:
-		log.Error().Str("command", command).Msg("Unknown command, supported: migrate")
-		os.Exit(2)
-	}
-
-	storageCfg := storageConfig(cfg)
+	storageCfg := storage.FromConfig(cfg)
 	backend, storageErr := storage.Init(storageCfg)
 	if storageErr != nil {
 		log.Error().Err(storageErr).Msg("Fail to initialize storage backend")
@@ -111,31 +100,4 @@ func main() {
 	if err := storage.Close(); err != nil {
 		log.Warn().Err(err).Msg("Fail to close storage backend")
 	}
-}
-
-// storageConfig 将配置文件的 storage 段转换为存储层配置。
-func storageConfig(cfg *config.Config) storage.Config {
-	storageCfg := storage.Config{}
-	if cfg.Storage == nil {
-		return storageCfg
-	}
-	storageCfg.Type = cfg.Storage.Type
-	if cfg.Storage.SQLite != nil {
-		storageCfg.SQLitePath = cfg.Storage.SQLite.Path
-		storageCfg.AutoMigrate = cfg.Storage.SQLite.AutoMigrate
-	}
-	if cfg.Storage.MySQL != nil {
-		storageCfg.MySQLDSN = cfg.Storage.MySQL.DSN
-	}
-	return storageCfg
-}
-
-// runMigrate 执行显式迁移后退出；启动路径本身只校验版本，不执行 DDL。
-func runMigrate(cfg *config.Config) {
-	applied, err := storage.Migrate(storageConfig(cfg))
-	if err != nil {
-		log.Error().Err(err).Msg("Fail to migrate storage schema")
-		os.Exit(1)
-	}
-	log.Info().Int("applied", applied).Msg("Storage schema migration completed")
 }

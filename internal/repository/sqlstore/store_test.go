@@ -18,14 +18,19 @@ import (
 
 func openTestSQLite(t *testing.T) *Store {
 	t.Helper()
-	store, err := Open(Config{
-		Backend:     BackendSQLite,
-		Path:        filepath.Join(t.TempDir(), "jt808.db"),
-		AutoMigrate: true,
-	})
+	path := filepath.Join(t.TempDir(), "jt808.db")
+	migrateSQLite(t, path)
+	store, err := Open(Config{Backend: BackendSQLite, Path: path})
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = store.Close() })
 	return store
+}
+
+// migrateSQLite 显式执行迁移，模拟独立工具 jt808-migrate 的职责。
+func migrateSQLite(t *testing.T, path string) {
+	t.Helper()
+	_, err := Migrate(Config{Backend: BackendSQLite, Path: path})
+	require.NoError(t, err)
 }
 
 func sampleDevice(phone string) *model.Device {
@@ -51,7 +56,8 @@ func TestSQLitePersistsDeviceAndParamsAcrossReopen(t *testing.T) {
 	ctx := context.Background()
 	dbPath := filepath.Join(t.TempDir(), "jt808.db")
 
-	first, err := Open(Config{Backend: BackendSQLite, Path: dbPath, AutoMigrate: true})
+	migrateSQLite(t, dbPath)
+	first, err := Open(Config{Backend: BackendSQLite, Path: dbPath})
 	require.NoError(t, err)
 	device := sampleDevice("188765400001")
 	require.NoError(t, first.DeviceRepository().Upsert(ctx, device))
@@ -77,7 +83,7 @@ func TestSQLitePersistsDeviceAndParamsAcrossReopen(t *testing.T) {
 	require.NoError(t, first.ResetRuntime(ctx))
 	require.NoError(t, first.Close())
 
-	second, err := Open(Config{Backend: BackendSQLite, Path: dbPath, AutoMigrate: true})
+	second, err := Open(Config{Backend: BackendSQLite, Path: dbPath})
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = second.Close() })
 
@@ -147,7 +153,8 @@ func TestSQLitePersistsTerminalProperties(t *testing.T) {
 	ctx := context.Background()
 	dbPath := filepath.Join(t.TempDir(), "jt808.db")
 
-	first, err := Open(Config{Backend: BackendSQLite, Path: dbPath, AutoMigrate: true})
+	migrateSQLite(t, dbPath)
+	first, err := Open(Config{Backend: BackendSQLite, Path: dbPath})
 	require.NoError(t, err)
 	props := &model.TerminalProperties{
 		Phone:                   "188765400005",
@@ -175,7 +182,7 @@ func TestSQLitePersistsTerminalProperties(t *testing.T) {
 	require.Equal(t, "value", again.Extra["legacy"])
 
 	require.NoError(t, first.Close())
-	second, err := Open(Config{Backend: BackendSQLite, Path: dbPath, AutoMigrate: true})
+	second, err := Open(Config{Backend: BackendSQLite, Path: dbPath})
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = second.Close() })
 
@@ -258,8 +265,8 @@ func TestSQLiteConcurrentDeviceWrites(t *testing.T) {
 	require.Len(t, devices, workers)
 }
 
-// 未启用自动迁移且库尚未建表时，启动被拒绝并提示执行迁移命令。
-func TestOpenRejectsFreshDatabaseWithoutAutoMigrate(t *testing.T) {
+// 库尚未建表时启动被拒绝，并提示先执行迁移工具。
+func TestOpenRejectsFreshDatabaseWithoutMigration(t *testing.T) {
 	_, err := Open(Config{Backend: BackendSQLite, Path: filepath.Join(t.TempDir(), "jt808.db")})
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "migrate")
@@ -270,7 +277,8 @@ func TestOpenRejectsOutdatedSchemaVersion(t *testing.T) {
 	ctx := context.Background()
 	dbPath := filepath.Join(t.TempDir(), "jt808.db")
 
-	store, err := Open(Config{Backend: BackendSQLite, Path: dbPath, AutoMigrate: true})
+	migrateSQLite(t, dbPath)
+	store, err := Open(Config{Backend: BackendSQLite, Path: dbPath})
 	require.NoError(t, err)
 	require.NoError(t, store.Close())
 
@@ -291,7 +299,8 @@ func TestOpenRejectsNewerSchemaVersion(t *testing.T) {
 	ctx := context.Background()
 	dbPath := filepath.Join(t.TempDir(), "jt808.db")
 
-	store, err := Open(Config{Backend: BackendSQLite, Path: dbPath, AutoMigrate: true})
+	migrateSQLite(t, dbPath)
+	store, err := Open(Config{Backend: BackendSQLite, Path: dbPath})
 	require.NoError(t, err)
 	require.NoError(t, store.Close())
 
@@ -311,7 +320,8 @@ func TestOpenRejectsNewerSchemaVersion(t *testing.T) {
 func TestOpenAcceptsMatchingSchemaVersion(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "jt808.db")
 
-	store, err := Open(Config{Backend: BackendSQLite, Path: dbPath, AutoMigrate: true})
+	migrateSQLite(t, dbPath)
+	store, err := Open(Config{Backend: BackendSQLite, Path: dbPath})
 	require.NoError(t, err)
 	require.NoError(t, store.Close())
 

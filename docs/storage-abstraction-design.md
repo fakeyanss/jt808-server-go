@@ -130,7 +130,7 @@ DeviceRecord（B，可持久化）          DeviceRuntime（A，仅内存）
    （bbolt 仅在「终态也是 KV」时占优；终态是 MySQL 时会导致仓储写两套，详见 §13）。
 2. **DAL 手写 SQL + `database/sql`**，不引入 ORM；SQL 集中在仓储层，配小 `Dialect` 与 scan helper。
 3. **迁移**：`go:embed` 内嵌 `.sql` + 极简版本化迁移器（DDL 与 Store 解耦，启动只校验版本，
-   迁移由 `migrate` 子命令执行，见 §7.2）。
+   迁移由独立工具 `jt808-migrate` 执行，见 §7.2）。
 4. **Go 工具链升级到当前最新稳定版**（Go 官方无 LTS 概念，实施时以当时 latest stable 为准），
    以满足纯 Go SQLite 驱动与 go-redis 的最低版本要求；预期业务代码零改动。
 
@@ -334,17 +334,17 @@ type Coordinator interface {
   `0003_device_runtime.sql`、`0004_devices_plate_index.sql`，用 `go:embed` 编译进二进制；
   SQL 文件中不再用 Go 常量拼 DDL。
   `schema_migrations` 由迁移器自身引导建表（迁移机制自身的元数据，是唯一保留在 Go 里的 DDL）。
-- **显式迁移入口**：`jt808-server -c <config> migrate`（SQLite/MySQL 均可用）；
-  MySQL 场景 DBA 可直接按文件名顺序执行这些 `.sql`。除索引创建外语句均为幂等形式
+- **独立迁移工具**：`jt808-migrate -c <config>`，源码位于 `cmd/jt808-migrate/`，与主服务
+  **分开编译、分开发布**（`make compile-migrate` / `make release-migrate`）。迁移工具只做连接、
+  执行迁移、打印 `applied` 数量，不启动 TCP/UDP/API，也不初始化主服务的运行时。
+  MySQL 场景 DBA 也可直接按文件名顺序执行这些 `.sql`。除索引创建外语句均为幂等形式
   （`CREATE TABLE IF NOT EXISTS` / `ALTER TABLE IF EXISTS`）；`0004` 的 `CREATE INDEX`
   在 MySQL 上没有 `IF NOT EXISTS`，重复手工执行会报"索引已存在"，属预期，执行前请先备份并核对
   `schema_migrations`。
-- **启动只校验不执行**：读取 `MAX(version)` 与期望版本比较。低于期望 → 报错退出并提示执行迁移命令；
-  高于期望 → 报错（库版本高于程序版本），拒绝启动。
-- **SQLite 例外**：嵌入式场景允许自动迁移，配置 `storage.sqlite.autoMigrate`，缺省 `true`；
-  MySQL 无论配置如何都不自动迁移（避免运行时 DDL 被生产权限拒绝）；显式给 MySQL 配 `true`
-  会作为配置错误拒绝启动，以免误判为"启动已迁移"。入口代码为 `storage.Migrate` /
-  `sqlstore.Migrate`，对应 `jt808-server -c <config> migrate`。
+- **所有后端一致，启动只校验不执行**：SQLite 与 MySQL 都不在服务启动时执行任何 DDL。
+  读取 `MAX(version)` 与期望版本比较：低于期望 → 报错退出并提示执行 `jt808-migrate`；
+  高于期望 → 报错（库版本高于程序版本），拒绝启动。入口代码为 `storage.Migrate` /
+  `sqlstore.Migrate`，仅被迁移工具调用。
 - 执行健壮性：逐版本执行，全部语句成功后才写入 `schema_migrations`；失败时错误信息带版本号与
   失败语句，已成功版本不会重复应用。
 - **客观限制（MySQL）**：DDL 会隐式提交，无法与"插入版本记录"同事务。若一个版本内多条 DDL
@@ -377,7 +377,7 @@ alarms:    按时间保留（默认 720h）且每设备上限（默认 5000 条�
 | `device_params` | 参数集合整体 JSON 单字段 | 一致（`params_json` TEXT） | 遵循 D1；`ParamValue` 的 JSON 数字会以 `float64` 回读，既有 `any2uintX` 编码逻辑已兼容 |
 | `locations` / `alarms` | B 类持久化 | 未落地（**明确延后**） | 理由见 §7.5；不是"不需要持久化" |
 | `region_items` / `terminal_catalogs` / `command_outbox` | B 类持久化 | 未落地（本阶段非交付项） | 区域需要事务化 `ReplaceAll`，目录与 outbox 需要幂等/重投语义，均未在本轮定义；媒体/运单按 D3 后置 |
-| `schema_migrations` | 版本化迁移器 | 本轮改造：DDL 位于 `internal/repository/migration/*.sql`（`go:embed`），启动只校验版本，迁移由独立命令执行 | 详见 §7.2；MySQL 的 DDL 隐式提交限制已在该节说明 |
+| `schema_migrations` | 版本化迁移器 | DDL 位于 `internal/repository/migration/*.sql`（`go:embed`），启动只校验版本，迁移由独立工具 `jt808-migrate` 执行 | 详见 §7.2；MySQL 的 DDL 隐式提交限制已在该节说明 |
 | 主键类型 | 未指定 | `VARCHAR` 主键 + `BIGINT` 毫秒时间戳 | 同时兼容 SQLite/MySQL；时间用毫秒整数避免时区与解析差异 |
 
 ### 7.5 明确延后的持久化决策（2026-11-01 确认）
@@ -896,19 +896,19 @@ internal/storage/                 # 仅装配：后端选择与初始化
 | 1 | `387b9fd` | 文档决策与缺口修正（本节、§7.1–§7.5、§11.3、§16） |
 | 2 | `82aa13d` | `terminal_properties` 落库 + 0x0107 三者同时 |
 | 3 | `8d49dfc` | `device_runtime` 拆分与重启语义 |
-| 4 | 本记录提交 | 迁移机制改造（SQL 文件 + `migrate` 子命令 + 启动校验） |
+| 4 | 本记录提交 | 迁移机制改造（SQL 文件 + 启动校验；迁移入口后续独立为 `jt808-migrate`，见 §19.8） |
 
 **迁移机制实现细节**
 
 - 目录：`internal/repository/migration/` 下 `migrate.go` + `0001_init.sql` /
   `0002_terminal_properties.sql` / `0003_device_runtime.sql`；SQL 经 `//go:embed *.sql` 编译进二进制，
   迁移器只依赖 `database/sql`，未引入框架。
-- 命令：`jt808-server -c <config> migrate` 执行迁移、打印 `applied` 数量后退出（不走服务启动流程）；
-  未知位置参数返回退出码 2。DBA 也可按文件名顺序直接执行这些 SQL 文件。
-- 启动校验：SQLite 在 `autoMigrate=true`（缺省）时先执行迁移；否则只比对版本。
-  低于期望报 `... is behind expected ... run \`jt808-server -c <config> migrate\``；高于期望报
+- 迁移入口：本批最初复用主服务的 `migrate` 位置参数；**§19.8 起改为独立工具 `jt808-migrate`**，
+  SQLite 的启动自动迁移同时取消。DBA 也可按文件名顺序直接执行这些 SQL 文件。
+- 启动校验（当前行为）：所有后端都只比对版本。低于期望报
+  `... is behind expected ... run \`jt808-migrate -c <config>\``；高于期望报
   `... is ahead of this program's expected ...`；全新库缺 `schema_migrations` 同样报错并提示迁移。
-  MySQL 显式配置 `autoMigrate=true` 视为配置错误，避免误以为启动时已迁移。
+  原 `storage.sqlite.autoMigrate` 配置项已删除（§19.8）。
 - 失败处理：逐版本执行，错误带版本号、文件名与语句序号；仅当该版本全部语句成功后才写入
   `schema_migrations`，已成功版本不会重复应用。
 - MySQL 客观限制：DDL 隐式提交，无法与版本记录同事务；中途失败可能留下"部分表已建、版本未记录"，
@@ -926,8 +926,8 @@ internal/storage/                 # 仅装配：后端选择与初始化
 
 - `gofmt` / `go build ./...` / `go vet ./...` / `go test -race ./...` 全绿。
 - 新增用例：迁移幂等（第二次 `applied=0`、版本行不重复）；`devices` 不再含运行时列；
-  SQLite 自动迁移路径；版本落后 / 超前拒绝启动；版本一致正常启动；显式迁移可重复；
-  内存后端迁移报错；MySQL 显式 `autoMigrate` 报配置错误。
+  版本落后 / 超前拒绝启动；版本一致正常启动；显式迁移可重复；内存后端迁移报错。
+  （SQLite 自动迁移路径的用例在 §19.8 随该行为取消而删除。）
 
 ### 19.7 心跳节流 / 车牌索引 / 重启语义修正（2026-11-01，分支 `dev/p0-baseline`，基线 `af0dff4`，提交 `cbde5aa`）
 
@@ -960,4 +960,29 @@ internal/storage/                 # 仅装配：后端选择与初始化
   TTL 收敛陈旧读为 offline 且保留 `last_com_time`；迁移 4 个文件且 `idx_devices_plate` 存在。
 - 已知限制：MySQL 下 `0004` 为普通 `CREATE INDEX`，重复手工执行会因索引已存在而失败，
   迁移器按 `schema_migrations` 版本号避免重复执行。
+
+### 19.8 独立迁移工具与取消 SQLite 自动迁移（2026-11-01，分支 `dev/p0-baseline`，基线 `bc439b9`）
+
+**决策**
+
+1. **迁移不再复用主服务二进制**：新增 `cmd/jt808-migrate`，单独编译、单独发布为 `jt808-migrate`。
+2. **取消 SQLite 启动自动迁移**（原 `storage.sqlite.autoMigrate`，缺省 `true`）。所有后端一致：
+   启动只校验版本，任何 DDL 只能由迁移工具或 DBA 执行。
+3. **主服务删除 `migrate` 位置参数**，避免一个二进制同时承担在线服务与运维动作。
+
+**实现要点**
+
+- `cmd/jt808-migrate/main.go`：仅接受 `-c <config>`，调用 `storage.Migrate(storage.FromConfig(cfg))`，
+  打印 `applied` 后退出；不启动 TCP/UDP/API。
+- 新增 `storage.FromConfig`，主服务与迁移工具共用配置映射，避免两处漂移（主服务原 `storageConfig` 删除）。
+- `sqlstore.Open` 只保留版本校验；`sqlstore.Config`、`storage.Config`、`config.sqliteConf`
+  删除 `AutoMigrate` 字段。
+- 构建：`scripts/build.sh` 增加 `jt808-migrate` 目标（`cmd/jt808-migrate/main.go`）；
+  `make compile-migrate` / `make release-migrate`；Dockerfile 同时构建并拷贝迁移工具。
+
+**验证**
+
+- `gofmt` / `go build ./...` / `go vet ./...` / `go test -race ./...` 全绿。
+- 用例调整：所有 SQLite 测试先显式 `Migrate` 再 `Open`；保留“全新库未迁移则拒绝启动”；
+  内存后端 / 未知后端迁移报错；删除 `autoMigrate` 相关断言。
 

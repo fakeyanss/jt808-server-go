@@ -165,8 +165,6 @@ type storageConf struct {
 
 type sqliteConf struct {
 	Path string `yaml:"path"`
-	// AutoMigrate 仅对 SQLite 生效，缺省 true：嵌入式单文件库在启动时自动补齐版本。
-	AutoMigrate *bool `yaml:"autoMigrate"`
 }
 
 type mysqlConf struct {

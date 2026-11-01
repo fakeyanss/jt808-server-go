@@ -51,7 +51,7 @@ function copy_conf() {
 	cp -r $conf_src $conf_dir
 }
 
-# target: jt808-server-go / jt808-client-go
+# target: jt808-server-go / jt808-client-go / jt808-migrate
 target=$2
 project_dir=$(git rev-parse --show-toplevel)
 target_dir="${project_dir}/target"
@@ -62,6 +62,8 @@ conf_src="$project_dir/configs/"
 if [[ $target == "jt808-client-go" ]]; then
 	build_file="test/client/main.go"
 	conf_src="$project_dir/test/client/configs/"
+elif [[ $target == "jt808-migrate" ]]; then
+	build_file="cmd/jt808-migrate/main.go"
 fi
 
 ret=0
