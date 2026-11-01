@@ -88,12 +88,18 @@ func (cache *memoryRetransmitTracker) CacheFrame(_ context.Context, phone string
 		cache.entries[key] = state
 	}
 	idx := int(index - 1)
+	var oldLen int
 	if state.frames[idx] != nil {
-		state.bytes -= len(state.frames[idx])
-		cache.bytes -= len(state.frames[idx])
+		oldLen = len(state.frames[idx])
 	}
-	if cache.bytes+len(frame) > maxSegmentCacheBytes {
+	// 容量判定按替换后的净字节数计算；容量不足时整体拒绝，保持旧帧与
+	// 字节计数不变（此前先扣旧帧字节再 return，导致帧还在、计数已扣）。
+	if cache.bytes-oldLen+len(frame) > maxSegmentCacheBytes {
 		return
+	}
+	if state.frames[idx] != nil {
+		state.bytes -= oldLen
+		cache.bytes -= oldLen
 	}
 	state.frames[idx] = append([]byte(nil), frame...)
 	state.bytes += len(frame)

@@ -21,3 +21,39 @@ func TestRetransmitTrackerReturnsRequestedFramesInOrderAsCopies(t *testing.T) {
 	require.Equal(t, []byte("frame-3"), tracker.Frames(ctx, phone, 77, []uint16{3})[0])
 	require.Nil(t, tracker.Frames(ctx, phone, 88, []uint16{1}))
 }
+
+// 重写超大分片被容量拒绝时，旧帧与字节计数必须保持不变，后续淘汰精确扣减。
+func TestCacheFrameRejectOversizeRewriteKeepsAccounting(t *testing.T) {
+	tracker := newMemoryRetransmitTracker()
+	ctx := context.Background()
+
+	// 先写 1023 个占位 entry，再写目标 entry，刚好填满 maxSegmentCacheEntries。
+	for i := 0; i < maxSegmentCacheEntries-1; i++ {
+		tracker.CacheFrame(ctx, "18800000002", uint16(i+1), 1, 1, []byte{byte(i)})
+	}
+	tracker.CacheFrame(ctx, "18800000001", 7, 1, 1, []byte{0xAA})
+	require.Len(t, tracker.entries, maxSegmentCacheEntries)
+	require.Equal(t, maxSegmentCacheEntries, tracker.bytes)
+
+	// 用超大帧重写同一分片：净增超出容量上限，应整体拒绝且状态不变。
+	tracker.CacheFrame(ctx, "18800000001", 7, 1, 1, make([]byte, maxSegmentCacheBytes))
+	require.Equal(t, []byte{0xAA}, tracker.Frames(ctx, "18800000001", 7, []uint16{1})[0], "拒绝后旧帧必须保留")
+	require.Equal(t, maxSegmentCacheEntries, tracker.bytes, "拒绝后全局字节计数不得被扣减")
+	require.Equal(t, 1, tracker.entries[sentSegmentKey("18800000001", 7)].bytes, "拒绝后 entry 字节计数不得被扣减")
+
+	// 正常重写（净增不超容量）仍应成功并正确更新计数。
+	tracker.CacheFrame(ctx, "18800000001", 7, 1, 1, []byte{0xBB, 0xBB})
+	require.Equal(t, []byte{0xBB, 0xBB}, tracker.Frames(ctx, "18800000001", 7, []uint16{1})[0])
+	require.Equal(t, maxSegmentCacheEntries+1, tracker.bytes)
+
+	// 写入新 key 触发淘汰最老 entry（最早写入的 18800000002/0001），字节精确扣减。
+	tracker.CacheFrame(ctx, "18800000003", 1, 1, 1, []byte{0xCC})
+	require.Len(t, tracker.entries, maxSegmentCacheEntries)
+	total := 0
+	for _, state := range tracker.entries {
+		total += state.bytes
+	}
+	require.Equal(t, total, tracker.bytes, "淘汰后全局计数必须等于各 entry 计数之和")
+	require.Equal(t, maxSegmentCacheEntries+1, tracker.bytes)
+	require.Nil(t, tracker.Frames(ctx, "18800000002", 1, []uint16{1}), "最老 entry 应已被淘汰")
+}
