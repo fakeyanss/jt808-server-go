@@ -13,6 +13,7 @@ import (
 
 	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
 	"github.com/fakeyanss/jt808-server-go/internal/repository"
+	"github.com/fakeyanss/jt808-server-go/internal/storage"
 )
 
 // newIdleKeepaliveTimer backs a timer with a cron that is never started, so
@@ -48,10 +49,10 @@ func cacheKeepaliveTestDevice(t *testing.T, phone string, status model.DeviceSta
 		Status:         status,
 		VersionDesc:    model.Version2013,
 	}
-	require.NoError(t, repository.Default().Devices.Upsert(ctx, d))
+	require.NoError(t, storage.Default().Devices.Upsert(ctx, d))
 	t.Cleanup(func() {
-		_ = repository.Default().Devices.DeleteByPhone(ctx, phone)
-		_ = repository.Default().Geo.Delete(ctx, phone)
+		_ = storage.Default().Devices.DeleteByPhone(ctx, phone)
+		_ = storage.Default().Geo.Delete(ctx, phone)
 		_ = devEnd.Close()
 		_ = peerEnd.Close()
 	})
@@ -84,7 +85,7 @@ func TestCheckDeviceKeepaliveTurnsExpiredOnlineDeviceOffline(t *testing.T) {
 
 	checkDeviceKeepalive(timer, phone)
 
-	d, err := repository.Default().Devices.GetByPhone(context.Background(), phone)
+	d, err := storage.Default().Devices.GetByPhone(context.Background(), phone)
 	require.NoError(t, err)
 	require.Equal(t, model.DeviceStatusOffline, d.Status)
 	require.True(t, hasKeepaliveJob(t, timer, phone), "offline devices keep the cleanup job")
@@ -100,15 +101,15 @@ func TestCheckDeviceKeepaliveClearsStaleOfflineDevice(t *testing.T) {
 	const phone = "188765444003"
 	ctx := context.Background()
 	peer := cacheKeepaliveTestDevice(t, phone, model.DeviceStatusOffline, time.Now().Add(-2*time.Second))
-	require.NoError(t, repository.Default().Geo.Append(ctx, &model.DeviceGeo{Phone: phone}))
+	require.NoError(t, storage.Default().Geo.Append(ctx, &model.DeviceGeo{Phone: phone}))
 	timer := newIdleKeepaliveTimer()
 	timer.Register(phone)
 
 	checkDeviceKeepalive(timer, phone)
 
-	_, err := repository.Default().Devices.GetByPhone(ctx, phone)
+	_, err := storage.Default().Devices.GetByPhone(ctx, phone)
 	require.ErrorIs(t, err, repository.ErrDeviceNotFound)
-	_, err = repository.Default().Geo.Latest(ctx, phone)
+	_, err = storage.Default().Geo.Latest(ctx, phone)
 	require.ErrorIs(t, err, repository.ErrGisNotFound)
 	require.False(t, hasKeepaliveJob(t, timer, phone))
 
@@ -126,7 +127,7 @@ func TestCheckDeviceKeepaliveFreshDeviceNoop(t *testing.T) {
 
 	checkDeviceKeepalive(timer, phone)
 
-	d, err := repository.Default().Devices.GetByPhone(context.Background(), phone)
+	d, err := storage.Default().Devices.GetByPhone(context.Background(), phone)
 	require.NoError(t, err)
 	require.Equal(t, model.DeviceStatusOnline, d.Status)
 	require.True(t, hasKeepaliveJob(t, timer, phone))

@@ -15,9 +15,9 @@ import (
 
 	"github.com/fakeyanss/jt808-server-go/internal/config"
 	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
-	"github.com/fakeyanss/jt808-server-go/internal/repository"
 	"github.com/fakeyanss/jt808-server-go/internal/runtime"
 	"github.com/fakeyanss/jt808-server-go/internal/server"
+	"github.com/fakeyanss/jt808-server-go/internal/storage"
 )
 
 func Run(serv *server.TCPServer, cfg *config.Config) {
@@ -25,8 +25,8 @@ func Run(serv *server.TCPServer, cfg *config.Config) {
 	gin.SetMode(gin.ReleaseMode)
 	router := gin.Default()
 	api := router.Group("/api")
-	devices := repository.Default().Devices
-	geo := repository.Default().Geo
+	devices := storage.Default().Devices
+	geo := storage.Default().Geo
 	connRegistry := runtime.Default().Conn
 
 	api.GET("/device", func(c *gin.Context) {
@@ -44,7 +44,7 @@ func Run(serv *server.TCPServer, cfg *config.Config) {
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
 		}
-		industry := repository.Default().Industry
+		industry := storage.Default().Industry
 		var result any
 		switch c.Param("kind") {
 		case "driver":
@@ -882,7 +882,7 @@ func Run(serv *server.TCPServer, cfg *config.Config) {
 			return
 		}
 		msg := &model.Msg8203{Header: model.GenMsgHeader(device, 0x8203, session.GetNextSerialNum()), AlarmSerial: request.AlarmSerial, AlarmType: request.AlarmType}
-		repository.Default().Alarms.RegisterConfirmation(phone, msg.Header.SerialNumber, request.AlarmSerial, request.AlarmType)
+		storage.Default().Alarms.RegisterConfirmation(phone, msg.Header.SerialNumber, request.AlarmSerial, request.AlarmType)
 		serv.Send(session.ID, msg)
 		c.JSON(http.StatusAccepted, gin.H{"messageId": "0x8203", "alarmSerial": request.AlarmSerial, "alarmType": request.AlarmType})
 	})
@@ -893,7 +893,7 @@ func Run(serv *server.TCPServer, cfg *config.Config) {
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
 		}
-		c.JSON(http.StatusOK, repository.Default().Alarms.List(phone))
+		c.JSON(http.StatusOK, storage.Default().Alarms.List(phone))
 	})
 
 	api.PUT("/device/:phone/params", func(c *gin.Context) {

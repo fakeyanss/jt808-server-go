@@ -10,6 +10,7 @@ import (
 
 	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
 	"github.com/fakeyanss/jt808-server-go/internal/repository"
+	"github.com/fakeyanss/jt808-server-go/internal/storage"
 )
 
 type KeepaliveTimer struct {
@@ -31,7 +32,7 @@ func NewKeepaliveTimer() *KeepaliveTimer {
 
 func (t *KeepaliveTimer) Register(devicePhone string) {
 	ctx := context.Background()
-	device, err := repository.Default().Devices.GetByPhone(ctx, devicePhone)
+	device, err := storage.Default().Devices.GetByPhone(ctx, devicePhone)
 	if errors.Is(err, repository.ErrDeviceNotFound) {
 		return
 	}
@@ -66,7 +67,7 @@ func (j *CheckDeviceJob) Run() {
 func checkDeviceKeepalive(t *KeepaliveTimer, devicePhone string) {
 	log.Debug().Str("device", devicePhone).Msg("Check device keepalive status")
 	ctx := context.Background()
-	stores := repository.Default()
+	stores := storage.Default()
 	d, err := stores.Devices.GetByPhone(ctx, devicePhone)
 	if errors.Is(err, repository.ErrDeviceNotFound) {
 		log.Debug().Str("device", devicePhone).Msg("Fail to find device cache")

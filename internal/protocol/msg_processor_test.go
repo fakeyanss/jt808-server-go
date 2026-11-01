@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
-	"github.com/fakeyanss/jt808-server-go/internal/repository"
+	"github.com/fakeyanss/jt808-server-go/internal/storage"
 	"github.com/stretchr/testify/require"
 )
 
@@ -60,10 +60,10 @@ func locationReportBody(alarmSign uint32) []byte {
 // 位置上报写入定位缓存。
 func TestLocationReportWritesGeo(t *testing.T) {
 	const phone = "188765499002"
-	repository.Default().Devices.Upsert(context.Background(), &model.Device{Phone: phone, Keepalive: time.Minute})
+	storage.Default().Devices.Upsert(context.Background(), &model.Device{Phone: phone, Keepalive: time.Minute})
 	t.Cleanup(func() {
-		repository.Default().Devices.DeleteByPhone(context.Background(), phone)
-		repository.Default().Geo.Delete(context.Background(), phone)
+		storage.Default().Devices.DeleteByPhone(context.Background(), phone)
+		storage.Default().Geo.Delete(context.Background(), phone)
 	})
 
 	processor := NewJT808MsgProcessor(nil)
@@ -72,7 +72,7 @@ func TestLocationReportWritesGeo(t *testing.T) {
 	require.NoError(t, err)
 	require.IsType(t, &model.Msg8001{}, result.Outgoing)
 
-	geo, err := repository.Default().Geo.Latest(context.Background(), phone)
+	geo, err := storage.Default().Geo.Latest(context.Background(), phone)
 	require.NoError(t, err)
 	require.Equal(t, phone, geo.Phone)
 }

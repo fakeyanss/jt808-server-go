@@ -18,6 +18,7 @@ import (
 	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
 	"github.com/fakeyanss/jt808-server-go/internal/repository"
 	"github.com/fakeyanss/jt808-server-go/internal/runtime"
+	"github.com/fakeyanss/jt808-server-go/internal/storage"
 )
 
 var (
@@ -565,7 +566,7 @@ func processSegmentPacket(ctx context.Context, pkt *model.PacketData) (*model.Pr
 // 收到心跳，应刷新终端缓存有效期
 func processMsg0002(_ context.Context, data *model.ProcessData) error {
 	ctx := context.Background()
-	devices := repository.Default().Devices
+	devices := storage.Default().Devices
 	device, err := devices.GetByPhone(ctx, data.Incoming.GetHeader().PhoneNumber)
 
 	// 缓存不存在，说明设备不合法，需要返回错误，让服务层处理关闭
@@ -582,7 +583,7 @@ func processMsg0002(_ context.Context, data *model.ProcessData) error {
 // 收到注销，应清除缓存，断开连接。
 func processMsg0003(_ context.Context, data *model.ProcessData) error {
 	ctx := context.Background()
-	devices := repository.Default().Devices
+	devices := storage.Default().Devices
 	device, err := devices.GetByPhone(ctx, data.Incoming.GetHeader().PhoneNumber)
 	// 缓存不存在，说明设备不合法，需要返回错误，让服务层处理关闭
 	if errors.Is(err, repository.ErrDeviceNotFound) {
@@ -601,7 +602,7 @@ func processMsg0003(_ context.Context, data *model.ProcessData) error {
 func processMsg0100(ctx context.Context, data *model.ProcessData) error {
 	in := data.Incoming.(*model.Msg0100)
 
-	devices := repository.Default().Devices
+	devices := storage.Default().Devices
 	// 校验注册逻辑
 	out := data.Outgoing.(*model.Msg8100)
 	// 车辆已被注册
@@ -631,7 +632,7 @@ func processMsg0102(_ context.Context, data *model.ProcessData) error {
 	in := data.Incoming.(*model.Msg0102)
 
 	ctx := context.Background()
-	devices := repository.Default().Devices
+	devices := storage.Default().Devices
 	device, err := devices.GetByPhone(ctx, in.Header.PhoneNumber)
 	// 缓存不存在，说明设备不合法，需要返回错误，让服务层处理关闭
 	if errors.Is(err, repository.ErrDeviceNotFound) {
@@ -676,7 +677,7 @@ func genAuthCode(d *model.Device) string {
 func processMsg0104(_ context.Context, data *model.ProcessData) error {
 	in := data.Incoming.(*model.Msg0104)
 	if in.Parameters != nil {
-		_ = repository.Default().Params.Replace(context.Background(), in.Parameters)
+		_ = storage.Default().Params.Replace(context.Background(), in.Parameters)
 	}
 	runtime.Default().ParamResponses.Deliver(in)
 	return nil
@@ -690,7 +691,7 @@ func processMsg0107(_ context.Context, data *model.ProcessData) error {
 func processMsg8201(_ context.Context, data *model.ProcessData) error {
 	in := data.Incoming.(*model.Msg8201)
 	out := data.Outgoing.(*model.Msg0201)
-	geo, err := repository.Default().Geo.Latest(context.Background(), in.Header.PhoneNumber)
+	geo, err := storage.Default().Geo.Latest(context.Background(), in.Header.PhoneNumber)
 	if err != nil {
 		return err
 	}
@@ -734,13 +735,13 @@ func processMsg0200(_ context.Context, data *model.ProcessData) error {
 	in := data.Incoming.(*model.Msg0200)
 
 	ctx := context.Background()
-	devices := repository.Default().Devices
+	devices := storage.Default().Devices
 	device, err := devices.GetByPhone(ctx, in.Header.PhoneNumber)
 	// 缓存不存在，说明设备不合法，需要返回错误，让服务层处理关闭
 	if errors.Is(err, repository.ErrDeviceNotFound) {
 		return errors.Wrapf(err, "Fail to find device cache, phoneNumber=%s", in.Header.PhoneNumber)
 	}
-	repository.Default().Alarms.Record(in.Header.PhoneNumber, in.Header.SerialNumber, in.AlarmSign, in.Latitude, in.Longitude, in.Time)
+	storage.Default().Alarms.Record(in.Header.PhoneNumber, in.Header.SerialNumber, in.AlarmSign, in.Latitude, in.Longitude, in.Time)
 
 	// 解析状态位编码
 	dg := &model.DeviceGeo{}
@@ -755,7 +756,7 @@ func processMsg0200(_ context.Context, data *model.ProcessData) error {
 		_ = devices.Upsert(ctx, device)
 	}
 
-	_ = repository.Default().Geo.Append(ctx, dg)
+	_ = storage.Default().Geo.Append(ctx, dg)
 
 	return nil
 }
@@ -766,7 +767,7 @@ func processMsg0001(ctx context.Context, data *model.ProcessData) error {
 		session.Acknowledge(in.AnswerMessageID, in.AnswerSerialNumber)
 	}
 	if in.AnswerMessageID == 0x8203 {
-		repository.Default().Alarms.ConfirmByCommand(in.Header.PhoneNumber, in.AnswerSerialNumber)
+		storage.Default().Alarms.ConfirmByCommand(in.Header.PhoneNumber, in.AnswerSerialNumber)
 	}
 	return nil
 }
@@ -782,7 +783,7 @@ func processMsg8001(ctx context.Context, data *model.ProcessData) error {
 	// 收到8001消息，说明此时是作为终端设备
 	if in.Result == model.ResultSuccess {
 		// 回复成功，说明之前注册成功，为方便后续处理，将设备状态改为Online并缓存
-		devices := repository.Default().Devices
+		devices := storage.Default().Devices
 		device, err := devices.GetByPhone(context.Background(), in.Header.PhoneNumber)
 		if errors.Is(err, repository.ErrDeviceNotFound) {
 			return nil
@@ -879,7 +880,7 @@ func processMsg8100(_ context.Context, data *model.ProcessData) error {
 	in := data.Incoming.(*model.Msg8100)
 	out := data.Outgoing.(*model.Msg0102)
 
-	device, err := repository.Default().Devices.GetByPhone(context.Background(), in.Header.PhoneNumber)
+	device, err := storage.Default().Devices.GetByPhone(context.Background(), in.Header.PhoneNumber)
 	if errors.Is(err, repository.ErrDeviceNotFound) {
 		// JT808 2013 registration responses carry the auth code in the response.
 		// A simulator that does not keep a local device cache can still continue
@@ -897,7 +898,7 @@ func processMsg8100(_ context.Context, data *model.ProcessData) error {
 func processMsg8103(_ context.Context, data *model.ProcessData) error {
 	in := data.Incoming.(*model.Msg8103)
 	ctx := context.Background()
-	paramsRepo := repository.Default().Params
+	paramsRepo := storage.Default().Params
 	params, err := paramsRepo.Get(ctx, in.GetHeader().PhoneNumber)
 	if errors.Is(err, repository.ErrDeviceParamsNotFound) {
 		params = in.Parameters
@@ -913,7 +914,7 @@ func processMsg8103(_ context.Context, data *model.ProcessData) error {
 func processMsg8104(_ context.Context, data *model.ProcessData) error {
 	// todo: generate by config
 	out := data.Outgoing.(*model.Msg0104)
-	params, err := repository.Default().Params.Get(context.Background(), out.GetHeader().PhoneNumber)
+	params, err := storage.Default().Params.Get(context.Background(), out.GetHeader().PhoneNumber)
 	if errors.Is(err, repository.ErrDeviceParamsNotFound) {
 		out.Parameters = &model.DeviceParams{}
 		// 模拟一个固定的参数
@@ -958,7 +959,7 @@ func processMsg8104(_ context.Context, data *model.ProcessData) error {
 		if err := out.Parameters.Decode(out.Header.PhoneNumber, uint8(paramCnt), hex.Str2Byte(paramByteStr)); err != nil {
 			return err
 		}
-		_ = repository.Default().Params.Replace(context.Background(), out.Parameters)
+		_ = storage.Default().Params.Replace(context.Background(), out.Parameters)
 	} else {
 		out.Parameters = params
 	}
@@ -1004,7 +1005,7 @@ func processMsg9205(_ context.Context, data *model.ProcessData) error {
 	in := data.Incoming.(*model.Msg9205)
 	out := data.Outgoing.(*model.Msg1205)
 	out.Items = nil
-	for _, media := range repository.Default().Industry.MediaUploads(in.Header.PhoneNumber) {
+	for _, media := range storage.Default().Industry.MediaUploads(in.Header.PhoneNumber) {
 		if in.LogicChannelID != 0 && media.LogicChannelID != in.LogicChannelID {
 			continue
 		}
@@ -1072,7 +1073,7 @@ func mediaTimeInRange(t string, start, end *time.Time) bool {
 }
 
 func processIndustryReport(_ context.Context, data *model.ProcessData) error {
-	repository.Default().Industry.Record(data.Incoming)
+	storage.Default().Industry.Record(data.Incoming)
 	return nil
 }
 
@@ -1080,14 +1081,14 @@ func processIndustryReport(_ context.Context, data *model.ProcessData) error {
 // event catalog according to the 0x8301 set type.
 func processMsg8301(_ context.Context, data *model.ProcessData) error {
 	in := data.Incoming.(*model.Msg8301)
-	repository.Default().Industry.ApplyEventSet(in.Header.PhoneNumber, in.SetType, in.Items)
+	storage.Default().Industry.ApplyEventSet(in.Header.PhoneNumber, in.SetType, in.Items)
 	return nil
 }
 
 // processMsg8302 stores the issued question so the latest question and its
 // candidate answers are available to the terminal simulator.
 func processMsg8302(_ context.Context, data *model.ProcessData) error {
-	repository.Default().Industry.Record(data.Incoming)
+	storage.Default().Industry.Record(data.Incoming)
 	return nil
 }
 
@@ -1095,13 +1096,13 @@ func processMsg8302(_ context.Context, data *model.ProcessData) error {
 // catalog according to the 0x8303 set type.
 func processMsg8303(_ context.Context, data *model.ProcessData) error {
 	in := data.Incoming.(*model.Msg8303)
-	repository.Default().Industry.ApplyInfoMenuSet(in.Header.PhoneNumber, in.SetType, in.Items)
+	storage.Default().Industry.ApplyInfoMenuSet(in.Header.PhoneNumber, in.SetType, in.Items)
 	return nil
 }
 
 // processMsg8304 stores the latest information-service message for a device.
 func processMsg8304(_ context.Context, data *model.ProcessData) error {
-	repository.Default().Industry.Record(data.Incoming)
+	storage.Default().Industry.Record(data.Incoming)
 	return nil
 }
 
@@ -1109,7 +1110,7 @@ func processMsg8304(_ context.Context, data *model.ProcessData) error {
 // 0x8401 set type.
 func processMsg8401(_ context.Context, data *model.ProcessData) error {
 	in := data.Incoming.(*model.Msg8401)
-	repository.Default().Industry.ApplyPhonebookSet(in.Header.PhoneNumber, in.SetType, in.Items)
+	storage.Default().Industry.ApplyPhonebookSet(in.Header.PhoneNumber, in.SetType, in.Items)
 	return nil
 }
 
@@ -1117,7 +1118,7 @@ func processMsg8401(_ context.Context, data *model.ProcessData) error {
 // them back to the platform.
 func processMsg8500(_ context.Context, data *model.ProcessData) error {
 	in := data.Incoming.(*model.Msg8500)
-	repository.Default().Industry.SetVehicleControl(in.Header.PhoneNumber, in.ControlFlags)
+	storage.Default().Industry.SetVehicleControl(in.Header.PhoneNumber, in.ControlFlags)
 	return nil
 }
 
@@ -1130,7 +1131,7 @@ func processRegionResponse(_ context.Context, data *model.ProcessData) error {
 // simulator's catalog so a subsequent 0x8608 query returns typed records.
 func processRegionRouteSet(_ context.Context, data *model.ProcessData) error {
 	in := data.Incoming.(*model.MsgRegionRouteSet)
-	repository.Default().Regions.ApplySet(in.Header.PhoneNumber, in)
+	storage.Default().Regions.ApplySet(in.Header.PhoneNumber, in)
 	return nil
 }
 
@@ -1141,7 +1142,7 @@ func processRegionRouteDelete(_ context.Context, data *model.ProcessData) error 
 	if !ok {
 		return nil
 	}
-	repository.Default().Regions.Delete(in.Header.PhoneNumber, typ, in.IDs)
+	storage.Default().Regions.Delete(in.Header.PhoneNumber, typ, in.IDs)
 	return nil
 }
 
@@ -1150,7 +1151,7 @@ func processRegionRouteDelete(_ context.Context, data *model.ProcessData) error 
 func processRegionRouteQuery(_ context.Context, data *model.ProcessData) error {
 	query := data.Incoming.(*model.Msg8608)
 	resp := data.Outgoing.(*model.Msg0608)
-	stored := repository.Default().Regions.Query(query.Header.PhoneNumber, query.QueryType, query.IDs)
+	stored := storage.Default().Regions.Query(query.Header.PhoneNumber, query.QueryType, query.IDs)
 	resp.Circles = stored.Circles
 	resp.Rectangles = stored.Rectangles
 	resp.Polygons = stored.Polygons
@@ -1161,7 +1162,7 @@ func processRegionRouteQuery(_ context.Context, data *model.ProcessData) error {
 func processMediaSearchResponse(_ context.Context, data *model.ProcessData) error {
 	query := data.Incoming.(*model.Msg8802)
 	response := data.Outgoing.(*model.Msg0802)
-	for _, media := range repository.Default().Industry.MediaUploads(query.Header.PhoneNumber) {
+	for _, media := range storage.Default().Industry.MediaUploads(query.Header.PhoneNumber) {
 		if media.MultiMediaType != query.MediaType || (query.ChannelID != 0 && media.LogicChannelID != query.ChannelID) || (query.EventID != 0 && media.EventID != query.EventID) {
 			continue
 		}
@@ -1227,7 +1228,7 @@ func processMsg8803(ctx context.Context, data *model.ProcessData) error {
 		return nil
 	}
 	phone := cmd.Header.PhoneNumber
-	industry := repository.Default().Industry
+	industry := storage.Default().Industry
 	uploads := industry.MediaUploads(phone)
 	for i := range uploads {
 		media := uploads[i]
@@ -1267,7 +1268,7 @@ func processMsg8804(ctx context.Context, data *model.ProcessData) error {
 	cmd := data.Incoming.(*model.Msg8804)
 	session, _ := ctx.Value(model.SessionCtxKey{}).(*model.Session)
 	phone := cmd.Header.PhoneNumber
-	industry := repository.Default().Industry
+	industry := storage.Default().Industry
 	industry.SetRecording(phone, cmd.Command == 1)
 	if cmd.Command != 1 || session == nil {
 		return nil
@@ -1301,7 +1302,7 @@ func processMsg8805(ctx context.Context, data *model.ProcessData) error {
 		return nil
 	}
 	phone := cmd.Header.PhoneNumber
-	industry := repository.Default().Industry
+	industry := storage.Default().Industry
 	for _, media := range industry.MediaUploads(phone) {
 		if media.MultiMediaID != cmd.MediaID {
 			continue
