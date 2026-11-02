@@ -309,7 +309,7 @@ func initProcessOption() processOptions {
 		genData: func() *model.ProcessData {
 			return &model.ProcessData{Incoming: &model.Msg0704{}, Outgoing: &model.Msg8001{}}
 		},
-		process: processIndustryReport,
+		process: processMsg0704,
 	}
 	for _, messageID := range []uint16{0x8601, 0x8603, 0x8605, 0x8607} {
 		options[messageID] = &action{genData: func() *model.ProcessData {
@@ -764,17 +764,18 @@ func processMsg8202(_ context.Context, data *model.ProcessData) error {
 }
 
 // 收到位置信息汇报，回复通用应答
-func processMsg0200(_ context.Context, data *model.ProcessData) error {
+func processMsg0200(ctx context.Context, data *model.ProcessData) error {
 	in := data.Incoming.(*model.Msg0200)
 
-	ctx := context.Background()
 	devices := storage.Default().Devices
 	device, err := devices.GetByPhone(ctx, in.Header.PhoneNumber)
 	// 缓存不存在，说明设备不合法，需要返回错误，让服务层处理关闭
 	if errors.Is(err, repository.ErrDeviceNotFound) {
 		return errors.Wrapf(err, "Fail to find device cache, phoneNumber=%s", in.Header.PhoneNumber)
 	}
-	storage.Default().Alarms.Record(in.Header.PhoneNumber, in.Header.SerialNumber, in.AlarmSign, in.Latitude, in.Longitude, in.Time)
+	if err := storage.Default().Alarms.Record(ctx, in.Header.PhoneNumber, in.Header.SerialNumber, in.AlarmSign, in.Latitude, in.Longitude, in.Time); err != nil {
+		log.Error().Err(err).Str("phone", in.Header.PhoneNumber).Msg("record alarm")
+	}
 
 	// 解析状态位编码
 	dg := &model.DeviceGeo{}
@@ -790,8 +791,57 @@ func processMsg0200(_ context.Context, data *model.ProcessData) error {
 	}
 
 	_ = storage.Default().Geo.Append(ctx, dg)
+	recordLocationHistory(ctx, 0x0200, []*model.Msg0200{in})
 
 	return nil
+}
+
+// processMsg0704 保存批量定位快照，并把每个数据项写入定位历史。
+// 0x0704 数据项内没有独立消息流水号，无法与报警去重口径对齐，因此只记定位、不记报警。
+func processMsg0704(ctx context.Context, data *model.ProcessData) error {
+	in := data.Incoming.(*model.Msg0704)
+	storage.Default().Industry.Record(in)
+
+	locs := make([]*model.Msg0200, 0, len(in.Items))
+	for i := range in.Items {
+		locs = append(locs, &in.Items[i].Loc)
+	}
+	recordLocationHistory(ctx, 0x0704, locs)
+	return nil
+}
+
+// recordLocationHistory 写入定位历史；memory 后端未启用 Locations 时跳过。
+func recordLocationHistory(ctx context.Context, msgID uint16, locs []*model.Msg0200) {
+	repo := storage.Default().Locations
+	if repo == nil || len(locs) == 0 {
+		return
+	}
+	records := make([]repository.LocationRecord, 0, len(locs))
+	for _, loc := range locs {
+		if loc.Header == nil {
+			continue
+		}
+		records = append(records, repository.LocationRecord{
+			Phone:      loc.Header.PhoneNumber,
+			MsgID:      msgID,
+			AlarmSign:  loc.AlarmSign,
+			StatusSign: loc.StatusSign,
+			Latitude:   loc.Latitude,
+			Longitude:  loc.Longitude,
+			Altitude:   loc.Altitude,
+			Speed:      loc.Speed,
+			Direction:  loc.Direction,
+			ExtItems:   loc.ExtItems,
+			OccurredAt: loc.Time,
+			ReceivedAt: time.Now(),
+		})
+	}
+	if len(records) == 0 {
+		return
+	}
+	if err := repo.Record(ctx, records); err != nil {
+		log.Error().Err(err).Str("phone", records[0].Phone).Uint16("msg_id", msgID).Msg("record location history")
+	}
 }
 
 func processMsg0001(ctx context.Context, data *model.ProcessData) error {
@@ -800,7 +850,9 @@ func processMsg0001(ctx context.Context, data *model.ProcessData) error {
 		session.Acknowledge(in.AnswerMessageID, in.AnswerSerialNumber)
 	}
 	if in.AnswerMessageID == 0x8203 {
-		storage.Default().Alarms.ConfirmByCommand(in.Header.PhoneNumber, in.AnswerSerialNumber)
+		if _, err := storage.Default().Alarms.ConfirmByCommand(ctx, in.Header.PhoneNumber, in.AnswerSerialNumber); err != nil {
+			log.Error().Err(err).Str("phone", in.Header.PhoneNumber).Msg("confirm alarm by command")
+		}
 	}
 	return nil
 }
