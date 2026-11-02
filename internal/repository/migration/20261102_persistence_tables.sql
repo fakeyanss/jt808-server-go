@@ -2,7 +2,7 @@
 -- 批次 A：终端下行配置目录（terminal_catalogs）与区域/路线（region_items）。
 -- 批次 B：定位历史（locations）与报警（alarms）；本文件一次性建表，代码分批接入。
 --
--- 方言约束同 init_20261101.sql：只使用 SQLite 与 MySQL 都支持的语法；
+-- 方言约束同 20261101_init.sql：只使用 SQLite 与 MySQL 都支持的语法；
 -- 不使用 TEXT/BLOB 默认值，不写 MySQL 专属子句。
 -- payload_json 使用 MEDIUMTEXT，MySQL 下可容纳升级包等较大 JSON；
 -- SQLite 对未知类型名按 TEXT 亲和性处理。

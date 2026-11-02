@@ -332,9 +332,10 @@ type Coordinator interface {
 
 - 目录（`go:embed *.sql` 编译进二进制）：
   - `bootstrap_schema_migrations.sql`：迁移元数据表建表脚本（引导脚本，不参与版本编号）；
-  - `init_20261101.sql`：当前唯一版本。开发阶段不保留增量迁移，直接给出最终 schema。
-- **版本号取自文件名末尾日期**：`<描述>_<YYYYMMDD>.sql`，迁移按日期升序执行；
-  后续变更追加新文件（如 `add_xxx_20261201.sql`），无需人工维护递增序号。
+  - `20261101_init.sql`：初始版本。开发阶段不保留增量迁移，直接给出最终 schema。
+- **版本号取自文件名开头日期**：`<YYYYMMDD>_<描述>.sql`，迁移按日期升序执行；
+  后续变更追加新文件（如 `20261201_add_xxx.sql`），无需人工维护递增序号；
+  同一天只允许一个迁移文件（同日期触发 `duplicate migration date` panic），当日多个变更合并为一个文件。
 - **`schema_migrations` 的 DDL 也在 SQL 文件里**，不在 Go 常量中。它必须先于版本存在
   （否则无处记录已应用版本），因此单独作为引导脚本；迁移工具在执行任何版本前先执行它，
   失败会作为普通迁移错误返回。MySQL 与 SQLite 都需要该表，二者共用同一份脚本。
@@ -342,7 +343,7 @@ type Coordinator interface {
   **分开编译、分开发布**（`make compile-migrate` / `make release-migrate`）。迁移工具只做连接、
   执行迁移、打印 `applied` 数量，不启动 TCP/UDP/API，也不初始化主服务的运行时。
   MySQL 场景 DBA 可直接执行：先 `bootstrap_schema_migrations.sql`，再按文件名顺序执行版本文件。
-  除索引创建外语句均为幂等形式（`CREATE TABLE IF NOT EXISTS`）；`init_20261101.sql` 末尾的
+  除索引创建外语句均为幂等形式（`CREATE TABLE IF NOT EXISTS`）；`20261101_init.sql` 末尾的
   `CREATE INDEX` 在 MySQL 上没有 `IF NOT EXISTS`，重复手工执行会报"索引已存在"，属预期，
   执行前请先备份并核对 `schema_migrations`。
 - **所有后端一致，启动只校验不执行**：SQLite 与 MySQL 都不在服务启动时执行任何 DDL。
@@ -392,10 +393,10 @@ alarms.maxPerDevice       = 1000   # 每设备最多 1000 条报警；0 表示�
 |---|---|---|---|
 | 设备运行时投影 | 拆 `devices` + `device_runtime` 两表，`last_com_time` 节流写 | 拆为：`devices` 保留 10 列静态/身份字段，`device_runtime` 承载 `session_id`/`trans_proto`/`last_com_time_ms`/`status`/`updated_at`。读用 `LEFT JOIN` 合并回完整 `model.Device`，写在同一事务内按归属分写两表 | `keepalive_ms` 是代码常量（`model.NewDevice` 固定 1 分钟，`device.go:50`），不属运行时观测值，留在 `devices`。**重启语义**：不做启动批量重置——单机由优雅停机（SIGINT/SIGTERM）调用 `ResetRuntime` 清空；异常重启残留的 `session_id`/`status` 在读路径按 `last_com_time_ms + keepalive_ms` 的 TTL 判定收敛为 offline 并清空 `session_id`，`last_com_time_ms` 保留作"上次在线时间"。分布式形态以 Redis 运行时缓存的全 TTL + 过期扫描回写替代单机重置。**心跳落库频率可配**：`server.heartbeatPersistIntervalMs`（缺省 `0`，逐条写库；若开启，应小于保活周期，当前保活 1 分钟故建议 ≤30000），被节流时保活判定取进程内 `runtime.Heartbeat` 的实时值（§11.3） |
 | `terminal_properties` | `phone` PK，属性 JSON | 新增：`phone` PK + 常用属性列（终端类型/制造商/型号/终端 ID/ICCID/硬件版本/固件版本/GNSS 与通信能力）+ `extra_json` 长尾 | 只由 0x0107 查询应答写入，与 `devices` **不合并**：`devices` 静态字段来自 0x0100/0x0102，属性应答若回写 `devices` 会触发其非主键列全量重写。0x0107 处理为"持久化 + 内存最新值 + broker 投递"三者同时 |
-| `plate` 唯一性 | `plate` UNIQUE | 未加唯一约束，仅加**非唯一**普通索引 `idx_devices_plate`（见 `init_20261101.sql`） | 内存实现按 `plate` 覆盖映射、允许空车牌重复，加 UNIQUE 会改变既有行为（多个空车牌或同牌设备会写入失败）。设备身份以协议里的终端手机号（`phone`）为准，`plate` 仅用于注册时"车辆已注册"校验；保持非唯一 |
-| `devices` 索引 | 未明确 | `phone` 主键 + `idx_devices_plate`（非唯一，见 `init_20261101.sql`） | `GetByPlate` 由全表扫描改为索引查找；不加唯一约束，理由见上一行的 `plate` 唯一性 |
+| `plate` 唯一性 | `plate` UNIQUE | 未加唯一约束，仅加**非唯一**普通索引 `idx_devices_plate`（见 `20261101_init.sql`） | 内存实现按 `plate` 覆盖映射、允许空车牌重复，加 UNIQUE 会改变既有行为（多个空车牌或同牌设备会写入失败）。设备身份以协议里的终端手机号（`phone`）为准，`plate` 仅用于注册时"车辆已注册"校验；保持非唯一 |
+| `devices` 索引 | 未明确 | `phone` 主键 + `idx_devices_plate`（非唯一，见 `20261101_init.sql`） | `GetByPlate` 由全表扫描改为索引查找；不加唯一约束，理由见上一行的 `plate` 唯一性 |
 | `device_params` | 参数集合整体 JSON 单字段 | 一致（`params_json` TEXT） | 遵循 D1；`ParamValue` 的 JSON 数字会以 `float64` 回读，既有 `any2uintX` 编码逻辑已兼容 |
-| `locations` / `alarms` | B 类持久化 | P2.1 已落地（`0004_persistence_tables_*.sql`）：定位批量插入 + 写入后清理；报警去重窗口与每设备上限可配 | 保留期口径与默认值来源见 §7.3；0x0704 只记定位不记报警，理由见 §19.13 |
+| `locations` / `alarms` | B 类持久化 | P2.1 已落地（`20261102_persistence_tables.sql`）：定位批量插入 + 写入后清理；报警去重窗口与每设备上限可配 | 保留期口径与默认值来源见 §7.3；0x0704 只记定位不记报警，理由见 §19.13 |
 | `region_items` / `terminal_catalogs` | B 类持久化 | P2.1 已落地：目录按 `(phone, catalog_type, item_key)` 整包覆盖；区域/路线在同一事务内 DELETE + INSERT | 写入接口保持既有内存实现签名（无 error），SQL 失败只记英文日志不阻断协议；对账与重试留待 command_outbox 阶段 |
 | `command_outbox` | B 类持久化 | 未落地（本阶段非交付项） | 需要幂等/重投语义，留待 M3；媒体/运单按 D3 后置 |
 | `AlarmRepository` 签名 | 未指定 | `Record`/`List`/`RegisterConfirmation`/`ConfirmByCommand` 统一增加 `ctx context.Context` 并返回 `error` | 与其它 B 类仓储一致，便于 SQL 实现透传超时与取消；内存实现忽略 ctx 并返回 nil。调用点已同步：`internal/api`、`internal/protocol`、`internal/server/udp_server_test.go` |
@@ -941,7 +942,7 @@ internal/storage/                 # 仅装配：后端选择与初始化
 - 目录：`internal/repository/migration/` 下 `migrate.go` + `0001_init.sql` /
   `0002_terminal_properties.sql` / `0003_device_runtime.sql`；SQL 经 `//go:embed *.sql` 编译进二进制，
   迁移器只依赖 `database/sql`，未引入框架。（这些增量文件已在 §19.10 合并为
-  `bootstrap_schema_migrations.sql` + `init_20261101.sql`。）
+  `bootstrap_schema_migrations.sql` + `20261101_init.sql`。）
 - 迁移入口：本批最初复用主服务的 `migrate` 位置参数；**§19.8 起改为独立工具 `jt808-migrate`**，
   SQLite 的启动自动迁移同时取消。DBA 也可按文件名顺序直接执行这些 SQL 文件。
 - 启动校验（当前行为）：所有后端都只比对版本。低于期望报
@@ -999,7 +1000,7 @@ internal/storage/                 # 仅装配：后端选择与初始化
   TTL 收敛陈旧读为 offline 且保留 `last_com_time`；迁移 4 个文件且 `idx_devices_plate` 存在。
 - 已知限制：MySQL 下 `0004` 为普通 `CREATE INDEX`，重复手工执行会因索引已存在而失败，
   迁移器按 `schema_migrations` 版本号避免重复执行。（迁移文件已在 §19.10 合并为
-  `init_20261101.sql`。）
+  `20261101_init.sql`。）
 
 ### 19.8 独立迁移工具与取消 SQLite 自动迁移（2026-11-01，分支 `dev/p0-baseline`，基线 `bc439b9`，提交 `629c29d`）
 
@@ -1059,6 +1060,8 @@ internal/storage/                 # 仅装配：后端选择与初始化
    `init_20261101.sql`（最终 schema 形态，`devices` 不再含运行时列）。
 2. **文件名改为 `<描述>_<YYYYMMDD>.sql`**，版本号取文件名末尾日期（如 `20261101`），
    迁移按日期升序执行；后续变更追加新文件即可，无需人工维护序号。
+   （2026-11-02 起再次调整为 `<YYYYMMDD>_<描述>.sql` 前缀格式，版本号语义不变，
+   仍为同一日期数字，已迁移库无需任何升级动作。）
 3. **`schema_migrations` 的建表 DDL 从 Go 常量移入 SQL**：新增
    `bootstrap_schema_migrations.sql`，由迁移工具在执行任何版本前先执行。
    该表是迁移机制自身的元数据，必须先于版本存在，所以作为不参与版本编号的引导脚本；
@@ -1089,7 +1092,7 @@ internal/storage/                 # 仅装配：后端选择与初始化
 
 ### 19.11 SQL 方言兼容性核对（2026-11-01，分支 `dev/p0-baseline`，基线 `0852461`，提交 `e7d4294`）
 
-**结论**：合并后的 `bootstrap_schema_migrations.sql` + `init_20261101.sql` 使用 SQLite 与
+**结论**：合并后的 `bootstrap_schema_migrations.sql` + `20261101_init.sql` 使用 SQLite 与
 MySQL 都支持的语法；核对中发现并修复一处 MySQL 不兼容：
 
 - `extra_json TEXT NOT NULL DEFAULT '{}'` → `extra_json TEXT NOT NULL`。
@@ -1137,7 +1140,7 @@ MySQL 都支持的语法；核对中发现并修复一处 MySQL 不兼容：
 
 **范围**：在既有 SQL 后端（`devices`/`device_runtime`/`device_params`/`terminal_properties`）之上，
 补齐 `terminal_catalogs`、`region_items`、`locations`、`alarms` 四张 B 类表；`memory` 仍为默认后端，
-`storage.type: memory` 下行为不变。迁移文件为 `0004_persistence_tables_20261102.sql`（四表一次建齐，
+`storage.type: memory` 下行为不变。迁移文件为 `20261102_persistence_tables.sql`（四表一次建齐，
 原因见 §7.2 的"同日文件会 panic"约束，批次拆分只影响代码接入，不影响 DDL）。
 
 **协议口径**（详见任务回报；结论已写入 §7.3 默认值来源）：
