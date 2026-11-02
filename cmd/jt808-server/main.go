@@ -33,6 +33,11 @@ func main() {
 	logConfig := cfg.ParseLogConf()
 	log.Logger = *logger.Configure(logConfig).Logger
 
+	if err := cfg.ValidateRetention(); err != nil {
+		log.Error().Err(err).Msg("invalid retention configuration")
+		os.Exit(1)
+	}
+
 	storageCfg := storage.FromConfig(cfg)
 	backend, storageErr := storage.Init(storageCfg)
 	if storageErr != nil {

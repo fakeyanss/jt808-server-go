@@ -25,11 +25,15 @@ const (
 	BackendMySQL  = "mysql"
 )
 
-// Config 描述持久化后端的选择与连接参数。
+// Config 描述持久化后端的选择、连接参数与保留策略。
 type Config struct {
 	Type       string // memory | sqlite | mysql
 	SQLitePath string // type=sqlite 时必填
 	MySQLDSN   string // type=mysql 时必填
+
+	// 保留策略仅 SQL 后端消费；memory 后端保持既有进程内行为不变。
+	LocationRetention repository.LocationRetention
+	AlarmRetention    repository.AlarmRetention
 }
 
 var (

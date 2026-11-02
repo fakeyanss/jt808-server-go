@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/mix-go/xfmt"
 	"github.com/pkg/errors"
@@ -150,10 +151,128 @@ type DeviceParamsConf struct {
 }
 
 type Config struct {
-	Log     *logConf     `yaml:"log"`
-	Server  *serverConf  `yaml:"server"`
-	Client  *clientConf  `yaml:"client"`
-	Storage *storageConf `yaml:"storage"`
+	Log       *logConf       `yaml:"log"`
+	Server    *serverConf    `yaml:"server"`
+	Client    *clientConf    `yaml:"client"`
+	Storage   *storageConf   `yaml:"storage"`
+	Retention *retentionConf `yaml:"retention"`
+}
+
+// 保留期默认值。未配置 retention 段时使用，保证与已有的进程内窗口一致：
+// 报警去重 30 分钟、确认关联 10 分钟、每设备 1000 条。定位历史的
+// 7 天 / 10000 条是自行设定的工程默认值（JT/T 808 未规定平台侧保留期）。
+const (
+	DefaultLocationRetentionDays = 7
+	DefaultLocationMaxPerDevice  = 10000
+	DefaultAlarmDedupWindowMS    = 30 * 60 * 1000
+	DefaultAlarmConfirmExpireMS  = 10 * 60 * 1000
+	DefaultAlarmMaxPerDevice     = 1000
+)
+
+// retentionConf 配置持久化数据的保留策略。
+// 字段使用指针以区分“未配置”（取默认值）与“显式 0”（关闭该策略）。
+type retentionConf struct {
+	Locations *locationRetentionConf `yaml:"locations"`
+	Alarms    *alarmRetentionConf    `yaml:"alarms"`
+}
+
+type locationRetentionConf struct {
+	RetentionDays *int `yaml:"retentionDays"`
+	MaxPerDevice  *int `yaml:"maxPerDevice"`
+}
+
+type alarmRetentionConf struct {
+	DedupWindowMS   *int `yaml:"dedupWindowMs"`
+	ConfirmExpireMS *int `yaml:"confirmExpireMs"`
+	MaxPerDevice    *int `yaml:"maxPerDevice"`
+}
+
+// LocationRetention 是定位历史保留策略的归一化结果。
+// MaxAge 为 0 表示不做时间清理；MaxPerDevice 为 0 表示不限制条数。
+type LocationRetention struct {
+	MaxAge       time.Duration
+	MaxPerDevice int
+}
+
+// AlarmRetention 是报警保留策略的归一化结果。
+// DedupWindow 为 0 表示不去重；ConfirmExpire 为 0 表示确认关联立即失效；
+// MaxPerDevice 为 0 表示不限制条数。
+type AlarmRetention struct {
+	DedupWindow   time.Duration
+	ConfirmExpire time.Duration
+	MaxPerDevice  int
+}
+
+// RetentionPolicy 汇总各仓储的保留策略。
+type RetentionPolicy struct {
+	Locations LocationRetention
+	Alarms    AlarmRetention
+}
+
+// RetentionPolicy 返回应用默认值后的保留策略。
+func (c *Config) RetentionPolicy() RetentionPolicy {
+	policy := RetentionPolicy{
+		Locations: LocationRetention{
+			MaxAge:       time.Duration(DefaultLocationRetentionDays) * 24 * time.Hour,
+			MaxPerDevice: DefaultLocationMaxPerDevice,
+		},
+		Alarms: AlarmRetention{
+			DedupWindow:   time.Duration(DefaultAlarmDedupWindowMS) * time.Millisecond,
+			ConfirmExpire: time.Duration(DefaultAlarmConfirmExpireMS) * time.Millisecond,
+			MaxPerDevice:  DefaultAlarmMaxPerDevice,
+		},
+	}
+	if c == nil || c.Retention == nil {
+		return policy
+	}
+	if loc := c.Retention.Locations; loc != nil {
+		if loc.RetentionDays != nil {
+			policy.Locations.MaxAge = time.Duration(*loc.RetentionDays) * 24 * time.Hour
+		}
+		if loc.MaxPerDevice != nil {
+			policy.Locations.MaxPerDevice = *loc.MaxPerDevice
+		}
+	}
+	if alarm := c.Retention.Alarms; alarm != nil {
+		if alarm.DedupWindowMS != nil {
+			policy.Alarms.DedupWindow = time.Duration(*alarm.DedupWindowMS) * time.Millisecond
+		}
+		if alarm.ConfirmExpireMS != nil {
+			policy.Alarms.ConfirmExpire = time.Duration(*alarm.ConfirmExpireMS) * time.Millisecond
+		}
+		if alarm.MaxPerDevice != nil {
+			policy.Alarms.MaxPerDevice = *alarm.MaxPerDevice
+		}
+	}
+	return policy
+}
+
+// ValidateRetention 校验保留策略配置，负数视为非法配置。
+// 显式 0 合法，表示关闭对应的清理/去重/上限。
+func (c *Config) ValidateRetention() error {
+	if c == nil || c.Retention == nil {
+		return nil
+	}
+	if loc := c.Retention.Locations; loc != nil {
+		if loc.RetentionDays != nil && *loc.RetentionDays < 0 {
+			return fmt.Errorf("retention.locations.retentionDays must be >= 0, got %d", *loc.RetentionDays)
+		}
+		if loc.MaxPerDevice != nil && *loc.MaxPerDevice < 0 {
+			return fmt.Errorf("retention.locations.maxPerDevice must be >= 0, got %d", *loc.MaxPerDevice)
+		}
+	}
+	if alarm := c.Retention.Alarms; alarm != nil {
+		if alarm.DedupWindowMS != nil && *alarm.DedupWindowMS < 0 {
+			return fmt.Errorf("retention.alarms.dedupWindowMs must be >= 0, got %d", *alarm.DedupWindowMS)
+		}
+		if alarm.ConfirmExpireMS != nil && *alarm.ConfirmExpireMS < 0 {
+			return fmt.Errorf("retention.alarms.confirmExpireMs must be >= 0, got %d", *alarm.ConfirmExpireMS)
+		}
+		if alarm.MaxPerDevice != nil && *alarm.MaxPerDevice < 0 {
+			return fmt.Errorf("retention.alarms.maxPerDevice must be >= 0, got %d", *alarm.MaxPerDevice)
+		}
+	}
+	return nil
 }
 
 // storageConf 配置持久化后端；type 缺省为 memory。

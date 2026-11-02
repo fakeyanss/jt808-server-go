@@ -30,6 +30,19 @@ server:
     enable: true
     bannerPath: "configs/banner.txt"
 
+# 持久化数据保留策略。整段缺省时使用代码内置默认值，行为与之前的进程内实现一致。
+# 显式写 0 表示关闭对应策略（0 天不做时间清理、0 条不限制上限、0 毫秒不去重）。
+# JT/T 808 未规定平台侧保存期限，定位 7 天 / 10000 条为自行设定的工程默认值；
+# 报警 30 分钟去重 / 10 分钟确认关联 / 1000 条沿用既有内存实现。
+retention:
+  locations:
+    retentionDays: 7
+    maxPerDevice: 10000
+  alarms:
+    dedupWindowMs: 1800000
+    confirmExpireMs: 600000
+    maxPerDevice: 1000
+
 # 持久化后端：memory | sqlite | mysql，缺省 memory（行为与旧版本一致）
 storage:
   type: "memory"
