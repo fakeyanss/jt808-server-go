@@ -165,6 +165,18 @@ func (s *Store) TerminalPropertiesRepository() repository.TerminalPropertiesRepo
 	}
 }
 
+// IndustryRepository 返回行业上报与下行配置仓储。
+// 配置类数据（0x8301/0x8303/0x8401/0x8108/0x8900）启动时从 DB 回灌内存。
+func (s *Store) IndustryRepository() (repository.IndustryRepository, error) {
+	return newIndustryRepository(s)
+}
+
+// RegionRepository 返回区域/路线仓储。
+// 启动时从 DB 回灌内存，写入按整族事务覆盖。
+func (s *Store) RegionRepository() (repository.RegionRepository, error) {
+	return newRegionRepository(s)
+}
+
 // buildDSN 组装驱动名与 DSN。
 // SQLite 通过 _pragma 为每个连接设置 busy_timeout 与 WAL，避免并发写立即返回 SQLITE_BUSY。
 func buildDSN(cfg Config) (string, string, error) {

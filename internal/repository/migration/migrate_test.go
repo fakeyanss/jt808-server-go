@@ -20,10 +20,11 @@ func newTestDB(t *testing.T) *sql.DB {
 }
 
 func TestExpectedVersionMatchesEmbeddedFiles(t *testing.T) {
-	// 开发阶段只保留一个合并版本；引导脚本不参与版本编号。
-	require.Len(t, migrations, 1)
+	// 开发阶段按批次追加版本；引导脚本不参与版本编号。
+	require.Len(t, migrations, 2)
 	require.Equal(t, "init_20261101.sql", migrations[0].name)
-	require.Equal(t, 20261101, ExpectedVersion())
+	require.Equal(t, "0004_persistence_tables_20261102.sql", migrations[1].name)
+	require.Equal(t, 20261102, ExpectedVersion())
 }
 
 // 同一库重复执行迁移只应用一次，版本记录不重复。
@@ -44,7 +45,10 @@ func TestApplyIsIdempotent(t *testing.T) {
 	require.Equal(t, len(migrations), rows)
 
 	// 迁移后业务表与车牌索引均存在。
-	for _, table := range []string{"devices", "device_params", "terminal_properties", "device_runtime"} {
+	for _, table := range []string{
+		"devices", "device_params", "terminal_properties", "device_runtime",
+		"terminal_catalogs", "region_items", "locations", "alarms",
+	} {
 		var name string
 		err := db.QueryRowContext(ctx, `SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?`, table).Scan(&name)
 		require.NoError(t, err, "table %s should exist", table)
