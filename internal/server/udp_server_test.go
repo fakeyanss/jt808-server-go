@@ -215,15 +215,17 @@ func TestTCPServerProcessesJT808Registration(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("client simulator did not answer 0x8201")
 	}
-	alarms := storage.Default().Alarms.List(phone)
+	alarms, err := storage.Default().Alarms.List(context.Background(), phone)
+	require.NoError(t, err)
 	require.NotEmpty(t, alarms)
 	require.Equal(t, report.Header.SerialNumber, alarms[len(alarms)-1].MessageSerial)
 	confirmSerial := session.GetNextSerialNum()
-	storage.Default().Alarms.RegisterConfirmation(phone, confirmSerial, report.Header.SerialNumber, report.AlarmSign)
+	require.NoError(t, storage.Default().Alarms.RegisterConfirmation(context.Background(), phone, confirmSerial, report.Header.SerialNumber, report.AlarmSign))
 	server.Send(session.ID, &model.Msg8203{Header: model.GenMsgHeader(device, 0x8203, confirmSerial), AlarmSerial: report.Header.SerialNumber, AlarmType: report.AlarmSign})
 	deadline = time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		alarms = storage.Default().Alarms.List(phone)
+		alarms, err = storage.Default().Alarms.List(context.Background(), phone)
+		require.NoError(t, err)
 		if len(alarms) > 0 && alarms[len(alarms)-1].Confirmed {
 			break
 		}

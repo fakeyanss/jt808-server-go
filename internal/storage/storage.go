@@ -25,11 +25,15 @@ const (
 	BackendMySQL  = "mysql"
 )
 
-// Config 描述持久化后端的选择与连接参数。
+// Config 描述持久化后端的选择、连接参数与保留策略。
 type Config struct {
 	Type       string // memory | sqlite | mysql
 	SQLitePath string // type=sqlite 时必填
 	MySQLDSN   string // type=mysql 时必填
+
+	// 保留策略仅 SQL 后端消费；memory 后端保持既有进程内行为不变。
+	LocationRetention repository.LocationRetention
+	AlarmRetention    repository.AlarmRetention
 }
 
 var (
@@ -46,6 +50,8 @@ type Stores struct {
 	Alarms     repository.AlarmRepository
 	Regions    repository.RegionRepository
 	Industry   repository.IndustryRepository
+	// Locations 为定位历史仓储；memory 后端保持既有热读环形缓冲，本字段为 nil。
+	Locations repository.LocationRepository
 
 	// Backend 记录实际启用的后端，供启动日志与运维排查使用。
 	Backend string
@@ -75,8 +81,8 @@ func newStores(backend string) *Stores {
 }
 
 // Open 按配置装配存储后端。
-// SQL 后端覆盖 Device、DeviceParams 与 TerminalProperties，其余仓储仍使用内存实现；
-// 因此除设备/参数/属性外的数据在进程重启后不保留（与设计文档 §7.4 范围一致）。
+// SQL 后端覆盖 Device、DeviceParams、TerminalProperties、Industry、Regions、
+// Alarms 与 Locations；memory 后端保持既有行为不变。
 func Open(cfg Config) (*Stores, error) {
 	backend := normalizeBackend(cfg.Type)
 	switch backend {
@@ -87,10 +93,24 @@ func Open(cfg Config) (*Stores, error) {
 		if err != nil {
 			return nil, err
 		}
+		industry, err := sqlStore.IndustryRepository()
+		if err != nil {
+			_ = sqlStore.Close()
+			return nil, err
+		}
+		regions, err := sqlStore.RegionRepository()
+		if err != nil {
+			_ = sqlStore.Close()
+			return nil, err
+		}
 		stores := newStores(backend)
 		stores.Devices = sqlStore.DeviceRepository()
 		stores.Params = sqlStore.DeviceParamsRepository()
 		stores.Properties = sqlStore.TerminalPropertiesRepository()
+		stores.Industry = industry
+		stores.Regions = regions
+		stores.Alarms = sqlStore.AlarmRepository(cfg.AlarmRetention)
+		stores.Locations = sqlStore.LocationRepository(cfg.LocationRetention)
 		stores.close = sqlStore.Close
 		stores.resetRuntime = sqlStore.ResetRuntime
 		return stores, nil

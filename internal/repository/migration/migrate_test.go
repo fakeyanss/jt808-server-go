@@ -20,10 +20,11 @@ func newTestDB(t *testing.T) *sql.DB {
 }
 
 func TestExpectedVersionMatchesEmbeddedFiles(t *testing.T) {
-	// 开发阶段只保留一个合并版本；引导脚本不参与版本编号。
-	require.Len(t, migrations, 1)
-	require.Equal(t, "init_20261101.sql", migrations[0].name)
-	require.Equal(t, 20261101, ExpectedVersion())
+	// 开发阶段按批次追加版本；引导脚本不参与版本编号。
+	require.Len(t, migrations, 2)
+	require.Equal(t, "20261101_init.sql", migrations[0].name)
+	require.Equal(t, "20261102_persistence_tables.sql", migrations[1].name)
+	require.Equal(t, 20261102, ExpectedVersion())
 }
 
 // 同一库重复执行迁移只应用一次，版本记录不重复。
@@ -44,7 +45,10 @@ func TestApplyIsIdempotent(t *testing.T) {
 	require.Equal(t, len(migrations), rows)
 
 	// 迁移后业务表与车牌索引均存在。
-	for _, table := range []string{"devices", "device_params", "terminal_properties", "device_runtime"} {
+	for _, table := range []string{
+		"devices", "device_params", "terminal_properties", "device_runtime",
+		"terminal_catalogs", "region_items", "locations", "alarms",
+	} {
 		var name string
 		err := db.QueryRowContext(ctx, `SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?`, table).Scan(&name)
 		require.NoError(t, err, "table %s should exist", table)
@@ -88,17 +92,46 @@ INSERT INTO a VALUES ('x;y');
 	require.Equal(t, "INSERT INTO a VALUES ('x;y')", stmts[2])
 }
 
-func TestParseVersionUsesDateSuffix(t *testing.T) {
-	version, err := parseVersion("init_20261101.sql")
+func TestParseVersionUsesDatePrefix(t *testing.T) {
+	version, err := parseVersion("20261101_init.sql")
 	require.NoError(t, err)
 	require.Equal(t, 20261101, version)
 
 	_, err = parseVersion("init.sql")
 	require.Error(t, err)
 
-	_, err = parseVersion("init_2026111.sql")
+	_, err = parseVersion("20261101.sql")
 	require.Error(t, err)
 
-	_, err = parseVersion("init_20261301.sql")
+	_, err = parseVersion("2026111_init.sql")
 	require.Error(t, err)
+
+	_, err = parseVersion("20261301_init.sql")
+	require.Error(t, err)
+}
+
+// 改名前已迁移的库（schema_migrations 中已有日期版本记录）在新代码下
+// 启动校验通过、重复迁移不重复应用：版本号语义未随文件名格式变化。
+func TestApplyCompatibleWithPreRenameDatabase(t *testing.T) {
+	ctx := context.Background()
+	db := newTestDB(t)
+
+	// 模拟改名前迁移过的库：引导表已建，两个日期版本均已记录。
+	for _, stmt := range bootstrapStatements {
+		_, err := db.ExecContext(ctx, stmt)
+		require.NoError(t, err)
+	}
+	for _, version := range []int{20261101, 20261102} {
+		_, err := db.ExecContext(ctx,
+			`INSERT INTO schema_migrations (version, applied_at) VALUES (?, 0)`, version)
+		require.NoError(t, err)
+	}
+
+	current, err := CurrentVersion(ctx, db)
+	require.NoError(t, err)
+	require.Equal(t, ExpectedVersion(), current)
+
+	applied, err := Apply(ctx, db)
+	require.NoError(t, err)
+	require.Equal(t, 0, applied)
 }

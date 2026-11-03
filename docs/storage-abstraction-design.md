@@ -319,10 +319,10 @@ type Coordinator interface {
 | `device_runtime` | 设备运行时投影（B，与设备写入同事务更新） | `phone` PK，`session_id`,`trans_proto`,`last_com_time_ms`,`status`,`updated_at`；**不在启动时批量重置**：单机由优雅停机清空，异常重启的残留由读路径 TTL 判定收敛为离线（见 §7.4） |
 | `device_params` | 终端参数（B） | `phone` PK，参数集合**整体 JSON 单字段**（已定，见 §18-D1；将来需要按参数 ID 服务端查询时再演进为 EAV） |
 | `terminal_properties` | 终端属性档案（B，来源 0x0107 查询应答） | `phone` PK，常用属性列化 + `extra_json` 长尾兜底；与 `devices` 不合并（见 §7.4） |
-| `region_items` | 区域/路线（B） | 唯一键 `(phone, family, region_id)`，payload JSON，`updated_at`；**本期非交付项** |
-| `terminal_catalogs` | 事件/信息菜单/电话本等下发目录（B） | 唯一键 `(phone, kind, item_id)`，payload JSON；**本期非交付项** |
-| `locations` | 定位历史（B，时序） | 索引 `(phone, ts)`；批量插入；按 `ts` 保留期删除；**本期明确延后（§7.5）** |
-| `alarms` | 报警历史与确认（B，时序） | 唯一键 `(phone, message_serial)` 去重；`confirmed`；索引 `(phone, ts)`；**本期明确延后（§7.5）** |
+| `region_items` | 区域/路线（B） | 唯一键 `(phone, region_type, item_id)`，payload JSON，`updated_at`；`region_type` 取 1 圆 / 2 矩 / 3 多边形 / 4 路线；"清空后重设"在同一事务内 DELETE + INSERT；**P2.1 已落地** |
+| `terminal_catalogs` | 事件/信息菜单/电话本/升级/透传等下发目录（B） | 唯一键 `(phone, catalog_type, item_key)`，完整 payload JSON；`catalog_type` 取 event / info_menu / phonebook / upgrade / transparent_down；**P2.1 已落地** |
+| `locations` | 定位历史（B，时序） | 主键 `(phone, record_id)`（`record_id` 为纳秒时间戳 + 进程内递增）；索引 `(phone, report_time_ms)`、`(report_time_ms)`；批量 INSERT；按 `received_at_ms` 保留期删除；**P2.1 已落地** |
+| `alarms` | 报警历史与确认（B，时序） | 主键 `(phone, message_serial, received_at_ms)`；`confirmed`；索引 `(phone, received_at_ms)`、`(received_at_ms)`；去重窗口内同流水号只更新 `alarm_sign`；**P2.1 已落地** |
 | `command_outbox` | 下行命令（B，幂等可重投） | `command_id` PK，`phone`,`owner`,`state`,`idempotency_key`,`created_at`；**本期非交付项** |
 | `media_metadata` / `waybills` | 媒体/运单元数据（B，**后续独立任务**，不在 M1/M2；见 §18-D3） | 媒体字节外置；元数据按 phone/时间索引 |
 
@@ -332,9 +332,10 @@ type Coordinator interface {
 
 - 目录（`go:embed *.sql` 编译进二进制）：
   - `bootstrap_schema_migrations.sql`：迁移元数据表建表脚本（引导脚本，不参与版本编号）；
-  - `init_20261101.sql`：当前唯一版本。开发阶段不保留增量迁移，直接给出最终 schema。
-- **版本号取自文件名末尾日期**：`<描述>_<YYYYMMDD>.sql`，迁移按日期升序执行；
-  后续变更追加新文件（如 `add_xxx_20261201.sql`），无需人工维护递增序号。
+  - `20261101_init.sql`：初始版本。开发阶段不保留增量迁移，直接给出最终 schema。
+- **版本号取自文件名开头日期**：`<YYYYMMDD>_<描述>.sql`，迁移按日期升序执行；
+  后续变更追加新文件（如 `20261201_add_xxx.sql`），无需人工维护递增序号；
+  同一天只允许一个迁移文件（同日期触发 `duplicate migration date` panic），当日多个变更合并为一个文件。
 - **`schema_migrations` 的 DDL 也在 SQL 文件里**，不在 Go 常量中。它必须先于版本存在
   （否则无处记录已应用版本），因此单独作为引导脚本；迁移工具在执行任何版本前先执行它，
   失败会作为普通迁移错误返回。MySQL 与 SQLite 都需要该表，二者共用同一份脚本。
@@ -342,7 +343,7 @@ type Coordinator interface {
   **分开编译、分开发布**（`make compile-migrate` / `make release-migrate`）。迁移工具只做连接、
   执行迁移、打印 `applied` 数量，不启动 TCP/UDP/API，也不初始化主服务的运行时。
   MySQL 场景 DBA 可直接执行：先 `bootstrap_schema_migrations.sql`，再按文件名顺序执行版本文件。
-  除索引创建外语句均为幂等形式（`CREATE TABLE IF NOT EXISTS`）；`init_20261101.sql` 末尾的
+  除索引创建外语句均为幂等形式（`CREATE TABLE IF NOT EXISTS`）；`20261101_init.sql` 末尾的
   `CREATE INDEX` 在 MySQL 上没有 `IF NOT EXISTS`，重复手工执行会报"索引已存在"，属预期，
   执行前请先备份并核对 `schema_migrations`。
 - **所有后端一致，启动只校验不执行**：SQLite 与 MySQL 都不在服务启动时执行任何 DDL。
@@ -357,44 +358,68 @@ type Coordinator interface {
 
 ### 7.3 保留期与容量（有界）
 
-> 以下保留期为设计草案；`locations` / `alarms` 本期**明确延后**（§7.5），未执行任何 Trim。
+P2.1 落地的实际口径（默认值由 `configs/default.yaml` 的 `retention` 段提供，未配置时取代码默认值）：
 
 ```
-locations: 按时间保留（默认 168h）且每设备上限（默认 10000 条）
-alarms:    按时间保留（默认 720h）且每设备上限（默认 5000 条）
+locations.retentionDays   = 7      # 按 received_at_ms 保留 7 天；0 表示不做时间清理
+locations.maxPerDevice    = 10000  # 每设备最多 10000 条；0 表示不限制
+alarms.dedupWindowMs      = 1800000（30 分钟）  # 同设备同流水号在该窗口内视为重复上报
+alarms.confirmExpireMs    = 600000（10 分钟）   # 0x8203 确认命令关联的有效期
+alarms.maxPerDevice       = 1000   # 每设备最多 1000 条报警；0 表示不限制
 ```
 
-- 定时（如每 10 分钟）+ 写入时惰性触发 `Trim`；删除走时间索引，分批 `DELETE ... LIMIT`，避免大事务。
-- 内存 L1 维持现有 RingBuffer/切片上界，作为热读与抗抖动层，不再是唯一副本。
+- **默认值来源**：JT/T 808-2011/2013 原文只规定终端侧存储与上报触发条件，
+  **未规定平台侧保存期限、条数上限、报警去重窗口或 0x8203 确认时限**；2019 版文本层为
+  自定义字体编码，未做机器验证。因此 7 天 / 10000 条为**自行设定**（按 1 分钟/条 ≈ 10k 条/设备
+  覆盖约 7 天估算）；报警 30 分钟 / 10 分钟 / 1000 条**沿用既有内存实现**，保证不配置时行为不变。
+- **清理方式**：每次成功写入后按设备在同一事务内执行（条数上限为硬约束，不依赖定时任务）：
+  1. `MaxAge > 0` 时 `DELETE ... WHERE phone=? AND received_at_ms < now-MaxAge`；
+  2. `MaxPerDevice > 0` 时取按 `(received_at_ms, record_id)` 倒序第 N 条的截止值，
+     删除严格早于该 `(received_at_ms, record_id)` 的行，保证保留条数恰好为 N。
+  报警的裁剪按 `(received_at_ms, message_serial)` 做同样的截止比较；报警写入为低频事件，
+  逐条裁剪可接受。
+- **写入频率**：0x0200 每条消息一次 `Record`（单行）；0x0704 一批数据项一次 `Record`
+  （按 200 行分块多行 INSERT），因此批量定位不会退化为逐行往返。保留期清理随写入触发，
+  一次写入最多一次按设备清理，索引 `(phone, received_at_ms)` 保证 DELETE 不扫全表。
+- **内存 L1** 维持现有 RingBuffer（100/设备）与报警切片，作为热读与抗抖动层，不再是唯一副本。
 
 ### 7.4 本期实现与关系模型的差异（2026-11-01）
 
 本轮 SQL 后端覆盖范围扩展为 `DeviceRepository`（含 `device_runtime`）、`DeviceParamsRepository`、
-`TerminalPropertiesRepository`；其余 B 类仓储仍为内存实现。据此与 §7.1 的差异如下：
+`TerminalPropertiesRepository`、`IndustryRepository`、`RegionRepository`、`AlarmRepository`、
+`LocationRepository`；其余 B 类仓储（如 `command_outbox`）仍为内存实现。据此与 §7.1 的差异如下：
 
 | 项 | §7.1 设计 | 本轮实现 | 原因/建议 |
 |---|---|---|---|
 | 设备运行时投影 | 拆 `devices` + `device_runtime` 两表，`last_com_time` 节流写 | 拆为：`devices` 保留 10 列静态/身份字段，`device_runtime` 承载 `session_id`/`trans_proto`/`last_com_time_ms`/`status`/`updated_at`。读用 `LEFT JOIN` 合并回完整 `model.Device`，写在同一事务内按归属分写两表 | `keepalive_ms` 是代码常量（`model.NewDevice` 固定 1 分钟，`device.go:50`），不属运行时观测值，留在 `devices`。**重启语义**：不做启动批量重置——单机由优雅停机（SIGINT/SIGTERM）调用 `ResetRuntime` 清空；异常重启残留的 `session_id`/`status` 在读路径按 `last_com_time_ms + keepalive_ms` 的 TTL 判定收敛为 offline 并清空 `session_id`，`last_com_time_ms` 保留作"上次在线时间"。分布式形态以 Redis 运行时缓存的全 TTL + 过期扫描回写替代单机重置。**心跳落库频率可配**：`server.heartbeatPersistIntervalMs`（缺省 `0`，逐条写库；若开启，应小于保活周期，当前保活 1 分钟故建议 ≤30000），被节流时保活判定取进程内 `runtime.Heartbeat` 的实时值（§11.3） |
 | `terminal_properties` | `phone` PK，属性 JSON | 新增：`phone` PK + 常用属性列（终端类型/制造商/型号/终端 ID/ICCID/硬件版本/固件版本/GNSS 与通信能力）+ `extra_json` 长尾 | 只由 0x0107 查询应答写入，与 `devices` **不合并**：`devices` 静态字段来自 0x0100/0x0102，属性应答若回写 `devices` 会触发其非主键列全量重写。0x0107 处理为"持久化 + 内存最新值 + broker 投递"三者同时 |
-| `plate` 唯一性 | `plate` UNIQUE | 未加唯一约束，仅加**非唯一**普通索引 `idx_devices_plate`（见 `init_20261101.sql`） | 内存实现按 `plate` 覆盖映射、允许空车牌重复，加 UNIQUE 会改变既有行为（多个空车牌或同牌设备会写入失败）。设备身份以协议里的终端手机号（`phone`）为准，`plate` 仅用于注册时"车辆已注册"校验；保持非唯一 |
-| `devices` 索引 | 未明确 | `phone` 主键 + `idx_devices_plate`（非唯一，见 `init_20261101.sql`） | `GetByPlate` 由全表扫描改为索引查找；不加唯一约束，理由见上一行的 `plate` 唯一性 |
+| `plate` 唯一性 | `plate` UNIQUE | 未加唯一约束，仅加**非唯一**普通索引 `idx_devices_plate`（见 `20261101_init.sql`） | 内存实现按 `plate` 覆盖映射、允许空车牌重复，加 UNIQUE 会改变既有行为（多个空车牌或同牌设备会写入失败）。设备身份以协议里的终端手机号（`phone`）为准，`plate` 仅用于注册时"车辆已注册"校验；保持非唯一 |
+| `devices` 索引 | 未明确 | `phone` 主键 + `idx_devices_plate`（非唯一，见 `20261101_init.sql`） | `GetByPlate` 由全表扫描改为索引查找；不加唯一约束，理由见上一行的 `plate` 唯一性 |
 | `device_params` | 参数集合整体 JSON 单字段 | 一致（`params_json` TEXT） | 遵循 D1；`ParamValue` 的 JSON 数字会以 `float64` 回读，既有 `any2uintX` 编码逻辑已兼容 |
-| `locations` / `alarms` | B 类持久化 | 未落地（**明确延后**） | 理由见 §7.5；不是"不需要持久化" |
-| `region_items` / `terminal_catalogs` / `command_outbox` | B 类持久化 | 未落地（本阶段非交付项） | 区域需要事务化 `ReplaceAll`，目录与 outbox 需要幂等/重投语义，均未在本轮定义；媒体/运单按 D3 后置 |
+| `locations` / `alarms` | B 类持久化 | P2.1 已落地（`20261102_persistence_tables.sql`）：定位批量插入 + 写入后清理；报警去重窗口与每设备上限可配 | 保留期口径与默认值来源见 §7.3；0x0704 只记定位不记报警，理由见 §19.13 |
+| `region_items` / `terminal_catalogs` | B 类持久化 | P2.1 已落地：目录按 `(phone, catalog_type, item_key)` 整包覆盖；区域/路线在同一事务内 DELETE + INSERT | 写入接口保持既有内存实现签名（无 error），SQL 失败只记英文日志不阻断协议；对账与重试留待 command_outbox 阶段 |
+| `command_outbox` | B 类持久化 | 未落地（本阶段非交付项） | 需要幂等/重投语义，留待 M3；媒体/运单按 D3 后置 |
+| `AlarmRepository` 签名 | 未指定 | `Record`/`List`/`RegisterConfirmation`/`ConfirmByCommand` 统一增加 `ctx context.Context` 并返回 `error` | 与其它 B 类仓储一致，便于 SQL 实现透传超时与取消；内存实现忽略 ctx 并返回 nil。调用点已同步：`internal/api`、`internal/protocol`、`internal/server/udp_server_test.go` |
 | `schema_migrations` | 版本化迁移器 | DDL 位于 `internal/repository/migration/*.sql`（`go:embed`），启动只校验版本，迁移由独立工具 `jt808-migrate` 执行 | 详见 §7.2；MySQL 的 DDL 隐式提交限制已在该节说明 |
 | 主键类型 | 未指定 | `VARCHAR` 主键 + `BIGINT` 毫秒时间戳 | 同时兼容 SQLite/MySQL；时间用毫秒整数避免时区与解析差异 |
 
-### 7.5 明确延后的持久化决策（2026-11-01 确认）
+### 7.5 明确延后的持久化决策（2026-11-01 确认，P2.1 已收敛）
+
+> 以下两条为本轮原先的延后理由；P2.1（2026-11-02）已按新的口径落地，保留原文作为决策记录。
 
 - **`locations`（定位历史）延后。** ①写量与保留期策略未定（§7.3 的 168h / 每设备 10000 条仍为草案）；
   ②按 §8 需批量写通道（有界 buffer + 1s/500 条刷库）与优雅退出 flush，尚未实现，直接落库会变成
   每条 0x0200 同步写；③最新定位查询已由内存 C 类 `GeoRepository.Latest` 满足，历史查询无调用方。
   **结论：值得持久化，本轮不做，不写成"不需要"。**
+  → **P2.1 收敛**：0x0704 按 200 行分块批量写；0x0200 仍为单条同步写（协议未要求异步削峰，
+  且写入失败只记日志不阻断主流程）；保留期默认 7 天 / 10000 条，来源见 §7.3。
 - **`alarms`（报警历史与确认）延后。** 现有 `AlarmRepository` 无 `ctx`，且含 30 分钟去重窗口、
   每设备 1000 条上限、10 分钟确认命令过期等行为；这些语义与关系库的"唯一键去重 + 过期清理归属"
   不匹配，需先定口径（去重键、确认状态机、TTL 清理由谁执行），再落库。
   **结论：值得持久化，本轮不做，不写成"不需要"。**
-- `region_items` / `terminal_catalogs` / `command_outbox` 为本阶段非交付项；
+  → **P2.1 收敛**：接口补 `ctx` 与 `error`；去重键为 `(phone, message_serial)` + 接收时间窗口，
+  确认状态机沿用既有语义；条数上限在写入后由仓储自身执行（不依赖外部定时任务）。
+- `region_items` / `terminal_catalogs` 已在 P2.1 落地；`command_outbox` 仍为本阶段非交付项；
   `media_metadata` / `waybills` 按 D3 留待独立任务。
 
 ---
@@ -591,11 +616,19 @@ storage:
     path: "./data/jt808.db"   # type=sqlite 时必填
   mysql:
     dsn: ""                    # type=mysql 时必填，如 user:pass@tcp(host:port)/db
+retention:                  # 仅 sqlite/mysql 后端消费；memory 后端行为不变
+  locations:
+    retentionDays: 7        # 0 表示不做时间清理
+    maxPerDevice: 10000     # 0 表示不限制
+  alarms:
+    dedupWindowMs: 1800000  # 30 分钟
+    confirmExpireMs: 600000 # 10 分钟
+    maxPerDevice: 1000      # 0 表示不限制
 ```
 
-`config.Config` 增加 `Storage *storageConf`，沿用现有 viper Unmarshal 流程。
-启动时由 `storage.Init(Config)` 选择后端并完成建表；非法 `type`、缺失 `path`/`dsn` 直接报错退出，
-启动日志打印 `backend=<实际后端>`。`coordinator` / `frontCache` / `write` / `retention` / `strict`
+`config.Config` 增加 `Storage *storageConf` 与 `Retention *retentionConf`，沿用现有 viper Unmarshal 流程。
+启动时由 `storage.Init(Config)` 选择后端；非法 `type`、缺失 `path`/`dsn`、非法 retention 值
+（负数）直接报错退出，启动日志打印 `backend=<实际后端>`。`coordinator` / `frontCache` / `write` / `strict`
 等字段属 M3 及后续范围，本期未实现，避免配置出现但无效果的误导。
 
 ---
@@ -668,6 +701,7 @@ internal/storage/                 # 仅装配：后端选择与初始化
 - **不含**媒体/运单元数据落库（后续独立任务，§18-D3），该阶段它们仍只留 HotView 最新值。
 - `frontCache.enabled=false` 直读直写库模式（§18-D4）**尚未实施**，留待后续里程碑。
 - 验收：重启不丢配置（设备/参数/属性）；运行时投影按 §7.4 语义重置；存储失败只告警不阻断协议；内存有界。
+- **P2.1 后续补齐**：`region_items` / `terminal_catalogs` / `locations` / `alarms` 已落地，见 §19.13。
 
 ### M3 — 分布式（MySQL + Redis 协调）
 - MySQL 方言复用 SQL 仓储；实现 Coordinator（owner 租约/fencing/presence/命令总线/应答关联/latest）。
@@ -908,7 +942,7 @@ internal/storage/                 # 仅装配：后端选择与初始化
 - 目录：`internal/repository/migration/` 下 `migrate.go` + `0001_init.sql` /
   `0002_terminal_properties.sql` / `0003_device_runtime.sql`；SQL 经 `//go:embed *.sql` 编译进二进制，
   迁移器只依赖 `database/sql`，未引入框架。（这些增量文件已在 §19.10 合并为
-  `bootstrap_schema_migrations.sql` + `init_20261101.sql`。）
+  `bootstrap_schema_migrations.sql` + `20261101_init.sql`。）
 - 迁移入口：本批最初复用主服务的 `migrate` 位置参数；**§19.8 起改为独立工具 `jt808-migrate`**，
   SQLite 的启动自动迁移同时取消。DBA 也可按文件名顺序直接执行这些 SQL 文件。
 - 启动校验（当前行为）：所有后端都只比对版本。低于期望报
@@ -966,7 +1000,7 @@ internal/storage/                 # 仅装配：后端选择与初始化
   TTL 收敛陈旧读为 offline 且保留 `last_com_time`；迁移 4 个文件且 `idx_devices_plate` 存在。
 - 已知限制：MySQL 下 `0004` 为普通 `CREATE INDEX`，重复手工执行会因索引已存在而失败，
   迁移器按 `schema_migrations` 版本号避免重复执行。（迁移文件已在 §19.10 合并为
-  `init_20261101.sql`。）
+  `20261101_init.sql`。）
 
 ### 19.8 独立迁移工具与取消 SQLite 自动迁移（2026-11-01，分支 `dev/p0-baseline`，基线 `bc439b9`，提交 `629c29d`）
 
@@ -1026,6 +1060,8 @@ internal/storage/                 # 仅装配：后端选择与初始化
    `init_20261101.sql`（最终 schema 形态，`devices` 不再含运行时列）。
 2. **文件名改为 `<描述>_<YYYYMMDD>.sql`**，版本号取文件名末尾日期（如 `20261101`），
    迁移按日期升序执行；后续变更追加新文件即可，无需人工维护序号。
+   （2026-11-02 起再次调整为 `<YYYYMMDD>_<描述>.sql` 前缀格式，版本号语义不变，
+   仍为同一日期数字，已迁移库无需任何升级动作。）
 3. **`schema_migrations` 的建表 DDL 从 Go 常量移入 SQL**：新增
    `bootstrap_schema_migrations.sql`，由迁移工具在执行任何版本前先执行。
    该表是迁移机制自身的元数据，必须先于版本存在，所以作为不参与版本编号的引导脚本；
@@ -1056,7 +1092,7 @@ internal/storage/                 # 仅装配：后端选择与初始化
 
 ### 19.11 SQL 方言兼容性核对（2026-11-01，分支 `dev/p0-baseline`，基线 `0852461`，提交 `e7d4294`）
 
-**结论**：合并后的 `bootstrap_schema_migrations.sql` + `init_20261101.sql` 使用 SQLite 与
+**结论**：合并后的 `bootstrap_schema_migrations.sql` + `20261101_init.sql` 使用 SQLite 与
 MySQL 都支持的语法；核对中发现并修复一处 MySQL 不兼容：
 
 - `extra_json TEXT NOT NULL DEFAULT '{}'` → `extra_json TEXT NOT NULL`。
@@ -1099,4 +1135,74 @@ MySQL 都支持的语法；核对中发现并修复一处 MySQL 不兼容：
 
 **验证**：`gofmt` / `go build ./...` / `go vet ./...` / `go test -race ./...` 全绿；
 `scripts/smoke.sh` 端到端通过；`make compile-client` 产物仍包含 `client/configs`。
+
+### 19.13 P2.1 剩余持久化（2026-11-02，分支 `dev/p2-persistence`）
+
+**范围**：在既有 SQL 后端（`devices`/`device_runtime`/`device_params`/`terminal_properties`）之上，
+补齐 `terminal_catalogs`、`region_items`、`locations`、`alarms` 四张 B 类表；`memory` 仍为默认后端，
+`storage.type: memory` 下行为不变。迁移文件为 `20261102_persistence_tables.sql`（四表一次建齐，
+原因见 §7.2 的"同日文件会 panic"约束，批次拆分只影响代码接入，不影响 DDL）。
+
+**协议口径**（详见任务回报；结论已写入 §7.3 默认值来源）：
+
+- 定位（0x0200/0x0704）的保存期限、上传周期、平台存储要求：2011/2013 **协议未规定**
+  （2011 §6.1.2.2 仅为终端侧链路异常保存；2013 §7.3.1/表 10 只定义周期性上报与参数开关，
+  §8 表 24 注定义"报警/状态变化立即上报"）。2019 版文本层为自定义字体编码，未能机器提取，未验证。
+- 报警去重、重复上报周期、0x8203 确认/解除时限：2011/2013 **协议未规定**，仅定义消息格式。
+- 0x0104/0x0107 为查询应答，无上报周期；0x8301/0x8303/0x8401/0x8600 等只规定终端侧存储/覆盖，
+  **未规定平台侧保存要求**；0x8108/0x8900 只定义消息格式。
+
+**默认值**
+
+| 配置键 | 默认值 | 来源 |
+|---|---|---|
+| `retention.locations.retentionDays` | 7 天 | 自行设定（协议未规定；按 1 分钟/条估算 7 天 ≈ 10k 条） |
+| `retention.locations.maxPerDevice` | 10000 | 自行设定（同上容量估算） |
+| `retention.alarms.dedupWindowMs` | 1800000（30 分钟） | 沿用既有内存实现，保证行为不变 |
+| `retention.alarms.confirmExpireMs` | 600000（10 分钟） | 沿用既有内存实现 |
+| `retention.alarms.maxPerDevice` | 1000 | 沿用既有内存实现 |
+
+显式配置 `0` 表示关闭对应策略（不做时间清理/不去重/不限制条数），负数为非法配置，启动时报错退出。
+
+**表结构与写入**
+
+| 表 | 主键/索引 | 写入行为 |
+|---|---|---|
+| `terminal_catalogs` | PK `(phone, catalog_type, item_key)`；索引 `(phone, catalog_type)` | 0x8301/0x8303/0x8401 内存更新成功后，在同一事务内按整包 DELETE + INSERT；0x8108/0x8900 以 `latest` 单条快照覆盖。启动时从库回灌内存 |
+| `region_items` | PK `(phone, region_type, item_id)`；索引 `(phone, region_type)` | 0x8600/02/04/06 设置与 0x8601/03/05/07 删除；"清空后重设"在同一事务内 DELETE + INSERT；启动回灌 |
+| `locations` | PK `(phone, record_id)`；索引 `(phone, report_time_ms)`、`(report_time_ms)` | 0x0200 单条写入；0x0704 一批数据项一次写入，按 200 行分块多行 INSERT。写入后在事务内按设备清理 |
+| `alarms` | PK `(phone, message_serial, received_at_ms)`；索引 `(phone, received_at_ms)`、`(received_at_ms)` | `alarm_sign != 0` 才写；去重窗口内同流水号只更新 `alarm_sign`；写入后按设备裁剪到上限 |
+
+**保留期清理**：随写入触发，不依赖定时任务；定位的时间清理与条数上限在同一事务内完成，
+截止值按 `(received_at_ms, record_id)` 元组比较，避免同毫秒多行导致保留条数不准。报警按
+`(received_at_ms, message_serial)` 做同样处理。索引保证 DELETE 按设备范围扫描。
+
+**重启语义**
+
+- `terminal_catalogs` / `region_items`：进程重启后由 SQL 仓储从库回灌内存，API 与协议读取路径立即可见。
+- `locations` / `alarms`：历史本身在库，重启不丢；内存侧不保留副本（`Locations` 在 memory 后端为 nil，
+  SQL 后端才装配），查询历史统一走 `LocationRepository.List` / `AlarmRepository.List`。
+- 报警确认命令关联（0x8203 的 command_serial → alarm_serial/alarm_type）仍是**进程内协调态**：
+  重启后未收到终端 0x0001 应答的关联失效；已确认结果写入 `alarms.confirmed`，重启后保留。
+- 0x0704 只记定位历史、不记报警：数据项内没有独立消息流水号，无法与报警表
+  `(phone, message_serial)` 的去重口径对齐；0x0704 的定位仍逐条落库。
+
+**取舍与遗留**
+
+1. 0x0200 为同步单条写，未引入有界写队列/异步刷库；协议未要求削峰，写失败只记日志不阻断主流程。
+   高频大规模场景可在 M3 引入写队列（见 §8）。
+2. 目录/区域写接口沿用无 `error` 的内存签名，SQL 失败只记英文日志（技术标识：`record catalog`、
+   `apply region` 等），不做协议阻断；对账/重试与 `command_outbox` 一起留待 M3。
+3. 报警表主键含 `received_at_ms`：关闭去重时同一毫秒的同流水号上报顺延 1ms 写入，保持"每次上报一条"。
+4. MySQL 侧仅通过 `JT808_TEST_MYSQL_DSN` 条件测试覆盖，本机未实跑；SQLite 侧为真实文件 + 关闭重开测试。
+
+**分批提交**
+
+| 批次 | commit | 内容 |
+|---|---|---|
+| 配置 | `4a54d0d` | `retention` 配置段、默认值归一化、校验与单测 |
+| A | `d1c80fa` | `terminal_catalogs` / `region_items` 落库与 sqlite 重开测试 |
+| B | 本记录提交 | `locations` / `alarms` 落库、保留期清理、`AlarmRepository` ctx/error 改造与测试 |
+
+**验证**：`gofmt -l .` 无输出；`go build ./...`、`go vet ./...`、`go test -race ./...` 全绿。
 

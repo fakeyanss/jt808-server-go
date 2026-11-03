@@ -882,7 +882,11 @@ func Run(serv *server.TCPServer, cfg *config.Config) {
 			return
 		}
 		msg := &model.Msg8203{Header: model.GenMsgHeader(device, 0x8203, session.GetNextSerialNum()), AlarmSerial: request.AlarmSerial, AlarmType: request.AlarmType}
-		storage.Default().Alarms.RegisterConfirmation(phone, msg.Header.SerialNumber, request.AlarmSerial, request.AlarmType)
+		if err := storage.Default().Alarms.RegisterConfirmation(c.Request.Context(), phone, msg.Header.SerialNumber, request.AlarmSerial, request.AlarmType); err != nil {
+			log.Error().Err(err).Str("phone", phone).Msg("register alarm confirmation")
+			c.JSON(http.StatusInternalServerError, gin.H{"err": err.Error()})
+			return
+		}
 		serv.Send(session.ID, msg)
 		c.JSON(http.StatusAccepted, gin.H{"messageId": "0x8203", "alarmSerial": request.AlarmSerial, "alarmType": request.AlarmType})
 	})
@@ -893,7 +897,13 @@ func Run(serv *server.TCPServer, cfg *config.Config) {
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
 		}
-		c.JSON(http.StatusOK, storage.Default().Alarms.List(phone))
+		alarms, err := storage.Default().Alarms.List(c.Request.Context(), phone)
+		if err != nil {
+			log.Error().Err(err).Str("phone", phone).Msg("list alarms")
+			c.JSON(http.StatusInternalServerError, gin.H{"err": err.Error()})
+			return
+		}
+		c.JSON(http.StatusOK, alarms)
 	})
 
 	api.PUT("/device/:phone/params", func(c *gin.Context) {

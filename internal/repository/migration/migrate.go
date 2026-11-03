@@ -3,7 +3,8 @@
 // 约束：
 //   - 不引入迁移框架；只使用 database/sql；
 //   - 所有 DDL 都在 .sql 文件里，包括 schema_migrations 的建表（引导脚本，不参与版本编号）；
-//   - 版本号取文件名末尾的日期（<描述>_<YYYYMMDD>.sql），按日期升序执行；
+//   - 版本号取文件名开头的日期（<YYYYMMDD>_<描述>.sql），按日期升序执行；
+//   - 同一天只允许一个迁移文件；当日多个变更合并为一个文件；
 //   - 启动路径只读版本，不执行 DDL；显式迁移由 sqlstore.Migrate 或 DBA 直接执行文件。
 //
 // MySQL 的 DDL 隐式提交，无法与"插入版本记录"同事务；因此一个版本中途失败时可能留下
@@ -146,16 +147,19 @@ func mustLoadMigrations() []versionedMigration {
 	return loaded
 }
 
-// parseVersion 解析文件名末尾的日期：<描述>_<YYYYMMDD>.sql。
+// parseVersion 解析文件名开头的日期：<YYYYMMDD>_<描述>.sql。
 func parseVersion(name string) (int, error) {
 	base := strings.TrimSuffix(name, ".sql")
-	idx := strings.LastIndexByte(base, '_')
+	idx := strings.IndexByte(base, '_')
 	if idx < 0 {
-		return 0, fmt.Errorf("migration file %s has no <description>_<YYYYMMDD> suffix", name)
+		return 0, fmt.Errorf("migration file %s has no <YYYYMMDD>_<description> prefix", name)
 	}
-	date := base[idx+1:]
+	date := base[:idx]
 	if len(date) != 8 {
-		return 0, fmt.Errorf("migration file %s has no 8-digit date suffix", name)
+		return 0, fmt.Errorf("migration file %s has no 8-digit date prefix", name)
+	}
+	if idx+1 >= len(base) {
+		return 0, fmt.Errorf("migration file %s has empty description", name)
 	}
 	if _, err := time.Parse("20060102", date); err != nil {
 		return 0, fmt.Errorf("migration file %s has invalid date %q: %w", name, date, err)
