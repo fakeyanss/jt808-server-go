@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/binary"
 	"fmt"
+	"net"
 	"testing"
 	"time"
 
@@ -98,6 +99,54 @@ func TestHeartbeatDoesNotPersistRuntime(t *testing.T) {
 	last, ok := runtime.Default().Heartbeat.Last(ctx, phone)
 	require.True(t, ok)
 	require.WithinDuration(t, time.Now(), last, 5*time.Second)
+}
+
+// 应答必须按流水号精确配对：先回第二条不应清掉第一条的等待项。
+func TestProcessAcknowledgesResponseBySerial(t *testing.T) {
+	const phone = "188765432111"
+	left, _ := net.Pipe()
+	defer left.Close()
+	session := &model.Session{ID: "ack-serial", Conn: left, AckTimeout: time.Hour, MaxRetries: 1}
+	defer session.ClosePending()
+
+	session.TrackReliable(0x8103, 31, phone, []byte("cmd-1"))
+	session.TrackReliable(0x8103, 32, phone, []byte("cmd-2"))
+
+	ctx := context.WithValue(context.Background(), model.SessionCtxKey{}, session)
+	// 应答第二条命令。
+	header := &model.MsgHeader{MsgID: 0x0001, PhoneNumber: phone, Attr: &model.MsgBodyAttr{}}
+	_, err := NewJT808MsgProcessor(nil).Process(ctx, &model.PacketData{Header: header, Body: []byte{0, 32, 0x81, 0x03, 0}})
+	require.NoError(t, err)
+	require.Equal(t, 1, session.PendingCount(), "only the answered serial may be cleared")
+	require.True(t, session.Acknowledge(0x8103, 31), "the first command must still be pending")
+	require.Equal(t, 0, session.PendingCount())
+
+	// 重复应答不清除任何等待项。
+	_, err = NewJT808MsgProcessor(nil).Process(ctx, &model.PacketData{Header: header, Body: []byte{0, 32, 0x81, 0x03, 0}})
+	require.NoError(t, err)
+	require.Equal(t, 0, session.PendingCount())
+}
+
+// 错会话的应答不得清除另一个会话的等待项。
+func TestProcessIgnoresResponseFromOtherSession(t *testing.T) {
+	const phone = "188765432112"
+	ownerConn, _ := net.Pipe()
+	defer ownerConn.Close()
+	owner := &model.Session{ID: "owner", Conn: ownerConn, AckTimeout: time.Hour, MaxRetries: 1}
+	defer owner.ClosePending()
+	owner.TrackReliable(0x8103, 41, phone, []byte("cmd"))
+
+	otherConn, _ := net.Pipe()
+	defer otherConn.Close()
+	other := &model.Session{ID: "other", Conn: otherConn, AckTimeout: time.Hour, MaxRetries: 1}
+	defer other.ClosePending()
+
+	ctx := context.WithValue(context.Background(), model.SessionCtxKey{}, other)
+	header := &model.MsgHeader{MsgID: 0x0001, PhoneNumber: phone, Attr: &model.MsgBodyAttr{}}
+	_, err := NewJT808MsgProcessor(nil).Process(ctx, &model.PacketData{Header: header, Body: []byte{0, 41, 0x81, 0x03, 0}})
+	require.NoError(t, err)
+	require.Equal(t, 1, owner.PendingCount(), "response from another session must not clear pending")
+	require.Equal(t, 0, other.PendingCount())
 }
 
 func TestSimulatorParameterTemplateDecodes(t *testing.T) {

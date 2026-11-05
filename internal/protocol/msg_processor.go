@@ -388,7 +388,7 @@ func (mp *JT808MsgProcessor) Process(ctx context.Context, pkt *model.PacketData)
 		return nil, errors.Wrap(err, "Fail to decode packet to jtmsg")
 	}
 	if session, ok := ctx.Value(model.SessionCtxKey{}).(*model.Session); ok && session != nil {
-		session.AcknowledgeResponse(in.GetHeader().MsgID, in.GetHeader().PhoneNumber)
+		acknowledgeResponse(session, in)
 	}
 
 	if log.Logger.GetLevel() == zerolog.DebugLevel {
@@ -868,11 +868,32 @@ func recordLocationHistory(ctx context.Context, msgID uint16, locs []*model.Msg0
 	}
 }
 
+// acknowledgeResponse 只清算与该应答精确对应的待确认项：
+// 携带应答流水号的应答按流水号唯一匹配；0x0608/0x0702/0x8800 的协议体
+// 不含流水号，仅在同类等待项唯一时清算。所有不匹配的应答只记告警，不清除任何等待项。
+func acknowledgeResponse(session *model.Session, in model.JT808Msg) {
+	if in == nil || in.GetHeader() == nil {
+		return
+	}
+	header := in.GetHeader()
+	if serial, ok := model.AnswerSerial(in); ok {
+		if !session.AcknowledgeSerial(serial, header.PhoneNumber) {
+			log.Warn().Str("session", session.ID).Uint16("msg_id", header.MsgID).Uint16("answer_serial", serial).
+				Msg("Received response without matching pending message")
+		}
+		return
+	}
+	switch header.MsgID {
+	case 0x0608, 0x0702, 0x8800:
+		if !session.AcknowledgeTypedResponse(header.MsgID, header.PhoneNumber) {
+			log.Warn().Str("session", session.ID).Uint16("msg_id", header.MsgID).
+				Msg("Received response without a unique pending message")
+		}
+	}
+}
+
 func processMsg0001(ctx context.Context, data *model.ProcessData) error {
 	in := data.Incoming.(*model.Msg0001)
-	if session, ok := ctx.Value(model.SessionCtxKey{}).(*model.Session); ok && session != nil {
-		session.Acknowledge(in.AnswerMessageID, in.AnswerSerialNumber)
-	}
 	if in.AnswerMessageID == 0x8203 {
 		if _, err := storage.Default().Alarms.ConfirmByCommand(ctx, in.Header.PhoneNumber, in.AnswerSerialNumber); err != nil {
 			log.Error().Err(err).Str("phone", in.Header.PhoneNumber).Msg("confirm alarm by command")
@@ -883,9 +904,6 @@ func processMsg0001(ctx context.Context, data *model.ProcessData) error {
 
 func processMsg8001(ctx context.Context, data *model.ProcessData) error {
 	in := data.Incoming.(*model.Msg8001)
-	if session, ok := ctx.Value(model.SessionCtxKey{}).(*model.Session); ok && session != nil {
-		session.Acknowledge(in.AnswerMessageID, in.AnswerSerialNumber)
-	}
 	if in.AnswerMessageID != 0x0102 {
 		return nil
 	}
