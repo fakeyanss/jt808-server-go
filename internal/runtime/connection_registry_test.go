@@ -81,6 +81,39 @@ func TestConnectionRegistryPhoneIndexLifecycle(t *testing.T) {
 	require.ErrorIs(t, err, ErrPhoneNotBound)
 }
 
+// 已被顶替的会话不得再次绑定：否则"注册期绑定 + 鉴权期再次绑定"的胜出者
+// 在并发下会与顶替者互相关闭，形成没有活会话的环。
+func TestConnectionRegistrySupersededSessionCannotRebind(t *testing.T) {
+	registry := NewConnectionRegistry()
+	ctx := context.Background()
+	const phone = "18800000004"
+
+	owner := &model.Session{ID: "registration-owner"}
+	challenger := &model.Session{ID: "auth-challenger"}
+	require.NoError(t, registry.Bind(ctx, owner))
+	require.NoError(t, registry.Bind(ctx, challenger))
+
+	// 注册阶段绑定成功。
+	bound, err := registry.BindPhoneIfFree(ctx, phone, owner.ID)
+	require.NoError(t, err)
+	require.True(t, bound)
+
+	// 鉴权阶段另一连接通过校验并顶替。
+	superseded, err := registry.BindPhone(ctx, phone, challenger.ID)
+	require.NoError(t, err)
+	require.Same(t, owner, superseded)
+	_, err = registry.Get(ctx, owner.ID)
+	require.ErrorIs(t, err, ErrSessionClosed, "superseded session must be removed atomically")
+
+	// 旧会话迟到的再次绑定必须失败，不能再把顶替者摘掉。
+	_, err = registry.BindPhone(ctx, phone, owner.ID)
+	require.ErrorIs(t, err, ErrSessionClosed)
+	got, err := registry.GetByPhone(ctx, phone)
+	require.NoError(t, err)
+	require.Same(t, challenger, got)
+	require.Equal(t, 1, registry.Count(ctx))
+}
+
 func TestConnectionRegistryConcurrentBindPhoneConverges(t *testing.T) {
 	registry := NewConnectionRegistry()
 	ctx := context.Background()
@@ -109,6 +142,8 @@ func TestConnectionRegistryConcurrentBindPhoneConverges(t *testing.T) {
 	got, err := registry.Get(ctx, owner.ID)
 	require.NoError(t, err)
 	require.Same(t, owner, got)
+	// 被顶替会话在锁内摘除，避免它们互相顶替形成环后没有活会话。
+	require.Equal(t, 1, registry.Count(ctx), "concurrent takeover must leave exactly one live session")
 
 	// 断开最终拥有者后索引不再残留。
 	registry.Unbind(ctx, owner.ID)

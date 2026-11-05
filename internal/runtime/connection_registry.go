@@ -96,7 +96,9 @@ func (cache *memoryConnectionRegistry) Bind(_ context.Context, s *model.Session)
 }
 
 // BindPhone 建立手机号索引，并返回被顶替的旧会话。
-// 仅完成索引切换；调用方负责关闭旧连接、清空旧会话的等待项等残留清理。
+// 被顶替会话在锁内一并从两套索引摘除，避免它并发地再次绑定成功、
+// 形成“互相顶替”的环（每个会话都关闭对方，最终没有活会话）。
+// 调用方仍负责关闭旧连接、清空旧会话的等待项等残留清理。
 func (cache *memoryConnectionRegistry) BindPhone(_ context.Context, phone, sessionID string) (*model.Session, error) {
 	cache.mutex.Lock()
 	defer cache.mutex.Unlock()
@@ -115,6 +117,8 @@ func (cache *memoryConnectionRegistry) BindPhone(_ context.Context, phone, sessi
 	var superseded *model.Session
 	if previousID, ok := cache.phoneToID[phone]; ok && previousID != sessionID {
 		superseded = cache.cacheByID[previousID]
+		delete(cache.cacheByID, previousID)
+		delete(cache.phoneByID, previousID)
 	}
 
 	cache.phoneToID[phone] = sessionID

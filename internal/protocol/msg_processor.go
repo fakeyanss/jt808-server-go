@@ -669,20 +669,23 @@ func processMsg0102(ctx context.Context, data *model.ProcessData) error {
 		_ = devices.DeleteByPhone(ctx, device.Phone)
 		runtime.Default().Heartbeat.Remove(ctx, device.Phone)
 	} else {
-		// 鉴权通过
+		// 鉴权通过。先完成绑定再写设备档案：若本连接已被并发顶替，
+		// 绑定会失败，此时不能用它覆盖新会话的设备状态。
+		if session != nil {
+			if bindErr := bindPhoneSession(ctx, in.Header.PhoneNumber, session); bindErr != nil {
+				log.Warn().Err(bindErr).Str("phone", in.Header.PhoneNumber).Str("session", session.ID).
+					Msg("Session was superseded during authentication, skip device update")
+				return nil
+			}
+			device.SessionID = session.ID
+			device.TransProto = session.GetTransProto()
+		}
 		device.Status = model.DeviceStatusOnline
 		device.LastestComTime = time.Now()
 		device.AuthCode = in.AuthCode
 		device.IMEI = in.IMEI
 		device.SoftwareVersion = in.SoftwareVersion
-		if session != nil {
-			device.SessionID = session.ID
-			device.TransProto = session.GetTransProto()
-		}
 		_ = devices.Upsert(ctx, device)
-		if session != nil {
-			bindPhoneSession(ctx, in.Header.PhoneNumber, session)
-		}
 	}
 
 	return nil
@@ -691,15 +694,15 @@ func processMsg0102(ctx context.Context, data *model.ProcessData) error {
 // bindPhoneSession 在鉴权成功后把手机号绑定到当前会话。
 // 若该手机号已有其它活会话，顶替它：关闭旧连接、清空旧会话的等待项，
 // 并清理该手机号的分包与重传缓存（缓存按手机号组织，无法区分会话，见设计文档）。
-func bindPhoneSession(ctx context.Context, phone string, session *model.Session) {
+func bindPhoneSession(ctx context.Context, phone string, session *model.Session) error {
 	stores := runtime.Default()
 	superseded, err := stores.Conn.BindPhone(ctx, phone, session.ID)
 	if err != nil {
 		log.Warn().Err(err).Str("phone", phone).Str("session", session.ID).Msg("Fail to bind phone after authentication")
-		return
+		return err
 	}
 	if superseded == nil || superseded.ID == session.ID {
-		return
+		return nil
 	}
 	log.Info().Str("phone", phone).Str("old_session", superseded.ID).Str("new_session", session.ID).
 		Msg("Superseding stale session for the same phone")
@@ -710,6 +713,7 @@ func bindPhoneSession(ctx context.Context, phone string, session *model.Session)
 	stores.Conn.Unbind(ctx, superseded.ID)
 	stores.Fragment.DropPhone(ctx, phone)
 	stores.Retrans.DropPhone(ctx, phone)
+	return nil
 }
 
 func genAuthCode(d *model.Device) string {
