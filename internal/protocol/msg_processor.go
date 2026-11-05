@@ -623,16 +623,24 @@ func processMsg0100(ctx context.Context, data *model.ProcessData) error {
 
 	_ = devices.Upsert(ctx, device)
 
+	// 手机号未被其它活会话占用时立即绑定；已被占用则不在注册阶段踢旧连接，
+	// 留到 0x0102 鉴权通过后再顶替，避免伪造注册报文把在线终端踢下线。
+	bound, bindErr := runtime.Default().Conn.BindPhoneIfFree(ctx, device.Phone, session.ID)
+	if bindErr != nil {
+		log.Warn().Err(bindErr).Str("phone", device.Phone).Str("session", session.ID).Msg("Fail to bind phone on registration")
+	} else if !bound {
+		log.Info().Str("phone", device.Phone).Str("session", session.ID).Msg("Phone is already bound, deferring takeover until authentication")
+	}
+
 	timer := NewKeepaliveTimer()
 	timer.Register(device.Phone)
 	return nil
 }
 
 // 收到鉴权，应校验鉴权token
-func processMsg0102(_ context.Context, data *model.ProcessData) error {
+func processMsg0102(ctx context.Context, data *model.ProcessData) error {
 	in := data.Incoming.(*model.Msg0102)
 
-	ctx := context.Background()
 	devices := storage.Default().Devices
 	device, err := devices.GetByPhone(ctx, in.Header.PhoneNumber)
 	// 缓存不存在，说明设备不合法，需要返回错误，让服务层处理关闭
@@ -641,13 +649,23 @@ func processMsg0102(_ context.Context, data *model.ProcessData) error {
 	}
 
 	out := data.Outgoing.(*model.Msg8001)
+	session, _ := ctx.Value(model.SessionCtxKey{}).(*model.Session)
 	// 校验鉴权逻辑
 	if in.AuthCode != genAuthCode(device) {
 		out.Result = model.ResultFail
-		// 取消定时任务
+		// 手机号已被其它活会话占用：本次鉴权只可能来自冒名连接。
+		// 保留原连接与设备档案，只拒绝当前连接，避免伪造报文头把在线终端踢下线。
+		if session != nil {
+			if owner, ownerErr := runtime.Default().Conn.GetByPhone(ctx, in.Header.PhoneNumber); ownerErr == nil && owner.ID != session.ID {
+				log.Warn().Str("phone", in.Header.PhoneNumber).Str("session", session.ID).Str("owner", owner.ID).
+					Msg("Reject authentication from superseded session")
+				session.MarkCloseAfterResponse()
+				return nil
+			}
+		}
+		// 首次注册鉴权失败：维持既有语义，清理未完成注册的设备记录。
 		timer := NewKeepaliveTimer()
 		timer.Cancel(device.Phone)
-		// 删除设备缓存
 		_ = devices.DeleteByPhone(ctx, device.Phone)
 		runtime.Default().Heartbeat.Remove(ctx, device.Phone)
 	} else {
@@ -657,10 +675,41 @@ func processMsg0102(_ context.Context, data *model.ProcessData) error {
 		device.AuthCode = in.AuthCode
 		device.IMEI = in.IMEI
 		device.SoftwareVersion = in.SoftwareVersion
+		if session != nil {
+			device.SessionID = session.ID
+			device.TransProto = session.GetTransProto()
+		}
 		_ = devices.Upsert(ctx, device)
+		if session != nil {
+			bindPhoneSession(ctx, in.Header.PhoneNumber, session)
+		}
 	}
 
 	return nil
+}
+
+// bindPhoneSession 在鉴权成功后把手机号绑定到当前会话。
+// 若该手机号已有其它活会话，顶替它：关闭旧连接、清空旧会话的等待项，
+// 并清理该手机号的分包与重传缓存（缓存按手机号组织，无法区分会话，见设计文档）。
+func bindPhoneSession(ctx context.Context, phone string, session *model.Session) {
+	stores := runtime.Default()
+	superseded, err := stores.Conn.BindPhone(ctx, phone, session.ID)
+	if err != nil {
+		log.Warn().Err(err).Str("phone", phone).Str("session", session.ID).Msg("Fail to bind phone after authentication")
+		return
+	}
+	if superseded == nil || superseded.ID == session.ID {
+		return
+	}
+	log.Info().Str("phone", phone).Str("old_session", superseded.ID).Str("new_session", session.ID).
+		Msg("Superseding stale session for the same phone")
+	superseded.ClosePending()
+	if superseded.Conn != nil {
+		_ = superseded.Conn.Close()
+	}
+	stores.Conn.Unbind(ctx, superseded.ID)
+	stores.Fragment.DropPhone(ctx, phone)
+	stores.Retrans.DropPhone(ctx, phone)
 }
 
 func genAuthCode(d *model.Device) string {

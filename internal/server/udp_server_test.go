@@ -7,6 +7,7 @@ import (
 	"errors"
 	"net"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -1558,9 +1559,10 @@ func TestClientFaultFramesDoNotPreventFollowingRegistration(t *testing.T) {
 // tests can send uplink messages the high-level client never generates
 // (e.g. a terminal-side 0x8204/0x8105/0x8500).
 type bareTerminal struct {
-	conn  net.Conn
-	codec *protocol.JT808PacketCodec
-	fh    *protocol.JT808FrameHandler
+	conn     net.Conn
+	codec    *protocol.JT808PacketCodec
+	fh       *protocol.JT808FrameHandler
+	authCode string
 }
 
 func uplinkHeader(msgID uint16, phone string, serial uint16) *model.MsgHeader {
@@ -1574,7 +1576,13 @@ func uplinkHeader(msgID uint16, phone string, serial uint16) *model.MsgHeader {
 
 func newBareTerminal(t *testing.T, addr string) *bareTerminal {
 	t.Helper()
-	conn, err := net.Dial("tcp", addr)
+	return newBareTerminalOn(t, "tcp", addr)
+}
+
+// newBareTerminalOn 按指定传输协议建立裸终端连接，UDP 复用同一套帧处理逻辑。
+func newBareTerminalOn(t *testing.T, network, addr string) *bareTerminal {
+	t.Helper()
+	conn, err := net.Dial(network, addr)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = conn.Close() })
 	return &bareTerminal{
@@ -1588,7 +1596,13 @@ func newBareTerminal(t *testing.T, addr string) *bareTerminal {
 // registration, leaving an online device the test fully controls on the wire.
 func dialBareTerminal(t *testing.T, addr, phone, plate, deviceID string) *bareTerminal {
 	t.Helper()
-	b := newBareTerminal(t, addr)
+	return dialBareTerminalOn(t, "tcp", addr, phone, plate, deviceID)
+}
+
+// dialBareTerminalOn 与 dialBareTerminal 相同，但可指定 TCP/UDP 传输。
+func dialBareTerminalOn(t *testing.T, network, addr, phone, plate, deviceID string) *bareTerminal {
+	t.Helper()
+	b := newBareTerminalOn(t, network, addr)
 	t.Cleanup(func() {
 		storage.Default().Devices.DeleteByPhone(context.Background(), phone)
 		protocol.NewKeepaliveTimer().Cancel(phone)
@@ -1606,6 +1620,7 @@ func dialBareTerminal(t *testing.T, addr, phone, plate, deviceID string) *bareTe
 	regReply := &model.Msg8100{}
 	b.recvInto(t, 3*time.Second, 0x8100, regReply)
 	require.Equal(t, model.ResSuccess, regReply.Result, "registration should succeed")
+	b.authCode = regReply.AuthCode
 
 	b.send(t, &model.Msg0102{Header: uplinkHeader(0x0102, phone, 2), AuthCode: regReply.AuthCode})
 	authReply := &model.Msg8001{}
@@ -2019,4 +2034,320 @@ func TestSimulatorRecorderPositionTestCommands(t *testing.T) {
 			require.True(t, strings.HasPrefix(pos.RMCData, "$GPRMC"), "unexpected RMC data %q", pos.RMCData)
 		})
 	}
+}
+
+// waitPhoneOwner 等待手机号索引指向期望的会话，避免接管异步收敛导致的偶发失败。
+func waitPhoneOwner(t *testing.T, phone, wantSessionID string) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	var lastErr error
+	for time.Now().Before(deadline) {
+		owner, err := runtime.Default().Conn.GetByPhone(context.Background(), phone)
+		lastErr = err
+		if err == nil && owner.ID == wantSessionID {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("phone %s was not bound to session %s, last error: %v", phone, wantSessionID, lastErr)
+}
+
+func waitSessionClosed(t *testing.T, sessionID string) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := runtime.Default().Conn.Get(context.Background(), sessionID); errors.Is(err, runtime.ErrSessionClosed) {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("session %s was not removed from registry", sessionID)
+}
+
+func TestTCPServerReconnectTakesOverOldSession(t *testing.T) {
+	server := NewTCPServer()
+	require.NoError(t, server.Listen("127.0.0.1:0"))
+	go server.Start()
+	t.Cleanup(server.Stop)
+
+	const phone = "188765434501"
+	old := dialBareTerminal(t, server.listener.Addr().String(), phone, "京D00501", "BARE-TAKEOVER-TCP")
+	oldSessionID := old.conn.LocalAddr().String()
+	waitPhoneOwner(t, phone, oldSessionID)
+
+	// 已注册终端重连：直接发 0x0102，鉴权通过后由服务端关闭旧连接并切换手机号索引。
+	fresh := newBareTerminal(t, server.listener.Addr().String())
+	freshSessionID := fresh.conn.LocalAddr().String()
+	fresh.send(t, &model.Msg0102{Header: uplinkHeader(0x0102, phone, 1), AuthCode: old.authCode})
+	authReply := &model.Msg8001{}
+	fresh.recvInto(t, 3*time.Second, 0x8001, authReply)
+	require.Equal(t, model.ResultSuccess, authReply.Result)
+
+	waitPhoneOwner(t, phone, freshSessionID)
+	waitSessionClosed(t, oldSessionID)
+
+	// 旧连接必须被真正关闭，而不是仍然可读。
+	require.NoError(t, old.conn.SetReadDeadline(time.Now().Add(2*time.Second)))
+	_, err := old.fh.Recv(context.Background())
+	require.Error(t, err)
+	require.False(t, isTimeout(err), "old connection should be closed after takeover, got %v", err)
+
+	// 新连接仍可正常收发。
+	fresh.send(t, &model.Msg0002{Header: uplinkHeader(0x0002, phone, 2)})
+	hbReply := &model.Msg8001{}
+	fresh.recvInto(t, 3*time.Second, 0x8001, hbReply)
+	require.Equal(t, uint16(0x0002), hbReply.AnswerMessageID)
+}
+
+func TestTCPServerRejectsImpersonationAndKeepsOldSession(t *testing.T) {
+	server := NewTCPServer()
+	require.NoError(t, server.Listen("127.0.0.1:0"))
+	go server.Start()
+	t.Cleanup(server.Stop)
+
+	const phone = "188765434502"
+	old := dialBareTerminal(t, server.listener.Addr().String(), phone, "京D00502", "BARE-TAKEOVER-TCP-2")
+	oldSessionID := old.conn.LocalAddr().String()
+	waitPhoneOwner(t, phone, oldSessionID)
+
+	// 冒名连接：报文头手机号相同但鉴权码错误。
+	impostor := newBareTerminal(t, server.listener.Addr().String())
+	impostor.send(t, &model.Msg0102{Header: uplinkHeader(0x0102, phone, 1), AuthCode: old.authCode + "X"})
+	authReply := &model.Msg8001{}
+	impostor.recvInto(t, 3*time.Second, 0x8001, authReply)
+	require.Equal(t, model.ResultFail, authReply.Result)
+
+	// 冒名连接在应答后被拒绝关闭。
+	require.NoError(t, impostor.conn.SetReadDeadline(time.Now().Add(2*time.Second)))
+	_, err := impostor.fh.Recv(context.Background())
+	require.Error(t, err)
+	require.False(t, isTimeout(err), "impostor connection should be closed, got %v", err)
+
+	// 原连接与设备档案保持不变。
+	waitPhoneOwner(t, phone, oldSessionID)
+	device, err := storage.Default().Devices.GetByPhone(context.Background(), phone)
+	require.NoError(t, err, "failed authentication must not delete the existing device")
+	require.Equal(t, model.DeviceStatusOnline, device.Status)
+
+	old.send(t, &model.Msg0002{Header: uplinkHeader(0x0002, phone, 2)})
+	hbReply := &model.Msg8001{}
+	old.recvInto(t, 3*time.Second, 0x8001, hbReply)
+	require.Equal(t, uint16(0x0002), hbReply.AnswerMessageID)
+}
+
+func TestTCPServerConcurrentSamePhoneAuthConvergesToOneSession(t *testing.T) {
+	server := NewTCPServer()
+	require.NoError(t, server.Listen("127.0.0.1:0"))
+	go server.Start()
+	t.Cleanup(server.Stop)
+
+	const phone = "188765434503"
+	seed := dialBareTerminal(t, server.listener.Addr().String(), phone, "京D00503", "BARE-TAKEOVER-CONC")
+	ids := []string{seed.conn.LocalAddr().String()}
+
+	const contenders = 4
+	terminals := make([]*bareTerminal, contenders)
+	frames := make([][]byte, contenders)
+	for i := range terminals {
+		terminals[i] = newBareTerminal(t, server.listener.Addr().String())
+		ids = append(ids, terminals[i].conn.LocalAddr().String())
+		frame, err := terminals[i].codec.Encode(&model.Msg0102{
+			Header:   uplinkHeader(0x0102, phone, 1),
+			AuthCode: seed.authCode,
+		})
+		require.NoError(t, err)
+		frames[i] = frame
+	}
+
+	var wg sync.WaitGroup
+	for i := range terminals {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			if _, writeErr := terminals[i].conn.Write(frames[i]); writeErr != nil {
+				t.Logf("concurrent contender %d write failed: %v", i, writeErr)
+			}
+		}(i)
+	}
+	wg.Wait()
+
+	// 并发鉴权后注册表必须收敛到唯一活会话，手机号索引指向该会话。
+	require.Eventually(t, func() bool {
+		alive := 0
+		for _, id := range ids {
+			if _, err := runtime.Default().Conn.Get(context.Background(), id); err == nil {
+				alive++
+			}
+		}
+		return alive == 1
+	}, 5*time.Second, 20*time.Millisecond)
+
+	owner, err := runtime.Default().Conn.GetByPhone(context.Background(), phone)
+	require.NoError(t, err)
+	require.Contains(t, ids, owner.ID)
+}
+
+func TestTCPServerDisconnectClearsPhoneIndex(t *testing.T) {
+	server := NewTCPServer()
+	require.NoError(t, server.Listen("127.0.0.1:0"))
+	go server.Start()
+	t.Cleanup(server.Stop)
+
+	const phone = "188765434504"
+	b := dialBareTerminal(t, server.listener.Addr().String(), phone, "京D00504", "BARE-TAKEOVER-CLOSE")
+	waitPhoneOwner(t, phone, b.conn.LocalAddr().String())
+
+	require.NoError(t, b.conn.Close())
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := runtime.Default().Conn.GetByPhone(context.Background(), phone); errors.Is(err, runtime.ErrPhoneNotBound) {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("phone %s index was not cleared after disconnect", phone)
+}
+
+func TestUDPServerReconnectTakesOverOldSession(t *testing.T) {
+	server := NewUDPServer()
+	require.NoError(t, server.Listen("127.0.0.1:0"))
+	go server.Start()
+	t.Cleanup(server.Stop)
+
+	const phone = "188765434505"
+	old := dialBareTerminalOn(t, "udp", server.listener.LocalAddr().String(), phone, "京D00505", "BARE-TAKEOVER-UDP")
+	oldSessionID := old.conn.LocalAddr().String()
+	waitPhoneOwner(t, phone, oldSessionID)
+
+	fresh := newBareTerminalOn(t, "udp", server.listener.LocalAddr().String())
+	fresh.send(t, &model.Msg0102{Header: uplinkHeader(0x0102, phone, 1), AuthCode: old.authCode})
+	freshSessionID := fresh.conn.LocalAddr().String()
+	authReply := &model.Msg8001{}
+	fresh.recvInto(t, 3*time.Second, 0x8001, authReply)
+	require.Equal(t, model.ResultSuccess, authReply.Result)
+
+	waitPhoneOwner(t, phone, freshSessionID)
+	waitSessionClosed(t, oldSessionID)
+}
+
+// 两个连接并发注册同一手机号时，鉴权通过后必须收敛到唯一活会话。
+func TestTCPServerConcurrentSamePhoneRegistrationConverges(t *testing.T) {
+	server := NewTCPServer()
+	require.NoError(t, server.Listen("127.0.0.1:0"))
+	go server.Start()
+	t.Cleanup(server.Stop)
+
+	const phone = "188765434506"
+	const plate = "京D00506"
+	const deviceID = "BARE-TAKEOVER-REG"
+	const contenders = 4
+
+	t.Cleanup(func() {
+		_ = storage.Default().Devices.DeleteByPhone(context.Background(), phone)
+	})
+
+	terminals := make([]*bareTerminal, contenders)
+	ids := make([]string, contenders)
+	regFrames := make([][]byte, contenders)
+	for i := range terminals {
+		terminals[i] = newBareTerminal(t, server.listener.Addr().String())
+		ids[i] = terminals[i].conn.LocalAddr().String()
+		frame, err := terminals[i].codec.Encode(&model.Msg0100{
+			Header:         uplinkHeader(0x0100, phone, 1),
+			ProvinceID:     11,
+			CityID:         1101,
+			ManufacturerID: "ABCDE",
+			DeviceMode:     "JT808-BARE-CONC",
+			DeviceID:       deviceID,
+			PlateColor:     1,
+			PlateNumber:    plate,
+		})
+		require.NoError(t, err)
+		regFrames[i] = frame
+	}
+
+	var wg sync.WaitGroup
+	for i := range terminals {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			if _, writeErr := terminals[i].conn.Write(regFrames[i]); writeErr != nil {
+				t.Logf("concurrent registration %d write failed: %v", i, writeErr)
+			}
+		}(i)
+	}
+	wg.Wait()
+
+	// 鉴权码由设备字段推导，并发注册中只有成功的一方拿到了鉴权码；
+	// 其余被判重复注册的连接复用同一鉴权码继续鉴权。
+	var authCode string
+	for i := range terminals {
+		regReply := &model.Msg8100{}
+		terminals[i].recvInto(t, 3*time.Second, 0x8100, regReply)
+		require.Contains(t,
+			[]model.ResultCodeType{model.ResSuccess, model.ResCarAlreadyRegister, model.ResDeviceAlreadyRegister},
+			regReply.Result)
+		// 只有注册成功的结果才携带有效鉴权码，失败结果里的 AuthCode 是消息默认值。
+		if regReply.Result == model.ResSuccess && regReply.AuthCode != "" {
+			authCode = regReply.AuthCode
+		}
+	}
+	require.NotEmpty(t, authCode, "one of the concurrent registrations must succeed")
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := storage.Default().Devices.GetByPhone(context.Background(), phone); err == nil {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	_, err := storage.Default().Devices.GetByPhone(context.Background(), phone)
+	require.NoError(t, err, "device should be registered by one of the concurrent contenders")
+
+	authFrames := make([][]byte, contenders)
+	for i := range terminals {
+		frame, err := terminals[i].codec.Encode(&model.Msg0102{
+			Header:   uplinkHeader(0x0102, phone, 2),
+			AuthCode: authCode,
+		})
+		require.NoError(t, err)
+		authFrames[i] = frame
+	}
+	for i := range terminals {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			if _, writeErr := terminals[i].conn.Write(authFrames[i]); writeErr != nil {
+				t.Logf("concurrent auth %d write failed: %v", i, writeErr)
+			}
+		}(i)
+	}
+	wg.Wait()
+
+	eventuallyDeadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(eventuallyDeadline) {
+		aliveCount := 0
+		for _, id := range ids {
+			if _, err := runtime.Default().Conn.Get(context.Background(), id); err == nil {
+				aliveCount++
+			}
+		}
+		if aliveCount == 1 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	aliveCount := 0
+	var aliveIDs []string
+	for _, id := range ids {
+		if _, err := runtime.Default().Conn.Get(context.Background(), id); err == nil {
+			aliveCount++
+			aliveIDs = append(aliveIDs, id)
+		}
+	}
+	require.Equal(t, 1, aliveCount, "alive sessions=%v", aliveIDs)
+
+	owner, err := runtime.Default().Conn.GetByPhone(context.Background(), phone)
+	require.NoError(t, err)
+	require.Contains(t, ids, owner.ID)
 }

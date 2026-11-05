@@ -41,6 +41,8 @@ type Session struct {
 	pendingMu    sync.Mutex
 	pending      map[uint32]*pendingPacket
 	closed       bool
+	// closeAfterResponse 用于拒绝冒名连接：应答帧发送完成后由服务层关闭连接。
+	closeAfterResponse bool
 }
 
 const (
@@ -185,6 +187,20 @@ func (s *Session) ClosePending() {
 		close(pending.done)
 	}
 	s.pendingMu.Unlock()
+}
+
+// MarkCloseAfterResponse 标记本会话在发送完当前应答后关闭，用于拒绝冒名连接。
+func (s *Session) MarkCloseAfterResponse() {
+	s.pendingMu.Lock()
+	s.closeAfterResponse = true
+	s.pendingMu.Unlock()
+}
+
+// ShouldCloseAfterResponse 返回本会话是否已被标记为应答后关闭。
+func (s *Session) ShouldCloseAfterResponse() bool {
+	s.pendingMu.Lock()
+	defer s.pendingMu.Unlock()
+	return s.closeAfterResponse
 }
 
 func (s *Session) WriteFrame(frame []byte) error {
