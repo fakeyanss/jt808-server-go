@@ -73,42 +73,31 @@ func TestProcessMsg0107PersistsAndDeliversTerminalProperties(t *testing.T) {
 	require.NoError(t, storage.Default().Properties.Delete(ctx, phone))
 }
 
-// 心跳落库按配置节流：周期内跳过写库，超过周期后写入；进程内最近心跳始终更新。
-func TestHeartbeatPersistIntervalThrottlesWrites(t *testing.T) {
+// 心跳只刷新进程内最近通信时间，不再写库：运行时状态不持久化。
+func TestHeartbeatDoesNotPersistRuntime(t *testing.T) {
 	const phone = "188765499004"
 	ctx := context.Background()
 	devices := storage.Default().Devices
-	persistedAt := time.UnixMilli(time.Now().Add(-10 * time.Second).UnixMilli())
 	require.NoError(t, devices.Upsert(ctx, &model.Device{
-		Phone:          phone,
-		Keepalive:      time.Minute,
-		LastestComTime: persistedAt,
-		Status:         model.DeviceStatusOnline,
+		Phone:     phone,
+		Keepalive: time.Minute,
 	}))
 	t.Cleanup(func() {
-		SetHeartbeatPersistInterval(0)
 		runtime.Default().Heartbeat.Remove(ctx, phone)
 		_ = devices.DeleteByPhone(ctx, phone)
 	})
 
-	SetHeartbeatPersistInterval(30 * time.Second)
 	msg := &model.Msg0002{Header: &model.MsgHeader{MsgID: 0x0002, PhoneNumber: phone, Attr: &model.MsgBodyAttr{}}}
 	require.NoError(t, processMsg0002(ctx, &model.ProcessData{Incoming: msg}))
 
 	stored, err := devices.GetByPhone(ctx, phone)
 	require.NoError(t, err)
-	require.Equal(t, persistedAt, stored.LastestComTime, "heartbeat inside the interval must not hit the store")
+	require.True(t, stored.LastestComTime.IsZero(), "heartbeat must not persist last com time")
+	require.Equal(t, model.DeviceStatusOffline, stored.Status, "heartbeat must not persist status")
+
 	last, ok := runtime.Default().Heartbeat.Last(ctx, phone)
 	require.True(t, ok)
 	require.WithinDuration(t, time.Now(), last, 5*time.Second)
-
-	// 超过节流周期后应重新落库。
-	stored.LastestComTime = time.UnixMilli(time.Now().Add(-40 * time.Second).UnixMilli())
-	require.NoError(t, devices.Upsert(ctx, stored))
-	require.NoError(t, processMsg0002(ctx, &model.ProcessData{Incoming: msg}))
-	refreshed, err := devices.GetByPhone(ctx, phone)
-	require.NoError(t, err)
-	require.WithinDuration(t, time.Now(), refreshed.LastestComTime, 5*time.Second)
 }
 
 func TestSimulatorParameterTemplateDecodes(t *testing.T) {

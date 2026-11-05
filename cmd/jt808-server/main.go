@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"flag"
 	"fmt"
 	"os"
@@ -14,7 +13,6 @@ import (
 	"github.com/fakeyanss/jt808-server-go/internal/action"
 	"github.com/fakeyanss/jt808-server-go/internal/api"
 	"github.com/fakeyanss/jt808-server-go/internal/config"
-	"github.com/fakeyanss/jt808-server-go/internal/protocol"
 	"github.com/fakeyanss/jt808-server-go/internal/server"
 	"github.com/fakeyanss/jt808-server-go/internal/storage"
 	"github.com/fakeyanss/jt808-server-go/pkg/logger"
@@ -45,9 +43,6 @@ func main() {
 		os.Exit(1)
 	}
 	log.Info().Str("backend", backend).Msg("Storage backend initialized")
-
-	// 心跳落库节流：0 表示逐条写库（缺省）；若开启，应小于设备保活周期（当前 1 分钟）。
-	protocol.SetHeartbeatPersistInterval(time.Duration(cfg.Server.HeartbeatPersistIntervalMS) * time.Millisecond)
 
 	var hooks action.Hooks = action.Noop{}
 	if cfg.Server.Action != nil && cfg.Server.Action.HTTP != nil && cfg.Server.Action.HTTP.URL != "" {
@@ -90,18 +85,12 @@ func main() {
 
 	routines.GoSafe(func() { api.Run(serv, cfg) })
 
-	// 单机优雅停机：进程退出前清空运行时投影，避免下次启动读到残留的在线状态。
-	// 分布式形态不能用整体重置（会覆盖其它节点），改由 Redis 运行时缓存 TTL 扫描（§7.4）。
+	// 运行时状态只存在于进程内，进程退出即自然归零；数据库无需、也不应被批量重置。
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	sig := <-quit
 	log.Info().Str("signal", sig.String()).Msg("Shutting down")
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if err := storage.ResetRuntime(ctx); err != nil {
-		log.Warn().Err(err).Msg("Fail to reset device runtime on shutdown")
-	}
 	if err := storage.Close(); err != nil {
 		log.Warn().Err(err).Msg("Fail to close storage backend")
 	}

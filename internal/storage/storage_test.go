@@ -67,7 +67,13 @@ func TestOpenSQLitePersistsDevicesAndParams(t *testing.T) {
 	got, err := second.Devices.GetByPhone(ctx, phone)
 	require.NoError(t, err)
 	require.Equal(t, device.ID, got.ID)
-	require.Equal(t, device.LastestComTime, got.LastestComTime)
+	require.Equal(t, device.Plate, got.Plate)
+	require.Equal(t, device.VersionDesc, got.VersionDesc)
+	// 运行时状态不落库：重开进程后 session/status/last_com_time 全部归零。
+	require.Empty(t, got.SessionID)
+	require.Empty(t, got.TransProto)
+	require.Equal(t, model.DeviceStatusOffline, got.Status)
+	require.True(t, got.LastestComTime.IsZero())
 	gone := "188765430099"
 	_, err = second.Devices.GetByPhone(ctx, gone)
 	require.ErrorIs(t, err, repository.ErrDeviceNotFound)

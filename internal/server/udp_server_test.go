@@ -1667,7 +1667,7 @@ func waitDeviceAbsent(t *testing.T, phone string) {
 	t.Fatalf("device %s was not removed from cache", phone)
 }
 
-func TestTCPServerHeartbeatRefreshesDeviceComTime(t *testing.T) {
+func TestTCPServerHeartbeatRefreshesRuntimeComTime(t *testing.T) {
 	server := NewTCPServer()
 	require.NoError(t, server.Listen("127.0.0.1:0"))
 	go server.Start()
@@ -1679,7 +1679,7 @@ func TestTCPServerHeartbeatRefreshesDeviceComTime(t *testing.T) {
 	devices := storage.Default().Devices
 	device, err := devices.GetByPhone(context.Background(), phone)
 	require.NoError(t, err)
-	// Backdate the last communication time beyond the keepalive window.
+	// Backdate the persisted last communication time; heartbeat must no longer write it.
 	stale := time.Now().Add(-90 * time.Second)
 	device.LastestComTime = stale
 	devices.Upsert(context.Background(), device)
@@ -1690,10 +1690,13 @@ func TestTCPServerHeartbeatRefreshesDeviceComTime(t *testing.T) {
 	require.Equal(t, uint16(0x0002), ack.AnswerMessageID)
 	require.Equal(t, model.ResultSuccess, ack.Result)
 
+	// 运行时状态不落库：库内 last_com_time 不变，进程内最近心跳被刷新。
 	refreshed, err := devices.GetByPhone(context.Background(), phone)
 	require.NoError(t, err)
-	require.True(t, refreshed.LastestComTime.After(stale.Add(80*time.Second)), "heartbeat must refresh LastestComTime")
-	require.WithinDuration(t, time.Now(), refreshed.LastestComTime, 5*time.Second)
+	require.Equal(t, stale, refreshed.LastestComTime)
+	last, ok := runtime.Default().Heartbeat.Last(context.Background(), phone)
+	require.True(t, ok)
+	require.WithinDuration(t, time.Now(), last, 5*time.Second)
 }
 
 func TestTCPServerHeartbeatFromUnknownDeviceClosesConn(t *testing.T) {
