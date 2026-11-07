@@ -283,7 +283,7 @@ func buildTest0200Body(alarmSign uint32, extItems ...model.LocationExtItem) []by
 	data = hex.WriteBCD(data, "201231235959")
 	for _, item := range extItems {
 		data = hex.WriteByte(data, item.ID)
-		data = hex.WriteWord(data, uint16(len(item.Data)))
+		data = hex.WriteByte(data, uint8(len(item.Data)))
 		data = hex.WriteBytes(data, item.Data)
 	}
 	return data

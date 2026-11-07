@@ -5,9 +5,10 @@ import (
 )
 
 // LocationExtItem is one 0x0200 extended (附加信息) TLV item.
+// 附加信息长度按 JT/T 808 表 26 定义为 BYTE（1 字节）。
 type LocationExtItem struct {
 	ID     uint8  `json:"id"`     // 附加信息ID
-	Length uint16 `json:"length"` // 附加信息长度
+	Length uint8  `json:"length"` // 附加信息长度（BYTE）
 	Data   []byte `json:"data"`   // 附加信息内容
 }
 
@@ -38,10 +39,10 @@ func (m *Msg0200) Decode(packet *PacketData) error {
 	m.Time = hex.ReadBCD(pkt, &idx, 6)
 	m.ExtItems = nil
 	for idx < len(pkt) {
-		if idx+3 > len(pkt) {
+		if idx+2 > len(pkt) {
 			return ErrDecodeMsg
 		}
-		item := LocationExtItem{ID: hex.ReadByte(pkt, &idx), Length: hex.ReadWord(pkt, &idx)}
+		item := LocationExtItem{ID: hex.ReadByte(pkt, &idx), Length: hex.ReadByte(pkt, &idx)}
 		if idx+int(item.Length) > len(pkt) {
 			return ErrDecodeMsg
 		}
@@ -62,7 +63,7 @@ func (m *Msg0200) Encode() (pkt []byte, err error) {
 	pkt = hex.WriteBCD(pkt, m.Time)
 	for _, item := range m.ExtItems {
 		pkt = hex.WriteByte(pkt, item.ID)
-		pkt = hex.WriteWord(pkt, item.Length)
+		pkt = hex.WriteByte(pkt, item.Length)
 		pkt = hex.WriteBytes(pkt, item.Data)
 	}
 

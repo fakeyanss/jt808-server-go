@@ -47,7 +47,7 @@ type ExtItemMeta struct {
 // 原始字节被完整保留，保证未知 ID 不丢包、解析失败不丢包。
 type ExtRawItem struct {
 	ExtItemMeta
-	Length uint16 `json:"length"` // 附加信息长度
+	Length uint8  `json:"length"` // 附加信息长度（BYTE）
 	Raw    []byte `json:"raw"`    // 原始字节
 }
 

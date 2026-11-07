@@ -101,10 +101,10 @@ func testDeviceID(domain ExtDomain) string {
 
 func buildTestExtItems(domain ExtDomain) []LocationExtItem {
 	return []LocationExtItem{
-		{ID: 0x64, Length: uint16(len(buildTestADAS(domain))), Data: buildTestADAS(domain)},
-		{ID: 0x65, Length: uint16(len(buildTestDSM(domain))), Data: buildTestDSM(domain)},
-		{ID: 0x66, Length: uint16(len(buildTestTPMS(domain))), Data: buildTestTPMS(domain)},
-		{ID: 0x67, Length: uint16(len(buildTestBSD(domain))), Data: buildTestBSD(domain)},
+		{ID: 0x64, Length: uint8(len(buildTestADAS(domain))), Data: buildTestADAS(domain)},
+		{ID: 0x65, Length: uint8(len(buildTestDSM(domain))), Data: buildTestDSM(domain)},
+		{ID: 0x66, Length: uint8(len(buildTestTPMS(domain))), Data: buildTestTPMS(domain)},
+		{ID: 0x67, Length: uint8(len(buildTestBSD(domain))), Data: buildTestBSD(domain)},
 		{ID: 0xE0, Length: 3, Data: []byte{0xDE, 0xAD, 0xBE}},
 	}
 }
@@ -188,7 +188,7 @@ func TestParseExtItemsSubiaoFields(t *testing.T) {
 	require.Equal(t, uint8(0xE0), raw.ExtID)
 	require.Equal(t, ExtTypeRaw, raw.ExtType)
 	require.Equal(t, ExtDomainSubiao, raw.ExtDomain)
-	require.Equal(t, uint16(3), raw.Length)
+	require.Equal(t, uint8(3), raw.Length)
 	require.Equal(t, []byte{0xDE, 0xAD, 0xBE}, raw.Raw)
 	require.Equal(t, []byte{0xDE, 0xAD, 0xBE}, ExtRawBytes(parsed))
 }
@@ -215,24 +215,24 @@ func TestParseExtItemsDoesNotCrossDomains(t *testing.T) {
 	base2019Data := buildTestADAS(ExtDomainBase2019)
 
 	underSubiao := msg0200WithDomain(ExtDomainSubiao, []LocationExtItem{
-		{ID: 0x64, Length: uint16(len(subiaoData)), Data: subiaoData},
+		{ID: 0x64, Length: uint8(len(subiaoData)), Data: subiaoData},
 	}).ParseExtItems()
 	require.IsType(t, ExtAlarmADAS{}, underSubiao[0])
 
 	// 苏标数据用 base2019 域解析时长度不符，必须整体退化为 raw，而不是截断字段。
 	crossParsed := msg0200WithDomain(ExtDomainBase2019, []LocationExtItem{
-		{ID: 0x64, Length: uint16(len(subiaoData)), Data: subiaoData},
+		{ID: 0x64, Length: uint8(len(subiaoData)), Data: subiaoData},
 	}).ParseExtItems()
 	require.IsType(t, ExtRawItem{}, crossParsed[0])
 
 	// 反向同理：base2019 数据不能按苏标 16 字节报警标识号截断解析。
 	reverseParsed := msg0200WithDomain(ExtDomainSubiao, []LocationExtItem{
-		{ID: 0x64, Length: uint16(len(base2019Data)), Data: base2019Data},
+		{ID: 0x64, Length: uint8(len(base2019Data)), Data: base2019Data},
 	}).ParseExtItems()
 	require.IsType(t, ExtRawItem{}, reverseParsed[0])
 
 	base2019Parsed := msg0200WithDomain(ExtDomainBase2019, []LocationExtItem{
-		{ID: 0x64, Length: uint16(len(base2019Data)), Data: base2019Data},
+		{ID: 0x64, Length: uint8(len(base2019Data)), Data: base2019Data},
 	}).ParseExtItems()
 	base2019ADAS, ok := base2019Parsed[0].(ExtAlarmADAS)
 	require.True(t, ok)
@@ -252,6 +252,76 @@ func TestParseExtItemsUnknownIDNeverFails(t *testing.T) {
 
 func TestParseExtItemsNilHeaderDefaultsToSubiao(t *testing.T) {
 	data := buildTestADAS(ExtDomainSubiao)
-	msg := &Msg0200{ExtItems: []LocationExtItem{{ID: 0x64, Length: uint16(len(data)), Data: data}}}
+	msg := &Msg0200{ExtItems: []LocationExtItem{{ID: 0x64, Length: uint8(len(data)), Data: data}}}
 	require.IsType(t, ExtAlarmADAS{}, msg.ParseExtItems()[0])
+}
+
+func buildRealistic0200Body(alarmSign uint32, items []LocationExtItem) []byte {
+	data := hex.WriteDoubleWord(nil, alarmSign)
+	data = hex.WriteDoubleWord(data, 0x00000003)
+	data = hex.WriteDoubleWord(data, 0x07D5A8C0)
+	data = hex.WriteDoubleWord(data, 0x0E5A9FA0)
+	data = hex.WriteWord(data, 100)
+	data = hex.WriteWord(data, 70)
+	data = hex.WriteWord(data, 90)
+	data = hex.WriteBCD(data, "201231235959")
+	for _, item := range items {
+		data = hex.WriteByte(data, item.ID)
+		data = hex.WriteByte(data, uint8(len(item.Data)))
+		data = hex.WriteBytes(data, item.Data)
+	}
+	return data
+}
+
+// 真实风格报文：附加信息 TLV 长度按标准使用 1 字节，包含 0x64/0x65
+// 苏标扩展与一个未知 ID，验证整条链路解码、字段解析与 raw 兜底。
+func TestMsg0200DecodeRealStyleTLV(t *testing.T) {
+	adas := buildTestADAS(ExtDomainSubiao)
+	dsm := buildTestDSM(ExtDomainSubiao)
+	unknown := []byte{0xDE, 0xAD, 0xBE, 0xEF}
+	items := []LocationExtItem{
+		{ID: 0x64, Length: uint8(len(adas)), Data: adas},
+		{ID: 0x65, Length: uint8(len(dsm)), Data: dsm},
+		{ID: 0xE0, Length: uint8(len(unknown)), Data: unknown},
+	}
+	body := buildRealistic0200Body(0x00000001, items)
+	header := &MsgHeader{
+		MsgID:        MsgID0200,
+		PhoneNumber:  "188765432120",
+		SerialNumber: 7,
+		Attr:         &MsgBodyAttr{VersionSign: 0, VersionDesc: Version2013},
+	}
+
+	msg := &Msg0200{}
+	require.NoError(t, msg.Decode(&PacketData{Header: header, Body: body}))
+	require.Len(t, msg.ExtItems, 3)
+	require.Equal(t, items[0], msg.ExtItems[0])
+	require.Equal(t, items[1], msg.ExtItems[1])
+	require.Equal(t, items[2], msg.ExtItems[2])
+
+	parsed := msg.ParseExtItems()
+	require.Len(t, parsed, 3)
+	adasParsed, ok := parsed[0].(ExtAlarmADAS)
+	require.True(t, ok)
+	require.Equal(t, uint8(0x01), adasParsed.AlarmOrEventType)
+	require.Equal(t, uint32(0x07D5A8C0), adasParsed.Latitude)
+	require.Equal(t, testSubiaoDeviceID, adasParsed.AlarmIDNumber.DeviceID)
+
+	dsmParsed, ok := parsed[1].(ExtAlarmDSM)
+	require.True(t, ok)
+	require.Equal(t, uint8(0x02), dsmParsed.AlarmOrEventType)
+	require.Equal(t, uint8(5), dsmParsed.FatigueDegree)
+
+	raw, ok := parsed[2].(ExtRawItem)
+	require.True(t, ok)
+	require.Equal(t, uint8(0xE0), raw.ExtID)
+	require.Equal(t, uint8(len(unknown)), raw.Length)
+	require.Equal(t, unknown, raw.Raw)
+	require.Equal(t, unknown, ExtRawBytes(parsed))
+
+	// 编码侧必须同样写 1 字节长度，且与解码输入逐字节一致。
+	encoded, err := msg.Encode()
+	require.NoError(t, err)
+	encodedBody := encoded[len(encoded)-int(msg.Header.Attr.BodyLength):]
+	require.Equal(t, body, encodedBody)
 }
