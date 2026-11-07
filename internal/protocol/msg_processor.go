@@ -502,6 +502,7 @@ func (mp *JT808MsgProcessor) notifyLocation(ctx context.Context, in *model.Msg02
 		Time:       in.Time,
 	})
 	if in.AlarmSign != 0 {
+		extItems := in.ParseExtItems()
 		mp.hooks.OnAlarm(ctx, actionpkg.AlarmEvent{
 			Phone:     in.Header.PhoneNumber,
 			Serial:    in.Header.SerialNumber,
@@ -509,6 +510,8 @@ func (mp *JT808MsgProcessor) notifyLocation(ctx context.Context, in *model.Msg02
 			Latitude:  in.Latitude,
 			Longitude: in.Longitude,
 			Time:      in.Time,
+			ExtItems:  extItems,
+			ExtRaw:    model.ExtRawBytes(extItems),
 		})
 	}
 }

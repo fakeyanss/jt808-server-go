@@ -3,11 +3,16 @@ package protocol
 import (
 	"context"
 	"encoding/binary"
+	"encoding/json"
 	"fmt"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
+	actionpkg "github.com/fakeyanss/jt808-server-go/internal/action"
+	"github.com/fakeyanss/jt808-server-go/internal/codec/hex"
 	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
 	"github.com/fakeyanss/jt808-server-go/internal/runtime"
 	"github.com/fakeyanss/jt808-server-go/internal/storage"
@@ -221,5 +226,134 @@ func TestSimulatorRepliesToRegionDriverRecorderAndMultimediaCommands(t *testing.
 				require.Equal(t, uint8(0), capture.Result)
 			}
 		})
+	}
+}
+
+func buildTest0200AlarmIDNumber() []byte {
+	data := hex.WriteString(nil, "ABC1234")
+	data = hex.WriteBCD(data, "210101120000")
+	data = hex.WriteByte(data, 5)
+	data = hex.WriteByte(data, 2)
+	return hex.WriteByte(data, 0xA0)
+}
+
+func buildTest0200ADAS() []byte {
+	data := hex.WriteDoubleWord(nil, 0x01020304)
+	data = hex.WriteByte(data, 0x01)
+	data = hex.WriteByte(data, 0x01)
+	data = hex.WriteByte(data, 0x01)
+	data = hex.WriteByte(data, 60)
+	data = hex.WriteByte(data, 20)
+	data = hex.WriteByte(data, 0x01)
+	data = hex.WriteByte(data, 0x01)
+	data = hex.WriteByte(data, 80)
+	data = hex.WriteByte(data, 70)
+	data = hex.WriteWord(data, 100)
+	data = hex.WriteDoubleWord(data, 0x07D5A8C0)
+	data = hex.WriteDoubleWord(data, 0x0E5A9FA0)
+	data = hex.WriteBCD(data, "201231235959")
+	data = hex.WriteWord(data, 0x0003)
+	return append(data, buildTest0200AlarmIDNumber()...)
+}
+
+func buildTest0200DSM() []byte {
+	data := hex.WriteDoubleWord(nil, 0x11223344)
+	data = hex.WriteByte(data, 0x02)
+	data = hex.WriteByte(data, 0x02)
+	data = hex.WriteByte(data, 0x02)
+	data = hex.WriteByte(data, 5)
+	data = hex.WriteBytes(data, []byte{0x11, 0x22, 0x33, 0x44})
+	data = hex.WriteByte(data, 66)
+	data = hex.WriteWord(data, 200)
+	data = hex.WriteDoubleWord(data, 0x07D5A8C1)
+	data = hex.WriteDoubleWord(data, 0x0E5A9FA1)
+	data = hex.WriteBCD(data, "210101120000")
+	data = hex.WriteWord(data, 0x0011)
+	return append(data, buildTest0200AlarmIDNumber()...)
+}
+
+func buildTest0200Body(alarmSign uint32, extItems ...model.LocationExtItem) []byte {
+	data := hex.WriteDoubleWord(nil, alarmSign)
+	data = hex.WriteDoubleWord(data, 0)
+	data = hex.WriteDoubleWord(data, 0x07D5A8C0)
+	data = hex.WriteDoubleWord(data, 0x0E5A9FA0)
+	data = hex.WriteWord(data, 100)
+	data = hex.WriteWord(data, 70)
+	data = hex.WriteWord(data, 90)
+	data = hex.WriteBCD(data, "201231235959")
+	for _, item := range extItems {
+		data = hex.WriteByte(data, item.ID)
+		data = hex.WriteWord(data, uint16(len(item.Data)))
+		data = hex.WriteBytes(data, item.Data)
+	}
+	return data
+}
+
+// 0x0200 报警事件经 OnAlarm HTTP 回调后，JSON 中应保留结构化扩展项，
+// 且 adas 与 dsm 可通过 extType 区分。
+func TestOnAlarmHTTPCallbackIncludesExtItems(t *testing.T) {
+	received := make(chan map[string]any, 4)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		received <- body
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	const phone = "188765432120"
+	ctx := context.Background()
+	devices := storage.Default().Devices
+	require.NoError(t, devices.Upsert(ctx, &model.Device{Phone: phone, Keepalive: time.Minute}))
+	t.Cleanup(func() { _ = devices.DeleteByPhone(ctx, phone) })
+
+	adas := buildTest0200ADAS()
+	dsm := buildTest0200DSM()
+	body := buildTest0200Body(0x00000001,
+		model.LocationExtItem{ID: 0x64, Data: adas},
+		model.LocationExtItem{ID: 0x65, Data: dsm},
+	)
+	header := &model.MsgHeader{
+		MsgID:        0x0200,
+		PhoneNumber:  phone,
+		SerialNumber: 101,
+		Attr:         &model.MsgBodyAttr{VersionDesc: model.Version2013},
+	}
+
+	callback := actionpkg.NewHTTPCallback(server.URL, time.Second)
+	_, err := NewJT808MsgProcessor(callback).Process(ctx, &model.PacketData{Header: header, Body: body})
+	require.NoError(t, err)
+
+	timeout := time.After(2 * time.Second)
+	for {
+		select {
+		case event := <-received:
+			if event["event"] != "alarm" {
+				continue
+			}
+			payload, ok := event["payload"].(map[string]any)
+			require.True(t, ok)
+			items, ok := payload["extItems"].([]any)
+			require.True(t, ok)
+			require.Len(t, items, 2)
+
+			adasJSON, ok := items[0].(map[string]any)
+			require.True(t, ok)
+			require.Equal(t, "adas", adasJSON["extType"])
+			require.Equal(t, float64(0x64), adasJSON["extId"])
+			require.Equal(t, "ABC1234", adasJSON["alarmIdNumber"].(map[string]any)["deviceId"])
+
+			dsmJSON, ok := items[1].(map[string]any)
+			require.True(t, ok)
+			require.Equal(t, "dsm", dsmJSON["extType"])
+			require.Equal(t, float64(0x65), dsmJSON["extId"])
+			require.Equal(t, float64(2), dsmJSON["alarmOrEventType"])
+			return
+		case <-timeout:
+			t.Fatal("alarm callback was not delivered")
+		}
 	}
 }

@@ -280,6 +280,11 @@
 
 #### P0.3 0x0200 附加信息"类型注册表 + raw 兜底"
 
+- **状态**：已实现（`dev/p0-position-ext`）。按消息头协议版本位选域：2019 版本使用
+  `base2019`（粤标 30 字节终端ID 布局），2011/2013 使用 `subiao`（7 字节终端ID 布局）；
+  `0x64~0x67` 已结构化解析，未注册 ID 与长度不符项退化为 raw 兜底并保留原始字节；
+  `OnAlarm` 回调新增 `extItems`/`extRaw`。苏标文档未定义 `VehicleNo/VehicleType`，
+  车辆身份由报警标识号中的终端ID（`alarmIdNumber.deviceId`）承载。
 - **目标**：位置与报警事件里能拿到结构化的 ADAS/DSM/TP 报警字段，同时不认识的
   附加信息 ID 仍然保留原始字节，不丢包。
 - **涉及模块**：`internal/protocol/model/msg_0200.go`（新增
