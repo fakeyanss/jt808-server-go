@@ -3,6 +3,9 @@ package config
 import (
 	"bytes"
 	"fmt"
+	"math"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -148,11 +151,73 @@ type DeviceParamsConf struct {
 }
 
 type Config struct {
-	Log       *logConf       `yaml:"log"`
-	Server    *serverConf    `yaml:"server"`
-	Client    *clientConf    `yaml:"client"`
-	Storage   *storageConf   `yaml:"storage"`
-	Retention *retentionConf `yaml:"retention"`
+	Log         *logConf         `yaml:"log"`
+	Server      *serverConf      `yaml:"server"`
+	Client      *clientConf      `yaml:"client"`
+	Storage     *storageConf     `yaml:"storage"`
+	Retention   *retentionConf   `yaml:"retention"`
+	AlarmServer *alarmServerConf `yaml:"alarmServer"`
+}
+
+// 苏标附件服务器的工程默认值。未配置 alarmServer.port 时服务不启动。
+const (
+	DefaultAlarmServerDir           = "./data/alarms"
+	DefaultAlarmServerMaxFileSize   = 100 * 1024 * 1024
+	DefaultAlarmServerMaxConcurrent = 16
+)
+
+// alarmServerConf 配置苏标主动安全附件服务器。
+// port 为空表示不启用；显式配置 port 后才监听独立 TCP 端口。
+type alarmServerConf struct {
+	Port          string `yaml:"port"`
+	Dir           string `yaml:"dir"`
+	MaxFileSize   int64  `yaml:"maxFileSize"`
+	MaxConcurrent int    `yaml:"maxConcurrent"`
+}
+
+// AlarmServerOptions 是附件服务器的归一化配置。
+type AlarmServerOptions struct {
+	Port          uint16
+	Dir           string
+	MaxFileSize   int64
+	MaxConcurrent int
+}
+
+// ParseAlarmServer 解析并校验 alarmServer 配置。
+// 返回 enabled=false 表示未配置端口，服务不启动，行为与旧版本一致。
+func (c *Config) ParseAlarmServer() (options AlarmServerOptions, enabled bool, err error) {
+	if c == nil || c.AlarmServer == nil || strings.TrimSpace(c.AlarmServer.Port) == "" {
+		return AlarmServerOptions{}, false, nil
+	}
+	rawPort := strings.TrimSpace(c.AlarmServer.Port)
+	port, parseErr := strconv.Atoi(rawPort)
+	if parseErr != nil || port < 1 || port > 65535 {
+		return AlarmServerOptions{}, false, fmt.Errorf("alarmServer.port must be a TCP port between 1 and 65535, got %q", rawPort)
+	}
+	dir := strings.TrimSpace(c.AlarmServer.Dir)
+	if dir == "" {
+		dir = DefaultAlarmServerDir
+	}
+	if c.AlarmServer.MaxFileSize < 0 || c.AlarmServer.MaxFileSize > math.MaxUint32 {
+		return AlarmServerOptions{}, false, fmt.Errorf("alarmServer.maxFileSize must be between 0 and %d, got %d", uint32(math.MaxUint32), c.AlarmServer.MaxFileSize)
+	}
+	maxFileSize := c.AlarmServer.MaxFileSize
+	if maxFileSize == 0 {
+		maxFileSize = DefaultAlarmServerMaxFileSize
+	}
+	if c.AlarmServer.MaxConcurrent < 0 {
+		return AlarmServerOptions{}, false, fmt.Errorf("alarmServer.maxConcurrent must be >= 0, got %d", c.AlarmServer.MaxConcurrent)
+	}
+	maxConcurrent := c.AlarmServer.MaxConcurrent
+	if maxConcurrent == 0 {
+		maxConcurrent = DefaultAlarmServerMaxConcurrent
+	}
+	return AlarmServerOptions{
+		Port:          uint16(port),
+		Dir:           dir,
+		MaxFileSize:   maxFileSize,
+		MaxConcurrent: maxConcurrent,
+	}, true, nil
 }
 
 // 保留期默认值。未配置 retention 段时使用，保证与已有的进程内窗口一致：

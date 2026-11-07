@@ -28,6 +28,14 @@ server:
     enable: true
     bannerPath: "configs/banner.txt"
 
+# 苏标主动安全附件服务器。port 为空或整段缺省时不启动，行为与旧版本一致。
+# 附件落盘目录结构为 <dir>/<手机号>/<YYYYMMDD>/<报警编号>/<文件名>。
+alarmServer:
+  port: "7200"
+  dir: "./data/alarms"
+  maxFileSize: 104857600
+  maxConcurrent: 16
+
 # 持久化数据保留策略。整段缺省时使用代码内置默认值，行为与之前的进程内实现一致。
 # 显式写 0 表示关闭对应策略（0 天不做时间清理、0 条不限制上限、0 毫秒不去重）。
 # JT/T 808 未规定平台侧保存期限，定位 7 天 / 10000 条为自行设定的工程默认值；

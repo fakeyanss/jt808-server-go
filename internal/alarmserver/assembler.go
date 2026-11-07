@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -694,30 +695,64 @@ func (a *Assembler) Reconcile() error {
 }
 
 // Select 返回已完成的附件元数据，phone 为空时返回全部。
+// 内存态之外还会扫描落盘元数据，保证进程重启后历史附件仍可查询。
 func (a *Assembler) Select(phone string) []Metadata {
+	merged := make(map[string]Metadata)
 	a.mu.Lock()
-	defer a.mu.Unlock()
-	result := make([]Metadata, 0)
 	for _, st := range a.files {
 		st.mu.Lock()
 		if st.completed && (phone == "" || st.phone == phone) {
-			result = append(result, st.meta)
+			merged[st.meta.Path] = st.meta
 		}
 		st.mu.Unlock()
 	}
+	a.mu.Unlock()
+
+	if phone == "" || validateSegment(phone) == nil {
+		root := a.cfg.Dir
+		if phone != "" {
+			root = filepath.Join(root, phone)
+		}
+		_ = filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
+			if walkErr != nil || entry.IsDir() || !strings.HasSuffix(path, metaSuffix) {
+				return nil
+			}
+			meta, readErr := readMetadata(path)
+			if readErr != nil {
+				return nil
+			}
+			if phone == "" || meta.Phone == phone {
+				merged[meta.Path] = meta
+			}
+			return nil
+		})
+	}
+
+	result := make([]Metadata, 0, len(merged))
+	for _, meta := range merged {
+		result = append(result, meta)
+	}
+	sort.Slice(result, func(i, j int) bool {
+		return result[i].CompletedAt.After(result[j].CompletedAt)
+	})
 	return result
 }
 
 // FindMetadata 返回指定手机号与文件名的已完成附件元数据。
 func (a *Assembler) FindMetadata(phone, fileName string) (Metadata, error) {
-	st := a.lookup(phone, fileName)
-	if st == nil {
-		return Metadata{}, ErrFileNotRegistered
+	if st := a.lookup(phone, fileName); st != nil {
+		st.mu.Lock()
+		completed := st.completed
+		meta := st.meta
+		st.mu.Unlock()
+		if completed {
+			return meta, nil
+		}
 	}
-	st.mu.Lock()
-	defer st.mu.Unlock()
-	if !st.completed {
-		return Metadata{}, ErrFileNotRegistered
+	for _, meta := range a.Select(phone) {
+		if meta.FileName == fileName {
+			return meta, nil
+		}
 	}
-	return st.meta, nil
+	return Metadata{}, ErrFileNotRegistered
 }

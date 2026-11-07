@@ -11,6 +11,7 @@ import (
 	"github.com/rs/zerolog/log"
 
 	"github.com/fakeyanss/jt808-server-go/internal/action"
+	"github.com/fakeyanss/jt808-server-go/internal/alarmserver"
 	"github.com/fakeyanss/jt808-server-go/internal/api"
 	"github.com/fakeyanss/jt808-server-go/internal/config"
 	"github.com/fakeyanss/jt808-server-go/internal/server"
@@ -83,7 +84,27 @@ func main() {
 		routines.GoSafe(func() { udpServ.Start() })
 	}
 
-	routines.GoSafe(func() { api.Run(serv, cfg) })
+	alarmOptions, alarmEnabled, alarmErr := cfg.ParseAlarmServer()
+	if alarmErr != nil {
+		log.Error().Err(alarmErr).Msg("Invalid alarmServer configuration")
+		os.Exit(1)
+	}
+	var alarmServ *alarmserver.Server
+	if alarmEnabled {
+		alarmServ = alarmserver.NewServer(alarmserver.Config{
+			Dir:           alarmOptions.Dir,
+			MaxFileSize:   alarmOptions.MaxFileSize,
+			MaxConcurrent: alarmOptions.MaxConcurrent,
+		})
+		alarmAddr := fmt.Sprintf(":%d", alarmOptions.Port)
+		if err := alarmServ.Listen(alarmAddr); err != nil {
+			log.Error().Err(err).Str("addr", alarmAddr).Msg("Fail to listen alarm server addr")
+			os.Exit(1)
+		}
+		routines.GoSafe(func() { alarmServ.Start() })
+	}
+
+	routines.GoSafe(func() { api.Run(serv, cfg, alarmServ) })
 
 	// 运行时状态只存在于进程内，进程退出即自然归零；数据库无需、也不应被批量重置。
 	quit := make(chan os.Signal, 1)
@@ -91,6 +112,9 @@ func main() {
 	sig := <-quit
 	log.Info().Str("signal", sig.String()).Msg("Shutting down")
 
+	if alarmServ != nil {
+		alarmServ.Stop()
+	}
 	if err := storage.Close(); err != nil {
 		log.Warn().Err(err).Msg("Fail to close storage backend")
 	}
