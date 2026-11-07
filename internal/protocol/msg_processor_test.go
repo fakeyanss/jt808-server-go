@@ -3,10 +3,16 @@ package protocol
 import (
 	"context"
 	"encoding/binary"
+	"encoding/json"
 	"fmt"
+	"net"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
+	actionpkg "github.com/fakeyanss/jt808-server-go/internal/action"
+	"github.com/fakeyanss/jt808-server-go/internal/codec/hex"
 	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
 	"github.com/fakeyanss/jt808-server-go/internal/runtime"
 	"github.com/fakeyanss/jt808-server-go/internal/storage"
@@ -73,42 +79,79 @@ func TestProcessMsg0107PersistsAndDeliversTerminalProperties(t *testing.T) {
 	require.NoError(t, storage.Default().Properties.Delete(ctx, phone))
 }
 
-// 心跳落库按配置节流：周期内跳过写库，超过周期后写入；进程内最近心跳始终更新。
-func TestHeartbeatPersistIntervalThrottlesWrites(t *testing.T) {
+// 心跳只刷新进程内最近通信时间，不再写库：运行时状态不持久化。
+func TestHeartbeatDoesNotPersistRuntime(t *testing.T) {
 	const phone = "188765499004"
 	ctx := context.Background()
 	devices := storage.Default().Devices
-	persistedAt := time.UnixMilli(time.Now().Add(-10 * time.Second).UnixMilli())
 	require.NoError(t, devices.Upsert(ctx, &model.Device{
-		Phone:          phone,
-		Keepalive:      time.Minute,
-		LastestComTime: persistedAt,
-		Status:         model.DeviceStatusOnline,
+		Phone:     phone,
+		Keepalive: time.Minute,
 	}))
 	t.Cleanup(func() {
-		SetHeartbeatPersistInterval(0)
 		runtime.Default().Heartbeat.Remove(ctx, phone)
 		_ = devices.DeleteByPhone(ctx, phone)
 	})
 
-	SetHeartbeatPersistInterval(30 * time.Second)
 	msg := &model.Msg0002{Header: &model.MsgHeader{MsgID: 0x0002, PhoneNumber: phone, Attr: &model.MsgBodyAttr{}}}
 	require.NoError(t, processMsg0002(ctx, &model.ProcessData{Incoming: msg}))
 
 	stored, err := devices.GetByPhone(ctx, phone)
 	require.NoError(t, err)
-	require.Equal(t, persistedAt, stored.LastestComTime, "heartbeat inside the interval must not hit the store")
+	require.True(t, stored.LastestComTime.IsZero(), "heartbeat must not persist last com time")
+	require.Equal(t, model.DeviceStatusOffline, stored.Status, "heartbeat must not persist status")
+
 	last, ok := runtime.Default().Heartbeat.Last(ctx, phone)
 	require.True(t, ok)
 	require.WithinDuration(t, time.Now(), last, 5*time.Second)
+}
 
-	// 超过节流周期后应重新落库。
-	stored.LastestComTime = time.UnixMilli(time.Now().Add(-40 * time.Second).UnixMilli())
-	require.NoError(t, devices.Upsert(ctx, stored))
-	require.NoError(t, processMsg0002(ctx, &model.ProcessData{Incoming: msg}))
-	refreshed, err := devices.GetByPhone(ctx, phone)
+// 应答必须按流水号精确配对：先回第二条不应清掉第一条的等待项。
+func TestProcessAcknowledgesResponseBySerial(t *testing.T) {
+	const phone = "188765432111"
+	left, _ := net.Pipe()
+	defer left.Close()
+	session := &model.Session{ID: "ack-serial", Conn: left, AckTimeout: time.Hour, MaxRetries: 1}
+	defer session.ClosePending()
+
+	session.TrackReliable(0x8103, 31, phone, []byte("cmd-1"))
+	session.TrackReliable(0x8103, 32, phone, []byte("cmd-2"))
+
+	ctx := context.WithValue(context.Background(), model.SessionCtxKey{}, session)
+	// 应答第二条命令。
+	header := &model.MsgHeader{MsgID: 0x0001, PhoneNumber: phone, Attr: &model.MsgBodyAttr{}}
+	_, err := NewJT808MsgProcessor(nil).Process(ctx, &model.PacketData{Header: header, Body: []byte{0, 32, 0x81, 0x03, 0}})
 	require.NoError(t, err)
-	require.WithinDuration(t, time.Now(), refreshed.LastestComTime, 5*time.Second)
+	require.Equal(t, 1, session.PendingCount(), "only the answered serial may be cleared")
+	require.True(t, session.Acknowledge(0x8103, 31), "the first command must still be pending")
+	require.Equal(t, 0, session.PendingCount())
+
+	// 重复应答不清除任何等待项。
+	_, err = NewJT808MsgProcessor(nil).Process(ctx, &model.PacketData{Header: header, Body: []byte{0, 32, 0x81, 0x03, 0}})
+	require.NoError(t, err)
+	require.Equal(t, 0, session.PendingCount())
+}
+
+// 错会话的应答不得清除另一个会话的等待项。
+func TestProcessIgnoresResponseFromOtherSession(t *testing.T) {
+	const phone = "188765432112"
+	ownerConn, _ := net.Pipe()
+	defer ownerConn.Close()
+	owner := &model.Session{ID: "owner", Conn: ownerConn, AckTimeout: time.Hour, MaxRetries: 1}
+	defer owner.ClosePending()
+	owner.TrackReliable(0x8103, 41, phone, []byte("cmd"))
+
+	otherConn, _ := net.Pipe()
+	defer otherConn.Close()
+	other := &model.Session{ID: "other", Conn: otherConn, AckTimeout: time.Hour, MaxRetries: 1}
+	defer other.ClosePending()
+
+	ctx := context.WithValue(context.Background(), model.SessionCtxKey{}, other)
+	header := &model.MsgHeader{MsgID: 0x0001, PhoneNumber: phone, Attr: &model.MsgBodyAttr{}}
+	_, err := NewJT808MsgProcessor(nil).Process(ctx, &model.PacketData{Header: header, Body: []byte{0, 41, 0x81, 0x03, 0}})
+	require.NoError(t, err)
+	require.Equal(t, 1, owner.PendingCount(), "response from another session must not clear pending")
+	require.Equal(t, 0, other.PendingCount())
 }
 
 func TestSimulatorParameterTemplateDecodes(t *testing.T) {
@@ -183,5 +226,134 @@ func TestSimulatorRepliesToRegionDriverRecorderAndMultimediaCommands(t *testing.
 				require.Equal(t, uint8(0), capture.Result)
 			}
 		})
+	}
+}
+
+func buildTest0200AlarmIDNumber() []byte {
+	data := hex.WriteString(nil, "ABC1234")
+	data = hex.WriteBCD(data, "210101120000")
+	data = hex.WriteByte(data, 5)
+	data = hex.WriteByte(data, 2)
+	return hex.WriteByte(data, 0xA0)
+}
+
+func buildTest0200ADAS() []byte {
+	data := hex.WriteDoubleWord(nil, 0x01020304)
+	data = hex.WriteByte(data, 0x01)
+	data = hex.WriteByte(data, 0x01)
+	data = hex.WriteByte(data, 0x01)
+	data = hex.WriteByte(data, 60)
+	data = hex.WriteByte(data, 20)
+	data = hex.WriteByte(data, 0x01)
+	data = hex.WriteByte(data, 0x01)
+	data = hex.WriteByte(data, 80)
+	data = hex.WriteByte(data, 70)
+	data = hex.WriteWord(data, 100)
+	data = hex.WriteDoubleWord(data, 0x07D5A8C0)
+	data = hex.WriteDoubleWord(data, 0x0E5A9FA0)
+	data = hex.WriteBCD(data, "201231235959")
+	data = hex.WriteWord(data, 0x0003)
+	return append(data, buildTest0200AlarmIDNumber()...)
+}
+
+func buildTest0200DSM() []byte {
+	data := hex.WriteDoubleWord(nil, 0x11223344)
+	data = hex.WriteByte(data, 0x02)
+	data = hex.WriteByte(data, 0x02)
+	data = hex.WriteByte(data, 0x02)
+	data = hex.WriteByte(data, 5)
+	data = hex.WriteBytes(data, []byte{0x11, 0x22, 0x33, 0x44})
+	data = hex.WriteByte(data, 66)
+	data = hex.WriteWord(data, 200)
+	data = hex.WriteDoubleWord(data, 0x07D5A8C1)
+	data = hex.WriteDoubleWord(data, 0x0E5A9FA1)
+	data = hex.WriteBCD(data, "210101120000")
+	data = hex.WriteWord(data, 0x0011)
+	return append(data, buildTest0200AlarmIDNumber()...)
+}
+
+func buildTest0200Body(alarmSign uint32, extItems ...model.LocationExtItem) []byte {
+	data := hex.WriteDoubleWord(nil, alarmSign)
+	data = hex.WriteDoubleWord(data, 0)
+	data = hex.WriteDoubleWord(data, 0x07D5A8C0)
+	data = hex.WriteDoubleWord(data, 0x0E5A9FA0)
+	data = hex.WriteWord(data, 100)
+	data = hex.WriteWord(data, 70)
+	data = hex.WriteWord(data, 90)
+	data = hex.WriteBCD(data, "201231235959")
+	for _, item := range extItems {
+		data = hex.WriteByte(data, item.ID)
+		data = hex.WriteByte(data, uint8(len(item.Data)))
+		data = hex.WriteBytes(data, item.Data)
+	}
+	return data
+}
+
+// 0x0200 报警事件经 OnAlarm HTTP 回调后，JSON 中应保留结构化扩展项，
+// 且 adas 与 dsm 可通过 extType 区分。
+func TestOnAlarmHTTPCallbackIncludesExtItems(t *testing.T) {
+	received := make(chan map[string]any, 4)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		received <- body
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	const phone = "188765432120"
+	ctx := context.Background()
+	devices := storage.Default().Devices
+	require.NoError(t, devices.Upsert(ctx, &model.Device{Phone: phone, Keepalive: time.Minute}))
+	t.Cleanup(func() { _ = devices.DeleteByPhone(ctx, phone) })
+
+	adas := buildTest0200ADAS()
+	dsm := buildTest0200DSM()
+	body := buildTest0200Body(0x00000001,
+		model.LocationExtItem{ID: 0x64, Data: adas},
+		model.LocationExtItem{ID: 0x65, Data: dsm},
+	)
+	header := &model.MsgHeader{
+		MsgID:        0x0200,
+		PhoneNumber:  phone,
+		SerialNumber: 101,
+		Attr:         &model.MsgBodyAttr{VersionDesc: model.Version2013},
+	}
+
+	callback := actionpkg.NewHTTPCallback(server.URL, time.Second)
+	_, err := NewJT808MsgProcessor(callback).Process(ctx, &model.PacketData{Header: header, Body: body})
+	require.NoError(t, err)
+
+	timeout := time.After(2 * time.Second)
+	for {
+		select {
+		case event := <-received:
+			if event["event"] != "alarm" {
+				continue
+			}
+			payload, ok := event["payload"].(map[string]any)
+			require.True(t, ok)
+			items, ok := payload["extItems"].([]any)
+			require.True(t, ok)
+			require.Len(t, items, 2)
+
+			adasJSON, ok := items[0].(map[string]any)
+			require.True(t, ok)
+			require.Equal(t, "adas", adasJSON["extType"])
+			require.Equal(t, float64(0x64), adasJSON["extId"])
+			require.Equal(t, "ABC1234", adasJSON["alarmIdNumber"].(map[string]any)["deviceId"])
+
+			dsmJSON, ok := items[1].(map[string]any)
+			require.True(t, ok)
+			require.Equal(t, "dsm", dsmJSON["extType"])
+			require.Equal(t, float64(0x65), dsmJSON["extId"])
+			require.Equal(t, float64(2), dsmJSON["alarmOrEventType"])
+			return
+		case <-timeout:
+			t.Fatal("alarm callback was not delivered")
+		}
 	}
 }

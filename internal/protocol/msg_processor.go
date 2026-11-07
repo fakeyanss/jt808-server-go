@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
-	"sync/atomic"
 	"time"
 
 	"github.com/pkg/errors"
@@ -389,7 +388,7 @@ func (mp *JT808MsgProcessor) Process(ctx context.Context, pkt *model.PacketData)
 		return nil, errors.Wrap(err, "Fail to decode packet to jtmsg")
 	}
 	if session, ok := ctx.Value(model.SessionCtxKey{}).(*model.Session); ok && session != nil {
-		session.AcknowledgeResponse(in.GetHeader().MsgID, in.GetHeader().PhoneNumber)
+		acknowledgeResponse(session, in)
 	}
 
 	if log.Logger.GetLevel() == zerolog.DebugLevel {
@@ -503,6 +502,7 @@ func (mp *JT808MsgProcessor) notifyLocation(ctx context.Context, in *model.Msg02
 		Time:       in.Time,
 	})
 	if in.AlarmSign != 0 {
+		extItems := in.ParseExtItems()
 		mp.hooks.OnAlarm(ctx, actionpkg.AlarmEvent{
 			Phone:     in.Header.PhoneNumber,
 			Serial:    in.Header.SerialNumber,
@@ -510,6 +510,8 @@ func (mp *JT808MsgProcessor) notifyLocation(ctx context.Context, in *model.Msg02
 			Latitude:  in.Latitude,
 			Longitude: in.Longitude,
 			Time:      in.Time,
+			ExtItems:  extItems,
+			ExtRaw:    model.ExtRawBytes(extItems),
 		})
 	}
 }
@@ -564,44 +566,20 @@ func processSegmentPacket(ctx context.Context, pkt *model.PacketData) (*model.Pr
 	return &model.ProcessData{Outgoing: outgoingMsg}, nil
 }
 
-// heartbeatPersistInterval 是心跳落库的最小间隔（纳秒）；0 表示逐条写库（缺省）。
-// 只影响落库频率，进程内的最近心跳仍由 runtime.Heartbeat 逐条记录，供保活判定使用。
-var heartbeatPersistInterval atomic.Int64
-
-// SetHeartbeatPersistInterval 设置心跳落库节流间隔；0 或负数表示逐条写库。
-func SetHeartbeatPersistInterval(interval time.Duration) {
-	if interval < 0 {
-		interval = 0
-	}
-	heartbeatPersistInterval.Store(int64(interval))
-}
-
-// 收到心跳，应刷新终端缓存有效期。
-// 进程内最近心跳逐条记录（供保活判定），落库则按配置节流，缺省逐条写库。
+// 收到心跳，刷新进程内最近通信时间。
+// 运行时状态不落库：心跳只更新 runtime.Heartbeat，供保活判定与 API 展示使用。
 func processMsg0002(_ context.Context, data *model.ProcessData) error {
 	ctx := context.Background()
 	phone := data.Incoming.GetHeader().PhoneNumber
 	devices := storage.Default().Devices
-	device, err := devices.GetByPhone(ctx, phone)
+	_, err := devices.GetByPhone(ctx, phone)
 
 	// 缓存不存在，说明设备不合法，需要返回错误，让服务层处理关闭
 	if errors.Is(err, repository.ErrDeviceNotFound) {
 		return errors.Wrapf(err, "Fail to find device cache, phoneNumber=%s", phone)
 	}
 
-	now := time.Now()
-	runtime.Default().Heartbeat.Touch(ctx, phone, now)
-
-	// 距上次落库不足一个节流周期则跳过写库；LastComTime 仍会在保活判定中从
-	// runtime.Heartbeat 取到实时值。
-	if interval := time.Duration(heartbeatPersistInterval.Load()); interval > 0 &&
-		now.Sub(device.LastestComTime) < interval {
-		return nil
-	}
-
-	device.LastestComTime = now
-	_ = devices.Upsert(ctx, device)
-
+	runtime.Default().Heartbeat.Touch(ctx, phone, time.Now())
 	return nil
 }
 
@@ -648,16 +626,24 @@ func processMsg0100(ctx context.Context, data *model.ProcessData) error {
 
 	_ = devices.Upsert(ctx, device)
 
+	// 手机号未被其它活会话占用时立即绑定；已被占用则不在注册阶段踢旧连接，
+	// 留到 0x0102 鉴权通过后再顶替，避免伪造注册报文把在线终端踢下线。
+	bound, bindErr := runtime.Default().Conn.BindPhoneIfFree(ctx, device.Phone, session.ID)
+	if bindErr != nil {
+		log.Warn().Err(bindErr).Str("phone", device.Phone).Str("session", session.ID).Msg("Fail to bind phone on registration")
+	} else if !bound {
+		log.Info().Str("phone", device.Phone).Str("session", session.ID).Msg("Phone is already bound, deferring takeover until authentication")
+	}
+
 	timer := NewKeepaliveTimer()
 	timer.Register(device.Phone)
 	return nil
 }
 
 // 收到鉴权，应校验鉴权token
-func processMsg0102(_ context.Context, data *model.ProcessData) error {
+func processMsg0102(ctx context.Context, data *model.ProcessData) error {
 	in := data.Incoming.(*model.Msg0102)
 
-	ctx := context.Background()
 	devices := storage.Default().Devices
 	device, err := devices.GetByPhone(ctx, in.Header.PhoneNumber)
 	// 缓存不存在，说明设备不合法，需要返回错误，让服务层处理关闭
@@ -666,17 +652,37 @@ func processMsg0102(_ context.Context, data *model.ProcessData) error {
 	}
 
 	out := data.Outgoing.(*model.Msg8001)
+	session, _ := ctx.Value(model.SessionCtxKey{}).(*model.Session)
 	// 校验鉴权逻辑
 	if in.AuthCode != genAuthCode(device) {
 		out.Result = model.ResultFail
-		// 取消定时任务
+		// 手机号已被其它活会话占用：本次鉴权只可能来自冒名连接。
+		// 保留原连接与设备档案，只拒绝当前连接，避免伪造报文头把在线终端踢下线。
+		if session != nil {
+			if owner, ownerErr := runtime.Default().Conn.GetByPhone(ctx, in.Header.PhoneNumber); ownerErr == nil && owner.ID != session.ID {
+				log.Warn().Str("phone", in.Header.PhoneNumber).Str("session", session.ID).Str("owner", owner.ID).
+					Msg("Reject authentication from superseded session")
+				session.MarkCloseAfterResponse()
+				return nil
+			}
+		}
+		// 首次注册鉴权失败：维持既有语义，清理未完成注册的设备记录。
 		timer := NewKeepaliveTimer()
 		timer.Cancel(device.Phone)
-		// 删除设备缓存
 		_ = devices.DeleteByPhone(ctx, device.Phone)
 		runtime.Default().Heartbeat.Remove(ctx, device.Phone)
 	} else {
-		// 鉴权通过
+		// 鉴权通过。先完成绑定再写设备档案：若本连接已被并发顶替，
+		// 绑定会失败，此时不能用它覆盖新会话的设备状态。
+		if session != nil {
+			if bindErr := bindPhoneSession(ctx, in.Header.PhoneNumber, session); bindErr != nil {
+				log.Warn().Err(bindErr).Str("phone", in.Header.PhoneNumber).Str("session", session.ID).
+					Msg("Session was superseded during authentication, skip device update")
+				return nil
+			}
+			device.SessionID = session.ID
+			device.TransProto = session.GetTransProto()
+		}
 		device.Status = model.DeviceStatusOnline
 		device.LastestComTime = time.Now()
 		device.AuthCode = in.AuthCode
@@ -685,6 +691,31 @@ func processMsg0102(_ context.Context, data *model.ProcessData) error {
 		_ = devices.Upsert(ctx, device)
 	}
 
+	return nil
+}
+
+// bindPhoneSession 在鉴权成功后把手机号绑定到当前会话。
+// 若该手机号已有其它活会话，顶替它：关闭旧连接、清空旧会话的等待项，
+// 并清理该手机号的分包与重传缓存（缓存按手机号组织，无法区分会话，见设计文档）。
+func bindPhoneSession(ctx context.Context, phone string, session *model.Session) error {
+	stores := runtime.Default()
+	superseded, err := stores.Conn.BindPhone(ctx, phone, session.ID)
+	if err != nil {
+		log.Warn().Err(err).Str("phone", phone).Str("session", session.ID).Msg("Fail to bind phone after authentication")
+		return err
+	}
+	if superseded == nil || superseded.ID == session.ID {
+		return nil
+	}
+	log.Info().Str("phone", phone).Str("old_session", superseded.ID).Str("new_session", session.ID).
+		Msg("Superseding stale session for the same phone")
+	superseded.ClosePending()
+	if superseded.Conn != nil {
+		_ = superseded.Conn.Close()
+	}
+	stores.Conn.Unbind(ctx, superseded.ID)
+	stores.Fragment.DropPhone(ctx, phone)
+	stores.Retrans.DropPhone(ctx, phone)
 	return nil
 }
 
@@ -844,11 +875,32 @@ func recordLocationHistory(ctx context.Context, msgID uint16, locs []*model.Msg0
 	}
 }
 
+// acknowledgeResponse 只清算与该应答精确对应的待确认项：
+// 携带应答流水号的应答按流水号唯一匹配；0x0608/0x0702/0x8800 的协议体
+// 不含流水号，仅在同类等待项唯一时清算。所有不匹配的应答只记告警，不清除任何等待项。
+func acknowledgeResponse(session *model.Session, in model.JT808Msg) {
+	if in == nil || in.GetHeader() == nil {
+		return
+	}
+	header := in.GetHeader()
+	if serial, ok := model.AnswerSerial(in); ok {
+		if !session.AcknowledgeSerial(serial, header.PhoneNumber) {
+			log.Warn().Str("session", session.ID).Uint16("msg_id", header.MsgID).Uint16("answer_serial", serial).
+				Msg("Received response without matching pending message")
+		}
+		return
+	}
+	switch header.MsgID {
+	case 0x0608, 0x0702, 0x8800:
+		if !session.AcknowledgeTypedResponse(header.MsgID, header.PhoneNumber) {
+			log.Warn().Str("session", session.ID).Uint16("msg_id", header.MsgID).
+				Msg("Received response without a unique pending message")
+		}
+	}
+}
+
 func processMsg0001(ctx context.Context, data *model.ProcessData) error {
 	in := data.Incoming.(*model.Msg0001)
-	if session, ok := ctx.Value(model.SessionCtxKey{}).(*model.Session); ok && session != nil {
-		session.Acknowledge(in.AnswerMessageID, in.AnswerSerialNumber)
-	}
 	if in.AnswerMessageID == 0x8203 {
 		if _, err := storage.Default().Alarms.ConfirmByCommand(ctx, in.Header.PhoneNumber, in.AnswerSerialNumber); err != nil {
 			log.Error().Err(err).Str("phone", in.Header.PhoneNumber).Msg("confirm alarm by command")
@@ -859,9 +911,6 @@ func processMsg0001(ctx context.Context, data *model.ProcessData) error {
 
 func processMsg8001(ctx context.Context, data *model.ProcessData) error {
 	in := data.Incoming.(*model.Msg8001)
-	if session, ok := ctx.Value(model.SessionCtxKey{}).(*model.Session); ok && session != nil {
-		session.Acknowledge(in.AnswerMessageID, in.AnswerSerialNumber)
-	}
 	if in.AnswerMessageID != 0x0102 {
 		return nil
 	}

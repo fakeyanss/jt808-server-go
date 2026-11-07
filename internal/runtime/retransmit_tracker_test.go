@@ -22,6 +22,33 @@ func TestRetransmitTrackerReturnsRequestedFramesInOrderAsCopies(t *testing.T) {
 	require.Nil(t, tracker.Frames(ctx, phone, 88, []uint16{1}))
 }
 
+// 顶替会话时按手机号清理下行帧与多媒体关联，其它手机号不受影响。
+func TestRetransmitTrackerDropPhoneClearsOnlyTargetPhone(t *testing.T) {
+	tracker := newMemoryRetransmitTracker()
+	ctx := context.Background()
+	const dropped = "18800000021"
+	const kept = "18800000022"
+
+	tracker.CacheFrame(ctx, dropped, 7, 1, 1, []byte("D"))
+	tracker.CacheFrame(ctx, kept, 7, 1, 1, []byte("KK"))
+	tracker.LinkMedia(ctx, dropped, 0x1001, 7)
+	tracker.LinkMedia(ctx, kept, 0x1002, 7)
+	require.Equal(t, 3, tracker.bytes)
+
+	tracker.DropPhone(ctx, dropped)
+	require.Nil(t, tracker.Frames(ctx, dropped, 7, []uint16{1}))
+	require.Equal(t, []byte("KK"), tracker.Frames(ctx, kept, 7, []uint16{1})[0])
+	require.Equal(t, len("KK"), tracker.bytes)
+	_, ok := tracker.MediaSerial(ctx, dropped, 0x1001)
+	require.False(t, ok)
+	serial, ok := tracker.MediaSerial(ctx, kept, 0x1002)
+	require.True(t, ok)
+	require.Equal(t, uint16(7), serial)
+
+	tracker.DropPhone(ctx, "")
+	require.Equal(t, len("KK"), tracker.bytes)
+}
+
 // 重写超大分片被容量拒绝时，旧帧与字节计数必须保持不变，后续淘汰精确扣减。
 func TestCacheFrameRejectOversizeRewriteKeepsAccounting(t *testing.T) {
 	tracker := newMemoryRetransmitTracker()

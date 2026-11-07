@@ -21,10 +21,11 @@ func newTestDB(t *testing.T) *sql.DB {
 
 func TestExpectedVersionMatchesEmbeddedFiles(t *testing.T) {
 	// 开发阶段按批次追加版本；引导脚本不参与版本编号。
-	require.Len(t, migrations, 2)
+	require.Len(t, migrations, 3)
 	require.Equal(t, "20261101_init.sql", migrations[0].name)
 	require.Equal(t, "20261102_persistence_tables.sql", migrations[1].name)
-	require.Equal(t, 20261102, ExpectedVersion())
+	require.Equal(t, "20261105_drop_device_runtime.sql", migrations[2].name)
+	require.Equal(t, 20261105, ExpectedVersion())
 }
 
 // 同一库重复执行迁移只应用一次，版本记录不重复。
@@ -44,9 +45,9 @@ func TestApplyIsIdempotent(t *testing.T) {
 	require.NoError(t, db.QueryRowContext(ctx, `SELECT COUNT(*) FROM schema_migrations`).Scan(&rows))
 	require.Equal(t, len(migrations), rows)
 
-	// 迁移后业务表与车牌索引均存在。
+	// 迁移后业务表与车牌索引均存在；device_runtime 已在最后一个版本中删除。
 	for _, table := range []string{
-		"devices", "device_params", "terminal_properties", "device_runtime",
+		"devices", "device_params", "terminal_properties",
 		"terminal_catalogs", "region_items", "locations", "alarms",
 	} {
 		var name string
@@ -59,22 +60,23 @@ func TestApplyIsIdempotent(t *testing.T) {
 	require.Equal(t, "idx_devices_plate", index)
 }
 
-// 设备表已不含运行时列，运行时列集中在 device_runtime。
-func TestApplySplitsDeviceRuntimeColumns(t *testing.T) {
+// 最终 schema 不再包含 device_runtime；运行时状态由进程内注册表持有。
+func TestApplyDropsDeviceRuntime(t *testing.T) {
 	ctx := context.Background()
 	db := newTestDB(t)
 	_, err := Apply(ctx, db)
 	require.NoError(t, err)
 
+	var count int
+	require.NoError(t, db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'device_runtime'`).Scan(&count))
+	require.Zero(t, count)
+
+	// devices 仍只有静态列，运行时列不再落库。
 	for _, col := range []string{"session_id", "trans_proto", "last_com_time_ms", "status"} {
-		var count int
 		require.NoError(t, db.QueryRowContext(ctx,
 			`SELECT COUNT(*) FROM pragma_table_info('devices') WHERE name = ?`, col).Scan(&count))
 		require.Zero(t, count, "devices should not contain %s", col)
-
-		require.NoError(t, db.QueryRowContext(ctx,
-			`SELECT COUNT(*) FROM pragma_table_info('device_runtime') WHERE name = ?`, col).Scan(&count))
-		require.Equal(t, 1, count, "device_runtime should contain %s", col)
 	}
 }
 
@@ -110,28 +112,60 @@ func TestParseVersionUsesDatePrefix(t *testing.T) {
 	require.Error(t, err)
 }
 
-// 改名前已迁移的库（schema_migrations 中已有日期版本记录）在新代码下
-// 启动校验通过、重复迁移不重复应用：版本号语义未随文件名格式变化。
-func TestApplyCompatibleWithPreRenameDatabase(t *testing.T) {
+// 老库升级路径：已应用 20261101/20261102 的库再次执行迁移时只追加 20261105；
+// device_runtime 被删除，devices 中的静态档案保留。
+func TestApplyUpgradesLegacyDatabase(t *testing.T) {
 	ctx := context.Background()
 	db := newTestDB(t)
 
-	// 模拟改名前迁移过的库：引导表已建，两个日期版本均已记录。
 	for _, stmt := range bootstrapStatements {
 		_, err := db.ExecContext(ctx, stmt)
 		require.NoError(t, err)
 	}
-	for _, version := range []int{20261101, 20261102} {
+	for _, m := range migrations[:2] {
+		for _, stmt := range m.stmts {
+			_, err := db.ExecContext(ctx, stmt)
+			require.NoError(t, err)
+		}
 		_, err := db.ExecContext(ctx,
-			`INSERT INTO schema_migrations (version, applied_at) VALUES (?, 0)`, version)
+			`INSERT INTO schema_migrations (version, applied_at) VALUES (?, 0)`, m.version)
 		require.NoError(t, err)
 	}
 
+	// 旧 schema 下写入一份设备静态档案与一条运行时投影。
+	_, err := db.ExecContext(ctx,
+		`INSERT INTO devices (phone, id, plate, keepalive_ms, version_desc, protocol_version,
+			auth_code, imei, software_version, updated_at)
+		 VALUES ('13800000001', 'DEV-UPGRADE', '京A12345', 60000, 1, 1, 'AUTH', 'IMEI', 'SW', 1)`)
+	require.NoError(t, err)
+	_, err = db.ExecContext(ctx,
+		`INSERT INTO device_runtime (phone, session_id, trans_proto, last_com_time_ms, status, updated_at)
+		 VALUES ('13800000001', 'old-session', 'tcp', 100, 1, 1)`)
+	require.NoError(t, err)
+
 	current, err := CurrentVersion(ctx, db)
 	require.NoError(t, err)
-	require.Equal(t, ExpectedVersion(), current)
+	require.Equal(t, 20261102, current)
 
 	applied, err := Apply(ctx, db)
 	require.NoError(t, err)
-	require.Equal(t, 0, applied)
+	require.Equal(t, 1, applied)
+	require.Equal(t, ExpectedVersion(), mustCurrentVersion(t, ctx, db))
+
+	var count int
+	require.NoError(t, db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'device_runtime'`).Scan(&count))
+	require.Zero(t, count, "device_runtime should be dropped")
+
+	var plate string
+	require.NoError(t, db.QueryRowContext(ctx,
+		`SELECT plate FROM devices WHERE phone = '13800000001'`).Scan(&plate))
+	require.Equal(t, "京A12345", plate)
+}
+
+func mustCurrentVersion(t *testing.T, ctx context.Context, db *sql.DB) int {
+	t.Helper()
+	current, err := CurrentVersion(ctx, db)
+	require.NoError(t, err)
+	return current
 }

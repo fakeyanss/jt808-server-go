@@ -127,6 +127,10 @@ func serveSession(session *model.Session, hooks action.Hooks) {
 
 		err := pg.ProcessConnRead(ctx)
 
+		// 应答已发送：拒绝冒名连接（鉴权失败且手机号已有在线会话）后关闭本连接。
+		if session.ShouldCloseAfterResponse() {
+			return
+		}
 		if err == nil {
 			continue
 		}

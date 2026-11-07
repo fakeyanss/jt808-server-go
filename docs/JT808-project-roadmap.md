@@ -212,6 +212,17 @@
 
 #### P0.1 会话双索引（`手机号 → Session`）与同号顶替
 
+- **状态**：已实现（`dev/p0-correctness`）。注册表同时维护 `sessionID → Session` 与
+  `phone → sessionID`，断开时两索引一并清理；接受连接时只建会话索引，手机号在
+  0x0100 注册成功（手机号空闲）或 0x0102 鉴权成功后才绑定。同号已有活连接时不在
+  0x0100 顶替，等新连接 0x0102 用库内鉴权码校验通过后才关闭旧连接、切换绑定并清空
+  旧会话等待项与该手机号的分包/重传缓存；校验失败只拒绝新连接，保留旧连接与设备档案。
+  被顶替会话在与绑定同一把锁内从两套索引摘除，避免「已被顶替的会话再次绑定成功」与顶替者
+  互相关闭、形成无活会话的环；绑定失败（会话已被顶替）时不写设备档案。
+  TCP 与 UDP 走同一套逻辑（手机号索引不区分 transport，未采用"禁止跨 transport 顶替"的旧设想）。
+  未实现：`OnDisconnect` 的 `reason` 字段、`Session.Phone/VersionDesc` 可写字段；API 仍以
+  `device.SessionID` 定位会话，尚未切换为按手机号查询。
+
 - **目标**：任何时刻同一手机号最多一条"有效连接"；设备重连后旧连接立即关闭，
   `device_runtime` 不再被旧连接覆盖；业务侧可以只凭手机号定位会话。
 - **涉及模块**：`internal/runtime/connection_registry.go`（新增 `cacheByPhone`）、
@@ -239,6 +250,15 @@
 
 #### P0.2 下行应答关联精确化（`0x0001/0x8001` 按应答流水号配对）
 
+- **状态**：已实现（`dev/p0-correctness`）。`Session.AcknowledgeSerial(answerSerial, phone)`
+  在会话内按被应答流水号 + 手机号精确清算一条等待项，`Acknowledge(msgID, serial)` 保留为
+  按 `msgID<<16|serial` 精确删除的实现；0x0001/0x8001 以及 0x0104/0x0201/0x1205/0x0700/
+  0x0802/0x0805 等携带流水号的应答统一走精确匹配。0x0608/0x0702/0x8800 的协议体不含
+  流水号，改为「同类等待项唯一才清算，多条并存时不清并记 warn」的保守策略，未采用
+  「按 responseID 兜底」的旧设想（它正是误清多条等待项的来源）。不匹配、重复、错会话、
+  找不到等待项的应答只记 warn，不清除任何等待项。未实现：待确认数量指标与重试耗尽的
+  `msgID/serial/phone/attempt` 日志（已提供 `Session.PendingCount()` 供观测与断言）。
+
 - **目标**：下行命令的"待确认"只被它自己的应答清算，杜绝"一条应答清空多条待确认"。
 - **涉及模块**：`internal/protocol/model/session.go`（`AcknowledgeResponse` 改为接收
   `answerSerial`、`answerMsgID`、`phone`）、`internal/protocol/msg_processor.go:391-393`
@@ -260,6 +280,11 @@
 
 #### P0.3 0x0200 附加信息"类型注册表 + raw 兜底"
 
+- **状态**：已实现（`dev/p0-position-ext`）。按消息头协议版本位选域：2019 版本使用
+  `base2019`（粤标 30 字节终端ID 布局），2011/2013 使用 `subiao`（7 字节终端ID 布局）；
+  `0x64~0x67` 已结构化解析，未注册 ID 与长度不符项退化为 raw 兜底并保留原始字节；
+  `OnAlarm` 回调新增 `extItems`/`extRaw`。苏标文档未定义 `VehicleNo/VehicleType`，
+  车辆身份由报警标识号中的终端ID（`alarmIdNumber.deviceId`）承载。
 - **目标**：位置与报警事件里能拿到结构化的 ADAS/DSM/TP 报警字段，同时不认识的
   附加信息 ID 仍然保留原始字节，不丢包。
 - **涉及模块**：`internal/protocol/model/msg_0200.go`（新增

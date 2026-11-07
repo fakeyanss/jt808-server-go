@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 )
@@ -107,6 +108,28 @@ func (cache *memoryRetransmitTracker) CacheFrame(_ context.Context, phone string
 	state.bytes += len(frame)
 	cache.bytes += len(frame)
 	state.updatedAt = now
+}
+
+// DropPhone 清理该手机号的下行分片与多媒体重传缓存。
+// 旧会话被顶替后，其保留帧不再有意义；新会话重新发送的命令会建立新条目。
+func (cache *memoryRetransmitTracker) DropPhone(_ context.Context, phone string) {
+	if phone == "" {
+		return
+	}
+	prefix := phone + "/"
+	cache.mu.Lock()
+	defer cache.mu.Unlock()
+	for key, state := range cache.entries {
+		if strings.HasPrefix(key, prefix) {
+			cache.bytes -= state.bytes
+			delete(cache.entries, key)
+		}
+	}
+	for key := range cache.media {
+		if strings.HasPrefix(key, prefix) {
+			delete(cache.media, key)
+		}
+	}
 }
 
 func (cache *memoryRetransmitTracker) evictOldest(excludeKey string) {

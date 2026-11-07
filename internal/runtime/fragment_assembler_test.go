@@ -29,6 +29,28 @@ func TestFragmentAssemblerHandlesOutOfOrderAndDuplicateFragments(t *testing.T) {
 	require.False(t, assembler.CacheSegment(ctx, &model.Segment{Phone: "18800000001", MsgID: 0x0200, SegTotal: 2, SegNo: 3}, 10))
 }
 
+// 顶替会话时按手机号清理半包，其它手机号的缓存与字节计数不受影响。
+func TestFragmentAssemblerDropPhoneClearsOnlyTargetPhone(t *testing.T) {
+	assembler := newMemoryFragmentAssembler()
+	ctx := context.Background()
+	const dropped = "18800000011"
+	const kept = "18800000012"
+
+	droppedSeg := &model.Segment{Phone: dropped, MsgID: 0x0200, SegTotal: 2, SegNo: 1, Data: []byte("A")}
+	keptSeg := &model.Segment{Phone: kept, MsgID: 0x0200, SegTotal: 3, SegNo: 1, Data: []byte("B")}
+	require.False(t, assembler.CacheSegment(ctx, droppedSeg, 9))
+	require.False(t, assembler.CacheSegment(ctx, keptSeg, 9))
+	require.Equal(t, 2, assembler.cachedBytes)
+
+	assembler.DropPhone(ctx, dropped)
+	require.Empty(t, assembler.MissingIndexes(ctx, droppedSeg, 9))
+	require.Equal(t, []uint16{2, 3}, assembler.MissingIndexes(ctx, keptSeg, 9))
+	require.Equal(t, len("B"), assembler.cachedBytes)
+
+	assembler.DropPhone(ctx, "")
+	require.Equal(t, len("B"), assembler.cachedBytes)
+}
+
 func TestFirstFragmentSerialHandlesSerialWraparound(t *testing.T) {
 	require.Equal(t, uint16(65534), FirstFragmentSerial(1, 3))
 	require.Equal(t, uint16(65535), FirstFragmentSerial(1, 2))

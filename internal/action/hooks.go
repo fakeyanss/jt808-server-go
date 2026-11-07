@@ -55,6 +55,11 @@ type AlarmEvent struct {
 	Latitude  uint32 `json:"latitude"`
 	Longitude uint32 `json:"longitude"`
 	Time      string `json:"time"`
+	// ExtItems 是 0x0200 附加信息的结构化解析结果，元素类型由协议层定义，
+	// 每个元素通过 extType 字段区分 adas/dsm/tpms/bsd/raw。
+	ExtItems []any `json:"extItems,omitempty"`
+	// ExtRaw 汇总无法结构化解析的附加信息项原始字节（仅 raw 兜底项）。
+	ExtRaw []byte `json:"extRaw,omitempty"`
 }
 
 // DisconnectEvent 连接断开事件。

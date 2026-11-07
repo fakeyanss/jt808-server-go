@@ -15,11 +15,17 @@ import (
 // ErrSessionClosed 表示连接现场不存在，对应连接已关闭或尚未注册。
 var ErrSessionClosed = errors.New("session closed")
 
+// ErrPhoneNotBound 表示手机号尚未与任何活会话绑定（未注册或已断开）。
+var ErrPhoneNotBound = errors.New("phone not bound")
+
 const monitorSessionCntInterval = 10 * time.Second
 
 // memoryConnectionRegistry 是 ConnectionRegistry 的内存实现。
+// 两套索引在同一把锁内更新，保证“手机号 → 会话”始终指向唯一活会话。
 type memoryConnectionRegistry struct {
 	cacheByID map[string]*model.Session
+	phoneByID map[string]string // sessionID -> phone
+	phoneToID map[string]string // phone -> sessionID
 	mutex     *sync.Mutex
 }
 
@@ -31,6 +37,8 @@ func NewConnectionRegistry() ConnectionRegistry {
 func newMemoryConnectionRegistry() *memoryConnectionRegistry {
 	return &memoryConnectionRegistry{
 		cacheByID: make(map[string]*model.Session),
+		phoneByID: make(map[string]string),
+		phoneToID: make(map[string]string),
 		mutex:     &sync.Mutex{},
 	}
 }
@@ -61,7 +69,25 @@ func (cache *memoryConnectionRegistry) Get(_ context.Context, id string) (*model
 	return nil, ErrSessionClosed
 }
 
-// Bind 缓存 session。
+// GetByPhone 通过终端手机号获取当前活会话。未绑定或会话已失效时返回 ErrPhoneNotBound。
+func (cache *memoryConnectionRegistry) GetByPhone(_ context.Context, phone string) (*model.Session, error) {
+	cache.mutex.Lock()
+	defer cache.mutex.Unlock()
+	id, ok := cache.phoneToID[phone]
+	if !ok {
+		return nil, ErrPhoneNotBound
+	}
+	session, ok := cache.cacheByID[id]
+	if !ok {
+		// 悬空索引不应存在；兜底清理，避免 phone 永远指向已关闭会话。
+		delete(cache.phoneToID, phone)
+		delete(cache.phoneByID, id)
+		return nil, ErrPhoneNotBound
+	}
+	return session, nil
+}
+
+// Bind 缓存 session。此时尚未完成鉴权，不建立手机号索引。
 func (cache *memoryConnectionRegistry) Bind(_ context.Context, s *model.Session) error {
 	cache.mutex.Lock()
 	defer cache.mutex.Unlock()
@@ -69,11 +95,74 @@ func (cache *memoryConnectionRegistry) Bind(_ context.Context, s *model.Session)
 	return nil
 }
 
-// Unbind 清理 session。
+// BindPhone 建立手机号索引，并返回被顶替的旧会话。
+// 被顶替会话在锁内一并从两套索引摘除，避免它并发地再次绑定成功、
+// 形成“互相顶替”的环（每个会话都关闭对方，最终没有活会话）。
+// 调用方仍负责关闭旧连接、清空旧会话的等待项等残留清理。
+func (cache *memoryConnectionRegistry) BindPhone(_ context.Context, phone, sessionID string) (*model.Session, error) {
+	cache.mutex.Lock()
+	defer cache.mutex.Unlock()
+
+	if _, ok := cache.cacheByID[sessionID]; !ok {
+		return nil, ErrSessionClosed
+	}
+
+	// 同一会话改绑到新手机号时，先摘掉旧反向索引。
+	if previousPhone, ok := cache.phoneByID[sessionID]; ok && previousPhone != phone {
+		if mapped, ok := cache.phoneToID[previousPhone]; ok && mapped == sessionID {
+			delete(cache.phoneToID, previousPhone)
+		}
+	}
+
+	var superseded *model.Session
+	if previousID, ok := cache.phoneToID[phone]; ok && previousID != sessionID {
+		superseded = cache.cacheByID[previousID]
+		delete(cache.cacheByID, previousID)
+		delete(cache.phoneByID, previousID)
+	}
+
+	cache.phoneToID[phone] = sessionID
+	cache.phoneByID[sessionID] = phone
+	return superseded, nil
+}
+
+// BindPhoneIfFree 仅在手机号未被其它会话占用时建立绑定。
+// 返回 true 表示调用方现在是该手机号的拥有者；false 表示已有其它活会话占用。
+func (cache *memoryConnectionRegistry) BindPhoneIfFree(_ context.Context, phone, sessionID string) (bool, error) {
+	cache.mutex.Lock()
+	defer cache.mutex.Unlock()
+
+	if _, ok := cache.cacheByID[sessionID]; !ok {
+		return false, ErrSessionClosed
+	}
+	if previousID, ok := cache.phoneToID[phone]; ok && previousID != sessionID {
+		return false, nil
+	}
+
+	// 同一会话改绑到新手机号时，先摘掉旧反向索引。
+	if previousPhone, ok := cache.phoneByID[sessionID]; ok && previousPhone != phone {
+		if mapped, ok := cache.phoneToID[previousPhone]; ok && mapped == sessionID {
+			delete(cache.phoneToID, previousPhone)
+		}
+	}
+	cache.phoneToID[phone] = sessionID
+	cache.phoneByID[sessionID] = phone
+	return true, nil
+}
+
+// Unbind 清理 session 及对应的手机号索引。
+// 仅当 phone 索引仍指向该 session 时才删除，避免误删顶替者的索引。
 func (cache *memoryConnectionRegistry) Unbind(_ context.Context, id string) {
 	cache.mutex.Lock()
 	defer cache.mutex.Unlock()
+
 	delete(cache.cacheByID, id)
+	if phone, ok := cache.phoneByID[id]; ok {
+		delete(cache.phoneByID, id)
+		if mapped, ok := cache.phoneToID[phone]; ok && mapped == id {
+			delete(cache.phoneToID, phone)
+		}
+	}
 }
 
 // Count 统计 session 个数。

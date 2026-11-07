@@ -41,6 +41,8 @@ type Session struct {
 	pendingMu    sync.Mutex
 	pending      map[uint32]*pendingPacket
 	closed       bool
+	// closeAfterResponse 用于拒绝冒名连接：应答帧发送完成后由服务层关闭连接。
+	closeAfterResponse bool
 }
 
 const (
@@ -149,28 +151,65 @@ func (s *Session) TrackReliable(msgID, serial uint16, phone string, frame []byte
 	}()
 }
 
-func (s *Session) AcknowledgeResponse(msgID uint16, phone string) {
-	if msgID == 0x0001 || msgID == 0x8001 {
-		return
+// Acknowledge 按（消息 ID，流水号）精确清算一条待确认项，返回是否命中。
+// 重复应答、错会话应答或找不到等待项时返回 false，且不会清除任何等待项。
+func (s *Session) Acknowledge(msgID, serial uint16) bool {
+	key := uint32(msgID)<<16 | uint32(serial)
+	s.pendingMu.Lock()
+	defer s.pendingMu.Unlock()
+	pending := s.pending[key]
+	if pending == nil {
+		return false
 	}
+	delete(s.pending, key)
+	close(pending.done)
+	return true
+}
+
+// AcknowledgeSerial 按被应答的消息流水号精确清算。
+// 流水号在单个会话内唯一，无需再区分被应答的消息 ID；
+// 同时校验报文头手机号，避免同号多会话场景下错清其它会话的等待项。
+func (s *Session) AcknowledgeSerial(serial uint16, phone string) bool {
 	s.pendingMu.Lock()
 	defer s.pendingMu.Unlock()
 	for key, pending := range s.pending {
-		if pending.phone == phone && pending.responseID == msgID {
-			delete(s.pending, key)
-			close(pending.done)
+		if pending.phone != phone || uint16(key) != serial {
+			continue
 		}
-	}
-}
-
-func (s *Session) Acknowledge(msgID, serial uint16) {
-	key := uint32(msgID)<<16 | uint32(serial)
-	s.pendingMu.Lock()
-	if pending := s.pending[key]; pending != nil {
 		delete(s.pending, key)
 		close(pending.done)
+		return true
 	}
-	s.pendingMu.Unlock()
+	return false
+}
+
+// AcknowledgeTypedResponse 用于协议体不含应答流水号的应答（0x0608/0x0702/0x8800）。
+// 这类应答无法精确到单条，只有在同类等待项唯一时才清算，避免一条应答误清多条。
+func (s *Session) AcknowledgeTypedResponse(responseID uint16, phone string) bool {
+	s.pendingMu.Lock()
+	defer s.pendingMu.Unlock()
+	var matchedKey uint32
+	matched := 0
+	for key, pending := range s.pending {
+		if pending.phone == phone && pending.responseID == responseID {
+			matchedKey = key
+			matched++
+		}
+	}
+	if matched != 1 {
+		return false
+	}
+	pending := s.pending[matchedKey]
+	delete(s.pending, matchedKey)
+	close(pending.done)
+	return true
+}
+
+// PendingCount 返回当前等待应答的条目数，用于观测与测试。
+func (s *Session) PendingCount() int {
+	s.pendingMu.Lock()
+	defer s.pendingMu.Unlock()
+	return len(s.pending)
 }
 
 func (s *Session) CancelReliable(msgID, serial uint16) {
@@ -185,6 +224,20 @@ func (s *Session) ClosePending() {
 		close(pending.done)
 	}
 	s.pendingMu.Unlock()
+}
+
+// MarkCloseAfterResponse 标记本会话在发送完当前应答后关闭，用于拒绝冒名连接。
+func (s *Session) MarkCloseAfterResponse() {
+	s.pendingMu.Lock()
+	s.closeAfterResponse = true
+	s.pendingMu.Unlock()
+}
+
+// ShouldCloseAfterResponse 返回本会话是否已被标记为应答后关闭。
+func (s *Session) ShouldCloseAfterResponse() bool {
+	s.pendingMu.Lock()
+	defer s.pendingMu.Unlock()
+	return s.closeAfterResponse
 }
 
 func (s *Session) WriteFrame(frame []byte) error {

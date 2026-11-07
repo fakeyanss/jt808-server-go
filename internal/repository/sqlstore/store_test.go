@@ -72,16 +72,13 @@ func TestSQLitePersistsDeviceAndParamsAcrossReopen(t *testing.T) {
 	}
 	require.NoError(t, first.DeviceParamsRepository().Replace(ctx, params))
 
-	// 同一进程内读路径合并两表，运行时字段完整可见。
+	// SQL 仓储只持久化静态档案：同进程内读回的运行时字段即为零值。
 	inProcess, err := first.DeviceRepository().GetByPhone(ctx, device.Phone)
 	require.NoError(t, err)
-	require.Equal(t, device.SessionID, inProcess.SessionID)
-	require.Equal(t, device.TransProto, inProcess.TransProto)
-	require.Equal(t, device.LastestComTime, inProcess.LastestComTime)
-	require.Equal(t, device.Status, inProcess.Status)
+	require.Empty(t, inProcess.SessionID)
+	require.Equal(t, model.DeviceStatusOffline, inProcess.Status)
+	require.True(t, inProcess.LastestComTime.IsZero())
 
-	// 优雅停机路径：先清空运行时投影，再关闭连接。
-	require.NoError(t, first.ResetRuntime(ctx))
 	require.NoError(t, first.Close())
 
 	second, err := Open(Config{Backend: BackendSQLite, Path: dbPath})
@@ -92,12 +89,12 @@ func TestSQLitePersistsDeviceAndParamsAcrossReopen(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, device.ID, got.ID)
 	require.Equal(t, device.Plate, got.Plate)
-	// 重启后 session_id 清空、status 归 offline；trans_proto 与 last_com_time 保留。
+	// 重启（或任意进程）读到的运行时字段恒为零值：status 离线、session 为空、last_com_time 为 0。
 	require.Empty(t, got.SessionID)
-	require.Equal(t, device.TransProto, got.TransProto)
+	require.Empty(t, got.TransProto)
 	require.Equal(t, model.DeviceStatusOffline, got.Status)
+	require.True(t, got.LastestComTime.IsZero())
 	require.Equal(t, device.Keepalive, got.Keepalive)
-	require.Equal(t, device.LastestComTime, got.LastestComTime)
 	require.Equal(t, device.VersionDesc, got.VersionDesc)
 	require.Equal(t, device.ProtocolVersion, got.ProtocolVersion)
 	require.Equal(t, device.AuthCode, got.AuthCode)
@@ -113,24 +110,25 @@ func TestSQLitePersistsDeviceAndParamsAcrossReopen(t *testing.T) {
 	require.Equal(t, "ABCDEFGH", gotParams.Params[1].ParamValue)
 }
 
-// ResetRuntime 清空 session 与 status，静态字段与最后在线时间保留。
-func TestSQLiteResetRuntimeClearsProjection(t *testing.T) {
+// 设备结构体上的运行时字段不落库：写入后立即读回即为零值，静态字段不受影响。
+func TestSQLiteIgnoresRuntimeFieldsOnWrite(t *testing.T) {
 	ctx := context.Background()
 	store := openTestSQLite(t)
 
 	device := sampleDevice("188765400006")
 	require.NoError(t, store.DeviceRepository().Upsert(ctx, device))
-	require.NoError(t, store.ResetRuntime(ctx))
 
 	got, err := store.DeviceRepository().GetByPhone(ctx, device.Phone)
 	require.NoError(t, err)
 	require.Empty(t, got.SessionID)
+	require.Empty(t, got.TransProto)
 	require.Equal(t, model.DeviceStatusOffline, got.Status)
+	require.True(t, got.LastestComTime.IsZero())
 	require.Equal(t, device.Plate, got.Plate)
-	require.Equal(t, device.LastestComTime, got.LastestComTime)
+	require.Equal(t, device.ID, got.ID)
 }
 
-// 崩溃重启后残留的 online/session 不整体重置；读取时按 keepalive TTL 收敛为离线。
+// 存量运行时字段不参与读路径：即使调用方构造了在线态，读回也是离线零值。
 func TestSQLiteRuntimeTTLNormalizesStaleRead(t *testing.T) {
 	ctx := context.Background()
 	store := openTestSQLite(t)
@@ -144,9 +142,8 @@ func TestSQLiteRuntimeTTLNormalizesStaleRead(t *testing.T) {
 	require.NoError(t, err)
 	require.Empty(t, got.SessionID)
 	require.Equal(t, model.DeviceStatusOffline, got.Status)
-	// 时间字段保留，仅作"上次在线时间"展示。
-	require.Equal(t, device.LastestComTime, got.LastestComTime)
-	require.Equal(t, device.TransProto, got.TransProto)
+	require.True(t, got.LastestComTime.IsZero())
+	require.Empty(t, got.TransProto)
 }
 
 // 属性档案：写入后内存可见；关闭再打开同一文件仍可读回；删除后返回既有错误值。
@@ -365,8 +362,8 @@ func TestMySQLPersistence(t *testing.T) {
 	require.NoError(t, store.DeviceRepository().Upsert(ctx, device))
 	got, err := store.DeviceRepository().GetByPhone(ctx, device.Phone)
 	require.NoError(t, err)
-	require.Equal(t, device.SessionID, got.SessionID)
-	require.Equal(t, device.LastestComTime, got.LastestComTime)
+	require.Empty(t, got.SessionID)
+	require.True(t, got.LastestComTime.IsZero())
 
 	params := &model.DeviceParams{DevicePhone: device.Phone, ParamCnt: 1, Params: []*model.ParamData{
 		{ParamID: 0x0010, ParamLen: 4, ParamValue: "WXYZ"},
@@ -376,8 +373,7 @@ func TestMySQLPersistence(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "WXYZ", gotParams.Params[0].ParamValue)
 
-	// 优雅停机路径：清空运行时投影后关闭，重开时 session/status 已归零。
-	require.NoError(t, store.ResetRuntime(ctx))
+	// 关闭后重开：运行时字段仍为零值，静态档案保留。
 	require.NoError(t, store.Close())
 	reopened, err := Open(Config{Backend: BackendMySQL, DSN: dsn})
 	require.NoError(t, err)
@@ -387,5 +383,5 @@ func TestMySQLPersistence(t *testing.T) {
 	require.Equal(t, device.Phone, got.Phone)
 	require.Empty(t, got.SessionID)
 	require.Equal(t, model.DeviceStatusOffline, got.Status)
-	require.Equal(t, device.LastestComTime, got.LastestComTime)
+	require.True(t, got.LastestComTime.IsZero())
 }

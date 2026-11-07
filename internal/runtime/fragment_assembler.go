@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -123,6 +124,24 @@ func (cache *memoryFragmentAssembler) MissingIndexes(_ context.Context, seg *mod
 		}
 	}
 	return missing
+}
+
+// DropPhone 清理该手机号的全部上行分包缓存。
+// 缓存 key 为 "phone/msgID/serial"，这里按手机号前缀删除，避免旧会话的半包
+// 被新会话继续复用。
+func (cache *memoryFragmentAssembler) DropPhone(_ context.Context, phone string) {
+	if phone == "" {
+		return
+	}
+	prefix := phone + "/"
+	cache.mutex.Lock()
+	defer cache.mutex.Unlock()
+	for key, state := range cache.cacheByKey {
+		if strings.HasPrefix(key, prefix) {
+			cache.cachedBytes -= state.bytes
+			delete(cache.cacheByKey, key)
+		}
+	}
 }
 
 func (cache *memoryFragmentAssembler) evictOldest(excludeKey string) bool {
