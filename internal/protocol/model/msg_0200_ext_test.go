@@ -1,0 +1,257 @@
+package model
+
+import (
+	"testing"
+
+	"github.com/fakeyanss/jt808-server-go/internal/codec/hex"
+	"github.com/stretchr/testify/require"
+)
+
+const (
+	testSubiaoDeviceID   = "ABC1234"
+	testBase2019DeviceID = "123456789012345678901234567890"
+)
+
+func buildTestAlarmIDNumber(deviceID string, domain ExtDomain) []byte {
+	data := hex.WriteString(nil, deviceID)
+	data = hex.WriteBCD(data, "210101120000")
+	data = hex.WriteByte(data, 5)
+	data = hex.WriteByte(data, 2)
+	for i := 0; i < reservedLength(domain); i++ {
+		data = hex.WriteByte(data, uint8(0xA0+i))
+	}
+	return data
+}
+
+func buildTestADAS(domain ExtDomain) []byte {
+	data := hex.WriteDoubleWord(nil, 0x01020304)
+	data = hex.WriteByte(data, 0x01)
+	data = hex.WriteByte(data, 0x01)
+	data = hex.WriteByte(data, 0x01)
+	data = hex.WriteByte(data, 60)
+	data = hex.WriteByte(data, 20)
+	data = hex.WriteByte(data, 0x01)
+	data = hex.WriteByte(data, 0x01)
+	data = hex.WriteByte(data, 80)
+	data = hex.WriteByte(data, 70)
+	data = hex.WriteWord(data, 100)
+	data = hex.WriteDoubleWord(data, 0x07D5A8C0)
+	data = hex.WriteDoubleWord(data, 0x0E5A9FA0)
+	data = hex.WriteBCD(data, "201231235959")
+	data = hex.WriteWord(data, 0x0003)
+	return append(data, buildTestAlarmIDNumber(testDeviceID(domain), domain)...)
+}
+
+func buildTestDSM(domain ExtDomain) []byte {
+	data := hex.WriteDoubleWord(nil, 0x11223344)
+	data = hex.WriteByte(data, 0x02)
+	data = hex.WriteByte(data, 0x02)
+	data = hex.WriteByte(data, 0x02)
+	data = hex.WriteByte(data, 5)
+	data = hex.WriteBytes(data, []byte{0x11, 0x22, 0x33, 0x44})
+	data = hex.WriteByte(data, 66)
+	data = hex.WriteWord(data, 200)
+	data = hex.WriteDoubleWord(data, 0x07D5A8C1)
+	data = hex.WriteDoubleWord(data, 0x0E5A9FA1)
+	data = hex.WriteBCD(data, "210101120000")
+	data = hex.WriteWord(data, 0x0011)
+	return append(data, buildTestAlarmIDNumber(testDeviceID(domain), domain)...)
+}
+
+func buildTestTPMS(domain ExtDomain) []byte {
+	data := hex.WriteDoubleWord(nil, 0x55667788)
+	data = hex.WriteByte(data, 0x01)
+	data = hex.WriteByte(data, 55)
+	data = hex.WriteWord(data, 150)
+	data = hex.WriteDoubleWord(data, 0x07D5A8C2)
+	data = hex.WriteDoubleWord(data, 0x0E5A9FA2)
+	data = hex.WriteBCD(data, "220202030405")
+	data = hex.WriteWord(data, 0x0022)
+	data = append(data, buildTestAlarmIDNumber(testDeviceID(domain), domain)...)
+	data = hex.WriteByte(data, 2)
+	for i := 0; i < 2; i++ {
+		data = hex.WriteWord(data, uint16(i))
+		data = hex.WriteWord(data, 1)
+		data = hex.WriteWord(data, uint16(230+i))
+		data = hex.WriteWord(data, uint16(35+i))
+		data = hex.WriteWord(data, uint16(80+i))
+	}
+	return data
+}
+
+func buildTestBSD(domain ExtDomain) []byte {
+	data := hex.WriteDoubleWord(nil, 0x99AABBCC)
+	data = hex.WriteByte(data, 0x02)
+	data = hex.WriteByte(data, 0x02)
+	data = hex.WriteByte(data, 45)
+	data = hex.WriteWord(data, 300)
+	data = hex.WriteDoubleWord(data, 0x07D5A8C3)
+	data = hex.WriteDoubleWord(data, 0x0E5A9FA3)
+	data = hex.WriteBCD(data, "230303040506")
+	data = hex.WriteWord(data, 0x0033)
+	return append(data, buildTestAlarmIDNumber(testDeviceID(domain), domain)...)
+}
+
+func testDeviceID(domain ExtDomain) string {
+	if domain == ExtDomainBase2019 {
+		return testBase2019DeviceID
+	}
+	return testSubiaoDeviceID
+}
+
+func buildTestExtItems(domain ExtDomain) []LocationExtItem {
+	return []LocationExtItem{
+		{ID: 0x64, Length: uint16(len(buildTestADAS(domain))), Data: buildTestADAS(domain)},
+		{ID: 0x65, Length: uint16(len(buildTestDSM(domain))), Data: buildTestDSM(domain)},
+		{ID: 0x66, Length: uint16(len(buildTestTPMS(domain))), Data: buildTestTPMS(domain)},
+		{ID: 0x67, Length: uint16(len(buildTestBSD(domain))), Data: buildTestBSD(domain)},
+		{ID: 0xE0, Length: 3, Data: []byte{0xDE, 0xAD, 0xBE}},
+	}
+}
+
+func msg0200WithDomain(domain ExtDomain, items []LocationExtItem) *Msg0200 {
+	version := Version2013
+	if domain == ExtDomainBase2019 {
+		version = Version2019
+	}
+	return &Msg0200{
+		Header:   &MsgHeader{Attr: &MsgBodyAttr{VersionDesc: version}},
+		ExtItems: items,
+	}
+}
+
+func TestParseExtItemsSubiaoFields(t *testing.T) {
+	msg := msg0200WithDomain(ExtDomainSubiao, buildTestExtItems(ExtDomainSubiao))
+	parsed := msg.ParseExtItems()
+	require.Len(t, parsed, 5)
+
+	adas, ok := parsed[0].(ExtAlarmADAS)
+	require.True(t, ok)
+	require.Equal(t, uint8(0x64), adas.ExtID)
+	require.Equal(t, ExtTypeADAS, adas.ExtType)
+	require.Equal(t, ExtDomainSubiao, adas.ExtDomain)
+	require.Equal(t, uint32(0x01020304), adas.AlarmID)
+	require.Equal(t, uint8(0x01), adas.FlagState)
+	require.Equal(t, uint8(0x01), adas.AlarmOrEventType)
+	require.Equal(t, uint8(0x01), adas.AlarmLevel)
+	require.Equal(t, uint8(60), adas.FrontVehicleSpeed)
+	require.Equal(t, uint8(20), adas.FrontVehicleDistance)
+	require.Equal(t, uint8(0x01), adas.DeviationType)
+	require.Equal(t, uint8(0x01), adas.RoadSignType)
+	require.Equal(t, uint8(80), adas.RoadSignData)
+	require.Equal(t, uint8(70), adas.Speed)
+	require.Equal(t, uint16(100), adas.Altitude)
+	require.Equal(t, uint32(0x07D5A8C0), adas.Latitude)
+	require.Equal(t, uint32(0x0E5A9FA0), adas.Longitude)
+	require.Equal(t, "201231235959", adas.DateTime)
+	require.Equal(t, uint16(0x0003), adas.VehicleState)
+	require.Equal(t, testSubiaoDeviceID, adas.AlarmIDNumber.DeviceID)
+	require.Equal(t, "210101120000", adas.AlarmIDNumber.Time)
+	require.Equal(t, uint8(5), adas.AlarmIDNumber.Sequence)
+	require.Equal(t, uint8(2), adas.AlarmIDNumber.AttachmentCount)
+	require.Equal(t, []byte{0xA0}, adas.AlarmIDNumber.Reserved)
+
+	dsm, ok := parsed[1].(ExtAlarmDSM)
+	require.True(t, ok)
+	require.Equal(t, ExtTypeDSM, dsm.ExtType)
+	require.Equal(t, uint32(0x11223344), dsm.AlarmID)
+	require.Equal(t, uint8(0x02), dsm.AlarmOrEventType)
+	require.Equal(t, uint8(5), dsm.FatigueDegree)
+	require.Equal(t, []byte{0x11, 0x22, 0x33, 0x44}, dsm.Reserved)
+	require.Equal(t, uint8(66), dsm.Speed)
+	require.Equal(t, uint16(200), dsm.Altitude)
+	require.Equal(t, "210101120000", dsm.DateTime)
+
+	tpms, ok := parsed[2].(ExtAlarmTPMS)
+	require.True(t, ok)
+	require.Equal(t, ExtTypeTPMS, tpms.ExtType)
+	require.Equal(t, uint32(0x55667788), tpms.AlarmID)
+	require.Equal(t, uint16(0x0022), tpms.VehicleState)
+	require.Len(t, tpms.Items, 2)
+	require.Equal(t, ExtTPMSItem{
+		Position: 0, AlarmOrEventType: 1, Pressure: 230, Temperature: 35, BatteryLevel: 80,
+	}, tpms.Items[0])
+	require.Equal(t, ExtTPMSItem{
+		Position: 1, AlarmOrEventType: 1, Pressure: 231, Temperature: 36, BatteryLevel: 81,
+	}, tpms.Items[1])
+
+	bsd, ok := parsed[3].(ExtAlarmBSD)
+	require.True(t, ok)
+	require.Equal(t, ExtTypeBSD, bsd.ExtType)
+	require.Equal(t, uint32(0x99AABBCC), bsd.AlarmID)
+	require.Equal(t, uint8(45), bsd.Speed)
+	require.Equal(t, uint16(300), bsd.Altitude)
+	require.Equal(t, "230303040506", bsd.DateTime)
+
+	raw, ok := parsed[4].(ExtRawItem)
+	require.True(t, ok)
+	require.Equal(t, uint8(0xE0), raw.ExtID)
+	require.Equal(t, ExtTypeRaw, raw.ExtType)
+	require.Equal(t, ExtDomainSubiao, raw.ExtDomain)
+	require.Equal(t, uint16(3), raw.Length)
+	require.Equal(t, []byte{0xDE, 0xAD, 0xBE}, raw.Raw)
+	require.Equal(t, []byte{0xDE, 0xAD, 0xBE}, ExtRawBytes(parsed))
+}
+
+func TestParseExtItemsBase2019Fields(t *testing.T) {
+	msg := msg0200WithDomain(ExtDomainBase2019, buildTestExtItems(ExtDomainBase2019))
+	parsed := msg.ParseExtItems()
+	require.Len(t, parsed, 5)
+
+	adas, ok := parsed[0].(ExtAlarmADAS)
+	require.True(t, ok)
+	require.Equal(t, ExtDomainBase2019, adas.ExtDomain)
+	require.Equal(t, testBase2019DeviceID, adas.AlarmIDNumber.DeviceID)
+	require.Equal(t, []byte{0xA0, 0xA1}, adas.AlarmIDNumber.Reserved)
+
+	tpms, ok := parsed[2].(ExtAlarmTPMS)
+	require.True(t, ok)
+	require.Equal(t, testBase2019DeviceID, tpms.AlarmIDNumber.DeviceID)
+	require.Len(t, tpms.Items, 2)
+}
+
+func TestParseExtItemsDoesNotCrossDomains(t *testing.T) {
+	subiaoData := buildTestADAS(ExtDomainSubiao)
+	base2019Data := buildTestADAS(ExtDomainBase2019)
+
+	underSubiao := msg0200WithDomain(ExtDomainSubiao, []LocationExtItem{
+		{ID: 0x64, Length: uint16(len(subiaoData)), Data: subiaoData},
+	}).ParseExtItems()
+	require.IsType(t, ExtAlarmADAS{}, underSubiao[0])
+
+	// 苏标数据用 base2019 域解析时长度不符，必须整体退化为 raw，而不是截断字段。
+	crossParsed := msg0200WithDomain(ExtDomainBase2019, []LocationExtItem{
+		{ID: 0x64, Length: uint16(len(subiaoData)), Data: subiaoData},
+	}).ParseExtItems()
+	require.IsType(t, ExtRawItem{}, crossParsed[0])
+
+	// 反向同理：base2019 数据不能按苏标 16 字节报警标识号截断解析。
+	reverseParsed := msg0200WithDomain(ExtDomainSubiao, []LocationExtItem{
+		{ID: 0x64, Length: uint16(len(base2019Data)), Data: base2019Data},
+	}).ParseExtItems()
+	require.IsType(t, ExtRawItem{}, reverseParsed[0])
+
+	base2019Parsed := msg0200WithDomain(ExtDomainBase2019, []LocationExtItem{
+		{ID: 0x64, Length: uint16(len(base2019Data)), Data: base2019Data},
+	}).ParseExtItems()
+	base2019ADAS, ok := base2019Parsed[0].(ExtAlarmADAS)
+	require.True(t, ok)
+	require.Equal(t, testBase2019DeviceID, base2019ADAS.AlarmIDNumber.DeviceID)
+	require.NotEqual(t, underSubiao[0].(ExtAlarmADAS).AlarmIDNumber.DeviceID, base2019ADAS.AlarmIDNumber.DeviceID)
+}
+
+func TestParseExtItemsUnknownIDNeverFails(t *testing.T) {
+	parsed := ParseExtItems([]LocationExtItem{
+		{ID: 0xE0, Length: 1, Data: []byte{0x01}},
+	}, ExtDomainSubiao)
+	require.Len(t, parsed, 1)
+	raw, ok := parsed[0].(ExtRawItem)
+	require.True(t, ok)
+	require.Equal(t, []byte{0x01}, raw.Raw)
+}
+
+func TestParseExtItemsNilHeaderDefaultsToSubiao(t *testing.T) {
+	data := buildTestADAS(ExtDomainSubiao)
+	msg := &Msg0200{ExtItems: []LocationExtItem{{ID: 0x64, Length: uint16(len(data)), Data: data}}}
+	require.IsType(t, ExtAlarmADAS{}, msg.ParseExtItems()[0])
+}
