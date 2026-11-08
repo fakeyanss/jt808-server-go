@@ -41,6 +41,8 @@ type IndustryRepository interface {
 	Capture(phone string) *model.Msg0805
 	MediaSearch(phone string) *model.Msg0802
 	MediaResourceList(phone string) *model.Msg1205
+	MediaStatus(phone string) *model.Msg9105
+	FileUploadNotice(phone string) *model.Msg1206
 	SetRecording(phone string, active bool)
 	IsRecording(phone string) bool
 }
@@ -56,6 +58,8 @@ type memoryIndustryRepository struct {
 	captures        map[string]*model.Msg0805
 	mediaSearches   map[string]*model.Msg0802
 	mediaResources  map[string]*model.Msg1205
+	mediaStatuses   map[string]*model.Msg9105
+	uploadNotices   map[string]*model.Msg1206
 	events          map[string]map[uint8]model.EventItem
 	eventReports    map[string]*model.Msg0301
 	questions       map[string]*model.Msg8302
@@ -80,7 +84,7 @@ type memoryIndustryRepository struct {
 func NewIndustryRepository() IndustryRepository { return newMemoryIndustryRepository() }
 
 func newMemoryIndustryRepository() *memoryIndustryRepository {
-	return &memoryIndustryRepository{drivers: map[string]*model.Msg0702{}, cans: map[string]*model.Msg0705{}, records: map[string]*model.Msg0700{}, mediaEvents: map[string]*model.Msg0800{}, mediaUploads: map[string][]*model.Msg0801{}, captures: map[string]*model.Msg0805{}, mediaSearches: map[string]*model.Msg0802{}, mediaResources: map[string]*model.Msg1205{}, events: map[string]map[uint8]model.EventItem{}, eventReports: map[string]*model.Msg0301{}, questions: map[string]*model.Msg8302{}, questionResps: map[string]*model.Msg0302{}, infoMenus: map[string]map[uint32]model.InfoMenuItem{}, menuActions: map[string]*model.Msg0303{}, infoServices: map[string]*model.Msg8304{}, callbacks: map[string]*model.Msg8400{}, phonebook: map[string]map[string]model.PhonebookContact{}, upgrades: map[string]*model.Msg8108{}, upgradeResults: map[string]*model.Msg0108{}, transparentDown: map[string]*model.Msg8900{}, transparentUp: map[string]*model.Msg0900{}, compressed: map[string]*model.Msg0901{}, vehicleControl: map[string]uint16{}, waybills: map[string]*model.Msg0701{}, batchLocs: map[string]*model.Msg0704{}, recording: map[string]bool{}}
+	return &memoryIndustryRepository{drivers: map[string]*model.Msg0702{}, cans: map[string]*model.Msg0705{}, records: map[string]*model.Msg0700{}, mediaEvents: map[string]*model.Msg0800{}, mediaUploads: map[string][]*model.Msg0801{}, captures: map[string]*model.Msg0805{}, mediaSearches: map[string]*model.Msg0802{}, mediaResources: map[string]*model.Msg1205{}, mediaStatuses: map[string]*model.Msg9105{}, uploadNotices: map[string]*model.Msg1206{}, events: map[string]map[uint8]model.EventItem{}, eventReports: map[string]*model.Msg0301{}, questions: map[string]*model.Msg8302{}, questionResps: map[string]*model.Msg0302{}, infoMenus: map[string]map[uint32]model.InfoMenuItem{}, menuActions: map[string]*model.Msg0303{}, infoServices: map[string]*model.Msg8304{}, callbacks: map[string]*model.Msg8400{}, phonebook: map[string]map[string]model.PhonebookContact{}, upgrades: map[string]*model.Msg8108{}, upgradeResults: map[string]*model.Msg0108{}, transparentDown: map[string]*model.Msg8900{}, transparentUp: map[string]*model.Msg0900{}, compressed: map[string]*model.Msg0901{}, vehicleControl: map[string]uint16{}, waybills: map[string]*model.Msg0701{}, batchLocs: map[string]*model.Msg0704{}, recording: map[string]bool{}}
 }
 
 func (c *memoryIndustryRepository) Record(msg model.JT808Msg) {
@@ -129,6 +133,12 @@ func (c *memoryIndustryRepository) Record(msg model.JT808Msg) {
 		copy := *m
 		copy.Items = append([]model.DeviceMedia(nil), m.Items...)
 		c.mediaResources[phone] = &copy
+	case *model.Msg9105:
+		copy := *m
+		c.mediaStatuses[phone] = &copy
+	case *model.Msg1206:
+		copy := *m
+		c.uploadNotices[phone] = &copy
 	case *model.Msg0301:
 		copy := *m
 		c.eventReports[phone] = &copy
@@ -595,6 +605,30 @@ func (c *memoryIndustryRepository) MediaResourceList(phone string) *model.Msg120
 	}
 	copy := *m
 	copy.Items = append([]model.DeviceMedia(nil), m.Items...)
+	return &copy
+}
+
+// MediaStatus returns the latest 0x9105 real-time transmission status for a device.
+func (c *memoryIndustryRepository) MediaStatus(phone string) *model.Msg9105 {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	m := c.mediaStatuses[phone]
+	if m == nil {
+		return nil
+	}
+	copy := *m
+	return &copy
+}
+
+// FileUploadNotice returns the latest 0x1206 file-upload completion notice for a device.
+func (c *memoryIndustryRepository) FileUploadNotice(phone string) *model.Msg1206 {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	m := c.uploadNotices[phone]
+	if m == nil {
+		return nil
+	}
+	copy := *m
 	return &copy
 }
 
