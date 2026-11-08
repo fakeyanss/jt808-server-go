@@ -350,6 +350,43 @@ func initProcessOption() processOptions {
 		},
 		process: processMsg9205,
 	}
+	options[0x9101] = &action{ // 实时音视频传输请求，接收方（终端）按协议回通用应答
+		genData: func() *model.ProcessData {
+			return &model.ProcessData{Incoming: &model.Msg9101{}, Outgoing: &model.Msg0001{}}
+		},
+	}
+	options[0x9102] = &action{ // 音视频实时传输控制
+		genData: func() *model.ProcessData {
+			return &model.ProcessData{Incoming: &model.Msg9102{}, Outgoing: &model.Msg0001{}}
+		},
+	}
+	options[0x9105] = &action{ // 实时音视频传输状态通知，终端上行，无需应答
+		genData: func() *model.ProcessData {
+			return &model.ProcessData{Incoming: &model.Msg9105{}}
+		},
+		process: processMediaSignaling,
+	}
+	options[0x9201] = &action{ // 平台下发远程录像回放请求
+		genData: func() *model.ProcessData {
+			return &model.ProcessData{Incoming: &model.Msg9201{}, Outgoing: &model.Msg0001{}}
+		},
+	}
+	options[0x9202] = &action{ // 平台下发远程录像回放控制
+		genData: func() *model.ProcessData {
+			return &model.ProcessData{Incoming: &model.Msg9202{}, Outgoing: &model.Msg0001{}}
+		},
+	}
+	options[0x9206] = &action{ // 文件上传指令
+		genData: func() *model.ProcessData {
+			return &model.ProcessData{Incoming: &model.Msg9206{}, Outgoing: &model.Msg0001{}}
+		},
+	}
+	options[0x1206] = &action{ // 文件上传完成通知，终端上行，无需应答
+		genData: func() *model.ProcessData {
+			return &model.ProcessData{Incoming: &model.Msg1206{}}
+		},
+		process: processMediaSignaling,
+	}
 
 	return options
 }
@@ -1228,6 +1265,13 @@ func mediaTimeInRange(t string, start, end *time.Time) bool {
 }
 
 func processIndustryReport(_ context.Context, data *model.ProcessData) error {
+	storage.Default().Industry.Record(data.Incoming)
+	return nil
+}
+
+// processMediaSignaling 记录终端上行的 1078 音视频信令状态，
+// 供 API 查询与后续媒体接入使用。
+func processMediaSignaling(_ context.Context, data *model.ProcessData) error {
 	storage.Default().Industry.Record(data.Incoming)
 	return nil
 }

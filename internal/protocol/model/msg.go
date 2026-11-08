@@ -39,6 +39,8 @@ func AnswerSerial(msg JT808Msg) (uint16, bool) {
 		return m.AnswerSerialNumber, true
 	case *Msg1205:
 		return m.AnswerSerialNumber, true
+	case *Msg1206:
+		return m.AnswerSerialNumber, true
 	case *Msg0700:
 		return m.AnswerSerial, true
 	case *Msg0802:
