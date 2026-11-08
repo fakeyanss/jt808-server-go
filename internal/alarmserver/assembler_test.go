@@ -131,7 +131,7 @@ func TestAssemblerDuplicateChunkNotCountedTwice(t *testing.T) {
 	state := assembler.lookup(phone, fileName)
 	require.NotNil(t, state)
 	state.mu.Lock()
-	require.Equal(t, 1, state.received)
+	require.Equal(t, int64(DefaultBlockSize), state.covered)
 	state.mu.Unlock()
 
 	result, err := assembler.CompleteCheck(phone, fileName)
@@ -324,4 +324,130 @@ func TestAssemblerRejectsOversizeAndTraversal(t *testing.T) {
 	require.ErrorIs(t, err, ErrFileTooLarge)
 
 	require.True(t, bytes.Equal(FrameMagic[:], []byte{'0', '1', 'c', 'd'}))
+}
+
+// 非 64KB 对齐、比块更小的碎片帧应立即计入覆盖区间。
+func TestAssemblerFragmentRangesCoverImmediately(t *testing.T) {
+	assembler, _ := newTestAssembler(t)
+	phone := "013800000009"
+	fileName := "fragment.jpg"
+	size := 10000
+	registerTestFile(t, assembler, phone, fileName, size)
+
+	require.NoError(t, assembler.WriteChunk(phone, fileName, 0, make([]byte, 300)))
+	require.NoError(t, assembler.WriteChunk(phone, fileName, 8000, make([]byte, 200)))
+	require.NoError(t, assembler.WriteChunk(phone, fileName, 300, make([]byte, 200)))
+
+	result, err := assembler.CompleteCheck(phone, fileName)
+	require.NoError(t, err)
+	require.False(t, result.Complete)
+	require.Equal(t, []MissingRange{
+		{Offset: 500, Length: 7500},
+		{Offset: 8200, Length: 1800},
+	}, result.Missing)
+
+	// 重叠区间与重复区间只扩展并集，不重复计数。
+	require.NoError(t, assembler.WriteChunk(phone, fileName, 400, make([]byte, 500)))
+	state := assembler.lookup(phone, fileName)
+	require.NotNil(t, state)
+	state.mu.Lock()
+	require.Equal(t, int64(900+200), state.covered)
+	require.Len(t, state.ranges, 2)
+	state.mu.Unlock()
+
+	result, err = assembler.CompleteCheck(phone, fileName)
+	require.NoError(t, err)
+	require.Equal(t, []MissingRange{
+		{Offset: 900, Length: 7100},
+		{Offset: 8200, Length: 1800},
+	}, result.Missing)
+}
+
+// 终端只按自己的小碎片补传时，多轮 0x1212 应逐步收敛到完全覆盖。
+func TestAssemblerMultiRoundFragmentsConverge(t *testing.T) {
+	assembler, dir := newTestAssembler(t)
+	phone := "013800000010"
+	fileName := "multi-round.bin"
+	size := 9973
+	source := buildSource(size)
+	registerTestFile(t, assembler, phone, fileName, size)
+
+	initial := []struct {
+		offset int
+		length int
+	}{
+		{offset: 0, length: 500},
+		{offset: 1000, length: 700},
+		{offset: 2500, length: 300},
+		{offset: 8000, length: 400},
+	}
+	for _, item := range initial {
+		require.NoError(t, assembler.WriteChunk(phone, fileName, uint32(item.offset), source[item.offset:item.offset+item.length]))
+	}
+
+	rounds := 0
+	for {
+		rounds++
+		require.Less(t, rounds, 50, "retransmission did not converge")
+		result, err := assembler.CompleteCheck(phone, fileName)
+		require.NoError(t, err)
+		if result.Complete {
+			break
+		}
+		// 每轮只补每个缺口的前 333 字节，模拟终端坚持使用更小的自有帧边界。
+		for _, missing := range result.Missing {
+			length := int64(333)
+			if length > int64(missing.Length) {
+				length = int64(missing.Length)
+			}
+			offset := int(missing.Offset)
+			require.NoError(t, assembler.WriteChunk(phone, fileName, missing.Offset, source[offset:offset+int(length)]))
+		}
+	}
+	require.Greater(t, rounds, 1)
+
+	onDisk, err := os.ReadFile(filepath.Join(dir, phone, "20260107", "ALARM-0001", fileName))
+	require.NoError(t, err)
+	require.Equal(t, source, onDisk)
+}
+
+// 首段缺口、尾段缺口、整文件单帧与越界帧的边界行为。
+func TestAssemblerRangeBoundaries(t *testing.T) {
+	assembler, _ := newTestAssembler(t)
+	phone := "013800000011"
+	fileName := "boundary.bin"
+	size := 1000
+	registerTestFile(t, assembler, phone, fileName, size)
+
+	require.NoError(t, assembler.WriteChunk(phone, fileName, 400, make([]byte, 200)))
+	result, err := assembler.CompleteCheck(phone, fileName)
+	require.NoError(t, err)
+	require.Equal(t, []MissingRange{
+		{Offset: 0, Length: 400},
+		{Offset: 600, Length: 400},
+	}, result.Missing)
+
+	require.NoError(t, assembler.WriteChunk(phone, fileName, 0, make([]byte, 400)))
+	result, err = assembler.CompleteCheck(phone, fileName)
+	require.NoError(t, err)
+	require.Equal(t, []MissingRange{{Offset: 600, Length: 400}}, result.Missing)
+
+	// 越界帧被拒绝，不改变已覆盖区间。
+	require.ErrorIs(t, assembler.WriteChunk(phone, fileName, 900, make([]byte, 200)), ErrOffsetOutOfRange)
+	result, err = assembler.CompleteCheck(phone, fileName)
+	require.NoError(t, err)
+	require.Equal(t, []MissingRange{{Offset: 600, Length: 400}}, result.Missing)
+
+	require.NoError(t, assembler.WriteChunk(phone, fileName, 600, make([]byte, 400)))
+	result, err = assembler.CompleteCheck(phone, fileName)
+	require.NoError(t, err)
+	require.True(t, result.Complete)
+
+	// 单帧小文件。
+	smallName := "small.bin"
+	registerTestFile(t, assembler, phone, smallName, 10)
+	require.NoError(t, assembler.WriteChunk(phone, smallName, 0, make([]byte, 10)))
+	result, err = assembler.CompleteCheck(phone, smallName)
+	require.NoError(t, err)
+	require.True(t, result.Complete)
 }

@@ -17,19 +17,18 @@ const (
 	metaSuffix  = ".meta.json"
 )
 
-// persistedState 是位图与文件登记信息的磁盘副本，用于按 fileName 恢复进度。
+// persistedState 是已覆盖区间与文件登记信息的磁盘副本，用于按 fileName 恢复进度。
 type persistedState struct {
-	FileName     string `json:"fileName"`
-	FileType     uint8  `json:"fileType"`
-	Size         int64  `json:"size"`
-	Phone        string `json:"phone"`
-	TerminalID   string `json:"terminalId"`
-	AlarmNo      string `json:"alarmNo"`
-	AlarmSign    []byte `json:"alarmSign"`
-	Date         string `json:"date"`
-	Received     int64  `json:"received"`
-	LastActivity int64  `json:"lastActivity"` // Unix 纳秒
-	Bitmap       []byte `json:"bitmap"`
+	FileName     string      `json:"fileName"`
+	FileType     uint8       `json:"fileType"`
+	Size         int64       `json:"size"`
+	Phone        string      `json:"phone"`
+	TerminalID   string      `json:"terminalId"`
+	AlarmNo      string      `json:"alarmNo"`
+	AlarmSign    []byte      `json:"alarmSign"`
+	Date         string      `json:"date"`
+	Ranges       []byteRange `json:"ranges"`
+	LastActivity int64       `json:"lastActivity"` // Unix 纳秒
 }
 
 // validateFileName 校验附件文件名：只允许单层文件名与白名单字符，

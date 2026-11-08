@@ -10,9 +10,8 @@ const (
 	FrameHeaderSize = 62
 	// FileNameFieldSize 是帧内文件名固定字段长度。
 	FileNameFieldSize = 50
-	// DefaultBlockSize 是位图每一 bit 对应的数据块大小。
-	// 苏标 4.6.4 表 4-26 规定数据体默认长度 64K，因此按 64K 建块；
-	// 未完整覆盖的块不会被提前置位，会被整块列入补传，属于安全偏保守的假设。
+	// DefaultBlockSize 是苏标文件码流默认数据体长度（64K），仅作为参考帧长；
+	// 服务端补传记账按字节区间进行，不要求帧按 64K 对齐。
 	DefaultBlockSize = 64 * 1024
 	// FramePayloadLimit 是单个数据帧负载的硬上限，防止异常 length 字段撑爆内存。
 	FramePayloadLimit = 8 * 1024 * 1024

@@ -14,49 +14,62 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
-// bitmap 按块记录附件数据是否已完整接收，每块占 1 bit。
-type bitmap []byte
-
-func bitmapSize(totalBlocks int) int {
-	if totalBlocks <= 0 {
-		return 0
-	}
-	return (totalBlocks + 7) / 8
+// byteRange 表示附件文件中已连续覆盖的字节区间 [Offset, Offset+Length)。
+// 补传记账按字节粒度进行，不要求终端按 64KB 块对齐。
+type byteRange struct {
+	Offset int64 `json:"offset"`
+	Length int64 `json:"length"`
 }
 
-func (b bitmap) get(index int) bool {
-	if index < 0 || index/8 >= len(b) {
-		return false
-	}
-	return b[index/8]&(1<<uint(index%8)) != 0
-}
+func (r byteRange) end() int64 { return r.Offset + r.Length }
 
-// set 置位并返回本次是否由未置位变为置位，用于重复块不重复计数。
-func (b bitmap) set(index int) bool {
-	if index < 0 || index/8 >= len(b) {
-		return false
+// normalizeRanges 将任意区间集合裁剪到 [0, size) 内，按偏移排序并合并相邻/重叠区间。
+func normalizeRanges(ranges []byteRange, size int64) []byteRange {
+	if size <= 0 || len(ranges) == 0 {
+		return nil
 	}
-	mask := byte(1 << uint(index%8))
-	if b[index/8]&mask != 0 {
-		return false
-	}
-	b[index/8] |= mask
-	return true
-}
-
-func (b bitmap) count() int {
-	n := 0
-	for _, v := range b {
-		for v != 0 {
-			n += int(v & 1)
-			v >>= 1
+	clipped := make([]byteRange, 0, len(ranges))
+	for _, item := range ranges {
+		start, end := item.Offset, item.end()
+		if start < 0 {
+			start = 0
 		}
+		if end > size {
+			end = size
+		}
+		if start >= end {
+			continue
+		}
+		clipped = append(clipped, byteRange{Offset: start, Length: end - start})
 	}
-	return n
+	if len(clipped) == 0 {
+		return nil
+	}
+	sort.Slice(clipped, func(i, j int) bool { return clipped[i].Offset < clipped[j].Offset })
+	merged := clipped[:1]
+	for _, item := range clipped[1:] {
+		last := &merged[len(merged)-1]
+		if item.Offset <= last.end() {
+			if item.end() > last.end() {
+				last.Length = item.end() - last.Offset
+			}
+			continue
+		}
+		merged = append(merged, item)
+	}
+	return merged
+}
+
+func coveredBytes(ranges []byteRange) int64 {
+	var total int64
+	for _, item := range ranges {
+		total += item.Length
+	}
+	return total
 }
 
 // fileState 表示一个附件文件的接收进度。
-// 同一文件的 WriteAt、位图修改与完成收尾必须在 st.mu 下串行执行。
+// 同一文件的 WriteAt、区间合并与完成收尾必须在 st.mu 下串行执行。
 type fileState struct {
 	mu sync.Mutex
 
@@ -76,9 +89,8 @@ type fileState struct {
 	finalPath string
 
 	file         *os.File
-	bitmap       bitmap
-	totalBlocks  int
-	received     int
+	ranges       []byteRange
+	covered      int64
 	lastActivity time.Time
 
 	completed bool
@@ -87,41 +99,34 @@ type fileState struct {
 }
 
 func newFileState(owner *Assembler, info AttachmentInfo, date, dir string, entry AttachmentEntry, fileType uint8) *fileState {
-	size := int64(entry.FileSize)
-	totalBlocks := 0
-	if size > 0 {
-		totalBlocks = int((size + DefaultBlockSize - 1) / DefaultBlockSize)
-	}
 	finalPath := filepath.Join(dir, entry.FileName)
 	return &fileState{
-		owner:       owner,
-		fileName:    entry.FileName,
-		fileType:    fileType,
-		size:        size,
-		phone:       info.Phone,
-		terminalID:  info.TerminalID,
-		alarmNo:     info.AlarmNo,
-		alarmSign:   append([]byte(nil), info.AlarmSign...),
-		date:        date,
-		dir:         dir,
-		partPath:    finalPath + partSuffix,
-		finalPath:   finalPath,
-		bitmap:      make(bitmap, bitmapSize(totalBlocks)),
-		totalBlocks: totalBlocks,
+		owner:      owner,
+		fileName:   entry.FileName,
+		fileType:   fileType,
+		size:       int64(entry.FileSize),
+		phone:      info.Phone,
+		terminalID: info.TerminalID,
+		alarmNo:    info.AlarmNo,
+		alarmSign:  append([]byte(nil), info.AlarmSign...),
+		date:       date,
+		dir:        dir,
+		partPath:   finalPath + partSuffix,
+		finalPath:  finalPath,
 	}
 }
 
-// adoptPersisted 在启动对账或断点续传时恢复位图。
-// 仅当文件大小、位图长度与 .part 文件同时匹配时才采纳，避免脏状态导致误判完成。
+// adoptPersisted 在启动对账或断点续传时恢复已覆盖区间。
+// 仅当文件大小与 .part 文件同时匹配时才采纳，避免脏状态导致误判完成。
 func (st *fileState) adoptPersisted(p persistedState) bool {
-	if p.Size != st.size || len(p.Bitmap) != len(st.bitmap) {
+	if p.Size != st.size {
 		return false
 	}
 	if _, err := os.Stat(st.partPath); err != nil {
 		return false
 	}
-	copy(st.bitmap, p.Bitmap)
-	st.received = st.bitmap.count()
+	st.ranges = normalizeRanges(p.Ranges, st.size)
+	st.covered = coveredBytes(st.ranges)
 	if st.fileType == 0 && p.FileType != 0 {
 		st.fileType = p.FileType
 	}
@@ -131,63 +136,71 @@ func (st *fileState) adoptPersisted(p persistedState) bool {
 	return true
 }
 
-func (st *fileState) blockRange(index int) (offset, length int64) {
-	start := int64(index) * DefaultBlockSize
-	end := start + DefaultBlockSize
-	if end > st.size {
-		end = st.size
-	}
-	return start, end - start
-}
-
-// markRangeLocked 把被 [offset, offset+length) 完整覆盖的块置位。
-// 非块对齐的碎片不会提前置位，宁可在 0x9212 中整块要求补传，也不误判完成。
+// markRangeLocked 将 [offset, offset+length) 并入已覆盖区间集合。
+// 任意字节粒度的碎片帧都会立即生效；重叠、重复、相邻区间自动合并。
 func (st *fileState) markRangeLocked(offset, length int64) {
 	if length <= 0 || st.size <= 0 {
 		return
 	}
-	first := int(offset / DefaultBlockSize)
-	last := int((offset + length - 1) / DefaultBlockSize)
-	if last >= st.totalBlocks {
-		last = st.totalBlocks - 1
+	start, end := offset, offset+length
+	if start < 0 {
+		start = 0
 	}
-	for i := first; i <= last; i++ {
-		blockOffset, blockLength := st.blockRange(i)
-		if offset <= blockOffset && offset+length >= blockOffset+blockLength {
-			if st.bitmap.set(i) {
-				st.received++
-			}
+	if end > st.size {
+		end = st.size
+	}
+	if start >= end {
+		return
+	}
+
+	index := sort.Search(len(st.ranges), func(i int) bool { return st.ranges[i].end() >= start })
+	last := index
+	replaced := int64(0)
+	for last < len(st.ranges) && st.ranges[last].Offset <= end {
+		if st.ranges[last].Offset < start {
+			start = st.ranges[last].Offset
 		}
+		if st.ranges[last].end() > end {
+			end = st.ranges[last].end()
+		}
+		replaced += st.ranges[last].Length
+		last++
 	}
+	st.covered += (end - start) - replaced
+	merged := byteRange{Offset: start, Length: end - start}
+	st.ranges = append(st.ranges[:index], append([]byteRange{merged}, st.ranges[last:]...)...)
 }
 
-// missingLocked 按偏移升序返回未完成的连续块区间。
-// 协议数量字段只有 1 字节，超过 255 段时先回报前 255 段，终端补传后再次 0x1212 收敛。
+// missingLocked 以 [0, fileSize) 为全集，减去已覆盖区间后返回按 offset 升序的缺口。
+// 首段缺口与尾段缺口都会返回；协议数量字段只有 1 字节，超过 255 段时先回报前 255 段，
+// 终端补传后再次 0x1212 收敛。
 func (st *fileState) missingLocked() []MissingRange {
-	if st.size <= 0 || st.received >= st.totalBlocks {
+	if st.size <= 0 || st.covered >= st.size {
 		return nil
 	}
-	var ranges []MissingRange
-	start := -1
-	for i := 0; i <= st.totalBlocks; i++ {
-		missing := i < st.totalBlocks && !st.bitmap.get(i)
-		switch {
-		case missing && start < 0:
-			start = i
-		case !missing && start >= 0:
-			firstOffset, _ := st.blockRange(start)
-			lastOffset, lastLength := st.blockRange(i - 1)
-			ranges = append(ranges, MissingRange{
-				Offset: uint32(firstOffset),
-				Length: uint32(lastOffset + lastLength - firstOffset),
+	result := make([]MissingRange, 0)
+	cursor := int64(0)
+	for _, item := range st.ranges {
+		if item.Offset > cursor {
+			result = append(result, MissingRange{
+				Offset: uint32(cursor),
+				Length: uint32(item.Offset - cursor),
 			})
-			start = -1
-			if len(ranges) >= MaxRetransmitRanges {
-				return ranges
+			if len(result) >= MaxRetransmitRanges {
+				return result
 			}
 		}
+		if item.end() > cursor {
+			cursor = item.end()
+		}
 	}
-	return ranges
+	if cursor < st.size {
+		result = append(result, MissingRange{
+			Offset: uint32(cursor),
+			Length: uint32(st.size - cursor),
+		})
+	}
+	return result
 }
 
 func (st *fileState) ensureOpenLocked() error {
@@ -232,9 +245,8 @@ func (st *fileState) persistLocked() error {
 		AlarmNo:      st.alarmNo,
 		AlarmSign:    st.alarmSign,
 		Date:         st.date,
-		Received:     int64(st.received),
 		LastActivity: st.lastActivity.UnixNano(),
-		Bitmap:       append([]byte(nil), st.bitmap...),
+		Ranges:       append([]byteRange(nil), st.ranges...),
 	})
 }
 
@@ -269,7 +281,7 @@ func (st *fileState) completeLocked() bool {
 	if st.size == 0 {
 		return true
 	}
-	return st.totalBlocks > 0 && st.received >= st.totalBlocks
+	return st.covered >= st.size
 }
 
 func (st *fileState) finishLocked() error {
@@ -342,7 +354,7 @@ func (st *fileState) check() (CompletionResult, error) {
 func (st *fileState) hasProgress() bool {
 	st.mu.Lock()
 	defer st.mu.Unlock()
-	return st.received > 0 || st.completed
+	return st.covered > 0 || st.completed
 }
 
 func (st *fileState) updateFileType(fileType uint8) {
