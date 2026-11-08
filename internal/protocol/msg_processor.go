@@ -487,7 +487,45 @@ func NewJT808MsgProcessor(hooks actionpkg.Hooks, opts ...ProcessorOption) *JT808
 	return mp
 }
 
-func (mp *JT808MsgProcessor) Process(ctx context.Context, pkt *model.PacketData) (*model.ProcessData, error) {
+// ackFirstMsgIDs 列出「应答内容固定、业务结果不参与应答」的上行业务消息。
+// 圈定依据是协议语义而非业务类别：应答体在解码阶段即可确定，业务处理只产生
+// 落库或运行时副作用。绝大多数应答为 0x8001；0x0801 的应答固定为 0x8800，
+// 0x1210/0x1211 为苏标扩展固定 0x0001。0x9105 等无需应答的终端上行不在其中。
+// 查询类与业务结果相关的消息必须保持业务先行：
+// 0x0100→0x8100、0x0102→0x8001、0x0608/0x0702 等各类查询应答、0x0004 时间查询。
+var ackFirstMsgIDs = map[uint16]struct{}{
+	0x0002: {}, // 心跳
+	0x0003: {}, // 注销
+	0x0108: {}, // 升级结果通知
+	0x0200: {}, // 位置信息汇报
+	0x0301: {}, // 事件上报
+	0x0302: {}, // 提问应答
+	0x0303: {}, // 信息点播/取消
+	0x0500: {}, // 车辆控制应答
+	0x0700: {}, // 定位数据批量上传（记录仪）
+	0x0701: {}, // 电子运单上报
+	0x0702: {}, // 驾驶员身份信息上报
+	0x0704: {}, // 批量定位数据上传
+	0x0705: {}, // CAN 总线数据上传
+	0x0800: {}, // 多媒体事件信息上传
+	0x0801: {}, // 多媒体数据上传
+	0x0802: {}, // 多媒体数据上传应答
+	0x0805: {}, // 摄像头立即拍摄命令应答
+	0x0900: {}, // 数据上行透传
+	0x0901: {}, // 数据压缩上报
+	0x1210: {}, // 苏标附件信息
+	0x1211: {}, // 苏标附件信息
+}
+
+// AckFirst 报告该消息是否允许先发应答再执行业务。
+func (mp *JT808MsgProcessor) AckFirst(msgID uint16) bool {
+	_, ok := ackFirstMsgIDs[msgID]
+	return ok
+}
+
+// Decode 完成查表、分包处理、消息体解码与应答构造，不执行业务逻辑。
+// 分包未完成时返回仅含 Outgoing 的 ProcessData，调用方不应再执行业务。
+func (mp *JT808MsgProcessor) Decode(ctx context.Context, pkt *model.PacketData) (*model.ProcessData, error) {
 	msgID := pkt.Header.MsgID
 	if session, ok := ctx.Value(model.SessionCtxKey{}).(*model.Session); ok && session != nil {
 		log.Debug().Str("session", session.ID).Uint16("msg_id", msgID).Msg("Processing JT808 message")
@@ -558,18 +596,46 @@ func (mp *JT808MsgProcessor) Process(ctx context.Context, pkt *model.PacketData)
 				Msg("Generating jt808 outgoing msg.")
 		}()
 	}
+	return data, nil
+}
 
-	// 对消息按类别做特殊处理
-	processFunc := act.process
-	if processFunc != nil {
-		err = processFunc(ctx, data)
-		if err != nil {
-			return data, errors.Wrap(err, "Fail to process data")
+// ApplyBusiness 执行消息对应的业务处理，并分发生命周期钩子。
+// msgID 必须由调用方在 Decode 之前捕获：部分 Outgoing.GenOutgoing 会复用
+// incoming 的 Header 指针并改写 MsgID，解码后不能再依赖 Header 查表。
+// 钩子基于已解码数据，业务失败时仍会触发（旁路观察语义）。
+func (mp *JT808MsgProcessor) ApplyBusiness(ctx context.Context, msgID uint16, data *model.ProcessData) error {
+	if data == nil || data.Incoming == nil {
+		return nil
+	}
+	var businessErr error
+	if act, ok := mp.options[msgID]; ok && act.process != nil {
+		businessErr = act.process(ctx, data)
+	}
+	mp.dispatchHooks(ctx, data)
+	return businessErr
+}
+
+// Process 是 Decode 与 ApplyBusiness 的组合入口，保持既有调用方语义：
+// 业务错误返回给调用方，由 Pipeline 决定是否中断应答。
+func (mp *JT808MsgProcessor) Process(ctx context.Context, pkt *model.PacketData) (*model.ProcessData, error) {
+	msgID := pkt.Header.MsgID
+	data, err := mp.Decode(ctx, pkt)
+	if err != nil {
+		return data, err
+	}
+	if data == nil {
+		return nil, nil
+	}
+	if data.Incoming == nil {
+		if data.Outgoing == nil {
+			return nil, nil
 		}
+		return data, nil
 	}
 
-	// 生命周期钩子只做旁路通知，与是否写入缓存无关。
-	mp.dispatchHooks(ctx, data)
+	if businessErr := mp.ApplyBusiness(ctx, msgID, data); businessErr != nil {
+		return data, errors.Wrap(businessErr, "Fail to process data")
+	}
 
 	if data.Outgoing == nil {
 		return nil, nil // 此类型msg不需要回复

@@ -1730,9 +1730,16 @@ func TestTCPServerHeartbeatFromUnknownDeviceClosesConn(t *testing.T) {
 
 	b := newBareTerminal(t, server.listener.Addr().String())
 	b.send(t, &model.Msg0002{Header: uplinkHeader(0x0002, "188765439999", 1)})
+
+	// 心跳属于「应答内容固定」的上行消息：服务端先回 0x8001，再因设备不存在关闭连接。
+	ack := &model.Msg8001{}
+	b.recvInto(t, 3*time.Second, 0x8001, ack)
+	require.Equal(t, uint16(0x0002), ack.AnswerMessageID)
+	require.Equal(t, model.ResultSuccess, ack.Result)
+
 	require.NoError(t, b.conn.SetReadDeadline(time.Now().Add(3*time.Second)))
 	_, err := b.fh.Recv(context.Background())
-	require.Error(t, err, "unknown-device heartbeat must close the connection")
+	require.Error(t, err, "unknown-device heartbeat must close the connection after acknowledging")
 }
 
 func TestTCPServerLogoutClearsCacheAndKeepsConn(t *testing.T) {

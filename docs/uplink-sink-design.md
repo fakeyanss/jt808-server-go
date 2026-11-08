@@ -1,6 +1,6 @@
 # 终端上行数据业务处理与出口可插拔化设计（Uplink Business Processing & Pluggable Sink）
 
-- 状态：**设计文档；S1/S2 已实施，S3 及之后尚未开始**
+- 状态：**设计文档；S1/S2/S4 已实施，S3 及之后尚未开始**
 - 创建日期：2026-11-08
 - 代码基线：`main`（`fc16d3e`，已合入 PR #33 媒体链路与 PR #34 管理面）。本文首版核查基于 `dev/p2-admin-api` 的 `e241511`，实施前已按 `main` 复核并更新统计数值
 - 说明：本文未修改任何非 `docs/` 文件；代码改动见独立提交
@@ -258,7 +258,7 @@ func (mp *JT808MsgProcessor) initProcessOption() processOptions {
 | 事件类型 | `OnRegister`、`OnAuth`、`OnLocation`、`OnAlarm`、`OnDisconnect` |
 | 返回值 | 无。注释明确「任何失败都不得影响协议主流程」 |
 | 触发点 | 注册/鉴权在 `processFunc` 之后；位置/报警来自 `dispatchHooks` 中的 `0x0200` 与 `0x0704` 逐条；断连来自 `serveSession` 的 defer |
-| 与业务处理顺序 | `dispatchHooks` 在 `processFunc` 成功之后执行；`processFunc` 失败则钩子也不触发 |
+| 与业务处理顺序 | S4 之后 `dispatchHooks` 始终在 `processFunc` 之后执行；`processFunc` 失败也会触发，钩子只做旁路观察 |
 | 默认实现 | `action.Noop{}` |
 | 示例实现 | `action.HTTPCallback`：容量 256 的有界 channel、单 worker 顺序发送、队列满丢弃并告警 |
 | HTTP 失败 | 网络错误或状态码 >= 400 只记日志，**不重试** |
@@ -301,9 +301,9 @@ func (mp *JT808MsgProcessor) initProcessOption() processOptions {
 
 | 编号 | 缺口 | 严重度 | 依据 |
 |---|---|---|---|
-| G1 | 业务写入与协议应答串行，DB 慢直接推迟 `0x8001`，终端会重传 | 高 | `processFunc` 在 `encode/send` 之前 |
-| G2 | 业务错误让本轮不应答，部分错误关闭连接 | 高 | `Process` 返回错误，`serveSession` 对 `ErrDeviceNotFound` 直接返回 |
-| G3 | 业务落库失败会连带跳过 `dispatchHooks` | 中 | `dispatchHooks` 位于 `processFunc` 成功之后 |
+| G1 | 业务写入与协议应答串行，DB 慢直接推迟 `0x8001`，终端会重传。S4 已对固定应答类消息改为先应答后业务；查询类仍串行 | 高（部分缓解） | `processFunc` 在 `encode/send` 之前 |
+| G2 | 业务错误让本轮不应答，部分错误关闭连接。S4 已改为「已应答 + 记日志 + 不关连接」，仅 `ErrDeviceNotFound` 例外 | 高（部分缓解） | `Process` 返回错误，`serveSession` 对 `ErrDeviceNotFound` 直接返回 |
+| G3 | 业务落库失败会连带跳过 `dispatchHooks`。S4 已改为钩子始终触发（旁路观察） | 中（已解决） | `dispatchHooks` 位于 `processFunc` 成功之后 |
 | G4 | 同一报警在 `0x0200` 落库、`0x0704` 只走钩子，口径不一致 | 中 | `processMsg0704` 注释与 `dispatchHooks` 行为 |
 | G5 | 钩子只有 at-most-once，队列满丢弃，无重试/顺序/事件 ID | 中 | `internal/action/http.go` |
 | G6 | 仓储写入无单次超时、无全局并发上限，多会话同时写 DB 会拖垮连接池；部分处理器显式使用 `context.Background()` | 高 | `processMsg0104/0107` 等直接调用仓储 |
@@ -689,6 +689,18 @@ uplink:
 - `outbox` 只承诺 at-least-once；**不承诺 exactly-once**。
 - 任何模式下，下游都必须按 `EventID` 幂等。
 
+S4 的协议层语义（与 Sink 模式无关，必须单独写清）：
+
+- **固定应答类上行消息改为一收到就先发应答、再执行业务。** 判定依据是协议语义：
+  应答体在解码阶段已确定、业务结果不参与应答内容（绝大多数为 `0x8001`；`0x0801` 为
+  `0x8800`，`0x1210/0x1211` 为苏标固定 `0x0001`）。查询类与业务结果相关的消息
+  （`0x0100→0x8100`、`0x0102→0x8001`、各类查询应答）仍保持业务先行。
+- **这使这些消息成为 at-most-once。** 应答一旦发出，若进程随后崩溃、业务写入失败或
+  下游不可用，本条数据不会被终端重传，也不会进入任何持久化出口；服务端不提供重试。
+  这是 S4 的固有代价，**S6/outbox 之前无法避免**，排查数据丢失时不得当作 bug。
+- 需要 at-least-once 的类别（报警、运单、监管上报）必须依赖 outbox（S7）或保持同步
+  本地写，不能通过给已应答消息补重试来弥补。
+
 ### 5.4 是否需要 outbox，边界在哪
 
 判断标准：
@@ -754,14 +766,14 @@ CREATE TABLE uplink_outbox (
 | 步骤 | 内容 | 涉及文件 | 影响面 | 触及主路径 | 风险 | 回滚方式 |
 |---|---|---|---|---|---|---|
 | S0 | 本文档与基线核查 | `docs/uplink-sink-design.md` | 无 | 否 | 无 | 删除文档 |
-| S1 | 注册表拆分与元数据标注：按「服务端上行 / 平台下行 / 模拟器」分组；为每个上行入口标注类别 | `internal/protocol/msg_processor.go`、相关测试 | 表结构可读性 | 是（仅注册表构造） | 低 | 还原注册表 |
-| S2 | 依赖注入骨架：`ProcessorDeps`、处理函数改方法、`initProcessOption` 改方法、Pipeline/Server/Client 传递依赖；保留 `Default()` 回退 | `msg_processor.go`、`pipeline.go`、`tcp_server.go`、`udp_server.go`、`internal/client/tcp_client.go`、`cmd/jt808-server/main.go`、测试 | 42 个处理函数 + 3 个辅助函数、81 个注册项 | 是（构造与签名） | 中（机械冲突多） | 保留旧构造函数薄封装 |
+| S1（已实施） | 注册表拆分与元数据标注：按「服务端上行 / 平台下行 / 模拟器」分组；为每个上行入口标注类别 | `internal/protocol/msg_processor.go`、相关测试 | 表结构可读性 | 是（仅注册表构造） | 低 | 还原注册表 |
+| S2（已实施） | 依赖注入骨架：`ProcessorDeps`、处理函数改方法、`initProcessOption` 改方法、Pipeline/Server/Client 传递依赖；保留 `Default()` 回退 | `msg_processor.go`、`pipeline.go`、`tcp_server.go`、`udp_server.go`、`internal/client/tcp_client.go`、`cmd/jt808-server/main.go`、测试 | 42 个处理函数 + 3 个辅助函数、81 个注册项 | 是（构造与签名） | 中（机械冲突多） | 保留旧构造函数薄封装 |
 | S3 | 归一化记录与 `local-db` 适配器：按类别产出 `Record`，`localsink` 1:1 映射现有耐用仓储，投影保持直写；行为不变 | 新增 `internal/uplink/`；`msg_processor.go`；`storage` 装配 | 六类业务写入 | 是（处理函数内部） | 中 | 每个类别独立开关，可逐类回退 |
 | S3a | 位置与报警类别 | `processMsg0200/0704`、`recordLocationHistory` | `Geo` 投影直写 + `Locations`/`Alarms` 耐用事实 | 是 | 中 | 保留旧分支 |
 | S3b | 行业上报类别 | `processIndustryReport` 的 16 个上行注册项（该函数共注册 19 个 MsgID，其中 `0x8108/0x8400/0x8900` 为下行语义；`0x0801/0x1205` 的媒体元数据归 S3d） | `Industry` 投影直写 + 目录快照走 Sink | 是 | 中 | 同上 |
 | S3c | 参数与属性类别 | `processMsg0104/0107` | `Params`、`Properties`、broker | 是 | 中 | 同上 |
 | S3d | 多媒体元数据类别 | `0x1205`、`0x0801`（`processIndustryReport`） | `Industry` 投影；无独立耐用目标 | 是 | 中 | 同上 |
-| S4 | 错误语义分离：业务 Sink 错误不再中断 Pipeline；仅协议前置错误影响应答/连接；增加按类别失败计数 | `msg_processor.go`、`pipeline.go`、`server`、测试 | 应答与连接行为 | 是（语义变化） | 中高 | 配置项临时恢复旧语义 |
+| S4（已实施） | 应答与连接语义分离：固定应答类上行消息先应答后业务；业务错误只记日志、不关连接；`ErrDeviceNotFound` 例外保留；钩子始终触发。按类别失败计数留待 S3/S5 | `msg_processor.go`、`pipeline.go`、`server`、测试 | 21 类固定应答上行消息 + 应答/连接行为 | 是（语义变化） | 中高 | 从 `ackFirstMsgIDs` 移除对应 MsgID |
 | S5 | 配置化 Sink 与 `noop`：`config.Uplink`、`ParseUplink`、Router、启动装配、有效路由表日志；默认 `local-db` | `config.go`、`default.yaml`、`cmd/jt808-server/main.go`、新增 `internal/uplink/router.go` | 启动装配 | 是（仅启动） | 低 | 删除配置段即回退 |
 | S6 | 异步投递（可选，默认关闭）：有界队列、单 worker/类别、drop 策略、队列深度与丢弃指标 | `internal/uplink/async.go`、`config.go`、`main.go`、测试 | 应答时延与顺序 | 是（开启后时序） | 高 | 将 `mode` 改回 `sync` |
 | S7 | MQ Sink 与 outbox（未来）：独立设计、独立迁移、独立提交 | `internal/uplink/mqsink`、迁移 SQL、relay | 跨系统投递 | 否（不改变现有路径，新增出口） | 高 | 关闭类别 MQ 配置 |
@@ -782,7 +794,7 @@ CREATE TABLE uplink_outbox (
 | S1 | 注册项数量与行为快照一致（81 个 MsgID / 42 个处理函数）；按角色分组的表可枚举 |
 | S2 | 不注入依赖时行为与改造前一致；注入独立 `storage.NewMemory()` 后测试互不污染；`Default()` 回退仅剩装配层 |
 | S3 | 同一组报文在改造前后产生相同的仓储状态（逐字段断言）；API 查询结果不变 |
-| S4 | 模拟仓储错误时仍返回 `0x8001`；设备不存在时仍关闭连接；错误计数可观测 |
+| S4 | 固定应答类消息先返回 `0x8001`（`0x0801` 为 `0x8800`）；业务失败仍返回成功应答且不关连接；`ErrDeviceNotFound` 仍关闭连接；钩子失败路径仍触发 |
 | S5 | 缺省配置行为不变；`noop` 下协议应答正常、业务落库为空；非法配置启动失败 |
 | S6 | 队列满不阻塞协议读循环；同手机号记录顺序稳定；关闭时按上限排空 |
 

@@ -2,6 +2,7 @@ package protocol
 
 import (
 	"context"
+	stderrors "errors"
 	"net"
 	"time"
 
@@ -9,9 +10,13 @@ import (
 
 	actionpkg "github.com/fakeyanss/jt808-server-go/internal/action"
 	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
+	"github.com/fakeyanss/jt808-server-go/internal/repository"
 )
 
 const maxJT808BodyLength = 1023
+
+// earlyAckSentCtxKey 标记本轮应答已在业务处理前发出，后续链路不再重复编码发送。
+type earlyAckSentCtxKey struct{}
 
 // tcp/udp 消息处理组
 type Pipeline struct {
@@ -79,6 +84,9 @@ func (p *Pipeline) ProcessConnWrite(ctx context.Context) error {
 
 func assignSerialNumber() delegateFunc {
 	return delegateFunc(func(ctx context.Context, _ *Pipeline) (context.Context, error) {
+		if ctx.Value(earlyAckSentCtxKey{}) != nil {
+			return ctx, nil
+		}
 		pd, _ := ctx.Value(model.ProcessDataCtxKey{}).(*model.ProcessData)
 		if pd == nil || pd.Outgoing == nil {
 			return nil, nil
@@ -127,14 +135,66 @@ func process() delegateFunc {
 		if packet == nil { // 不需要处理
 			return nil, nil
 		}
-		pd, err := p.mp.Process(ctx, packet)
+		// Decode 内部可能改写 Header.MsgID，先捕获协议原始值。
+		msgID := packet.Header.MsgID
+		pd, err := p.mp.Decode(ctx, packet)
 		nxtCtx := context.WithValue(ctx, model.ProcessDataCtxKey{}, pd)
-		return nxtCtx, err
+		if err != nil {
+			return nxtCtx, err
+		}
+		// Incoming 为空表示分包尚未收齐，本轮没有可处理的业务。
+		// Outgoing 为空只说明该消息不需要应答（如 0x0001/0x0608 等应答类），
+		// 这些消息仍必须执行 process，否则应答登记与运行时状态不会更新。
+		if pd == nil || pd.Incoming == nil {
+			return nxtCtx, nil
+		}
+
+		ackFirst := pd.Outgoing != nil && p.mp.AckFirst(msgID)
+		if ackFirst {
+			// 先应答后落库是 at-most-once 语义：应答发出后若进程崩溃、业务处理失败
+			// 或下游存储不可用，本条上行数据不会被终端重传，也不会进入持久化出口。
+			// 需要 at-least-once 时必须依赖 S6/outbox，不能在此处补重试。
+			if sendErr := p.sendOutgoingNow(nxtCtx); sendErr != nil {
+				return nxtCtx, sendErr
+			}
+			nxtCtx = context.WithValue(nxtCtx, earlyAckSentCtxKey{}, true)
+		}
+
+		if businessErr := p.mp.ApplyBusiness(ctx, msgID, pd); businessErr != nil {
+			// 未先应答的消息保持旧语义：业务错误中断本轮应答。
+			// 已先应答的消息只记录日志，连接继续；设备不存在仍作为例外向上返回。
+			if !ackFirst || stderrors.Is(businessErr, repository.ErrDeviceNotFound) {
+				return nxtCtx, businessErr
+			}
+			log.Error().Err(businessErr).
+				Uint16("msg_id", msgID).
+				Str("phone", packet.Header.PhoneNumber).
+				Msg("Business processing failed after acknowledgement was sent")
+		}
+		return nxtCtx, nil
 	})
+}
+
+// sendOutgoingNow 在当前会话内立即完成流水号分配、编码与写回，
+// 用于「先应答后业务」的消息。后续 encode/send 通过 earlyAckSentCtxKey 跳过。
+func (p *Pipeline) sendOutgoingNow(ctx context.Context) error {
+	curCtx, err := assignSerialNumber()(ctx, p)
+	if err != nil || curCtx == nil {
+		return err
+	}
+	curCtx, err = encode()(curCtx, p)
+	if err != nil || curCtx == nil {
+		return err
+	}
+	_, err = send()(curCtx, p)
+	return err
 }
 
 func encode() delegateFunc {
 	return delegateFunc(func(ctx context.Context, p *Pipeline) (context.Context, error) {
+		if ctx.Value(earlyAckSentCtxKey{}) != nil {
+			return ctx, nil
+		}
 		pd := ctx.Value(model.ProcessDataCtxKey{}).(*model.ProcessData)
 		if pd == nil || pd.Outgoing == nil { // 不需要回复，不用后续处理
 			return nil, nil
@@ -196,6 +256,9 @@ func encode() delegateFunc {
 
 func send() delegateFunc {
 	return delegateFunc(func(ctx context.Context, p *Pipeline) (context.Context, error) {
+		if ctx.Value(earlyAckSentCtxKey{}) != nil {
+			return ctx, nil
+		}
 		packets := ctx.Value(model.PacketEncodeCtxKey{}).([][]byte)
 		session, _ := ctx.Value(model.SessionCtxKey{}).(*model.Session)
 		if session != nil {
