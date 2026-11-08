@@ -196,70 +196,145 @@ func TestParsePacketSIMBoundaries(t *testing.T) {
 
 func TestFrameAssemblerReassemblesSubpackages(t *testing.T) {
 	assembler := newFrameAssembler(1024)
-	require.Nil(t, assembler.Push(&Packet{DataType: DataTypeIFrame, SubpackageType: SubpackageFirst, Body: []byte("aa")}))
-	require.Nil(t, assembler.Push(&Packet{DataType: DataTypeIFrame, SubpackageType: SubpackageMiddle, Body: []byte("bb")}))
-	require.Equal(t, []byte("aabbcc"), assembler.Push(&Packet{DataType: DataTypeIFrame, SubpackageType: SubpackageLast, Body: []byte("cc")}))
+	frame, err := assembler.Push(&Packet{DataType: DataTypeIFrame, SubpackageType: SubpackageFirst, Body: []byte("aa")})
+	require.NoError(t, err)
+	require.Nil(t, frame)
+	frame, err = assembler.Push(&Packet{DataType: DataTypeIFrame, SubpackageType: SubpackageMiddle, Body: []byte("bb")})
+	require.NoError(t, err)
+	require.Nil(t, frame)
+	frame, err = assembler.Push(&Packet{DataType: DataTypeIFrame, SubpackageType: SubpackageLast, Body: []byte("cc")})
+	require.NoError(t, err)
+	require.Equal(t, []byte("aabbcc"), frame)
 
 	// 原子帧直接返回。
-	require.Equal(t, []byte("x"), assembler.Push(&Packet{DataType: DataTypePFrame, SubpackageType: SubpackageAtomic, Body: []byte("x")}))
+	frame, err = assembler.Push(&Packet{DataType: DataTypePFrame, SubpackageType: SubpackageAtomic, Body: []byte("x")})
+	require.NoError(t, err)
+	require.Equal(t, []byte("x"), frame)
 
-	// 缺少 first 的 last 包被丢弃。
-	require.Nil(t, assembler.Push(&Packet{DataType: DataTypePFrame, SubpackageType: SubpackageLast, Body: []byte("zz")}))
+	// 缺少 first 的 last 包返回截断错误。
+	frame, err = assembler.Push(&Packet{DataType: DataTypePFrame, SubpackageType: SubpackageLast, Body: []byte("zz")})
+	require.ErrorIs(t, err, ErrTruncatedPayload)
+	require.Nil(t, frame)
 
-	// 超过上限时清空缓存，避免异常终端撑爆内存。
+	// 超过上限时返回错误并清空缓存，避免异常终端撑爆内存。
 	small := newFrameAssembler(4)
-	require.Nil(t, small.Push(&Packet{DataType: DataTypeIFrame, SubpackageType: SubpackageFirst, Body: []byte("1234")}))
-	require.Nil(t, small.Push(&Packet{DataType: DataTypeIFrame, SubpackageType: SubpackageLast, Body: []byte("5")}))
+	frame, err = small.Push(&Packet{DataType: DataTypeIFrame, SubpackageType: SubpackageFirst, Body: []byte("1234")})
+	require.NoError(t, err)
+	require.Nil(t, frame)
+	frame, err = small.Push(&Packet{DataType: DataTypeIFrame, SubpackageType: SubpackageLast, Body: []byte("5")})
+	require.ErrorIs(t, err, ErrFrameTooLarge)
+	require.Nil(t, frame)
 }
 
-// 分包乱序或缺片时不得拼出错误帧：middle/last 先到都丢弃，随后到达的 first 仍需等待。
-func TestFrameAssemblerDropsOutOfOrderFragments(t *testing.T) {
+// 分包乱序或缺片时必须返回截断错误，不得拼出错误帧。
+func TestFrameAssemblerReportsOutOfOrderFragments(t *testing.T) {
 	assembler := newFrameAssembler(1024)
-	// 乱序：中间片和尾片先到，都因缺少首片被丢弃。
-	require.Nil(t, assembler.Push(&Packet{DataType: DataTypeIFrame, SubpackageType: SubpackageMiddle, Body: []byte("missing-first")}))
-	require.Nil(t, assembler.Push(&Packet{DataType: DataTypeIFrame, SubpackageType: SubpackageLast, Body: []byte("missing-first")}))
+	// 乱序：中间片和尾片先到，都因缺少首片返回截断错误。
+	frame, err := assembler.Push(&Packet{DataType: DataTypeIFrame, SubpackageType: SubpackageMiddle, Body: []byte("missing-first")})
+	require.ErrorIs(t, err, ErrTruncatedPayload)
+	require.Nil(t, frame)
+	frame, err = assembler.Push(&Packet{DataType: DataTypeIFrame, SubpackageType: SubpackageLast, Body: []byte("missing-first")})
+	require.ErrorIs(t, err, ErrTruncatedPayload)
+	require.Nil(t, frame)
 	// 新帧的 first 仍然正常缓存，last 缺 middle 也能收尾。
-	require.Nil(t, assembler.Push(&Packet{DataType: DataTypeIFrame, SubpackageType: SubpackageFirst, Body: []byte("aa")}))
-	require.Equal(t, []byte("aacc"), assembler.Push(&Packet{DataType: DataTypeIFrame, SubpackageType: SubpackageLast, Body: []byte("cc")}))
+	frame, err = assembler.Push(&Packet{DataType: DataTypeIFrame, SubpackageType: SubpackageFirst, Body: []byte("aa")})
+	require.NoError(t, err)
+	require.Nil(t, frame)
+	frame, err = assembler.Push(&Packet{DataType: DataTypeIFrame, SubpackageType: SubpackageLast, Body: []byte("cc")})
+	require.NoError(t, err)
+	require.Equal(t, []byte("aacc"), frame)
 
 	// 缺片：只有 first 没有 last 时不产出帧；原子帧不消费 I 帧缓存。
-	require.Nil(t, assembler.Push(&Packet{DataType: DataTypeIFrame, SubpackageType: SubpackageFirst, Body: []byte("orphan")}))
-	require.Equal(t, []byte("p"), assembler.Push(&Packet{DataType: DataTypePFrame, SubpackageType: SubpackageAtomic, Body: []byte("p")}))
+	frame, err = assembler.Push(&Packet{DataType: DataTypeIFrame, SubpackageType: SubpackageFirst, Body: []byte("orphan")})
+	require.NoError(t, err)
+	require.Nil(t, frame)
+	frame, err = assembler.Push(&Packet{DataType: DataTypePFrame, SubpackageType: SubpackageAtomic, Body: []byte("p")})
+	require.NoError(t, err)
+	require.Equal(t, []byte("p"), frame)
 	// 下一个 I 帧尾片会消费残留的首片，消费后缓存清空。
-	require.Equal(t, []byte("orphanzz"), assembler.Push(&Packet{DataType: DataTypeIFrame, SubpackageType: SubpackageLast, Body: []byte("zz")}))
-	require.Nil(t, assembler.Push(&Packet{DataType: DataTypeIFrame, SubpackageType: SubpackageLast, Body: []byte("zz")}))
+	frame, err = assembler.Push(&Packet{DataType: DataTypeIFrame, SubpackageType: SubpackageLast, Body: []byte("zz")})
+	require.NoError(t, err)
+	require.Equal(t, []byte("orphanzz"), frame)
+	frame, err = assembler.Push(&Packet{DataType: DataTypeIFrame, SubpackageType: SubpackageLast, Body: []byte("zz")})
+	require.ErrorIs(t, err, ErrTruncatedPayload)
+	require.Nil(t, frame)
 
-	// 重复的 first 覆盖旧缓存，不拼接两段首片。
+	// 重复 first 说明上一帧缺尾片：返回截断错误，并用新 first 覆盖旧缓存。
 	assembler = newFrameAssembler(1024)
-	require.Nil(t, assembler.Push(&Packet{DataType: DataTypeIFrame, SubpackageType: SubpackageFirst, Body: []byte("aa")}))
-	require.Nil(t, assembler.Push(&Packet{DataType: DataTypeIFrame, SubpackageType: SubpackageFirst, Body: []byte("bb")}))
-	require.Equal(t, []byte("bbcc"), assembler.Push(&Packet{DataType: DataTypeIFrame, SubpackageType: SubpackageLast, Body: []byte("cc")}))
+	frame, err = assembler.Push(&Packet{DataType: DataTypeIFrame, SubpackageType: SubpackageFirst, Body: []byte("aa")})
+	require.NoError(t, err)
+	require.Nil(t, frame)
+	frame, err = assembler.Push(&Packet{DataType: DataTypeIFrame, SubpackageType: SubpackageFirst, Body: []byte("bb")})
+	require.ErrorIs(t, err, ErrTruncatedPayload)
+	require.Nil(t, frame)
+	frame, err = assembler.Push(&Packet{DataType: DataTypeIFrame, SubpackageType: SubpackageLast, Body: []byte("cc")})
+	require.NoError(t, err)
+	require.Equal(t, []byte("bbcc"), frame)
 }
 
 // 不同数据类型的分片缓存互相独立，且原子帧不破坏正在拼装的缓存。
 func TestFrameAssemblerKeepsDataTypeBuffersSeparate(t *testing.T) {
 	assembler := newFrameAssembler(1024)
-	require.Nil(t, assembler.Push(&Packet{DataType: DataTypeIFrame, SubpackageType: SubpackageFirst, Body: []byte("ii")}))
-	require.Nil(t, assembler.Push(&Packet{DataType: DataTypePFrame, SubpackageType: SubpackageFirst, Body: []byte("pp")}))
-	require.Equal(t, []byte("x"), assembler.Push(&Packet{DataType: DataTypeIFrame, SubpackageType: SubpackageAtomic, Body: []byte("x")}))
-	require.Equal(t, []byte("iicc"), assembler.Push(&Packet{DataType: DataTypeIFrame, SubpackageType: SubpackageLast, Body: []byte("cc")}))
-	require.Equal(t, []byte("ppdd"), assembler.Push(&Packet{DataType: DataTypePFrame, SubpackageType: SubpackageLast, Body: []byte("dd")}))
+	frame, err := assembler.Push(&Packet{DataType: DataTypeIFrame, SubpackageType: SubpackageFirst, Body: []byte("ii")})
+	require.NoError(t, err)
+	require.Nil(t, frame)
+	frame, err = assembler.Push(&Packet{DataType: DataTypePFrame, SubpackageType: SubpackageFirst, Body: []byte("pp")})
+	require.NoError(t, err)
+	require.Nil(t, frame)
+	frame, err = assembler.Push(&Packet{DataType: DataTypeIFrame, SubpackageType: SubpackageAtomic, Body: []byte("x")})
+	require.NoError(t, err)
+	require.Equal(t, []byte("x"), frame)
+	frame, err = assembler.Push(&Packet{DataType: DataTypeIFrame, SubpackageType: SubpackageLast, Body: []byte("cc")})
+	require.NoError(t, err)
+	require.Equal(t, []byte("iicc"), frame)
+	frame, err = assembler.Push(&Packet{DataType: DataTypePFrame, SubpackageType: SubpackageLast, Body: []byte("dd")})
+	require.NoError(t, err)
+	require.Equal(t, []byte("ppdd"), frame)
 }
 
-// 超过 8MB 的单帧重组上限时必须丢弃并清空缓存，且超限后可重新开始正常收帧。
+// 超过 8MB 的单帧重组上限时必须返回 ErrFrameTooLarge 并清空缓存，且超限后可重新开始正常收帧。
 func TestFrameAssemblerEnforcesEightMegabyteLimit(t *testing.T) {
 	first := make([]byte, maxFrameBytes-1)
 
 	exact := newFrameAssembler(maxFrameBytes)
-	require.Nil(t, exact.Push(&Packet{DataType: DataTypeIFrame, SubpackageType: SubpackageFirst, Body: first}))
-	frame := exact.Push(&Packet{DataType: DataTypeIFrame, SubpackageType: SubpackageLast, Body: []byte{0x01}})
+	frame, err := exact.Push(&Packet{DataType: DataTypeIFrame, SubpackageType: SubpackageFirst, Body: first})
+	require.NoError(t, err)
+	require.Nil(t, frame)
+	frame, err = exact.Push(&Packet{DataType: DataTypeIFrame, SubpackageType: SubpackageLast, Body: []byte{0x01}})
+	require.NoError(t, err)
 	require.Len(t, frame, maxFrameBytes)
 
 	over := newFrameAssembler(maxFrameBytes)
-	require.Nil(t, over.Push(&Packet{DataType: DataTypeIFrame, SubpackageType: SubpackageFirst, Body: make([]byte, maxFrameBytes)}))
-	require.Nil(t, over.Push(&Packet{DataType: DataTypeIFrame, SubpackageType: SubpackageMiddle, Body: []byte{0x02}}))
+	frame, err = over.Push(&Packet{DataType: DataTypeIFrame, SubpackageType: SubpackageFirst, Body: make([]byte, maxFrameBytes)})
+	require.NoError(t, err)
+	require.Nil(t, frame)
+	frame, err = over.Push(&Packet{DataType: DataTypeIFrame, SubpackageType: SubpackageMiddle, Body: []byte{0x02}})
+	require.ErrorIs(t, err, ErrFrameTooLarge)
+	require.Nil(t, frame)
 	require.Empty(t, over.buffers)
 
-	require.Nil(t, over.Push(&Packet{DataType: DataTypeIFrame, SubpackageType: SubpackageFirst, Body: []byte{1}}))
-	require.Equal(t, []byte{1, 2}, over.Push(&Packet{DataType: DataTypeIFrame, SubpackageType: SubpackageLast, Body: []byte{2}}))
+	// 首片本身就超限：立即报错且不缓存。
+	frame, err = over.Push(&Packet{DataType: DataTypeIFrame, SubpackageType: SubpackageFirst, Body: make([]byte, maxFrameBytes+1)})
+	require.ErrorIs(t, err, ErrFrameTooLarge)
+	require.Nil(t, frame)
+
+	// 原子帧超限同样报错。
+	frame, err = over.Push(&Packet{DataType: DataTypeIFrame, SubpackageType: SubpackageAtomic, Body: make([]byte, maxFrameBytes+1)})
+	require.ErrorIs(t, err, ErrFrameTooLarge)
+	require.Nil(t, frame)
+
+	frame, err = over.Push(&Packet{DataType: DataTypeIFrame, SubpackageType: SubpackageFirst, Body: []byte{1}})
+	require.NoError(t, err)
+	require.Nil(t, frame)
+	frame, err = over.Push(&Packet{DataType: DataTypeIFrame, SubpackageType: SubpackageLast, Body: []byte{2}})
+	require.NoError(t, err)
+	require.Equal(t, []byte{1, 2}, frame)
+}
+
+// 未知分包类型属于损坏数据，返回 ErrCorruptPayload。
+func TestFrameAssemblerRejectsUnknownSubpackageType(t *testing.T) {
+	assembler := newFrameAssembler(1024)
+	frame, err := assembler.Push(&Packet{DataType: DataTypeIFrame, SubpackageType: 0xFF, Body: []byte("x")})
+	require.ErrorIs(t, err, ErrCorruptPayload)
+	require.Nil(t, frame)
 }

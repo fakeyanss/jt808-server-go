@@ -141,37 +141,58 @@ func newFrameAssembler(maxBytes int) *frameAssembler {
 	return &frameAssembler{buffers: map[uint8][]byte{}, maxBytes: maxBytes}
 }
 
-// Push 接收一个分片包；返回完整帧载荷，未收齐时返回 nil。
-func (a *frameAssembler) Push(pkt *Packet) []byte {
+// Push 接收一个分片包。
+//
+// 返回语义：
+//   - 完整帧：返回帧载荷与 nil error；
+//   - 尚未收齐：返回 nil 与 nil error（正常中间状态）；
+//   - 缺片/超限/未知分包类型：返回 nil 与哨兵错误（ErrTruncatedPayload /
+//     ErrFrameTooLarge / ErrCorruptPayload），调用方应丢弃当前帧。
+func (a *frameAssembler) Push(pkt *Packet) ([]byte, error) {
 	body := pkt.Body
 	switch pkt.SubpackageType {
 	case SubpackageAtomic:
-		return body
+		if len(body) > a.maxBytes {
+			return nil, fmt.Errorf("atomic frame size %d exceeds limit %d: %w",
+				len(body), a.maxBytes, ErrFrameTooLarge)
+		}
+		return body, nil
 	case SubpackageFirst:
+		var err error
+		if _, ok := a.buffers[pkt.DataType]; ok {
+			err = fmt.Errorf("previous frame missing last fragment: %w", ErrTruncatedPayload)
+		}
+		if len(body) > a.maxBytes {
+			delete(a.buffers, pkt.DataType)
+			return nil, fmt.Errorf("frame size %d exceeds limit %d: %w",
+				len(body), a.maxBytes, ErrFrameTooLarge)
+		}
 		a.buffers[pkt.DataType] = append([]byte(nil), body...)
-		return nil
+		return nil, err
 	case SubpackageMiddle:
 		buf, ok := a.buffers[pkt.DataType]
 		if !ok {
-			return nil
+			return nil, fmt.Errorf("middle fragment without first fragment: %w", ErrTruncatedPayload)
 		}
 		if len(buf)+len(body) > a.maxBytes {
 			delete(a.buffers, pkt.DataType)
-			return nil
+			return nil, fmt.Errorf("assembled frame size %d exceeds limit %d: %w",
+				len(buf)+len(body), a.maxBytes, ErrFrameTooLarge)
 		}
 		a.buffers[pkt.DataType] = append(buf, body...)
-		return nil
+		return nil, nil
 	case SubpackageLast:
 		buf, ok := a.buffers[pkt.DataType]
 		if !ok {
-			return nil
+			return nil, fmt.Errorf("last fragment without first fragment: %w", ErrTruncatedPayload)
 		}
 		delete(a.buffers, pkt.DataType)
 		if len(buf)+len(body) > a.maxBytes {
-			return nil
+			return nil, fmt.Errorf("assembled frame size %d exceeds limit %d: %w",
+				len(buf)+len(body), a.maxBytes, ErrFrameTooLarge)
 		}
-		return append(buf, body...)
+		return append(buf, body...), nil
 	default:
-		return nil
+		return nil, fmt.Errorf("unknown subpackage type %d: %w", pkt.SubpackageType, ErrCorruptPayload)
 	}
 }

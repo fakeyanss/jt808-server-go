@@ -166,17 +166,25 @@ func (s *Server) handlePacket(raw []byte) {
 	}
 	st.lastSeen = time.Now()
 
-	frame := st.assemble.Push(pkt)
-	if len(frame) == 0 {
+	frame, err := st.assemble.Push(pkt)
+	if err != nil {
+		// 缺片/超限：丢弃当前帧，但保留流继续接收后续帧（UDP 丢包属常态）。
+		log.Debug().Err(err).Str("phone", pkt.Phone).Uint8("channel", pkt.LogicChannel).
+			Msg("Drop truncated media frame")
 		return
+	}
+	if len(frame) == 0 {
+		return // 分片未收齐，正常中间状态
 	}
 	h264, err := ExtractH264(frame)
 	if err != nil {
+		// 截断/损坏同样只丢帧不断流；不支持的载荷形态也无需写盘。
 		log.Debug().Err(err).Str("phone", pkt.Phone).Uint8("channel", pkt.LogicChannel).
-			Msg("Ignore unsupported media frame")
+			Msg("Drop unusable media frame")
 		return
 	}
 	if len(h264) == 0 {
+		// PS 正常结束且无 ES，不是错误。
 		return
 	}
 	if err := st.sink.Write(h264); err != nil {

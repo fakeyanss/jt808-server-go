@@ -62,14 +62,16 @@ func TestExtractH264RawAnnexBPassthrough(t *testing.T) {
 }
 
 func TestExtractH264RejectsUnsupportedPayload(t *testing.T) {
-	_, err := ExtractH264([]byte{0xde, 0xad, 0xbe, 0xef})
-	require.Error(t, err)
+	got, err := ExtractH264([]byte{0xde, 0xad, 0xbe, 0xef})
+	require.ErrorIs(t, err, ErrUnsupportedPayload)
+	require.Nil(t, got)
 
-	// PS 中只有音频 PES 时没有视频 ES。
+	// PS 结构完整但只有音频 PES 时没有视频 ES，属于不可用数据。
 	payload := append([]byte(nil), testPSPackHeader()...)
 	payload = append(payload, []byte{0x00, 0x00, 0x01, 0xC0, 0x00, 0x04, 0x80, 0x00, 0x00, 0x11}...)
-	_, err = ExtractH264(payload)
-	require.Error(t, err)
+	got, err = ExtractH264(payload)
+	require.ErrorIs(t, err, ErrCorruptPayload)
+	require.Nil(t, got)
 }
 
 func TestExtractH264TrimsPESPrefix(t *testing.T) {
@@ -156,43 +158,81 @@ func TestExtractH264WithoutSPSPPSDoesNotPanic(t *testing.T) {
 	require.Equal(t, idrOnly, got)
 }
 
-// 声明长度超过实际数据时按实际数据截断，不 panic。
-func TestExtractH264ClampsPESLengthBeyondPayload(t *testing.T) {
+// PES 声明长度超过实际字节时必须报错，不能按实际数据静默裁剪。
+func TestExtractH264RejectsPESLengthBeyondPayload(t *testing.T) {
 	es := []byte{0x00, 0x00, 0x00, 0x01, 0x41, 0x9A}
 	payload := append([]byte(nil), testPSPackHeader()...)
 	payload = append(payload, testVideoPES(es, len(es)+50)...)
 
 	got, err := ExtractH264(payload)
-	require.NoError(t, err)
-	require.Equal(t, es, got)
+	require.ErrorIs(t, err, ErrTruncatedPayload)
+	require.Nil(t, got)
 }
 
-// 各种截断/损坏的 PS 载荷必须返回错误而不是 panic。
-func TestExtractH264RejectsTruncatedPSWithoutPanic(t *testing.T) {
+// 专门的截断用例：任何 PS/PES 头或声明长度被截断都必须返回 ErrTruncatedPayload，
+// 且不得返回已解析出的部分 ES（否则调用方会落盘不完整帧）。
+func TestExtractH264TruncatedPayloadReturnsError(t *testing.T) {
 	cases := map[string][]byte{
 		"pack start code only": {0x00, 0x00, 0x01, 0xBA},
 		"short pack header":    {0x00, 0x00, 0x01, 0xBA, 0x44, 0x00},
 		"short video pes":      append(append([]byte(nil), testPSPackHeader()...), 0x00, 0x00, 0x01, 0xE0, 0x00),
 		"psm declares too much": append(append([]byte(nil), testPSPackHeader()...),
 			0x00, 0x00, 0x01, 0xBC, 0x00, 0x08),
+		"audio pes declares too much": append(append([]byte(nil), testPSPackHeader()...),
+			0x00, 0x00, 0x01, 0xC0, 0x00, 0x20),
 	}
 	for name, payload := range cases {
 		t.Run(name, func(t *testing.T) {
-			require.NotPanics(t, func() {
-				out, err := ExtractH264(payload)
-				if err != nil {
-					require.Nil(t, out)
-					return
-				}
-				require.Empty(t, out, "truncated PS payload must not produce a partial ES")
-			})
+			var got []byte
+			var err error
+			require.NotPanics(t, func() { got, err = ExtractH264(payload) })
+			require.ErrorIs(t, err, ErrTruncatedPayload)
+			require.Nil(t, got, "truncated PS payload must not produce a partial ES")
 		})
 	}
 
-	require.NotPanics(t, func() {
-		_, err := ExtractH264(nil)
-		require.Error(t, err)
-	})
+	// 已成功解析出一个完整视频 PES 后，后续音频 PES 头被截断也必须整体报错。
+	es := []byte{0x00, 0x00, 0x00, 0x01, 0x65, 0x01}
+	payload := append([]byte(nil), testPSPackHeader()...)
+	payload = append(payload, testVideoPES(es, -1)...)
+	payload = append(payload, 0x00, 0x00, 0x01, 0xC0, 0x00)
+	var got []byte
+	var err error
+	require.NotPanics(t, func() { got, err = ExtractH264(payload) })
+	require.ErrorIs(t, err, ErrTruncatedPayload)
+	require.Nil(t, got, "partial ES must be discarded on truncation")
+
+	got, err = ExtractH264(nil)
+	require.ErrorIs(t, err, ErrUnsupportedPayload)
+	require.Nil(t, got)
+}
+
+// PS program end code 表示正常结束，不是错误；只有结束码时返回空数据且无错误。
+func TestExtractH264ProgramEndIsNotAnError(t *testing.T) {
+	es := []byte{0x00, 0x00, 0x00, 0x01, 0x65, 0x01}
+	payload := append([]byte(nil), testPSPackHeader()...)
+	payload = append(payload, testVideoPES(es, -1)...)
+	payload = append(payload, 0x00, 0x00, 0x01, psProgramEndCode)
+
+	got, err := ExtractH264(payload)
+	require.NoError(t, err)
+	require.Equal(t, es, got)
+
+	empty := append([]byte(nil), testPSPackHeader()...)
+	empty = append(empty, 0x00, 0x00, 0x01, psProgramEndCode)
+	got, err = ExtractH264(empty)
+	require.NoError(t, err)
+	require.Nil(t, got)
+}
+
+// 视频 PES 内没有 Annex B 起始码属于损坏数据，必须报错。
+func TestExtractH264CorruptVideoPESReturnsError(t *testing.T) {
+	payload := append([]byte(nil), testPSPackHeader()...)
+	payload = append(payload, testVideoPES([]byte{0xAA, 0xBB, 0xCC}, -1)...)
+
+	got, err := ExtractH264(payload)
+	require.ErrorIs(t, err, ErrCorruptPayload)
+	require.Nil(t, got)
 }
 
 // findPSStart 只识别 >= 0xB0 的容器码，H.264 NAL 起始码不能被当作容器边界。
