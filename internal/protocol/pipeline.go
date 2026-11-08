@@ -159,26 +159,28 @@ func process() delegateFunc {
 		}
 
 		ackFirst := pd.Outgoing != nil && p.mp.AckFirst(msgID)
-		if ackFirst {
-			// 先应答后落库是 at-most-once 语义：应答发出后若进程崩溃、业务处理失败
-			// 或下游存储不可用，本条上行数据不会被终端重传，也不会进入持久化出口。
-			// 需要 at-least-once 时必须依赖 S6/outbox，不能在此处补重试。
+		// at_least_once 分类改为先落库后应答：落库失败不发出应答，终端会按协议重传。
+		atLeastOnce := ackFirst && p.mp.deps.Uplink != nil && p.mp.deps.Uplink.AtLeastOnce(msgID, pd.Incoming)
+		if ackFirst && !atLeastOnce {
+			// best_effort 分类先应答后落库；落库失败只记日志，不等终端重传。
 			if sendErr := p.sendOutgoingNow(nxtCtx); sendErr != nil {
 				return nxtCtx, sendErr
 			}
 			nxtCtx = context.WithValue(nxtCtx, earlyAckSentCtxKey{}, true)
 		}
 
-		if businessErr := p.mp.ApplyBusiness(ctx, msgID, pd); businessErr != nil {
-			// 未先应答的消息保持旧语义：业务错误中断本轮应答。
-			// 已先应答的消息只记录日志，连接继续；设备不存在仍作为例外向上返回。
-			if !ackFirst || stderrors.Is(businessErr, repository.ErrDeviceNotFound) {
+		businessErr := p.mp.ApplyBusiness(ctx, msgID, pd)
+		if businessErr != nil {
+			// at_least_once 未发应答：直接中断，让终端重传本条数据。
+			// best_effort 已先应答：只记录日志，连接继续；设备不存在仍作为例外向上返回。
+			if atLeastOnce || !ackFirst || stderrors.Is(businessErr, repository.ErrDeviceNotFound) {
 				return nxtCtx, businessErr
 			}
 			log.Error().Err(businessErr).
 				Uint16("msg_id", msgID).
 				Str("phone", packet.Header.PhoneNumber).
 				Msg("Business processing failed after acknowledgement was sent")
+			return nxtCtx, nil
 		}
 		return nxtCtx, nil
 	})

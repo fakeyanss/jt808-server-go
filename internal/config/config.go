@@ -160,7 +160,146 @@ type Config struct {
 	AlarmServer   *alarmServerConf   `yaml:"alarmServer"`
 	MediaServer   *mediaServerConf   `yaml:"mediaServer"`
 	Admin         *adminConf         `yaml:"admin"`
+	API           *apiConf           `yaml:"api"`
 	CommandOutbox *commandOutboxConf `yaml:"commandOutbox"`
+	Uplink        *uplinkConf        `yaml:"uplink"`
+}
+
+// 业务 API 的默认限流参数；token 为空表示未开启鉴权，启动时会打警告。
+const (
+	DefaultAPIRatePerSecond = 50.0
+	DefaultAPIBurst         = 100
+)
+
+// apiConf 配置业务 API 的鉴权与限流。
+// token 为空表示鉴权关闭，仅建议在可信内网临时使用。
+type apiConf struct {
+	Auth      *apiAuthConf      `yaml:"auth"`
+	RateLimit *apiRateLimitConf `yaml:"rateLimit"`
+}
+
+type apiAuthConf struct {
+	Token string `yaml:"token"`
+}
+
+type apiRateLimitConf struct {
+	RatePerSecond *float64 `yaml:"ratePerSecond"`
+	Burst         *int     `yaml:"burst"`
+}
+
+// APIOptions 是业务 API 鉴权与限流的归一化配置。
+type APIOptions struct {
+	Token         string
+	RatePerSecond float64
+	Burst         int
+}
+
+// ParseAPI 解析业务 API 配置；未配置时返回默认限流与空 token（鉴权关闭）。
+func (c *Config) ParseAPI() (APIOptions, error) {
+	options := APIOptions{
+		RatePerSecond: DefaultAPIRatePerSecond,
+		Burst:         DefaultAPIBurst,
+	}
+	if c == nil || c.API == nil {
+		return options, nil
+	}
+	conf := c.API
+	if conf.Auth != nil {
+		options.Token = strings.TrimSpace(conf.Auth.Token)
+	}
+	if limit := conf.RateLimit; limit != nil {
+		if limit.RatePerSecond != nil {
+			if *limit.RatePerSecond <= 0 {
+				return APIOptions{}, fmt.Errorf("api.rateLimit.ratePerSecond must be > 0, got %v", *limit.RatePerSecond)
+			}
+			options.RatePerSecond = *limit.RatePerSecond
+		}
+		if limit.Burst != nil {
+			if *limit.Burst < 1 {
+				return APIOptions{}, fmt.Errorf("api.rateLimit.burst must be >= 1, got %d", *limit.Burst)
+			}
+			options.Burst = *limit.Burst
+		}
+	}
+	return options, nil
+}
+
+// uplinkConf 配置上行可靠性。
+// reliability 按消息分类选择 best_effort / at_least_once；
+// at_least_once 先完成落库再应答，落库失败由终端按协议重传。
+type uplinkConf struct {
+	Reliability *uplinkReliabilityConf `yaml:"reliability"`
+}
+
+type uplinkReliabilityConf struct {
+	Default       string `yaml:"default"`
+	Location      string `yaml:"location"`
+	BatchLocation string `yaml:"batchLocation"`
+	Alarm         string `yaml:"alarm"`
+}
+
+// UplinkOptions 是上行可靠性的归一化配置。
+type UplinkOptions struct {
+	Default       string
+	Location      string
+	BatchLocation string
+	Alarm         string
+}
+
+const (
+	UplinkReliabilityBestEffort  = "best_effort"
+	UplinkReliabilityAtLeastOnce = "at_least_once"
+)
+
+// DefaultUplinkOptions 返回默认上行可靠性配置：
+// 实时定位 best-effort（几十秒后就有下一条），批量定位与报警 at-least-once。
+func DefaultUplinkOptions() UplinkOptions {
+	return UplinkOptions{
+		Default:       UplinkReliabilityBestEffort,
+		Location:      UplinkReliabilityBestEffort,
+		BatchLocation: UplinkReliabilityAtLeastOnce,
+		Alarm:         UplinkReliabilityAtLeastOnce,
+	}
+}
+
+// ParseUplink 归一化上行可靠性配置。
+func (c *Config) ParseUplink() (UplinkOptions, error) {
+	options := DefaultUplinkOptions()
+	if c == nil || c.Uplink == nil {
+		return options, nil
+	}
+	if conf := c.Uplink.Reliability; conf != nil {
+		options.Default = firstNonEmpty(conf.Default, options.Default)
+		options.Location = firstNonEmpty(conf.Location, options.Location)
+		options.BatchLocation = firstNonEmpty(conf.BatchLocation, options.BatchLocation)
+		options.Alarm = firstNonEmpty(conf.Alarm, options.Alarm)
+	}
+
+	for name, value := range map[string]string{
+		"default":       options.Default,
+		"location":      options.Location,
+		"batchLocation": options.BatchLocation,
+		"alarm":         options.Alarm,
+	} {
+		normalized := strings.ToLower(strings.TrimSpace(value))
+		if normalized != UplinkReliabilityBestEffort && normalized != UplinkReliabilityAtLeastOnce {
+			return UplinkOptions{}, fmt.Errorf(
+				"uplink.reliability.%s must be best_effort or at_least_once, got %q", name, value)
+		}
+	}
+	options.Default = strings.ToLower(strings.TrimSpace(options.Default))
+	options.Location = strings.ToLower(strings.TrimSpace(options.Location))
+	options.BatchLocation = strings.ToLower(strings.TrimSpace(options.BatchLocation))
+	options.Alarm = strings.ToLower(strings.TrimSpace(options.Alarm))
+
+	return options, nil
+}
+
+func firstNonEmpty(value, fallback string) string {
+	if trimmed := strings.TrimSpace(value); trimmed != "" {
+		return trimmed
+	}
+	return fallback
 }
 
 // 苏标附件服务器的工程默认值。未配置 alarmServer.port 时服务不启动。
@@ -168,6 +307,8 @@ const (
 	DefaultAlarmServerDir           = "./data/alarms"
 	DefaultAlarmServerMaxFileSize   = 100 * 1024 * 1024
 	DefaultAlarmServerMaxConcurrent = 16
+	// DefaultAlarmServerRetentionDays 是已完成附件文件的默认落盘保留天数。
+	DefaultAlarmServerRetentionDays = 7
 	DefaultAlarmServerCompletedTTL  = 20 * time.Minute
 )
 
@@ -184,6 +325,8 @@ type alarmServerConf struct {
 	// CompletedTTL 是完成态内存状态的保留时长（如 "20m"）；
 	// 显式 "0" 表示不淘汰，留空使用默认值。
 	CompletedTTL string `yaml:"completedTTL"`
+	// RetentionDays 是已完成附件文件的落盘保留天数；显式 0 表示不清理。
+	RetentionDays *int `yaml:"retentionDays"`
 	// AutoUpload 控制报警首次上报时是否自动下发 0x9208。
 	// 默认 false，保持既有手动下发行为不变。
 	AutoUpload bool `yaml:"autoUpload"`
@@ -200,6 +343,7 @@ type AlarmServerOptions struct {
 	MaxFileSize   int64
 	MaxConcurrent int
 	CompletedTTL  time.Duration
+	Retention     time.Duration
 	AutoUpload    bool
 	UploadIP      string
 }
@@ -262,6 +406,13 @@ func (c *Config) ParseAlarmServer() (options AlarmServerOptions, enabled bool, e
 		}
 		completedTTL = parsed
 	}
+	retentionDays := DefaultAlarmServerRetentionDays
+	if conf.RetentionDays != nil {
+		if *conf.RetentionDays < 0 {
+			return AlarmServerOptions{}, false, fmt.Errorf("alarmServer.retentionDays must be >= 0, got %d", *conf.RetentionDays)
+		}
+		retentionDays = *conf.RetentionDays
+	}
 	uploadIP := strings.TrimSpace(conf.UploadIP)
 	if conf.AutoUpload {
 		if uploadIP == "" {
@@ -281,6 +432,7 @@ func (c *Config) ParseAlarmServer() (options AlarmServerOptions, enabled bool, e
 		MaxFileSize:   maxFileSize,
 		MaxConcurrent: maxConcurrent,
 		CompletedTTL:  completedTTL,
+		Retention:     time.Duration(retentionDays) * 24 * time.Hour,
 		AutoUpload:    conf.AutoUpload,
 		UploadIP:      uploadIP,
 	}, true, nil
@@ -290,6 +442,7 @@ func (c *Config) ParseAlarmServer() (options AlarmServerOptions, enabled bool, e
 const (
 	DefaultMediaServerDir           = "./data/media"
 	DefaultMediaServerMaxConcurrent = 16
+	DefaultMediaServerRetentionDays = 7
 )
 
 // mediaServerConf 配置 1078 RTP 音视频接入服务器。
@@ -298,6 +451,8 @@ type mediaServerConf struct {
 	Port          string `yaml:"port"`
 	Dir           string `yaml:"dir"`
 	MaxConcurrent int    `yaml:"maxConcurrent"`
+	// RetentionDays 是 .h264 文件的落盘保留天数；显式 0 表示不清理。
+	RetentionDays *int `yaml:"retentionDays"`
 }
 
 // MediaServerOptions 是媒体接入服务器的归一化配置。
@@ -305,6 +460,7 @@ type MediaServerOptions struct {
 	Port          uint16
 	Dir           string
 	MaxConcurrent int
+	Retention     time.Duration
 }
 
 // ParseMediaServer 解析并校验 mediaServer 配置。
@@ -333,10 +489,18 @@ func (c *Config) ParseMediaServer() (options MediaServerOptions, enabled bool, e
 	if maxConcurrent == 0 {
 		maxConcurrent = DefaultMediaServerMaxConcurrent
 	}
+	retentionDays := DefaultMediaServerRetentionDays
+	if conf.RetentionDays != nil {
+		if *conf.RetentionDays < 0 {
+			return MediaServerOptions{}, false, fmt.Errorf("mediaServer.retentionDays must be >= 0, got %d", *conf.RetentionDays)
+		}
+		retentionDays = *conf.RetentionDays
+	}
 	return MediaServerOptions{
 		Port:          uint16(port),
 		Dir:           dir,
 		MaxConcurrent: maxConcurrent,
+		Retention:     time.Duration(retentionDays) * 24 * time.Hour,
 	}, true, nil
 }
 
@@ -566,10 +730,21 @@ const (
 	DefaultCommandOutboxInitialWait   = time.Minute
 )
 
+// command_outbox 的三种运行模式。
+//   - off：不写 outbox，下行直接调用 Serv.Send，失败不可查、不可重投。
+//   - memory：outbox 只存在进程内，保留幂等键与状态查询，进程重启即丢。
+//   - durable：outbox 落在当前存储后端，支持进程重启后继续重投。
+const (
+	CommandOutboxModeOff     = "off"
+	CommandOutboxModeMemory  = "memory"
+	CommandOutboxModeDurable = "durable"
+)
+
 // commandOutboxConf 配置 pending 命令的重投调度。
-// 整段缺省时使用内置默认值，重投始终开启：内存后端重启后 outbox 自然为空，
-// 不需要额外开关。
+// mode 缺省时按存储后端归一化：memory 后端默认 memory，SQL 后端默认 durable；
+// 调度参数仅对 memory/durable 生效，off 模式忽略。
 type commandOutboxConf struct {
+	Mode          string `yaml:"mode"`
 	PollInterval  string `yaml:"pollInterval"`
 	BatchSize     int    `yaml:"batchSize"`
 	MaxAttempts   int    `yaml:"maxAttempts"`
@@ -582,6 +757,7 @@ type commandOutboxConf struct {
 
 // CommandOutboxOptions 是重投调度的归一化配置。
 type CommandOutboxOptions struct {
+	Mode          string
 	PollInterval  time.Duration
 	BatchSize     int
 	MaxAttempts   int
@@ -590,6 +766,19 @@ type CommandOutboxOptions struct {
 	RetryMax      time.Duration
 	ExpireAfter   time.Duration
 	InitialWait   time.Duration
+}
+
+// ResolveCommandOutboxMode 把未显式配置的 mode 按存储后端归一化。
+// memory 后端无法跨重启恢复，默认 memory；SQL 后端具备持久化能力，默认 durable。
+// 显式配置优先，调用方应保证值已通过 ParseCommandOutbox 校验。
+func ResolveCommandOutboxMode(mode, backend string) string {
+	if normalized := strings.ToLower(strings.TrimSpace(mode)); normalized != "" {
+		return normalized
+	}
+	if strings.EqualFold(strings.TrimSpace(backend), "memory") {
+		return CommandOutboxModeMemory
+	}
+	return CommandOutboxModeDurable
 }
 
 // DefaultCommandOutboxOptions 返回未配置 commandOutbox 时的默认重投参数。
@@ -614,6 +803,13 @@ func (c *Config) ParseCommandOutbox() (CommandOutboxOptions, error) {
 		return options, nil
 	}
 	conf := c.CommandOutbox
+	switch mode := strings.ToLower(strings.TrimSpace(conf.Mode)); mode {
+	case "", CommandOutboxModeOff, CommandOutboxModeMemory, CommandOutboxModeDurable:
+		options.Mode = mode
+	default:
+		return CommandOutboxOptions{}, fmt.Errorf(
+			"commandOutbox.mode must be one of off, memory, durable, got %q", conf.Mode)
+	}
 	parseDuration := func(name, raw string, fallback time.Duration) (time.Duration, error) {
 		if strings.TrimSpace(raw) == "" {
 			return fallback, nil

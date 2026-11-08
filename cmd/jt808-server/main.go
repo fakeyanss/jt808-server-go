@@ -18,11 +18,14 @@ import (
 	"github.com/fakeyanss/jt808-server-go/internal/command"
 	"github.com/fakeyanss/jt808-server-go/internal/config"
 	"github.com/fakeyanss/jt808-server-go/internal/media"
+	"github.com/fakeyanss/jt808-server-go/internal/observability"
 	"github.com/fakeyanss/jt808-server-go/internal/protocol"
 	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
+	"github.com/fakeyanss/jt808-server-go/internal/repository"
 	"github.com/fakeyanss/jt808-server-go/internal/runtime"
 	"github.com/fakeyanss/jt808-server-go/internal/server"
 	"github.com/fakeyanss/jt808-server-go/internal/storage"
+	"github.com/fakeyanss/jt808-server-go/internal/uplink"
 	"github.com/fakeyanss/jt808-server-go/pkg/logger"
 	"github.com/fakeyanss/jt808-server-go/pkg/routines"
 )
@@ -48,6 +51,11 @@ func main() {
 		log.Error().Err(outboxErr).Msg("Invalid commandOutbox configuration")
 		os.Exit(1)
 	}
+	uplinkOptions, uplinkErr := cfg.ParseUplink()
+	if uplinkErr != nil {
+		log.Error().Err(uplinkErr).Msg("Invalid uplink reliability configuration")
+		os.Exit(1)
+	}
 
 	storageCfg := storage.FromConfig(cfg)
 	stores, storageErr := storage.Init(storageCfg)
@@ -57,7 +65,29 @@ func main() {
 	}
 	log.Info().Str("backend", stores.Backend).Msg("Storage backend initialized")
 
-	deps := protocol.ProcessorDeps{Storage: stores, Runtime: runtime.Default()}
+	// mode 未显式配置时按存储后端归一化：memory 后端默认 memory，SQL 后端默认 durable。
+	outboxOptions.Mode = config.ResolveCommandOutboxMode(outboxOptions.Mode, stores.Backend)
+	var commandRepo repository.CommandRepository
+	switch outboxOptions.Mode {
+	case config.CommandOutboxModeOff:
+	case config.CommandOutboxModeMemory:
+		commandRepo = repository.NewCommandRepository()
+	case config.CommandOutboxModeDurable:
+		commandRepo = stores.Commands
+	}
+	log.Info().Str("mode", outboxOptions.Mode).Msg("Command outbox mode resolved")
+
+	// 上行可靠性：at_least_once 分类先完成落库再应答，落库失败由终端重传。
+	uplinkPolicy := uplink.NewPolicy(uplinkOptions.Default, uplinkOptions.Location,
+		uplinkOptions.BatchLocation, uplinkOptions.Alarm)
+	log.Info().
+		Str("default", string(uplinkPolicy.Default)).
+		Str("location", string(uplinkPolicy.Location)).
+		Str("batch_location", string(uplinkPolicy.BatchLocation)).
+		Str("alarm", string(uplinkPolicy.Alarm)).
+		Msg("Uplink reliability configured")
+
+	deps := protocol.ProcessorDeps{Storage: stores, Runtime: runtime.Default(), Uplink: &uplinkPolicy}
 
 	var hooks action.Hooks = action.Noop{}
 	if cfg.Server.Action != nil && cfg.Server.Action.HTTP != nil && cfg.Server.Action.HTTP.URL != "" {
@@ -92,35 +122,52 @@ func main() {
 		log.Error().Err(adminErr).Msg("Invalid admin configuration")
 		os.Exit(1)
 	}
+	apiOptions, apiErr := cfg.ParseAPI()
+	if apiErr != nil {
+		log.Error().Err(apiErr).Msg("Invalid business API configuration")
+		os.Exit(1)
+	}
+	if apiOptions.Token == "" {
+		log.Warn().Msg("Business API authentication is disabled; set api.auth.token in production")
+	}
 
 	serv := server.NewTCPServer()
 	serv.SetDeps(deps)
 	serv.SetReliability(time.Duration(cfg.Server.AckTimeoutMS)*time.Millisecond, cfg.Server.MaxRetransmissions)
+	metrics := observability.NewMetrics()
+	serv.SetMetrics(metrics)
 
-	// 进程重启后把 pending 命令重新投给已上线会话；首次 Tick 立即执行，之后周期调度。
-	replay, replayErr := command.NewService(command.Dependencies{
-		Commands: stores.Commands,
-		Devices:  stores.Devices,
-		Conn:     deps.Runtime.Conn,
-		Send: func(sessionID string, msg model.JT808Msg, serial uint16) error {
-			return serv.Send(sessionID, msg, server.WithSerial(serial))
-		},
-	}, command.Options{
-		PollInterval:  outboxOptions.PollInterval,
-		BatchSize:     outboxOptions.BatchSize,
-		MaxAttempts:   outboxOptions.MaxAttempts,
-		LeaseDuration: outboxOptions.LeaseDuration,
-		RetryBase:     outboxOptions.RetryBase,
-		RetryMax:      outboxOptions.RetryMax,
-	})
-	if replayErr != nil {
-		log.Error().Err(replayErr).Msg("Fail to create command replay service")
-		os.Exit(1)
+	// memory/durable 模式启动重投调度：进程重启后把 pending 命令重新投给已上线会话。
+	// off 模式不写 outbox，也不启动重投。
+	cancelOutbox := func() {}
+	var outboxDone <-chan struct{}
+	if outboxOptions.Mode != config.CommandOutboxModeOff {
+		replay, replayErr := command.NewService(command.Dependencies{
+			Commands: commandRepo,
+			Devices:  stores.Devices,
+			Conn:     deps.Runtime.Conn,
+			Send: func(sessionID string, msg model.JT808Msg, serial uint16) error {
+				return serv.Send(sessionID, msg, server.WithSerial(serial))
+			},
+		}, command.Options{
+			PollInterval:  outboxOptions.PollInterval,
+			BatchSize:     outboxOptions.BatchSize,
+			MaxAttempts:   outboxOptions.MaxAttempts,
+			LeaseDuration: outboxOptions.LeaseDuration,
+			RetryBase:     outboxOptions.RetryBase,
+			RetryMax:      outboxOptions.RetryMax,
+		})
+		if replayErr != nil {
+			log.Error().Err(replayErr).Msg("Fail to create command replay service")
+			os.Exit(1)
+		}
+		// 由重投服务负责把应答/失败事件落回 outbox，并在失败时决定重试还是终结。
+		serv.SetReliableResultHandler(replay.HandleResult)
+		outboxCtx, cancel := context.WithCancel(context.Background())
+		cancelOutbox = cancel
+		outboxDone = replay.Done()
+		routines.GoSafe(func() { replay.Run(outboxCtx) })
 	}
-	// 由重投服务负责把应答/失败事件落回 outbox，并在失败时决定重试还是终结。
-	serv.SetReliableResultHandler(replay.HandleResult)
-	outboxCtx, cancelOutbox := context.WithCancel(context.Background())
-	routines.GoSafe(func() { replay.Run(outboxCtx) })
 	if alarmOptions.AutoUpload {
 		hooks = alarmserver.NewUploadTrigger(hooks, alarmserver.UploadTriggerOptions{
 			IP:      alarmOptions.UploadIP,
@@ -132,7 +179,7 @@ func main() {
 			if err != nil {
 				return fmt.Errorf("device is offline: %w", err)
 			}
-			session, err := deps.Runtime.Conn.Get(ctx, device.SessionID)
+			session, err := deps.Runtime.Conn.GetByPhone(ctx, device.Phone)
 			if err != nil {
 				return fmt.Errorf("session is unavailable: %w", err)
 			}
@@ -152,10 +199,12 @@ func main() {
 		os.Exit(1)
 	}
 	routines.GoSafe(func() { serv.Start() })
+	var udpServ *server.UDPServer
 	if cfg.Server.Port.UDPPort != "" {
-		udpServ := server.NewUDPServer()
+		udpServ = server.NewUDPServer()
 		udpServ.SetDeps(deps)
 		udpServ.SetHooks(hooks)
+		udpServ.SetMetrics(metrics)
 		udpServ.SetReliability(time.Duration(cfg.Server.AckTimeoutMS)*time.Millisecond, cfg.Server.MaxRetransmissions)
 		udpAddr := ":" + cfg.Server.Port.UDPPort
 		if err := udpServ.Listen(udpAddr); err != nil {
@@ -172,6 +221,7 @@ func main() {
 			MaxFileSize:   alarmOptions.MaxFileSize,
 			MaxConcurrent: alarmOptions.MaxConcurrent,
 			CompletedTTL:  alarmOptions.CompletedTTL,
+			Retention:     alarmOptions.Retention,
 		})
 		// TCP 与 UDP 各自独立监听，0x9208 通告的端口即这里的监听端口。
 		if alarmOptions.Port != 0 {
@@ -196,6 +246,7 @@ func main() {
 		mediaServ = media.NewServer(media.Config{
 			Dir:           mediaOptions.Dir,
 			MaxConcurrent: mediaOptions.MaxConcurrent,
+			Retention:     mediaOptions.Retention,
 		})
 		mediaAddr := fmt.Sprintf(":%d", mediaOptions.Port)
 		if err := mediaServ.Listen(mediaAddr); err != nil {
@@ -203,6 +254,63 @@ func main() {
 			os.Exit(1)
 		}
 		routines.GoSafe(func() { mediaServ.Start() })
+	}
+
+	// 就绪检查：存储连通、outbox 过期堆积、媒体/附件目录可写。
+	// 未启用的组件不参与判定，避免把“功能关闭”误报成“服务异常”。
+	checks := []observability.Check{{
+		Name: "storage",
+		Fn: func(ctx context.Context) error {
+			ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+			defer cancel()
+			return stores.Check(ctx)
+		},
+	}}
+	if outboxOptions.Mode != config.CommandOutboxModeOff && commandRepo != nil {
+		checks = append(checks, observability.Check{
+			Name: "outbox_backlog",
+			Fn: func(ctx context.Context) error {
+				return observability.CheckOutboxBacklog(ctx, commandRepo, observability.DefaultExpiredOutboxThreshold)
+			},
+		})
+	}
+	if mediaEnabled {
+		checks = append(checks, observability.Check{
+			Name: "media_disk",
+			Fn:   func(context.Context) error { return observability.CheckWritableDir(mediaOptions.Dir) },
+		})
+	}
+	if alarmEnabled {
+		checks = append(checks, observability.Check{
+			Name: "attachment_disk",
+			Fn:   func(context.Context) error { return observability.CheckWritableDir(alarmOptions.Dir) },
+		})
+	}
+	probes := &observability.Provider{
+		Metrics: metrics,
+		Checks:  checks,
+		Collect: func(ctx context.Context) observability.Snapshot {
+			snapshot := observability.Snapshot{ConnectedSessions: deps.Runtime.Conn.Count(ctx)}
+			for _, binding := range deps.Runtime.Conn.ListBindings(ctx) {
+				snapshot.AckPending += binding.Session.PendingCount()
+			}
+			if commandRepo != nil {
+				pending, expired, err := observability.OutboxStats(ctx, commandRepo)
+				if err != nil {
+					log.Warn().Err(err).Msg("Fail to collect outbox metrics")
+				} else {
+					snapshot.OutboxPending = pending
+					snapshot.OutboxExpired = expired
+				}
+			}
+			if mediaServ != nil {
+				snapshot.MediaStreams = mediaServ.Streams()
+			}
+			if alarmServ != nil {
+				snapshot.AttachmentsActive, snapshot.AttachmentsCompleted = alarmServ.Assembler().Stats()
+			}
+			return snapshot
+		},
 	}
 
 	var adminServ *adminapi.Server
@@ -213,6 +321,7 @@ func main() {
 			Devices:   stores.Devices,
 			Locations: stores.Locations,
 			Alarms:    stores.Alarms,
+			Probes:    probes,
 		})
 		if err := adminServ.Listen(adminOptions.Addr); err != nil {
 			log.Error().Err(err).Str("addr", adminOptions.Addr).Msg("Fail to listen admin API addr")
@@ -221,7 +330,12 @@ func main() {
 		routines.GoSafe(func() { _ = adminServ.Start() })
 	}
 
-	routines.GoSafe(func() { api.Run(serv, cfg, alarmServ) })
+	apiCtx, cancelAPI := context.WithCancel(context.Background())
+	apiDone := make(chan struct{})
+	routines.GoSafe(func() {
+		defer close(apiDone)
+		api.Run(apiCtx, serv, cfg, apiOptions, alarmServ, outboxOptions, commandRepo)
+	})
 
 	// 运行时状态只存在于进程内，进程退出即自然归零；数据库无需、也不应被批量重置。
 	quit := make(chan os.Signal, 1)
@@ -229,6 +343,44 @@ func main() {
 	sig := <-quit
 	log.Info().Str("signal", sig.String()).Msg("Shutting down")
 
+	// 关机顺序：先停业务入口，再停终端接入，最后排空投递与落盘。
+	// 1. 业务 API 不再受理新的下发请求，并等待在途 HTTP 请求完成。
+	cancelAPI()
+	select {
+	case <-apiDone:
+	case <-time.After(10 * time.Second):
+		log.Warn().Msg("Timed out waiting for business API to shut down")
+	}
+
+	// 2. 停止接入新终端并关闭存量会话，后续不再产生新的上行写入。
+	shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), 10*time.Second)
+	if err := serv.Shutdown(shutdownCtx); err != nil {
+		log.Warn().Err(err).Msg("Fail to shutdown TCP server")
+	}
+	cancelShutdown()
+	if udpServ != nil {
+		udpServ.Stop()
+	}
+
+	// 3. 取消重投循环并等待当前 tick 收尾；未投递的命令留在 outbox 等下次启动。
+	cancelOutbox()
+	if outboxDone != nil {
+		select {
+		case <-outboxDone:
+		case <-time.After(5 * time.Second):
+			log.Warn().Msg("Timed out waiting for command outbox to drain")
+		}
+	}
+
+	// 4. 关闭媒体与附件写入，确保文件句柄与已收数据落盘。
+	if alarmServ != nil {
+		alarmServ.Stop()
+	}
+	if mediaServ != nil {
+		mediaServ.Stop()
+	}
+
+	// 5. 管理面最后停止，尽量延长探针与指标的可用窗口。
 	if adminServ != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		if err := adminServ.Stop(ctx); err != nil {
@@ -236,13 +388,6 @@ func main() {
 		}
 		cancel()
 	}
-	if alarmServ != nil {
-		alarmServ.Stop()
-	}
-	if mediaServ != nil {
-		mediaServ.Stop()
-	}
-	cancelOutbox()
 	if err := storage.Close(); err != nil {
 		log.Warn().Err(err).Msg("Fail to close storage backend")
 	}

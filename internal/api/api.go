@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"net"
 	"net/http"
-	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -19,6 +18,7 @@ import (
 
 	"github.com/fakeyanss/jt808-server-go/internal/alarmserver"
 	"github.com/fakeyanss/jt808-server-go/internal/config"
+	"github.com/fakeyanss/jt808-server-go/internal/httpguard"
 	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
 	"github.com/fakeyanss/jt808-server-go/internal/repository"
 	"github.com/fakeyanss/jt808-server-go/internal/runtime"
@@ -26,25 +26,26 @@ import (
 	"github.com/fakeyanss/jt808-server-go/internal/storage"
 )
 
-func Run(serv *server.TCPServer, cfg *config.Config, alarmServ *alarmserver.Server) {
+// Run 启动业务 API。commands 为 nil 表示 outbox 已关闭（mode=off），
+// 下行入口直接调用 Serv.Send，不提供命令状态查询。
+func Run(ctx context.Context, serv *server.TCPServer, cfg *config.Config, apiOptions config.APIOptions, alarmServ *alarmserver.Server, outboxOptions config.CommandOutboxOptions, commands repository.CommandRepository) {
 	// web server structure
 	gin.SetMode(gin.ReleaseMode)
 	router := gin.Default()
+	// 顺序为审计 → 限流 → 鉴权：审计能看到被拒绝的请求，限流在鉴权前挡住洪峰。
+	router.Use(httpguard.Audit(), httpguard.RateLimit(apiOptions.RatePerSecond, apiOptions.Burst), httpguard.Auth(apiOptions.Token))
 	api := router.Group("/api")
 	devices := storage.Default().Devices
 	geo := storage.Default().Geo
 	connRegistry := runtime.Default().Conn
-	commands := storage.Default().Commands
-	// 入队时写入首次可重投时刻与过期时刻；配置非法时回退默认值
-	// （启动阶段已由 main 校验，这里仅做兜底）。
-	outboxOptions, outboxErr := cfg.ParseCommandOutbox()
-	if outboxErr != nil {
-		log.Error().Err(outboxErr).Msg("Invalid commandOutbox configuration, using defaults")
-		outboxOptions = config.DefaultCommandOutboxOptions()
-	}
+	outboxEnabled := outboxOptions.Mode != config.CommandOutboxModeOff && commands != nil
 
 	// 下行命令投递状态查询；命令下发时返回的 commandId 可在此回查。
 	api.GET("/commands/:commandId", func(c *gin.Context) {
+		if !outboxEnabled {
+			c.JSON(http.StatusNotFound, gin.H{"err": "command outbox is disabled"})
+			return
+		}
 		command, err := commands.Get(c.Request.Context(), c.Param("commandId"))
 		if errors.Is(err, repository.ErrCommandNotFound) {
 			c.JSON(http.StatusNotFound, gin.H{"err": "command not found"})
@@ -146,7 +147,7 @@ func Run(serv *server.TCPServer, cfg *config.Config, alarmServ *alarmserver.Serv
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
 		}
-		session, err := connRegistry.Get(c.Request.Context(), device.SessionID)
+		session, err := lookupSessionByPhone(c.Request.Context(), connRegistry, device)
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
@@ -180,7 +181,7 @@ func Run(serv *server.TCPServer, cfg *config.Config, alarmServ *alarmserver.Serv
 		} else {
 			msg = &model.Msg8104{Header: model.GenMsgHeader(device, 0x8104, serial)}
 		}
-		serv.Send(session.ID, msg)
+		directSend(serv, session, msg)
 		ctx, cancelRequest := context.WithTimeout(c.Request.Context(), 10*time.Second)
 		defer cancelRequest()
 		select {
@@ -201,7 +202,7 @@ func Run(serv *server.TCPServer, cfg *config.Config, alarmServ *alarmserver.Serv
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
 		}
-		session, err := connRegistry.Get(c.Request.Context(), device.SessionID)
+		session, err := lookupSessionByPhone(c.Request.Context(), connRegistry, device)
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
@@ -213,7 +214,7 @@ func Run(serv *server.TCPServer, cfg *config.Config, alarmServ *alarmserver.Serv
 			return
 		}
 		defer cancel()
-		serv.Send(session.ID, &model.Msg8107{Header: model.GenMsgHeader(device, 0x8107, session.GetNextSerialNum())})
+		directSend(serv, session, &model.Msg8107{Header: model.GenMsgHeader(device, 0x8107, session.GetNextSerialNum())})
 		ctx, cancelRequest := context.WithTimeout(c.Request.Context(), 10*time.Second)
 		defer cancelRequest()
 		select {
@@ -234,7 +235,7 @@ func Run(serv *server.TCPServer, cfg *config.Config, alarmServ *alarmserver.Serv
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
 		}
-		session, err := connRegistry.Get(c.Request.Context(), device.SessionID)
+		session, err := lookupSessionByPhone(c.Request.Context(), connRegistry, device)
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
@@ -247,7 +248,7 @@ func Run(serv *server.TCPServer, cfg *config.Config, alarmServ *alarmserver.Serv
 			return
 		}
 		defer cancel()
-		serv.Send(session.ID, &model.Msg8201{Header: model.GenMsgHeader(device, 0x8201, serial)})
+		directSend(serv, session, &model.Msg8201{Header: model.GenMsgHeader(device, 0x8201, serial)})
 		ctx, cancelRequest := context.WithTimeout(c.Request.Context(), 10*time.Second)
 		defer cancelRequest()
 		select {
@@ -284,7 +285,7 @@ func Run(serv *server.TCPServer, cfg *config.Config, alarmServ *alarmserver.Serv
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
 		}
-		session, err := connRegistry.Get(c.Request.Context(), device.SessionID)
+		session, err := lookupSessionByPhone(c.Request.Context(), connRegistry, device)
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
@@ -294,7 +295,7 @@ func Run(serv *server.TCPServer, cfg *config.Config, alarmServ *alarmserver.Serv
 			return
 		}
 		msg := &model.Msg8105{Header: model.GenMsgHeader(device, 0x8105, session.GetNextSerialNum()), CommandWord: request.CommandWord, CommandParam: request.CommandParam}
-		command, created, err := enqueueDownlinkCommand(c, commands, serv, session, msg, outboxOptions)
+		command, created, err := dispatchDownlink(c, commands, serv, session, msg, outboxOptions)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"err": err.Error()})
 			return
@@ -325,14 +326,18 @@ func Run(serv *server.TCPServer, cfg *config.Config, alarmServ *alarmserver.Serv
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
 		}
-		session, err := connRegistry.Get(c.Request.Context(), device.SessionID)
+		session, err := lookupSessionByPhone(c.Request.Context(), connRegistry, device)
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
 		}
 		msg := &model.Msg860Delete{Header: model.GenMsgHeader(device, request.MessageID, session.GetNextSerialNum()), IDs: request.IDs}
-		serv.Send(session.ID, msg)
-		c.JSON(http.StatusAccepted, gin.H{"messageId": request.MessageID, "count": len(request.IDs)})
+		command, created, err := dispatchDownlink(c, commands, serv, session, msg, outboxOptions)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"err": err.Error()})
+			return
+		}
+		writeCommandAccepted(c, command, created, gin.H{"messageId": request.MessageID, "count": len(request.IDs)})
 	})
 
 	api.POST("/device/:phone/regions/set", func(c *gin.Context) {
@@ -359,7 +364,7 @@ func Run(serv *server.TCPServer, cfg *config.Config, alarmServ *alarmserver.Serv
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
 		}
-		session, err := connRegistry.Get(c.Request.Context(), device.SessionID)
+		session, err := lookupSessionByPhone(c.Request.Context(), connRegistry, device)
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
@@ -396,8 +401,12 @@ func Run(serv *server.TCPServer, cfg *config.Config, alarmServ *alarmserver.Serv
 			c.JSON(http.StatusBadRequest, gin.H{"err": "at least one region/route item is required"})
 			return
 		}
-		serv.Send(session.ID, msg)
-		c.JSON(http.StatusAccepted, gin.H{"messageId": request.MessageID, "count": count})
+		command, created, err := dispatchDownlink(c, commands, serv, session, msg, outboxOptions)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"err": err.Error()})
+			return
+		}
+		writeCommandAccepted(c, command, created, gin.H{"messageId": request.MessageID, "count": count})
 	})
 
 	api.POST("/device/:phone/regions/query", func(c *gin.Context) {
@@ -419,7 +428,7 @@ func Run(serv *server.TCPServer, cfg *config.Config, alarmServ *alarmserver.Serv
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
 		}
-		session, err := connRegistry.Get(c.Request.Context(), device.SessionID)
+		session, err := lookupSessionByPhone(c.Request.Context(), connRegistry, device)
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
@@ -431,7 +440,7 @@ func Run(serv *server.TCPServer, cfg *config.Config, alarmServ *alarmserver.Serv
 			return
 		}
 		defer cancel()
-		serv.Send(session.ID, &model.Msg8608{Header: model.GenMsgHeader(device, 0x8608, session.GetNextSerialNum()), QueryType: request.QueryType, IDs: request.IDs})
+		directSend(serv, session, &model.Msg8608{Header: model.GenMsgHeader(device, 0x8608, session.GetNextSerialNum()), QueryType: request.QueryType, IDs: request.IDs})
 		ctx, cancelRequest := context.WithTimeout(c.Request.Context(), 10*time.Second)
 		defer cancelRequest()
 		select {
@@ -452,12 +461,12 @@ func Run(serv *server.TCPServer, cfg *config.Config, alarmServ *alarmserver.Serv
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
 		}
-		session, err := connRegistry.Get(c.Request.Context(), device.SessionID)
+		session, err := lookupSessionByPhone(c.Request.Context(), connRegistry, device)
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
 		}
-		serv.Send(session.ID, &model.Msg8702{Header: model.GenMsgHeader(device, 0x8702, session.GetNextSerialNum())})
+		directSend(serv, session, &model.Msg8702{Header: model.GenMsgHeader(device, 0x8702, session.GetNextSerialNum())})
 		c.JSON(http.StatusAccepted, gin.H{"messageId": "0x8702"})
 	})
 	api.POST("/device/:phone/recorder/command", func(c *gin.Context) {
@@ -485,13 +494,13 @@ func Run(serv *server.TCPServer, cfg *config.Config, alarmServ *alarmserver.Serv
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
 		}
-		session, err := connRegistry.Get(c.Request.Context(), device.SessionID)
+		session, err := lookupSessionByPhone(c.Request.Context(), connRegistry, device)
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
 		}
 		msg := &model.MsgRecordCommand{Header: model.GenMsgHeader(device, request.MessageID, session.GetNextSerialNum()), Command: request.Command, Data: data}
-		command, created, err := enqueueDownlinkCommand(c, commands, serv, session, msg, outboxOptions)
+		command, created, err := dispatchDownlink(c, commands, serv, session, msg, outboxOptions)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"err": err.Error()})
 			return
@@ -510,7 +519,7 @@ func Run(serv *server.TCPServer, cfg *config.Config, alarmServ *alarmserver.Serv
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
 		}
-		session, err := connRegistry.Get(c.Request.Context(), device.SessionID)
+		session, err := lookupSessionByPhone(c.Request.Context(), connRegistry, device)
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
@@ -520,8 +529,12 @@ func Run(serv *server.TCPServer, cfg *config.Config, alarmServ *alarmserver.Serv
 			c.JSON(http.StatusBadRequest, gin.H{"err": "invalid camera command fields"})
 			return
 		}
-		serv.Send(session.ID, &request)
-		c.JSON(http.StatusAccepted, gin.H{"messageId": "0x8801"})
+		command, created, err := dispatchDownlink(c, commands, serv, session, &request, outboxOptions)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"err": err.Error()})
+			return
+		}
+		writeCommandAccepted(c, command, created, gin.H{"messageId": "0x8801"})
 	})
 	api.POST("/device/:phone/media/search", func(c *gin.Context) {
 		var request model.Msg8802
@@ -535,7 +548,7 @@ func Run(serv *server.TCPServer, cfg *config.Config, alarmServ *alarmserver.Serv
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
 		}
-		session, err := connRegistry.Get(c.Request.Context(), device.SessionID)
+		session, err := lookupSessionByPhone(c.Request.Context(), connRegistry, device)
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
@@ -545,7 +558,7 @@ func Run(serv *server.TCPServer, cfg *config.Config, alarmServ *alarmserver.Serv
 			c.JSON(http.StatusBadRequest, gin.H{"err": "invalid media search fields"})
 			return
 		}
-		serv.Send(session.ID, &request)
+		directSend(serv, session, &request)
 		c.JSON(http.StatusAccepted, gin.H{"messageId": "0x8802"})
 	})
 	api.POST("/device/:phone/media/resources", func(c *gin.Context) {
@@ -569,7 +582,7 @@ func Run(serv *server.TCPServer, cfg *config.Config, alarmServ *alarmserver.Serv
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
 		}
-		session, err := connRegistry.Get(c.Request.Context(), device.SessionID)
+		session, err := lookupSessionByPhone(c.Request.Context(), connRegistry, device)
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
@@ -602,7 +615,7 @@ func Run(serv *server.TCPServer, cfg *config.Config, alarmServ *alarmserver.Serv
 			c.JSON(http.StatusBadRequest, gin.H{"err": "invalid resource query fields"})
 			return
 		}
-		serv.Send(session.ID, &msg)
+		directSend(serv, session, &msg)
 		c.JSON(http.StatusAccepted, gin.H{"messageId": "0x9205"})
 	})
 	api.POST("/device/:phone/media/command", func(c *gin.Context) {
@@ -629,7 +642,7 @@ func Run(serv *server.TCPServer, cfg *config.Config, alarmServ *alarmserver.Serv
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
 		}
-		session, err := connRegistry.Get(c.Request.Context(), device.SessionID)
+		session, err := lookupSessionByPhone(c.Request.Context(), connRegistry, device)
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
@@ -649,8 +662,12 @@ func Run(serv *server.TCPServer, cfg *config.Config, alarmServ *alarmserver.Serv
 			c.JSON(http.StatusBadRequest, gin.H{"err": "bodyHex does not match the selected JT808 media command format"})
 			return
 		}
-		serv.Send(session.ID, msg)
-		c.JSON(http.StatusAccepted, gin.H{"messageId": request.MessageID})
+		command, created, err := dispatchDownlink(c, commands, serv, session, msg, outboxOptions)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"err": err.Error()})
+			return
+		}
+		writeCommandAccepted(c, command, created, gin.H{"messageId": fmt.Sprintf("0x%04X", request.MessageID)})
 	})
 
 	api.POST("/device/:phone/text/issue", func(c *gin.Context) {
@@ -665,7 +682,7 @@ func Run(serv *server.TCPServer, cfg *config.Config, alarmServ *alarmserver.Serv
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
 		}
-		session, err := connRegistry.Get(c.Request.Context(), device.SessionID)
+		session, err := lookupSessionByPhone(c.Request.Context(), connRegistry, device)
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
@@ -675,8 +692,12 @@ func Run(serv *server.TCPServer, cfg *config.Config, alarmServ *alarmserver.Serv
 			c.JSON(http.StatusBadRequest, gin.H{"err": "invalid text issue fields"})
 			return
 		}
-		serv.Send(session.ID, &request)
-		c.JSON(http.StatusAccepted, gin.H{"messageId": "0x8300"})
+		command, created, err := dispatchDownlink(c, commands, serv, session, &request, outboxOptions)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"err": err.Error()})
+			return
+		}
+		writeCommandAccepted(c, command, created, gin.H{"messageId": "0x8300"})
 	})
 	api.POST("/device/:phone/events/set", func(c *gin.Context) {
 		var request model.Msg8301
@@ -690,7 +711,7 @@ func Run(serv *server.TCPServer, cfg *config.Config, alarmServ *alarmserver.Serv
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
 		}
-		session, err := connRegistry.Get(c.Request.Context(), device.SessionID)
+		session, err := lookupSessionByPhone(c.Request.Context(), connRegistry, device)
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
@@ -701,8 +722,12 @@ func Run(serv *server.TCPServer, cfg *config.Config, alarmServ *alarmserver.Serv
 			c.JSON(http.StatusBadRequest, gin.H{"err": "invalid event set fields"})
 			return
 		}
-		serv.Send(session.ID, &request)
-		c.JSON(http.StatusAccepted, gin.H{"messageId": "0x8301"})
+		command, created, err := dispatchDownlink(c, commands, serv, session, &request, outboxOptions)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"err": err.Error()})
+			return
+		}
+		writeCommandAccepted(c, command, created, gin.H{"messageId": "0x8301"})
 	})
 
 	api.POST("/device/:phone/vehicle/control", func(c *gin.Context) {
@@ -717,7 +742,7 @@ func Run(serv *server.TCPServer, cfg *config.Config, alarmServ *alarmserver.Serv
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
 		}
-		session, err := connRegistry.Get(c.Request.Context(), device.SessionID)
+		session, err := lookupSessionByPhone(c.Request.Context(), connRegistry, device)
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
@@ -727,8 +752,12 @@ func Run(serv *server.TCPServer, cfg *config.Config, alarmServ *alarmserver.Serv
 			c.JSON(http.StatusBadRequest, gin.H{"err": "invalid vehicle control fields"})
 			return
 		}
-		serv.Send(session.ID, &request)
-		c.JSON(http.StatusAccepted, gin.H{"messageId": "0x8500"})
+		command, created, err := dispatchDownlink(c, commands, serv, session, &request, outboxOptions)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"err": err.Error()})
+			return
+		}
+		writeCommandAccepted(c, command, created, gin.H{"messageId": "0x8500"})
 	})
 
 	api.POST("/device/:phone/question/issue", func(c *gin.Context) {
@@ -743,7 +772,7 @@ func Run(serv *server.TCPServer, cfg *config.Config, alarmServ *alarmserver.Serv
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
 		}
-		session, err := connRegistry.Get(c.Request.Context(), device.SessionID)
+		session, err := lookupSessionByPhone(c.Request.Context(), connRegistry, device)
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
@@ -753,8 +782,12 @@ func Run(serv *server.TCPServer, cfg *config.Config, alarmServ *alarmserver.Serv
 			c.JSON(http.StatusBadRequest, gin.H{"err": "invalid question issue fields"})
 			return
 		}
-		serv.Send(session.ID, &request)
-		c.JSON(http.StatusAccepted, gin.H{"messageId": "0x8302"})
+		command, created, err := dispatchDownlink(c, commands, serv, session, &request, outboxOptions)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"err": err.Error()})
+			return
+		}
+		writeCommandAccepted(c, command, created, gin.H{"messageId": "0x8302"})
 	})
 
 	api.POST("/device/:phone/info/menu/set", func(c *gin.Context) {
@@ -769,7 +802,7 @@ func Run(serv *server.TCPServer, cfg *config.Config, alarmServ *alarmserver.Serv
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
 		}
-		session, err := connRegistry.Get(c.Request.Context(), device.SessionID)
+		session, err := lookupSessionByPhone(c.Request.Context(), connRegistry, device)
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
@@ -779,8 +812,12 @@ func Run(serv *server.TCPServer, cfg *config.Config, alarmServ *alarmserver.Serv
 			c.JSON(http.StatusBadRequest, gin.H{"err": "invalid info menu set fields"})
 			return
 		}
-		serv.Send(session.ID, &request)
-		c.JSON(http.StatusAccepted, gin.H{"messageId": "0x8303"})
+		command, created, err := dispatchDownlink(c, commands, serv, session, &request, outboxOptions)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"err": err.Error()})
+			return
+		}
+		writeCommandAccepted(c, command, created, gin.H{"messageId": "0x8303"})
 	})
 
 	api.POST("/device/:phone/info/service", func(c *gin.Context) {
@@ -795,7 +832,7 @@ func Run(serv *server.TCPServer, cfg *config.Config, alarmServ *alarmserver.Serv
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
 		}
-		session, err := connRegistry.Get(c.Request.Context(), device.SessionID)
+		session, err := lookupSessionByPhone(c.Request.Context(), connRegistry, device)
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
@@ -805,8 +842,12 @@ func Run(serv *server.TCPServer, cfg *config.Config, alarmServ *alarmserver.Serv
 			c.JSON(http.StatusBadRequest, gin.H{"err": "invalid info service fields"})
 			return
 		}
-		serv.Send(session.ID, &request)
-		c.JSON(http.StatusAccepted, gin.H{"messageId": "0x8304"})
+		command, created, err := dispatchDownlink(c, commands, serv, session, &request, outboxOptions)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"err": err.Error()})
+			return
+		}
+		writeCommandAccepted(c, command, created, gin.H{"messageId": "0x8304"})
 	})
 
 	api.POST("/device/:phone/call/callback", func(c *gin.Context) {
@@ -821,7 +862,7 @@ func Run(serv *server.TCPServer, cfg *config.Config, alarmServ *alarmserver.Serv
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
 		}
-		session, err := connRegistry.Get(c.Request.Context(), device.SessionID)
+		session, err := lookupSessionByPhone(c.Request.Context(), connRegistry, device)
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
@@ -831,7 +872,7 @@ func Run(serv *server.TCPServer, cfg *config.Config, alarmServ *alarmserver.Serv
 			c.JSON(http.StatusBadRequest, gin.H{"err": "invalid call callback fields"})
 			return
 		}
-		command, created, err := enqueueDownlinkCommand(c, commands, serv, session, &request, outboxOptions)
+		command, created, err := dispatchDownlink(c, commands, serv, session, &request, outboxOptions)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"err": err.Error()})
 			return
@@ -851,7 +892,7 @@ func Run(serv *server.TCPServer, cfg *config.Config, alarmServ *alarmserver.Serv
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
 		}
-		session, err := connRegistry.Get(c.Request.Context(), device.SessionID)
+		session, err := lookupSessionByPhone(c.Request.Context(), connRegistry, device)
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
@@ -861,7 +902,7 @@ func Run(serv *server.TCPServer, cfg *config.Config, alarmServ *alarmserver.Serv
 			c.JSON(http.StatusBadRequest, gin.H{"err": "invalid phonebook set fields"})
 			return
 		}
-		command, created, err := enqueueDownlinkCommand(c, commands, serv, session, &request, outboxOptions)
+		command, created, err := dispatchDownlink(c, commands, serv, session, &request, outboxOptions)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"err": err.Error()})
 			return
@@ -881,7 +922,7 @@ func Run(serv *server.TCPServer, cfg *config.Config, alarmServ *alarmserver.Serv
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
 		}
-		session, err := connRegistry.Get(c.Request.Context(), device.SessionID)
+		session, err := lookupSessionByPhone(c.Request.Context(), connRegistry, device)
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
@@ -891,7 +932,7 @@ func Run(serv *server.TCPServer, cfg *config.Config, alarmServ *alarmserver.Serv
 			c.JSON(http.StatusBadRequest, gin.H{"err": "invalid terminal upgrade fields"})
 			return
 		}
-		command, created, err := enqueueDownlinkCommand(c, commands, serv, session, &request, outboxOptions)
+		command, created, err := dispatchDownlink(c, commands, serv, session, &request, outboxOptions)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"err": err.Error()})
 			return
@@ -911,7 +952,7 @@ func Run(serv *server.TCPServer, cfg *config.Config, alarmServ *alarmserver.Serv
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
 		}
-		session, err := connRegistry.Get(c.Request.Context(), device.SessionID)
+		session, err := lookupSessionByPhone(c.Request.Context(), connRegistry, device)
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
@@ -921,7 +962,7 @@ func Run(serv *server.TCPServer, cfg *config.Config, alarmServ *alarmserver.Serv
 			c.JSON(http.StatusBadRequest, gin.H{"err": "invalid transparent downlink fields"})
 			return
 		}
-		command, created, err := enqueueDownlinkCommand(c, commands, serv, session, &request, outboxOptions)
+		command, created, err := dispatchDownlink(c, commands, serv, session, &request, outboxOptions)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"err": err.Error()})
 			return
@@ -944,7 +985,7 @@ func Run(serv *server.TCPServer, cfg *config.Config, alarmServ *alarmserver.Serv
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
 		}
-		session, err := connRegistry.Get(c.Request.Context(), device.SessionID)
+		session, err := lookupSessionByPhone(c.Request.Context(), connRegistry, device)
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
@@ -955,7 +996,7 @@ func Run(serv *server.TCPServer, cfg *config.Config, alarmServ *alarmserver.Serv
 			c.JSON(http.StatusInternalServerError, gin.H{"err": err.Error()})
 			return
 		}
-		serv.Send(session.ID, msg)
+		directSend(serv, session, msg)
 		c.JSON(http.StatusAccepted, gin.H{"messageId": "0x8203", "alarmSerial": request.AlarmSerial, "alarmType": request.AlarmType})
 	})
 
@@ -986,7 +1027,7 @@ func Run(serv *server.TCPServer, cfg *config.Config, alarmServ *alarmserver.Serv
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
 		}
-		session, err := connRegistry.Get(c.Request.Context(), device.SessionID)
+		session, err := lookupSessionByPhone(c.Request.Context(), connRegistry, device)
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
@@ -996,7 +1037,12 @@ func Run(serv *server.TCPServer, cfg *config.Config, alarmServ *alarmserver.Serv
 			Header:     header,
 			Parameters: &params,
 		}
-		serv.Send(session.ID, &msg)
+		command, created, err := dispatchDownlink(c, commands, serv, session, &msg, outboxOptions)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"err": err.Error()})
+			return
+		}
+		writeCommandAccepted(c, command, created, gin.H{"messageId": "0x8103"})
 	})
 
 	// 苏标主动安全附件：下发 0x9208 报警附件上传指令。
@@ -1071,7 +1117,7 @@ func Run(serv *server.TCPServer, cfg *config.Config, alarmServ *alarmserver.Serv
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
 		}
-		session, err := connRegistry.Get(c.Request.Context(), device.SessionID)
+		session, err := lookupSessionByPhone(c.Request.Context(), connRegistry, device)
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
@@ -1085,8 +1131,12 @@ func Run(serv *server.TCPServer, cfg *config.Config, alarmServ *alarmserver.Serv
 			AlarmNo:   request.AlarmNo,
 			Reserved:  reserved,
 		}
-		serv.Send(session.ID, msg)
-		c.JSON(http.StatusAccepted, gin.H{"messageId": "0x9208", "tcpPort": tcpPort, "udpPort": udpPort})
+		command, created, err := dispatchDownlink(c, commands, serv, session, msg, outboxOptions)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"err": err.Error()})
+			return
+		}
+		writeCommandAccepted(c, command, created, gin.H{"messageId": "0x9208", "tcpPort": tcpPort, "udpPort": udpPort})
 	})
 
 	// 苏标主动安全附件：查询已完成附件的元数据。
@@ -1124,11 +1174,63 @@ func Run(serv *server.TCPServer, cfg *config.Config, alarmServ *alarmserver.Serv
 	httpAddr := ":" + cfg.Server.Port.HTTPPort
 
 	log.Debug().Msgf("Listening and serving HTTP on :%s", cfg.Server.Port.HTTPPort)
-	err := router.Run(httpAddr)
+	listener, err := net.Listen("tcp", httpAddr)
 	if err != nil {
-		log.Error().Err(err).Str("addr", httpAddr).Msg("Fail to run gin router")
-		os.Exit(1)
+		log.Error().Err(err).Str("addr", httpAddr).Msg("Fail to listen HTTP API addr")
+		return
 	}
+	srv := &http.Server{
+		Handler:           router,
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       15 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       60 * time.Second,
+	}
+	serveDone := make(chan struct{})
+	go func() {
+		defer close(serveDone)
+		if serveErr := srv.Serve(listener); serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) {
+			log.Error().Err(serveErr).Str("addr", httpAddr).Msg("Fail to run HTTP API server")
+		}
+	}()
+
+	select {
+	case <-ctx.Done():
+	case <-serveDone:
+		return
+	}
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := srv.Shutdown(shutdownCtx); err != nil {
+		log.Warn().Err(err).Msg("Fail to shutdown HTTP API server")
+	}
+}
+
+// lookupSessionByPhone 按终端手机号在运行时会话注册表中定位当前活连接。
+// SQL 后端不再持久化运行时字段，Device.SessionID 读出来是零值；
+// 下行路由因此必须走手机号索引，不能依赖该字段。
+func lookupSessionByPhone(ctx context.Context, conn runtime.ConnectionRegistry, device *model.Device) (*model.Session, error) {
+	return conn.GetByPhone(ctx, device.Phone)
+}
+
+// dispatchDownlink 按 outbox 模式选择下发路径：
+// off 直接交给 Serv.Send（不落库、不可查、不可重投）；memory/durable 走 outbox。
+func dispatchDownlink(
+	c *gin.Context,
+	commands repository.CommandRepository,
+	serv *server.TCPServer,
+	session *model.Session,
+	msg model.JT808Msg,
+	outbox config.CommandOutboxOptions,
+) (*repository.DownlinkCommand, bool, error) {
+	if outbox.Mode == config.CommandOutboxModeOff {
+		serv.Send(session.ID, msg)
+		return nil, false, nil
+	}
+	if commands == nil {
+		return nil, false, errors.New("command outbox repository is not configured")
+	}
+	return enqueueDownlinkCommand(c, commands, serv, session, msg, outbox)
 }
 
 // enqueueDownlinkCommand 把下行命令写入 outbox 后再发送。
@@ -1203,6 +1305,11 @@ func enqueueDownlinkCommand(
 
 // writeCommandAccepted 返回下行命令受理结果；幂等命中用 200 与 202 区分。
 func writeCommandAccepted(c *gin.Context, command *repository.DownlinkCommand, created bool, fields gin.H) {
+	// off 模式没有 outbox 记录，只返回已下发。
+	if command == nil {
+		c.JSON(http.StatusAccepted, fields)
+		return
+	}
 	fields["commandId"] = command.CommandID
 	fields["duplicate"] = !created
 	status := http.StatusAccepted

@@ -1,7 +1,9 @@
 package adminapi
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -9,6 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/fakeyanss/jt808-server-go/internal/config"
+	"github.com/fakeyanss/jt808-server-go/internal/observability"
 )
 
 func testOptions(token string, rate float64, burst int) config.AdminOptions {
@@ -90,4 +93,38 @@ func TestAdminUnknownRouteUsesJSONError(t *testing.T) {
 	recorder := doRequest(t, serv.Handler(), http.MethodGet, "/missing", "secret")
 	require.Equal(t, http.StatusNotFound, recorder.Code)
 	require.Equal(t, codeNotFound, decodeError(t, recorder).Code)
+}
+
+func TestAdminReadyzReflectsFailedChecks(t *testing.T) {
+	serv := NewServer(testOptions("secret", 10, 20), Dependencies{
+		Probes: &observability.Provider{Checks: []observability.Check{
+			{Name: "storage", Fn: func(context.Context) error { return errors.New("database is down") }},
+		}},
+	})
+
+	recorder := doRequest(t, serv.Handler(), http.MethodGet, "/readyz", "")
+	require.Equal(t, http.StatusServiceUnavailable, recorder.Code)
+	require.Contains(t, recorder.Body.String(), `"status":"not ready"`)
+	require.Contains(t, recorder.Body.String(), `"name":"storage"`)
+	require.Contains(t, recorder.Body.String(), "database is down")
+}
+
+func TestAdminReadyzDefaultsToReady(t *testing.T) {
+	serv := NewServer(testOptions("secret", 10, 20), Dependencies{})
+	recorder := doRequest(t, serv.Handler(), http.MethodGet, "/readyz", "")
+	require.Equal(t, http.StatusOK, recorder.Code)
+	require.JSONEq(t, `{"status":"ready","checks":[]}`, recorder.Body.String())
+}
+
+func TestAdminMetricsRequiresToken(t *testing.T) {
+	serv := NewServer(testOptions("secret", 10, 20), Dependencies{})
+
+	recorder := doRequest(t, serv.Handler(), http.MethodGet, "/metrics", "")
+	require.Equal(t, http.StatusUnauthorized, recorder.Code)
+
+	recorder = doRequest(t, serv.Handler(), http.MethodGet, "/metrics", "secret")
+	require.Equal(t, http.StatusOK, recorder.Code)
+	require.Equal(t, "text/plain; version=0.0.4; charset=utf-8", recorder.Header().Get("Content-Type"))
+	require.Contains(t, recorder.Body.String(), "jt808_sessions_connected 0")
+	require.Contains(t, recorder.Body.String(), "jt808_attachments_completed_total 0")
 }

@@ -33,7 +33,27 @@ func TestParseAlarmServerDefaults(t *testing.T) {
 		MaxFileSize:   DefaultAlarmServerMaxFileSize,
 		MaxConcurrent: DefaultAlarmServerMaxConcurrent,
 		CompletedTTL:  DefaultAlarmServerCompletedTTL,
+		Retention:     DefaultAlarmServerRetentionDays * 24 * time.Hour,
 	}, options)
+}
+
+func TestParseAlarmServerRetentionDays(t *testing.T) {
+	days := 30
+	options, enabled, err := (&Config{AlarmServer: &alarmServerConf{Port: "7200", RetentionDays: &days}}).ParseAlarmServer()
+	assert.NoError(t, err)
+	assert.True(t, enabled)
+	assert.Equal(t, 30*24*time.Hour, options.Retention)
+
+	disabled := 0
+	options, enabled, err = (&Config{AlarmServer: &alarmServerConf{Port: "7200", RetentionDays: &disabled}}).ParseAlarmServer()
+	assert.NoError(t, err)
+	assert.True(t, enabled)
+	assert.Zero(t, options.Retention)
+
+	negative := -1
+	_, enabled, err = (&Config{AlarmServer: &alarmServerConf{Port: "7200", RetentionDays: &negative}}).ParseAlarmServer()
+	assert.Error(t, err)
+	assert.False(t, enabled)
 }
 
 func TestParseAlarmServerCompletedTTL(t *testing.T) {
@@ -78,6 +98,7 @@ func TestParseAlarmServerExplicitValues(t *testing.T) {
 		MaxFileSize:   1024,
 		MaxConcurrent: 3,
 		CompletedTTL:  7 * time.Minute,
+		Retention:     DefaultAlarmServerRetentionDays * 24 * time.Hour,
 	}, options)
 }
 

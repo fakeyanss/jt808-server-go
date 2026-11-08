@@ -17,13 +17,16 @@ RUN bash scripts/build.sh release jt808-migrate linux amd64
 
 FROM alpine:latest
 
-WORKDIR /app
+WORKDIR /app/output
 
 COPY --from=build /app/target/release/jt808-server-go_linux_amd64/ /app/output/
 COPY --from=build /app/target/release/jt808-migrate_linux_amd64/jt808-migrate /app/output/
 
-EXPOSE 8081
 EXPOSE 8080
+EXPOSE 8081
 EXPOSE 8008
+EXPOSE 7200
+EXPOSE 7201
+EXPOSE 9000
 
-CMD ["/app/output/jt808-server-go"]
+CMD ["/app/output/jt808-server-go", "-c", "/app/output/configs/default.yaml"]

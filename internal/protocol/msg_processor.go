@@ -19,6 +19,7 @@ import (
 	"github.com/fakeyanss/jt808-server-go/internal/repository"
 	"github.com/fakeyanss/jt808-server-go/internal/runtime"
 	"github.com/fakeyanss/jt808-server-go/internal/storage"
+	"github.com/fakeyanss/jt808-server-go/internal/uplink"
 )
 
 var (
@@ -45,6 +46,8 @@ type action struct {
 type ProcessorDeps struct {
 	Storage *storage.Stores
 	Runtime *runtime.Stores
+	// Uplink 为空表示上行可靠性未配置（全部 best_effort）。
+	Uplink *uplink.Policy
 }
 
 // ProcessorOption 配置消息处理器。
@@ -478,6 +481,9 @@ func NewJT808MsgProcessor(hooks actionpkg.Hooks, opts ...ProcessorOption) *JT808
 	}
 	if settings.deps.Runtime != nil {
 		deps.Runtime = settings.deps.Runtime
+	}
+	if settings.deps.Uplink != nil {
+		deps.Uplink = settings.deps.Uplink
 	}
 	mp := &JT808MsgProcessor{
 		hooks: hooks,
@@ -1007,7 +1013,8 @@ func (mp *JT808MsgProcessor) processMsg0200(ctx context.Context, data *model.Pro
 		return errors.Wrapf(err, "Fail to find device cache, phoneNumber=%s", in.Header.PhoneNumber)
 	}
 	if err := mp.deps.Storage.Alarms.Record(ctx, in.Header.PhoneNumber, in.Header.SerialNumber, in.AlarmSign, in.Latitude, in.Longitude, in.Time); err != nil {
-		log.Error().Err(err).Str("phone", in.Header.PhoneNumber).Msg("record alarm")
+		// 报警落库失败需要上抛：at_least_once 分类下不应答，由终端重传。
+		return errors.Wrapf(err, "record alarm, phoneNumber=%s", in.Header.PhoneNumber)
 	}
 
 	// 解析状态位编码
@@ -1024,9 +1031,7 @@ func (mp *JT808MsgProcessor) processMsg0200(ctx context.Context, data *model.Pro
 	}
 
 	_ = mp.deps.Storage.Geo.Append(ctx, dg)
-	mp.recordLocationHistory(ctx, 0x0200, []*model.Msg0200{in})
-
-	return nil
+	return mp.recordLocationHistory(ctx, 0x0200, []*model.Msg0200{in})
 }
 
 // processMsg0704 保存批量定位快照，并把每个数据项写入定位历史。
@@ -1039,15 +1044,15 @@ func (mp *JT808MsgProcessor) processMsg0704(ctx context.Context, data *model.Pro
 	for i := range in.Items {
 		locs = append(locs, &in.Items[i].Loc)
 	}
-	mp.recordLocationHistory(ctx, 0x0704, locs)
-	return nil
+	return mp.recordLocationHistory(ctx, 0x0704, locs)
 }
 
 // recordLocationHistory 写入定位历史；memory 后端未启用 Locations 时跳过。
-func (mp *JT808MsgProcessor) recordLocationHistory(ctx context.Context, msgID uint16, locs []*model.Msg0200) {
+// 返回错误供 at_least_once 分类判定：落库失败时本次不应答，等待终端重传。
+func (mp *JT808MsgProcessor) recordLocationHistory(ctx context.Context, msgID uint16, locs []*model.Msg0200) error {
 	repo := mp.deps.Storage.Locations
 	if repo == nil || len(locs) == 0 {
-		return
+		return nil
 	}
 	records := make([]repository.LocationRecord, 0, len(locs))
 	for _, loc := range locs {
@@ -1070,11 +1075,12 @@ func (mp *JT808MsgProcessor) recordLocationHistory(ctx context.Context, msgID ui
 		})
 	}
 	if len(records) == 0 {
-		return
+		return nil
 	}
 	if err := repo.Record(ctx, records); err != nil {
-		log.Error().Err(err).Str("phone", records[0].Phone).Uint16("msg_id", msgID).Msg("record location history")
+		return errors.Wrapf(err, "record location history, phoneNumber=%s, msgID=0x%04X", records[0].Phone, msgID)
 	}
+	return nil
 }
 
 // acknowledgeResponse 只清算与该应答精确对应的待确认项：

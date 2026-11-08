@@ -27,6 +27,7 @@ type Config struct {
 	Dir           string        // H.264 落盘根目录
 	MaxConcurrent int           // 并发通道上限
 	IdleTimeout   time.Duration // 空闲回收时长
+	Retention     time.Duration // .h264 文件保留时长；<=0 表示不清理
 }
 
 func (c Config) normalize() Config {
@@ -84,6 +85,9 @@ func NewServer(cfg Config) *Server {
 
 // Listen 绑定 UDP 端口。
 func (s *Server) Listen(addr string) error {
+	if err := os.MkdirAll(s.cfg.Dir, 0o755); err != nil {
+		return fmt.Errorf("create media dir %s: %w", s.cfg.Dir, err)
+	}
 	udpAddr, err := net.ResolveUDPAddr("udp", addr)
 	if err != nil {
 		return fmt.Errorf("resolve media udp addr %s: %w", addr, err)
@@ -95,7 +99,7 @@ func (s *Server) Listen(addr string) error {
 	_ = conn.SetReadBuffer(udpReadBuffer)
 	s.conn = conn
 	log.Info().Str("addr", conn.LocalAddr().String()).Str("dir", s.cfg.Dir).
-		Int("maxConcurrent", s.cfg.MaxConcurrent).Msg("Media RTP server listening")
+		Int("maxConcurrent", s.cfg.MaxConcurrent).Dur("retention", s.cfg.Retention).Msg("Media RTP server listening")
 	return nil
 }
 
@@ -105,6 +109,13 @@ func (s *Server) Addr() string {
 		return ""
 	}
 	return s.conn.LocalAddr().String()
+}
+
+// Streams 返回当前活跃的媒体流数量，供指标采集。
+func (s *Server) Streams() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.streams)
 }
 
 // Start 进入阻塞式收包循环，由调用方放入独立 goroutine。
@@ -233,13 +244,67 @@ func (s *Server) cleanupLoop() {
 	}
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
+	var lastPrune time.Time
 	for {
 		select {
 		case <-s.done:
 			return
 		case now := <-ticker.C:
 			s.evictIdle(now)
+			// 每小时扫一次落盘目录；保留期为 0 时不清理。
+			if s.cfg.Retention > 0 && (lastPrune.IsZero() || now.Sub(lastPrune) >= time.Hour) {
+				lastPrune = now
+				s.pruneExpired(now)
+			}
 		}
+	}
+}
+
+// pruneExpired 删除超过保留期且不在写入中的 .h264 文件。
+// 正在写入的流即使修改时间较旧也跳过，避免删除已打开的文件。
+func (s *Server) pruneExpired(now time.Time) {
+	if s.cfg.Retention <= 0 {
+		return
+	}
+	cutoff := now.Add(-s.cfg.Retention)
+	active := make(map[string]struct{})
+	s.mu.Lock()
+	for _, st := range s.streams {
+		active[st.sink.Path()] = struct{}{}
+	}
+	s.mu.Unlock()
+
+	removed := 0
+	walkErr := filepath.WalkDir(s.cfg.Dir, func(path string, entry os.DirEntry, err error) error {
+		if err != nil {
+			log.Warn().Err(err).Str("path", path).Msg("Fail to scan media dir")
+			return nil
+		}
+		if entry.IsDir() || filepath.Ext(entry.Name()) != ".h264" {
+			return nil
+		}
+		if _, ok := active[path]; ok {
+			return nil
+		}
+		info, infoErr := entry.Info()
+		if infoErr != nil {
+			return nil
+		}
+		if !info.ModTime().Before(cutoff) {
+			return nil
+		}
+		if removeErr := os.Remove(path); removeErr != nil {
+			log.Warn().Err(removeErr).Str("path", path).Msg("Fail to prune expired media file")
+			return nil
+		}
+		removed++
+		return nil
+	})
+	if walkErr != nil {
+		log.Warn().Err(walkErr).Str("dir", s.cfg.Dir).Msg("Fail to walk media dir")
+	}
+	if removed > 0 {
+		log.Info().Int("removed", removed).Str("dir", s.cfg.Dir).Msg("Pruned expired media files")
 	}
 }
 

@@ -41,6 +41,8 @@ alarmServer:
   # 已完成附件的内存状态保留时长；到期后仅释放内存，.meta.json 仍可查询。
   # 显式 0 表示不淘汰，留空使用默认值 20m。
   completedTTL: "20m"
+  # 已完成附件文件的落盘保留天数；每小时扫描一次目录，显式 0 表示不清理。
+  retentionDays: 7
   # 报警首次上报时是否自动下发 0x9208（报警附件上传指令）。
   # 默认 false，保持仅通过 API 手动下发的既有行为。
   autoUpload: false
@@ -56,6 +58,8 @@ mediaServer:
   port: ""
   dir: "./data/media"
   maxConcurrent: 16
+  # .h264 文件落盘保留天数；每小时扫描一次目录，显式 0 表示不清理。
+  retentionDays: 7
 
 # 独立管理面 HTTP 监听。enable 缺省 false，不启动管理端口，
 # 终端接入端口、既有 HTTP API 与苏标/媒体服务行为完全不变。
@@ -72,6 +76,17 @@ admin:
     burst: 20
     keyBy: "credential"
 
+# 业务 API 鉴权、限流与审计。
+# token 为空表示鉴权关闭，仅建议在可信内网临时使用；生产环境必须配置。
+# 变更类请求（POST/PUT/PATCH/DELETE）与鉴权失败会写入审计日志。
+api:
+  auth:
+    token: ""
+  rateLimit:
+    # 按来源 IP 的令牌桶；ratePerSecond 为每秒补充令牌数，burst 为桶容量。
+    ratePerSecond: 50
+    burst: 100
+
 # 持久化数据保留策略。整段缺省时使用代码内置默认值，行为与之前的进程内实现一致。
 # 显式写 0 表示关闭对应策略（0 天不做时间清理、0 条不限制上限、0 毫秒不去重）。
 # JT/T 808 未规定平台侧保存期限，定位 7 天 / 10000 条为自行设定的工程默认值；
@@ -85,11 +100,15 @@ retention:
     confirmExpireMs: 600000
     maxPerDevice: 1000
 
-# 下行命令 outbox 重投。进程重启后 pending 命令按下面的节奏重新投给在线会话。
+# 下行命令 outbox 重投（memory / durable 模式）。
+# durable 下进程重启后 pending 命令按下面的节奏重新投给在线会话；memory 重启即丢。
 # 重投复用原始流水号，语义是 at-least-once：终端可能重复执行同一条命令。
 # initialWait 必须覆盖一次下发到会话重传耗尽的窗口（ackTimeout × (maxRetransmissions+1)），
 # 否则会在会话仍在重传时重复下发。
 commandOutbox:
+  # off | memory | durable；缺省按存储后端归一化：memory 后端默认 memory，SQL 后端默认 durable。
+  # off 直连下发，不落 outbox、不可查；memory 保留幂等与状态查询但重启即丢。
+  # mode: memory
   pollInterval: "10s"
   batchSize: 50
   # 总下发次数上限（含首次下发）；达到上限后转 failed，不做无限重试。
@@ -102,6 +121,17 @@ commandOutbox:
   expireAfter: "24h"
   # 首次下发后等待应答/会话重传的窗口，到期前不重投。
   initialWait: "1m"
+
+# 上行可靠性：按消息分类选择 best_effort / at_least_once。
+# best_effort：先应答后落库；落库失败只记日志，不等终端重传。
+# at_least_once：先完成落库再应答；落库失败不应答，由终端按协议重传。
+# 默认实时定位 best-effort（很快就有下一条），批量定位与报警 at-least-once。
+uplink:
+  reliability:
+    default: "best_effort"
+    location: "best_effort"
+    batchLocation: "at_least_once"
+    alarm: "at_least_once"
 
 # 持久化后端：memory | sqlite | mysql，缺省 memory（行为与旧版本一致）
 storage:

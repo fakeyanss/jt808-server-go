@@ -17,6 +17,7 @@ import (
 	"github.com/rs/zerolog/log"
 
 	"github.com/fakeyanss/jt808-server-go/internal/config"
+	"github.com/fakeyanss/jt808-server-go/internal/observability"
 	"github.com/fakeyanss/jt808-server-go/internal/repository"
 	"github.com/fakeyanss/jt808-server-go/internal/runtime"
 )
@@ -29,6 +30,8 @@ type Dependencies struct {
 	Devices   repository.DeviceRepository
 	Locations repository.LocationRepository
 	Alarms    repository.AlarmRepository
+	// Probes 提供就绪检查与指标采集；nil 时 /readyz 恒为就绪、/metrics 输出零值。
+	Probes *observability.Provider
 }
 
 // Server 是管理面 HTTP 服务。
@@ -49,11 +52,41 @@ func NewServer(opts config.AdminOptions, deps Dependencies) *Server {
 		c.JSON(http.StatusOK, gin.H{"status": "ok"})
 	})
 
+	// 就绪探针公开，供编排系统直接调用；不返回任何业务数据。
+	engine.GET("/readyz", func(c *gin.Context) {
+		results := deps.Probes.Ready(c.Request.Context())
+		checks := make([]gin.H, 0, len(results))
+		ready := true
+		for _, result := range results {
+			check := gin.H{"name": result.Name, "ok": result.OK()}
+			if result.Err != nil {
+				check["error"] = result.Err.Error()
+				ready = false
+			}
+			checks = append(checks, check)
+		}
+		status := http.StatusOK
+		state := "ready"
+		if !ready {
+			status = http.StatusServiceUnavailable
+			state = "not ready"
+		}
+		c.JSON(status, gin.H{"status": state, "checks": checks})
+	})
+
 	limiter := newRateLimiter(opts.RatePerSecond, opts.Burst)
 	secured := engine.Group("/")
 	secured.Use(authMiddleware(opts.Token), rateLimitMiddleware(limiter, opts.KeyBy))
 	secured.GET("/ping", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"status": "ok"})
+	})
+	// 指标含连接与命令规模，与管理面其它接口一样要求 Bearer token。
+	secured.GET("/metrics", func(c *gin.Context) {
+		c.Header("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
+		snapshot := deps.Probes.Snapshot(c.Request.Context())
+		if err := observability.WritePrometheus(c.Writer, snapshot); err != nil {
+			log.Warn().Err(err).Msg("Fail to write metrics response")
+		}
 	})
 	registerSessionRoutes(secured, deps)
 	registerHistoryRoutes(secured, deps)
