@@ -324,7 +324,10 @@ type Coordinator interface {
 | `locations` | 定位历史（B，时序） | 主键 `(phone, record_id)`（`record_id` 为纳秒时间戳 + 进程内递增）；索引 `(phone, report_time_ms)`、`(report_time_ms)`；批量 INSERT；按 `received_at_ms` 保留期删除；**P2.1 已落地** |
 | `alarms` | 报警历史与确认（B，时序） | 主键 `(phone, message_serial, received_at_ms)`；`confirmed`；索引 `(phone, received_at_ms)`、`(received_at_ms)`；去重窗口内同流水号只更新 `alarm_sign`；**P2.1 已落地** |
 | `command_outbox` | 下行命令（B，幂等可重投） | `command_id` PK，`phone`,`owner`,`state`,`idempotency_key`,`created_at`；**本期非交付项** |
-| `media_metadata` / `waybills` | 媒体/运单元数据（B，**后续独立任务**，不在 M1/M2；见 §18-D3） | 媒体字节外置；元数据按 phone/时间索引 |
+| `media_resource_lists` | 音视频资源列表（B，来源 0x1205） | `phone` PK；按设备整包覆盖 `items_json` 与 `media_count`；**P1 已落地** |
+| `media_upload_tasks` | 文件上传指令元数据（B，来源 0x9206） | 主键 `(phone, serial)`；FTP 参数、时间范围、报警标志等序列化为 `payload_json`；**P1 已落地** |
+| `media_upload_notices` | 文件上传完成通知（B，来源 0x1206） | 主键 `(phone, serial)`；保存上传结果 `result`；**P1 已落地** |
+| `waybills` | 运单元数据（B，**后续独立任务**） | 按 phone/时间索引 |
 
 大 payload（0x0801 媒体、0x8900/0901 透传压缩字节）**不入关系库**，落文件/对象存储，库里存 URI 与元数据。
 
@@ -332,7 +335,8 @@ type Coordinator interface {
 
 - 目录（`go:embed *.sql` 编译进二进制）：
   - `bootstrap_schema_migrations.sql`：迁移元数据表建表脚本（引导脚本，不参与版本编号）；
-  - `20261101_init.sql`：初始版本。开发阶段不保留增量迁移，直接给出最终 schema。
+  - `20261101_init.sql`：初始版本。开发阶段不保留增量迁移，直接给出最终 schema；
+  - `20261108_media_metadata.sql`：新增 `media_resource_lists`、`media_upload_tasks`、`media_upload_notices` 三张媒体元数据表。
 - **版本号取自文件名开头日期**：`<YYYYMMDD>_<描述>.sql`，迁移按日期升序执行；
   后续变更追加新文件（如 `20261201_add_xxx.sql`），无需人工维护递增序号；
   同一天只允许一个迁移文件（同日期触发 `duplicate migration date` panic），当日多个变更合并为一个文件。
@@ -730,7 +734,7 @@ internal/storage/                 # 仅装配：后端选择与初始化
 |---|---|---|---|
 | **D1** | 终端参数落库形态：整体 JSON 单字段 vs EAV 键值表 | **先用整体 JSON 单字段**（简单、与现有模型直接对应）；将来确有「按参数 ID 服务端查询」需求时，再通过迁移演进为 EAV，不影响仓储接口 | §7.1 `device_params` |
 | **D2** | 行业上报（0702/0705/0700/0900/0901 等）最新值是否跨节点镜像 Redis | **首版不需要**。仅留本地 L1（HotView）；`Coordinator.LatestCache` 首版只覆盖定位 latest。将来需要跨节点 API 时按同一接口随时增量扩展 | §3.1、§6.3、§8 |
-| **D3** | 媒体（0x0801/0x1205）/运单（0x0701）等 B 类元数据何时落库 | **后续独立任务开发，不放入 M1/M2**。这两阶段只在 HotView 留最新值；`WaybillRepository`/`MediaMetadataRepository` 与对应建表在独立里程碑实现 | §3.1、§6.4、§7.1、M2 |
+| **D3** | 媒体（0x0801/0x1205）/运单（0x0701）等 B 类元数据何时落库 | **后续独立任务开发，不放入 M1/M2**。这两阶段只在 HotView 留最新值；`WaybillRepository`/`MediaMetadataRepository` 与对应建表在独立里程碑实现。**P1 已落地媒体部分（0x1205/0x9206/0x1206，见 §7.1）**，0x0801 媒体字节与运单仍待独立任务 | §3.1、§6.4、§7.1、M2 |
 | **D4** | 单机是否支持「关闭内存 L1 / 直读直写库」模式（超低资源设备） | **支持**。提供 `storage.frontCache.enabled` 开关（单机/分布式均生效，默认开）；关闭后配置类直读直写库、latest 回源库或 Redis | §8、§14 |
 | **D5** | API 鉴权 / 多租户 / 存储隔离 | **需求尚不明确，后续专题讨论**（与路线图 P2.2 运维就绪一并考虑）；本期存储设计不做多租户假设，表结构预留 `phone` 维度即可 | P2.2 |
 
