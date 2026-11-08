@@ -84,6 +84,9 @@ func NewServer(cfg Config) *Server {
 
 // Listen 绑定 UDP 端口。
 func (s *Server) Listen(addr string) error {
+	if err := os.MkdirAll(s.cfg.Dir, 0o755); err != nil {
+		return fmt.Errorf("create media dir %s: %w", s.cfg.Dir, err)
+	}
 	udpAddr, err := net.ResolveUDPAddr("udp", addr)
 	if err != nil {
 		return fmt.Errorf("resolve media udp addr %s: %w", addr, err)
@@ -105,6 +108,13 @@ func (s *Server) Addr() string {
 		return ""
 	}
 	return s.conn.LocalAddr().String()
+}
+
+// Streams 返回当前活跃的媒体流数量，供指标采集。
+func (s *Server) Streams() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.streams)
 }
 
 // Start 进入阻塞式收包循环，由调用方放入独立 goroutine。

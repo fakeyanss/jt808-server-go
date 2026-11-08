@@ -330,6 +330,7 @@ func (st *fileState) finishLocked() error {
 	}
 	st.completed = true
 	st.completedAt = st.meta.CompletedAt
+	st.owner.completed.Add(1)
 	log.Info().Str("phone", st.phone).Str("file", st.fileName).Int64("size", st.size).
 		Str("md5", sum).Msg("Attachment file completed")
 	return nil
@@ -413,6 +414,8 @@ type Assembler struct {
 	files map[string]*fileState
 	// active 统计当前持有文件句柄的附件数量，用原子操作避免与清理路径互相等待。
 	active atomic.Int64
+	// completed 统计进程启动后完成落盘的附件数量，供指标采集。
+	completed atomic.Int64
 	// now 可注入时钟，测试据此验证完成态 TTL，无需等待真实时间。
 	now func() time.Time
 }
@@ -428,6 +431,14 @@ func NewAssembler(cfg Config) *Assembler {
 func (a *Assembler) nowTime() time.Time { return a.now() }
 
 func (a *Assembler) Config() Config { return a.cfg }
+
+// Stats 返回当前正在组装的附件数与进程启动后完成落盘的附件数。
+func (a *Assembler) Stats() (active, completed int64) {
+	if a == nil {
+		return 0, 0
+	}
+	return a.active.Load(), a.completed.Load()
+}
 
 func fileKey(phone, fileName string) string { return phone + "\x00" + fileName }
 

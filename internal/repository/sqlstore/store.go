@@ -122,6 +122,14 @@ func validateSchemaVersion(ctx context.Context, db *stdsql.DB, backend Backend) 
 	return nil
 }
 
+// Ping 校验连接池当前仍可用，供就绪探针使用。
+func (s *Store) Ping(ctx context.Context) error {
+	if s == nil || s.db == nil {
+		return nil
+	}
+	return s.db.PingContext(ctx)
+}
+
 // Close 关闭连接池。
 func (s *Store) Close() error {
 	if s == nil || s.db == nil {

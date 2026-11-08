@@ -100,6 +100,8 @@ type Service struct {
 	owner    string
 	clock    func() time.Time
 	opts     Options
+	// done 在 Run 退出后关闭，供关机流程等待当前 tick 收尾。
+	done chan struct{}
 }
 
 // NewService 校验依赖并创建重投服务。
@@ -132,11 +134,16 @@ func NewService(deps Dependencies, options Options) (*Service, error) {
 		owner:    owner,
 		clock:    clock,
 		opts:     options.withDefaults(),
+		done:     make(chan struct{}),
 	}, nil
 }
 
+// Done 在 Run 退出后关闭；未调用 Run 时永不关闭。
+func (s *Service) Done() <-chan struct{} { return s.done }
+
 // Run 启动时立即重投一次，之后按 PollInterval 周期执行，直到 ctx 取消。
 func (s *Service) Run(ctx context.Context) {
+	defer close(s.done)
 	if err := s.Tick(ctx); err != nil {
 		log.Error().Err(err).Msg("Initial command replay tick failed")
 	}

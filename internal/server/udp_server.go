@@ -10,6 +10,7 @@ import (
 	"github.com/rs/zerolog/log"
 
 	"github.com/fakeyanss/jt808-server-go/internal/action"
+	"github.com/fakeyanss/jt808-server-go/internal/observability"
 	"github.com/fakeyanss/jt808-server-go/internal/protocol"
 	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
 	"github.com/fakeyanss/jt808-server-go/internal/runtime"
@@ -26,6 +27,12 @@ type UDPServer struct {
 	maxRetransmissions int
 	hooks              action.Hooks
 	deps               protocol.ProcessorDeps
+	metrics            *observability.Metrics
+}
+
+// SetMetrics 注入进程级指标计数器；未注入时不计数。
+func (s *UDPServer) SetMetrics(metrics *observability.Metrics) {
+	s.metrics = metrics
 }
 
 // SetDeps 设置处理器依赖；未注入的字段回退到包级默认单例。
@@ -80,6 +87,11 @@ func (s *UDPServer) Start() {
 			conn = newUDPSessionConn(s.listener, remote, func() { s.remove(key) })
 			s.sessions[key] = conn
 			session := &model.Session{ID: key, Conn: conn, Transport: model.UDPProto, ConnectedAt: time.Now(), AckTimeout: s.ackTimeout, MaxRetries: s.maxRetransmissions}
+			session.OnReliableResult = func(result model.ReliableResult) {
+				if result.Status == model.ReliableStatusFailed && result.Reason == model.ReliableReasonRetransmissionExhausted {
+					s.metrics.IncAckTimeout()
+				}
+			}
 			_ = s.runtimeStores().Conn.Bind(context.Background(), session)
 			routines.GoSafe(func() { serveSession(session, s.hooks, s.deps) })
 		}

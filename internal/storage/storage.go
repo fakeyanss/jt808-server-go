@@ -9,6 +9,7 @@
 package storage
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"sync"
@@ -57,6 +58,8 @@ type Stores struct {
 	// Backend 记录实际启用的后端，供启动日志与运维排查使用。
 	Backend string
 	close   func() error
+	// check 校验后端连通性；memory 后端为空操作，nil 表示始终可用。
+	check func(ctx context.Context) error
 }
 
 // NewMemory 创建一组互相独立的内存仓储，供测试与新代码注入。
@@ -113,6 +116,7 @@ func Open(cfg Config) (*Stores, error) {
 		stores.Alarms = sqlStore.AlarmRepository(cfg.AlarmRetention)
 		stores.Locations = sqlStore.LocationRepository(cfg.LocationRetention)
 		stores.close = sqlStore.Close
+		stores.check = sqlStore.Ping
 		return stores, nil
 	default:
 		return nil, fmt.Errorf("unsupported storage backend %q, expected memory|sqlite|mysql", cfg.Type)
@@ -189,6 +193,14 @@ func (s *Stores) Close() error {
 		return nil
 	}
 	return s.close()
+}
+
+// Check 校验后端当前可用；memory 后端始终返回 nil。
+func (s *Stores) Check(ctx context.Context) error {
+	if s == nil || s.check == nil {
+		return nil
+	}
+	return s.check(ctx)
 }
 
 // Close 关闭默认存储持有的资源（当前仅 SQL 后端需要）。

@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"net"
 	"net/http"
-	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -28,7 +27,7 @@ import (
 
 // Run 启动业务 API。commands 为 nil 表示 outbox 已关闭（mode=off），
 // 下行入口直接调用 Serv.Send，不提供命令状态查询。
-func Run(serv *server.TCPServer, cfg *config.Config, alarmServ *alarmserver.Server, outboxOptions config.CommandOutboxOptions, commands repository.CommandRepository) {
+func Run(ctx context.Context, serv *server.TCPServer, cfg *config.Config, alarmServ *alarmserver.Server, outboxOptions config.CommandOutboxOptions, commands repository.CommandRepository) {
 	// web server structure
 	gin.SetMode(gin.ReleaseMode)
 	router := gin.Default()
@@ -1172,10 +1171,35 @@ func Run(serv *server.TCPServer, cfg *config.Config, alarmServ *alarmserver.Serv
 	httpAddr := ":" + cfg.Server.Port.HTTPPort
 
 	log.Debug().Msgf("Listening and serving HTTP on :%s", cfg.Server.Port.HTTPPort)
-	err := router.Run(httpAddr)
+	listener, err := net.Listen("tcp", httpAddr)
 	if err != nil {
-		log.Error().Err(err).Str("addr", httpAddr).Msg("Fail to run gin router")
-		os.Exit(1)
+		log.Error().Err(err).Str("addr", httpAddr).Msg("Fail to listen HTTP API addr")
+		return
+	}
+	srv := &http.Server{
+		Handler:           router,
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       15 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       60 * time.Second,
+	}
+	serveDone := make(chan struct{})
+	go func() {
+		defer close(serveDone)
+		if serveErr := srv.Serve(listener); serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) {
+			log.Error().Err(serveErr).Str("addr", httpAddr).Msg("Fail to run HTTP API server")
+		}
+	}()
+
+	select {
+	case <-ctx.Done():
+	case <-serveDone:
+		return
+	}
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := srv.Shutdown(shutdownCtx); err != nil {
+		log.Warn().Err(err).Msg("Fail to shutdown HTTP API server")
 	}
 }
 

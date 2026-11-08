@@ -48,6 +48,11 @@ type ReliableResult struct {
 	Reason string
 }
 
+const (
+	// ReliableReasonRetransmissionExhausted 标记应答重传耗尽，是应答超时的终态。
+	ReliableReasonRetransmissionExhausted = "retransmission exhausted"
+)
+
 type Session struct {
 	ID        string // remote addr
 	Conn      net.Conn
@@ -172,7 +177,7 @@ func (s *Session) TrackReliable(msgID, serial uint16, phone string, frame []byte
 		if s.pending[key] == pending {
 			delete(s.pending, key)
 			s.pendingMu.Unlock()
-			s.notifyReliable(ReliableResult{MsgID: msgID, Serial: serial, Phone: phone, Status: ReliableStatusFailed, Reason: "retransmission exhausted"})
+			s.notifyReliable(ReliableResult{MsgID: msgID, Serial: serial, Phone: phone, Status: ReliableStatusFailed, Reason: ReliableReasonRetransmissionExhausted})
 			_ = s.Conn.Close()
 			return
 		}
