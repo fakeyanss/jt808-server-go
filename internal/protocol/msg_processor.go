@@ -161,6 +161,26 @@ func initProcessOption() processOptions {
 		},
 		process: processIndustryReport,
 	}
+	// 苏标附件信令实际由独立附件服务器端口处理；主链路注册解码与通用应答，
+	// 避免终端误发到 8080 时被判为不支持消息。0x1212 的 0x9212 应答由附件服务器负责。
+	options[0x1210] = &action{
+		genData: func() *model.ProcessData {
+			return &model.ProcessData{Incoming: &model.Msg1210{}, Outgoing: &model.Msg0001{}}
+		},
+		process: processAttachmentSignaling,
+	}
+	options[0x1211] = &action{
+		genData: func() *model.ProcessData {
+			return &model.ProcessData{Incoming: &model.Msg1211{}, Outgoing: &model.Msg0001{}}
+		},
+		process: processAttachmentSignaling,
+	}
+	options[0x1212] = &action{
+		genData: func() *model.ProcessData {
+			return &model.ProcessData{Incoming: &model.Msg1212{}}
+		},
+		process: processAttachmentSignaling,
+	}
 	options[0x8001] = &action{ // 通用应答
 		genData: func() *model.ProcessData {
 			return &model.ProcessData{Incoming: &model.Msg8001{}}
@@ -512,6 +532,7 @@ func (mp *JT808MsgProcessor) notifyLocation(ctx context.Context, in *model.Msg02
 			Time:      in.Time,
 			ExtItems:  extItems,
 			ExtRaw:    model.ExtRawBytes(extItems),
+			AlarmID:   in.AlarmIDNumberBytes(),
 		})
 	}
 }
@@ -1208,6 +1229,18 @@ func mediaTimeInRange(t string, start, end *time.Time) bool {
 
 func processIndustryReport(_ context.Context, data *model.ProcessData) error {
 	storage.Default().Industry.Record(data.Incoming)
+	return nil
+}
+
+// processAttachmentSignaling 记录主链路上的苏标附件信令。
+// 真正的附件接收、位图与 0x9212 应答在 internal/alarmserver 的独立端口完成。
+func processAttachmentSignaling(_ context.Context, data *model.ProcessData) error {
+	if data == nil || data.Incoming == nil || data.Incoming.GetHeader() == nil {
+		return nil
+	}
+	header := data.Incoming.GetHeader()
+	log.Debug().Uint16("msg_id", header.MsgID).Str("phone", header.PhoneNumber).
+		Msg("Attachment signaling received on main port, handled by alarm server")
 	return nil
 }
 

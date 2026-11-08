@@ -3,6 +3,9 @@ package config
 import (
 	"bytes"
 	"fmt"
+	"math"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -148,11 +151,135 @@ type DeviceParamsConf struct {
 }
 
 type Config struct {
-	Log       *logConf       `yaml:"log"`
-	Server    *serverConf    `yaml:"server"`
-	Client    *clientConf    `yaml:"client"`
-	Storage   *storageConf   `yaml:"storage"`
-	Retention *retentionConf `yaml:"retention"`
+	Log         *logConf         `yaml:"log"`
+	Server      *serverConf      `yaml:"server"`
+	Client      *clientConf      `yaml:"client"`
+	Storage     *storageConf     `yaml:"storage"`
+	Retention   *retentionConf   `yaml:"retention"`
+	AlarmServer *alarmServerConf `yaml:"alarmServer"`
+}
+
+// 苏标附件服务器的工程默认值。未配置 alarmServer.port 时服务不启动。
+const (
+	DefaultAlarmServerDir           = "./data/alarms"
+	DefaultAlarmServerMaxFileSize   = 100 * 1024 * 1024
+	DefaultAlarmServerMaxConcurrent = 16
+	DefaultAlarmServerCompletedTTL  = 20 * time.Minute
+)
+
+// alarmServerConf 配置苏标主动安全附件服务器。
+// port 为 TCP 监听端口，udpPort 为 UDP 监听端口；两者都为空表示不启用。
+// 0x9208 通告的端口直接取自这两个监听端口，未配置的一侧以 0 表示不可用，
+// 避免通告地址与实际监听不一致。
+type alarmServerConf struct {
+	Port          string `yaml:"port"`
+	UDPPort       string `yaml:"udpPort"`
+	Dir           string `yaml:"dir"`
+	MaxFileSize   int64  `yaml:"maxFileSize"`
+	MaxConcurrent int    `yaml:"maxConcurrent"`
+	// CompletedTTL 是完成态内存状态的保留时长（如 "20m"）；
+	// 显式 "0" 表示不淘汰，留空使用默认值。
+	CompletedTTL string `yaml:"completedTTL"`
+	// AutoUpload 控制报警首次上报时是否自动下发 0x9208。
+	// 默认 false，保持既有手动下发行为不变。
+	AutoUpload bool `yaml:"autoUpload"`
+	// UploadIP 是 0x9208 中携带的附件服务器 IP，autoUpload 开启时必填。
+	// 端口不单独配置，始终使用 port / udpPort 的实际监听端口。
+	UploadIP string `yaml:"uploadIP"`
+}
+
+// AlarmServerOptions 是附件服务器的归一化配置。
+type AlarmServerOptions struct {
+	Port          uint16 // TCP 监听与通告端口，0 表示未启用
+	UDPPort       uint16 // UDP 监听与通告端口，0 表示未启用
+	Dir           string
+	MaxFileSize   int64
+	MaxConcurrent int
+	CompletedTTL  time.Duration
+	AutoUpload    bool
+	UploadIP      string
+}
+
+// ParseAlarmServer 解析并校验 alarmServer 配置。
+// 返回 enabled=false 表示未配置任何监听端口，附件服务器不启动，行为与旧版本一致。
+// port / udpPort 分别对应 TCP / UDP 的实际监听与 0x9208 通告端口，未配置的一侧通告为 0。
+func (c *Config) ParseAlarmServer() (options AlarmServerOptions, enabled bool, err error) {
+	if c == nil || c.AlarmServer == nil {
+		return AlarmServerOptions{}, false, nil
+	}
+	conf := c.AlarmServer
+	rawPort := strings.TrimSpace(conf.Port)
+	rawUDPPort := strings.TrimSpace(conf.UDPPort)
+	// 未配置任何端口且未开启自动下发时，整段配置视为未启用，保持历史行为。
+	if rawPort == "" && rawUDPPort == "" && !conf.AutoUpload {
+		return AlarmServerOptions{}, false, nil
+	}
+	parsePort := func(name, raw string) (int, error) {
+		if raw == "" {
+			return 0, nil
+		}
+		parsed, parseErr := strconv.Atoi(raw)
+		if parseErr != nil || parsed < 1 || parsed > 65535 {
+			return 0, fmt.Errorf("alarmServer.%s must be a port between 1 and 65535, got %q", name, raw)
+		}
+		return parsed, nil
+	}
+	port, err := parsePort("port", rawPort)
+	if err != nil {
+		return AlarmServerOptions{}, false, err
+	}
+	udpPort, err := parsePort("udpPort", rawUDPPort)
+	if err != nil {
+		return AlarmServerOptions{}, false, err
+	}
+	dir := strings.TrimSpace(conf.Dir)
+	if dir == "" {
+		dir = DefaultAlarmServerDir
+	}
+	if conf.MaxFileSize < 0 || conf.MaxFileSize > math.MaxUint32 {
+		return AlarmServerOptions{}, false, fmt.Errorf("alarmServer.maxFileSize must be between 0 and %d, got %d", uint32(math.MaxUint32), conf.MaxFileSize)
+	}
+	maxFileSize := conf.MaxFileSize
+	if maxFileSize == 0 {
+		maxFileSize = DefaultAlarmServerMaxFileSize
+	}
+	if conf.MaxConcurrent < 0 {
+		return AlarmServerOptions{}, false, fmt.Errorf("alarmServer.maxConcurrent must be >= 0, got %d", conf.MaxConcurrent)
+	}
+	maxConcurrent := conf.MaxConcurrent
+	if maxConcurrent == 0 {
+		maxConcurrent = DefaultAlarmServerMaxConcurrent
+	}
+	completedTTL := DefaultAlarmServerCompletedTTL
+	if raw := strings.TrimSpace(conf.CompletedTTL); raw != "" {
+		parsed, parseErr := time.ParseDuration(raw)
+		if parseErr != nil || parsed < 0 {
+			return AlarmServerOptions{}, false, fmt.Errorf("alarmServer.completedTTL must be a non-negative duration (e.g. 20m), got %q", raw)
+		}
+		completedTTL = parsed
+	}
+	uploadIP := strings.TrimSpace(conf.UploadIP)
+	if conf.AutoUpload {
+		if uploadIP == "" {
+			return AlarmServerOptions{}, false, fmt.Errorf("alarmServer.uploadIP is required when alarmServer.autoUpload is enabled")
+		}
+		if len([]byte(uploadIP)) > 255 {
+			return AlarmServerOptions{}, false, fmt.Errorf("alarmServer.uploadIP must contain at most 255 bytes")
+		}
+		if port == 0 && udpPort == 0 {
+			return AlarmServerOptions{}, false, fmt.Errorf("alarmServer.port or alarmServer.udpPort is required when alarmServer.autoUpload is enabled")
+		}
+	}
+	return AlarmServerOptions{
+		Port:          uint16(port),
+		UDPPort:       uint16(udpPort),
+		Dir:           dir,
+		MaxFileSize:   maxFileSize,
+		MaxConcurrent: maxConcurrent,
+		CompletedTTL:  completedTTL,
+		AutoUpload:    conf.AutoUpload,
+		UploadIP:      uploadIP,
+	}, true, nil
 }
 
 // 保留期默认值。未配置 retention 段时使用，保证与已有的进程内窗口一致：

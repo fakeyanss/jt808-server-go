@@ -156,13 +156,9 @@ func (c *memoryIndustryRepository) Record(msg model.JT808Msg) {
 		copy := *m
 		c.upgradeResults[phone] = &copy
 	case *model.Msg8900:
-		copy := *m
-		copy.Data = append([]byte(nil), m.Data...)
-		c.transparentDown[phone] = &copy
+		c.transparentDown[phone] = cloneMsg8900(m)
 	case *model.Msg0900:
-		copy := *m
-		copy.Data = append([]byte(nil), m.Data...)
-		c.transparentUp[phone] = &copy
+		c.transparentUp[phone] = cloneMsg0900(m)
 	case *model.Msg0901:
 		copy := *m
 		copy.Data = append([]byte(nil), m.Data...)
@@ -439,9 +435,7 @@ func (c *memoryIndustryRepository) TransparentDown(phone string) *model.Msg8900 
 	if m == nil {
 		return nil
 	}
-	copy := *m
-	copy.Data = append([]byte(nil), m.Data...)
-	return &copy
+	return cloneMsg8900(m)
 }
 
 // TransparentUp returns the latest 0x0900 uplink transparent message for a device.
@@ -452,9 +446,52 @@ func (c *memoryIndustryRepository) TransparentUp(phone string) *model.Msg0900 {
 	if m == nil {
 		return nil
 	}
+	return cloneMsg0900(m)
+}
+
+func cloneMsg8900(m *model.Msg8900) *model.Msg8900 {
+	if m == nil {
+		return nil
+	}
 	copy := *m
-	copy.Data = append([]byte(nil), m.Data...)
+	copy.IDs = append([]byte(nil), m.IDs...)
 	return &copy
+}
+
+func cloneMsg0900(m *model.Msg0900) *model.Msg0900 {
+	if m == nil {
+		return nil
+	}
+	copy := *m
+	copy.Items = clonePeripheralItems(m.Items)
+	return &copy
+}
+
+// clonePeripheralItems 深拷贝外设条目，避免仓储返回值与协议处理并发读写同一底层数组。
+func clonePeripheralItems(items []model.PeripheralItem) []model.PeripheralItem {
+	if items == nil {
+		return nil
+	}
+	out := make([]model.PeripheralItem, len(items))
+	for i, item := range items {
+		out[i] = item
+		out[i].Raw = append([]byte(nil), item.Raw...)
+		if item.Status != nil {
+			status := *item.Status
+			out[i].Status = &status
+		}
+		if item.System != nil {
+			system := *item.System
+			system.CompanyName = append([]byte(nil), item.System.CompanyName...)
+			system.ProductModel = append([]byte(nil), item.System.ProductModel...)
+			system.HardwareVersion = append([]byte(nil), item.System.HardwareVersion...)
+			system.SoftwareVersion = append([]byte(nil), item.System.SoftwareVersion...)
+			system.DeviceID = append([]byte(nil), item.System.DeviceID...)
+			system.CustomerCode = append([]byte(nil), item.System.CustomerCode...)
+			out[i].System = &system
+		}
+	}
+	return out
 }
 
 // Compressed returns the latest 0x0901 compressed data report for a device.

@@ -325,3 +325,49 @@ func TestMsg0200DecodeRealStyleTLV(t *testing.T) {
 	encodedBody := encoded[len(encoded)-int(msg.Header.Attr.BodyLength):]
 	require.Equal(t, body, encodedBody)
 }
+
+// AlarmIDNumberBytes 必须按各扩展项的固定布局截取，而不是简单取尾部：
+// 0x66 的报警标识号后面还跟着轮胎列表，尾部截取会读错字节。
+func TestAlarmIDNumberBytesFromEachExtItem(t *testing.T) {
+	expected := buildTestAlarmIDNumber(testSubiaoDeviceID, ExtDomainSubiao)
+	cases := []struct {
+		id   uint8
+		data []byte
+	}{
+		{id: 0x64, data: buildTestADAS(ExtDomainSubiao)},
+		{id: 0x65, data: buildTestDSM(ExtDomainSubiao)},
+		{id: 0x66, data: buildTestTPMS(ExtDomainSubiao)},
+		{id: 0x67, data: buildTestBSD(ExtDomainSubiao)},
+	}
+	for _, item := range cases {
+		msg := msg0200WithDomain(ExtDomainSubiao, []LocationExtItem{
+			{ID: item.id, Length: uint8(len(item.data)), Data: item.data},
+		})
+		require.Equal(t, expected, msg.AlarmIDNumberBytes(), "ext id 0x%02x", item.id)
+	}
+}
+
+func TestAlarmIDNumberBytesUnavailable(t *testing.T) {
+	// 没有 0x64~0x67 扩展项。
+	require.Nil(t, msg0200WithDomain(ExtDomainSubiao, nil).AlarmIDNumberBytes())
+
+	// 长度与定义不符时不得截取。
+	broken := buildTestADAS(ExtDomainSubiao)
+	msg := msg0200WithDomain(ExtDomainSubiao, []LocationExtItem{
+		{ID: 0x64, Length: uint8(len(broken) - 1), Data: broken[:len(broken)-1]},
+	})
+	require.Nil(t, msg.AlarmIDNumberBytes())
+
+	// base2019 的报警标识号为 40 字节，不能截断成苏标 16 字节。
+	baseItems := buildTestExtItems(ExtDomainBase2019)
+	require.Nil(t, msg0200WithDomain(ExtDomainBase2019, baseItems).AlarmIDNumberBytes())
+}
+
+func TestAlarmIDNumberBytesReturnsCopy(t *testing.T) {
+	data := buildTestADAS(ExtDomainSubiao)
+	msg := msg0200WithDomain(ExtDomainSubiao, []LocationExtItem{{ID: 0x64, Length: uint8(len(data)), Data: data}})
+	got := msg.AlarmIDNumberBytes()
+	require.Len(t, got, 16)
+	got[0] ^= 0xFF
+	require.NotEqual(t, got, msg.AlarmIDNumberBytes())
+}

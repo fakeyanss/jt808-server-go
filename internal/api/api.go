@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/hex"
+	"net"
 	"net/http"
 	"os"
 	"strconv"
@@ -13,6 +14,7 @@ import (
 	"github.com/mitchellh/mapstructure"
 	"github.com/rs/zerolog/log"
 
+	"github.com/fakeyanss/jt808-server-go/internal/alarmserver"
 	"github.com/fakeyanss/jt808-server-go/internal/config"
 	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
 	"github.com/fakeyanss/jt808-server-go/internal/runtime"
@@ -20,7 +22,7 @@ import (
 	"github.com/fakeyanss/jt808-server-go/internal/storage"
 )
 
-func Run(serv *server.TCPServer, cfg *config.Config) {
+func Run(serv *server.TCPServer, cfg *config.Config, alarmServ *alarmserver.Server) {
 	// web server structure
 	gin.SetMode(gin.ReleaseMode)
 	router := gin.Default()
@@ -61,8 +63,10 @@ func Run(serv *server.TCPServer, cfg *config.Config) {
 			result = industry.MediaSearch(phone)
 		case "media-uploads":
 			result = industry.MediaUploads(phone)
+		case "transparent", "peripheral":
+			result = industry.TransparentUp(phone)
 		default:
-			c.JSON(http.StatusBadRequest, gin.H{"err": "kind must be driver, can, recorder, media-event, media-capture, media-search, or media-uploads"})
+			c.JSON(http.StatusBadRequest, gin.H{"err": "kind must be driver, can, recorder, media-event, media-capture, media-search, media-uploads, transparent, or peripheral"})
 			return
 		}
 		if result == nil {
@@ -929,6 +933,128 @@ func Run(serv *server.TCPServer, cfg *config.Config) {
 			Parameters: &params,
 		}
 		serv.Send(session.ID, &msg)
+	})
+
+	// 苏标主动安全附件：下发 0x9208 报警附件上传指令。
+	api.POST("/device/:phone/attachments/upload", func(c *gin.Context) {
+		if alarmServ == nil {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"err": "alarm server is not enabled"})
+			return
+		}
+		var request struct {
+			IP           string `json:"ip" binding:"required"`
+			TCPPort      uint16 `json:"tcpPort"`
+			UDPPort      uint16 `json:"udpPort"`
+			AlarmSignHex string `json:"alarmSignHex" binding:"required"`
+			AlarmNo      string `json:"alarmNo" binding:"required"`
+			ReservedHex  string `json:"reservedHex"`
+		}
+		if err := c.ShouldBindJSON(&request); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
+			return
+		}
+		ip := strings.TrimSpace(request.IP)
+		if ip == "" || len(ip) > 255 {
+			c.JSON(http.StatusBadRequest, gin.H{"err": "ip must contain 1 to 255 bytes"})
+			return
+		}
+		alarmSign, err := hex.DecodeString(strings.TrimSpace(request.AlarmSignHex))
+		if err != nil || len(alarmSign) != 16 {
+			c.JSON(http.StatusBadRequest, gin.H{"err": "alarmSignHex must be 16 decoded bytes"})
+			return
+		}
+		if request.AlarmNo == "" || len([]byte(request.AlarmNo)) > 32 {
+			c.JSON(http.StatusBadRequest, gin.H{"err": "alarmNo must contain 1 to 32 UTF-8 bytes"})
+			return
+		}
+		var reserved []byte
+		if request.ReservedHex != "" {
+			reserved, err = hex.DecodeString(strings.TrimSpace(request.ReservedHex))
+			if err != nil || len(reserved) > 16 {
+				c.JSON(http.StatusBadRequest, gin.H{"err": "reservedHex must decode to at most 16 bytes"})
+				return
+			}
+		}
+		// 未显式指定端口时回落到附件服务器的实际监听端口，
+		// 保证 0x9208 通告的地址不会指向没有监听的协议端口。
+		resolvePort := func(addr string) uint16 {
+			if addr == "" {
+				return 0
+			}
+			_, portText, splitErr := net.SplitHostPort(addr)
+			parsed, parseErr := strconv.Atoi(portText)
+			if splitErr != nil || parseErr != nil || parsed < 1 || parsed > 65535 {
+				return 0
+			}
+			return uint16(parsed)
+		}
+		tcpPort := request.TCPPort
+		if tcpPort == 0 {
+			tcpPort = resolvePort(alarmServ.Addr())
+		}
+		udpPort := request.UDPPort
+		if udpPort == 0 {
+			udpPort = resolvePort(alarmServ.UDPAddr())
+		}
+		if tcpPort == 0 && udpPort == 0 {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"err": "alarm server has no tcp or udp listener"})
+			return
+		}
+
+		phone := c.Param("phone")
+		device, err := devices.GetByPhone(c.Request.Context(), phone)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
+			return
+		}
+		session, err := connRegistry.Get(c.Request.Context(), device.SessionID)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
+			return
+		}
+		msg := &model.Msg9208{
+			Header:    model.GenMsgHeader(device, 0x9208, session.GetNextSerialNum()),
+			IP:        ip,
+			TCPPort:   tcpPort,
+			UDPPort:   udpPort,
+			AlarmSign: alarmSign,
+			AlarmNo:   request.AlarmNo,
+			Reserved:  reserved,
+		}
+		serv.Send(session.ID, msg)
+		c.JSON(http.StatusAccepted, gin.H{"messageId": "0x9208", "tcpPort": tcpPort, "udpPort": udpPort})
+	})
+
+	// 苏标主动安全附件：查询已完成附件的元数据。
+	api.GET("/device/:phone/attachments", func(c *gin.Context) {
+		if alarmServ == nil {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"err": "alarm server is not enabled"})
+			return
+		}
+		phone := c.Param("phone")
+		if _, err := devices.GetByPhone(c.Request.Context(), phone); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
+			return
+		}
+		c.JSON(http.StatusOK, alarmServ.Assembler().Select(phone))
+	})
+
+	api.GET("/device/:phone/attachments/:fileName", func(c *gin.Context) {
+		if alarmServ == nil {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"err": "alarm server is not enabled"})
+			return
+		}
+		phone := c.Param("phone")
+		if _, err := devices.GetByPhone(c.Request.Context(), phone); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
+			return
+		}
+		meta, err := alarmServ.Assembler().FindMetadata(phone, c.Param("fileName"))
+		if err != nil {
+			c.JSON(http.StatusNotFound, gin.H{"err": err.Error()})
+			return
+		}
+		c.JSON(http.StatusOK, meta)
 	})
 
 	httpAddr := ":" + cfg.Server.Port.HTTPPort

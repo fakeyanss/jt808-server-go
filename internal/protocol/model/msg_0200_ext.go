@@ -204,6 +204,51 @@ func (m *Msg0200) ParseExtItems() []any {
 	return ParseExtItems(m.ExtItems, ExtDomainForHeader(m.Header))
 }
 
+// AlarmIDNumberBytes 从 0x0200 附加信息中的 0x64~0x67 提取苏标 16 字节报警标识号。
+//
+// 仅当协议域为苏标（T/JSATL 12-2017）且扩展项长度与定义一致时返回副本；
+// base2019 域的报警标识号为 40 字节，语义与苏标 0x9208 不同，这里不做截断或转换。
+// 取不到时返回 nil，调用方不得自行拼装报警标识号。
+func (m *Msg0200) AlarmIDNumberBytes() []byte {
+	if m == nil || ExtDomainForHeader(m.Header) != ExtDomainSubiao {
+		return nil
+	}
+	for _, item := range m.ExtItems {
+		if id := subiaoAlarmIDFromExtItem(item); id != nil {
+			return id
+		}
+	}
+	return nil
+}
+
+// subiaoAlarmIDFromExtItem 按苏标 4.3 的固定布局截取报警标识号。
+// 返回 nil 表示该扩展项不是 0x64~0x67，或长度与定义不符。
+func subiaoAlarmIDFromExtItem(item LocationExtItem) []byte {
+	const alarmIDLen = 16
+	switch item.ID {
+	case 0x64, 0x65:
+		// 固定字段 31 字节 + 报警标识号 16 字节
+		if len(item.Data) == 31+alarmIDLen {
+			return append([]byte(nil), item.Data[31:31+alarmIDLen]...)
+		}
+	case 0x66:
+		// 固定字段 24 字节 + 报警标识号 16 字节 + 轮胎列表
+		if len(item.Data) < 24+alarmIDLen+1 {
+			return nil
+		}
+		listTotal := int(item.Data[24+alarmIDLen])
+		if len(item.Data) == 24+alarmIDLen+1+listTotal*10 {
+			return append([]byte(nil), item.Data[24:24+alarmIDLen]...)
+		}
+	case 0x67:
+		// 固定字段 25 字节 + 报警标识号 16 字节
+		if len(item.Data) == 25+alarmIDLen {
+			return append([]byte(nil), item.Data[25:25+alarmIDLen]...)
+		}
+	}
+	return nil
+}
+
 // ExtRawBytes 汇总所有 raw 兜底项的原始字节，便于业务侧留档与二次解析。
 func ExtRawBytes(items []any) []byte {
 	var raw []byte

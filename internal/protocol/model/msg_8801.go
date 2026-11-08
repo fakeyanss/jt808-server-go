@@ -33,13 +33,13 @@ func (m *Msg8801) Decode(p *PacketData) error {
 	m.Contrast = hex.ReadByte(p.Body, &i)
 	m.Saturation = hex.ReadByte(p.Body, &i)
 	m.Chroma = hex.ReadByte(p.Body, &i)
-	if m.ChannelID == 0 || m.Save > 1 || m.Quality < 1 || m.Quality > 10 || m.Contrast > 127 || m.Saturation > 127 || (m.Resolution != 0 && (m.Resolution < 1 || m.Resolution > 8) && m.Resolution != 0xff) {
+	if m.ChannelID > 0x25 || m.Save > 1 || m.Quality < 1 || m.Quality > 10 || m.Contrast > 127 || m.Saturation > 127 || (m.Resolution != 0 && (m.Resolution < 1 || m.Resolution > 8) && m.Resolution != 0xff) {
 		return ErrDecodeMsg
 	}
 	return nil
 }
 func (m *Msg8801) Encode() ([]byte, error) {
-	if m.Header == nil || m.ChannelID == 0 || m.Save > 1 || m.Quality < 1 || m.Quality > 10 || m.Contrast > 127 || m.Saturation > 127 {
+	if m.Header == nil || m.ChannelID > 0x25 || m.Save > 1 || m.Quality < 1 || m.Quality > 10 || m.Contrast > 127 || m.Saturation > 127 {
 		return nil, ErrEncodeMsg
 	}
 	if m.Resolution != 0 && (m.Resolution < 1 || m.Resolution > 8) && m.Resolution != 0xff {

@@ -197,19 +197,21 @@ func dialAndSend(cfg *config.Config, cliWg *sync.WaitGroup, fragmentSize int, re
 				// the client pipeline and needs no local cache record.
 				cli.Send(datagen.GenMsg0004(d))
 				for _, msg := range []model.JT808Msg{
-					datagen.GenMsg0301(d, 1),                                   // 事件上报
-					datagen.GenMsg0302(d, 1, 1),                                // 提问应答
-					datagen.GenMsg0303(d, 1, 1),                                // 信息点播
-					datagen.GenMsg0108(d, 0, 0),                                // 升级结果通知
-					datagen.GenMsg0701(d, "模拟电子运单内容"),                          // 电子运单
-					datagen.GenMsg0704(d),                                      // 批量定位
-					datagen.GenMsg0900(d, 0x0002, []byte{0x11, 0x22}),          // 数据上行透传
+					datagen.GenMsg0301(d, 1),          // 事件上报
+					datagen.GenMsg0302(d, 1, 1),       // 提问应答
+					datagen.GenMsg0303(d, 1, 1),       // 信息点播
+					datagen.GenMsg0108(d, 0, 0),       // 升级结果通知
+					datagen.GenMsg0701(d, "模拟电子运单内容"), // 电子运单
+					datagen.GenMsg0704(d),             // 批量定位
+					datagen.GenMsg0900(d, model.TransparentTypePeripheralStatus, []model.PeripheralItem{
+						{ID: model.PeripheralIDADAS, Raw: []byte{0x01, 0x00, 0x00, 0x00, 0x02}},
+					}), // 外设状态查询应答
 					datagen.GenMsg0901(d, []byte("compressed uplink payload")), // 数据压缩上报
-					datagen.GenMsg0702(d),                                      // 驾驶员身份识别
-					datagen.GenMsg0705(d),                                      // CAN 总线数据
-					datagen.GenMsg0700(d),                                      // 行驶记录仪数据
-					datagen.GenMsg0800(d),                                      // 多媒体事件
-					datagen.GenMsg0801(d),                                      // 多媒体数据
+					datagen.GenMsg0702(d), // 驾驶员身份识别
+					datagen.GenMsg0705(d), // CAN 总线数据
+					datagen.GenMsg0700(d), // 行驶记录仪数据
+					datagen.GenMsg0800(d), // 多媒体事件
+					datagen.GenMsg0801(d), // 多媒体数据
 				} {
 					storage.Default().Industry.Record(msg)
 					cli.Send(msg)

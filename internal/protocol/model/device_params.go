@@ -44,9 +44,9 @@ func (p *DeviceParams) Encode() (pkt []byte, err error) {
 	for _, arg := range p.Params {
 		encoded, err := arg.Encode()
 		if err != nil {
-			// skip this err
-			log.Error().Err(err).Str("device", p.DevicePhone).Msg("Fail to encode device param")
-			continue
+			// 编码失败必须向上返回，避免下发出去的命令与调用方预期不一致。
+			log.Error().Err(err).Str("device", p.DevicePhone).Uint32("paramId", arg.ParamID).Msg("Fail to encode device param")
+			return nil, fmt.Errorf("%w: param 0x%04x: %w", ErrEncodeDeviceParams, arg.ParamID, err)
 		}
 		paramBytes = hex.WriteBytes(paramBytes, encoded)
 		cnt++
@@ -108,20 +108,30 @@ func (p *ParamData) Decode(pkt []byte, idx *int) error {
 }
 
 func (p *ParamData) Encode() (pkt []byte, err error) {
-	pkt = hex.WriteDoubleWord(pkt, p.ParamID)
-	if fn, ok := argTable[p.ParamID]; ok {
-		value := fn.encode(p.ParamValue)
-		pkt = hex.WriteByte(pkt, uint8(len(value)))
-		pkt = hex.WriteBytes(pkt, value)
-		return pkt, nil
+	fn, ok := argTable[p.ParamID]
+	if !ok {
+		log.Warn().Str("ParamID", fmt.Sprintf("0x%04x", p.ParamID)).Err(ErrParamIDNotSupportted).Msg("skip it")
+		return nil, ErrParamIDNotSupportted
 	}
-	log.Warn().Str("ParamID", fmt.Sprintf("0x%04x", p.ParamID)).Err(ErrParamIDNotSupportted).Msg("skip it")
-	return nil, ErrParamIDNotSupportted
+	var value []byte
+	if fn.encodeErr != nil {
+		value, err = fn.encodeErr(p.ParamValue)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		value = fn.encode(p.ParamValue)
+	}
+	pkt = hex.WriteDoubleWord(pkt, p.ParamID)
+	pkt = hex.WriteByte(pkt, uint8(len(value)))
+	pkt = hex.WriteBytes(pkt, value)
+	return pkt, nil
 }
 
 type paramFn struct {
-	decode func([]byte) (any, error)
-	encode func(any) (pkt []byte)
+	decode    func([]byte) (any, error)
+	encode    func(any) (pkt []byte)
+	encodeErr func(any) (pkt []byte, err error)
 }
 
 // !!!特别注意，any类型被encoding/json Unmarshal后，会转为默认的类型，如下:
@@ -433,4 +443,14 @@ var argTable = map[uint32]*paramFn{
 	0x007B: {decode: decodeBytes, encode: encodeBytes},
 	// 终端休眠唤醒模式设置
 	0x007C: {decode: decodeBytes, encode: encodeBytes},
+
+	// 苏标 T/JSATL 12-2017 4.3.1 主动安全参数
+	// 高级驾驶辅助系统参数
+	0xF364: {decode: decodeSubiaoADASParam, encodeErr: encodeSubiaoADASParam},
+	// 驾驶员状态监测系统参数
+	0xF365: {decode: decodeSubiaoDSMParam, encodeErr: encodeSubiaoDSMParam},
+	// 胎压监测系统参数
+	0xF366: {decode: decodeSubiaoTPMSParam, encodeErr: encodeSubiaoTPMSParam},
+	// 盲区监测系统参数
+	0xF367: {decode: decodeSubiaoBSDParam, encodeErr: encodeSubiaoBSDParam},
 }

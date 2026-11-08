@@ -408,6 +408,8 @@ make release
 
 默认开启 TCP `8080`、UDP `8081` 和 HTTP `8008` 监听；将 `server.port.udpPort` 设为空可关闭 UDP。可靠消息的确认超时和最多重发次数可通过 `server.ackTimeoutMs`、`server.maxRetransmissions` 配置。
 
+苏标主动安全附件服务器使用独立端口：`alarmServer.port` 为 TCP 监听端口，`alarmServer.udpPort` 为 UDP 监听端口，二者可同时开启并共用同一套 `0x1210/0x1211/0x1212` 信令与 `0x30 0x31 0x63 0x64` 数据帧处理逻辑。只配置其中一个时，另一协议明确不可用；两个都为空时附件服务器不启动。开启 `alarmServer.autoUpload` 后，`0x9208` 直接通告这两个实际监听端口（未配置的一侧填 0），不再有独立的通告端口配置，避免通告地址与实际监听不一致。
+
 gateway/standalone 为设计目标，当前代码未实现，规格见 [docs/gateway-mode-design.md](docs/gateway-mode-design.md)。现有行为保持单一形态：设备、定位、报警等数据全量写入内存缓存，并启动 HTTP API。可选的 Action HTTP 回调通过 `server.action.http.url`、`server.action.http.timeoutMs` 配置；回调失败只记录日志，不影响协议流程。
 
 源码运行：

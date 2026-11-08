@@ -48,11 +48,11 @@ func TestSQLitePersistsTerminalCatalogsAcrossReopen(t *testing.T) {
 		Version:     "v1.2.3",
 		Data:        upgradeData,
 	})
-	transparent := []byte{0xAA, 0xBB}
+	transparentIDs := []uint8{0x64, 0x65}
 	industry.Record(&model.Msg8900{
 		Header: catalogHeader(phone),
-		Type:   0x0001,
-		Data:   transparent,
+		Type:   0xF7,
+		IDs:    transparentIDs,
 	})
 
 	// 进程内立即可见。
@@ -92,8 +92,8 @@ func TestSQLitePersistsTerminalCatalogsAcrossReopen(t *testing.T) {
 
 	down := reloaded.TransparentDown(phone)
 	require.NotNil(t, down)
-	require.Equal(t, uint32(0x0001), down.Type)
-	require.Equal(t, transparent, down.Data)
+	require.Equal(t, uint8(0xF7), down.Type)
+	require.Equal(t, transparentIDs, down.IDs)
 
 	// 删除全部后重开仍为空，验证整包覆盖不是简单追加。
 	reloaded.ApplyEventSet(phone, 0, nil)

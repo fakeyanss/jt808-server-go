@@ -1108,9 +1108,8 @@ func TestSimulatorTransparentAndCompressed(t *testing.T) {
 	session, err := runtime.Default().Conn.Get(context.Background(), device.SessionID)
 	require.NoError(t, err)
 
-	// 0x8900 downlink transparent transmission.
-	payload := []byte{0xAA, 0xBB, 0xCC, 0xDD}
-	server.Send(session.ID, &model.Msg8900{Header: model.GenMsgHeader(device, 0x8900, session.GetNextSerialNum()), Type: 0x0001, Data: payload})
+	// 0x8900 downlink peripheral query (ID list only, no message body).
+	server.Send(session.ID, &model.Msg8900{Header: model.GenMsgHeader(device, 0x8900, session.GetNextSerialNum()), Type: model.TransparentTypePeripheralStatus, IDs: []uint8{model.PeripheralIDADAS, model.PeripheralIDDSM}})
 	deadline = time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
 		if industry.TransparentDown(phone) != nil {
@@ -1120,11 +1119,16 @@ func TestSimulatorTransparentAndCompressed(t *testing.T) {
 	}
 	down := industry.TransparentDown(phone)
 	require.NotNil(t, down, "0x8900 should be stored")
-	require.Equal(t, uint32(0x0001), down.Type)
-	require.Equal(t, payload, down.Data)
+	require.Equal(t, model.TransparentTypePeripheralStatus, down.Type)
+	require.Equal(t, []uint8{model.PeripheralIDADAS, model.PeripheralIDDSM}, down.IDs)
 
-	// 0x0900 uplink transparent transmission from terminal.
-	require.NoError(t, cli.SendWithError(&model.Msg0900{Header: model.GenMsgHeader(device, 0x0900, 9), Type: 0x0002, Data: []byte{0x11, 0x22}}))
+	// 0x0900 uplink peripheral status report from terminal.
+	statusRaw := []byte{0x01, 0x00, 0x00, 0x00, 0x02}
+	require.NoError(t, cli.SendWithError(&model.Msg0900{
+		Header: model.GenMsgHeader(device, 0x0900, 9),
+		Type:   model.TransparentTypePeripheralStatus,
+		Items:  []model.PeripheralItem{{ID: model.PeripheralIDADAS, Raw: statusRaw}},
+	}))
 	deadline = time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
 		if industry.TransparentUp(phone) != nil {
@@ -1134,8 +1138,12 @@ func TestSimulatorTransparentAndCompressed(t *testing.T) {
 	}
 	up := industry.TransparentUp(phone)
 	require.NotNil(t, up, "0x0900 should be stored")
-	require.Equal(t, uint32(0x0002), up.Type)
-	require.Equal(t, []byte{0x11, 0x22}, up.Data)
+	require.Equal(t, model.TransparentTypePeripheralStatus, up.Type)
+	require.Len(t, up.Items, 1)
+	require.Equal(t, statusRaw, up.Items[0].Raw)
+	require.NotNil(t, up.Items[0].Status)
+	require.Equal(t, uint8(0x01), up.Items[0].Status.WorkStatus)
+	require.Equal(t, uint32(0x02), up.Items[0].Status.AlarmStatus)
 
 	// 0x0901 compressed data report from terminal.
 	raw := []byte("compressed payload for testing")

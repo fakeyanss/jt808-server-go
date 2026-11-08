@@ -311,28 +311,38 @@
 
 #### P0.4 苏标主动安全附件服务器
 
+- **状态**：已实现（`dev/p0-subiao`）。阶段 1 完成
+  `0x1210/0x1211/0x1212/0x9208/0x9212` 编解码；阶段 2 完成独立 TCP/UDP 附件服务器，
+  字节区间记账与随机写位于 `assembler.go`（未单独拆 `index.go`），持久化
+  `*.part.state.json` 并支持启动对账；阶段 3 完成主链路注册、`alarmServer` 配置、`0x9208` 下发与
+  附件元数据查询。UDP 侧无连接，按手机号与文件名（含报警编号）定位文件状态，与 TCP
+  共用同一套组装逻辑。缺口回报仅由 `0x1212` 触发（标准 4.6.6），`0x1211` 只回通用
+  应答（标准 4.6.3）。
 - **目标**：终端能按苏标流程把 ADAS/DSM/TP 报警附件完整传到平台；
   断点续传、缺口检测、完成通知（`0x9212`）全链路可用。
 - **涉及模块**：
-  - 新增 `internal/alarmserver/`：`server.go`（独立 TCP 端口监听与帧切分）、
+  - 新增 `internal/alarmserver/`：`server.go`（独立 TCP/UDP 端口监听与帧切分）、
     `assembler.go`（按 `fileName` 维护 `fileState`）、`file_store.go`（随机写与完整性校验）、
     `index.go`（块索引/位图，替代单一日志文件）；
   - `internal/protocol/model/`：新增 `msg_1210.go`、`msg_1211.go`、`msg_1212.go`、
     `msg_9208.go`、`msg_9212.go`；
   - `internal/protocol/msg_processor.go`：注册上行 `0x1210/0x1211/0x1212`；
   - `internal/api/api.go`：新增报警附件下发（`0x9208`）与附件查询；
-  - `internal/config/config.go`：新增 `alarmServer.{port,dir,maxFileSize,maxConcurrent}`。
+  - `internal/config/config.go`：新增 `alarmServer.{port,udpPort,dir,maxFileSize,maxConcurrent,completedTTL}`。
 - **技术方案要点**：
-  1. **独立端口**（参考 yezhihao 的 7200），不复用 8080；帧头魔数 `0x30 0x31 0x63 0x64`，
-     帧内为 `offset(uint32) + length(uint32) + data`；
+  1. **独立端口**（参考 yezhihao 的 7200），不复用 8080；`port` 为 TCP、`udpPort` 为 UDP，
+     两者可同时开启并共用处理逻辑，未配置的一侧在 `0x9208` 中通告为 0；
+     帧头魔数 `0x30 0x31 0x63 0x64`，帧内为 `offset(uint32) + length(uint32) + data`；
   2. **首包 `0x1210`**：登记 `fileName/报警ID/报警编号/附件类型`，创建目录与空文件，
      文件名 `filepath.Base` + 白名单字符，拒绝 `../` 与绝对路径；
   3. **随机写**：`WriteAt(data, offset)`；同一文件用 `sync.Map[fileName]*fileState` +
      单文件互斥，禁止两个 goroutine 同时改位图；
-  4. **完整性**：块位图（每块 1 bit）字节数与期望大小对比；`0x1211` 到达后
-     排序找缺口，回 `0x9212`（缺失偏移列表）；全部到齐后 `rename` 为正式文件并生成元数据；
-  5. **索引**：位图存 SQLite/内存，按 `fileName` 可恢复；启动时扫描目录做对账；
-  6. **超时**：`fileState` 30 分钟无进展则清理并记 `Warn`，防目录膨胀。
+  4. **完整性**：按字节区间记录已覆盖范围，与期望大小求补得到缺口；`0x1212` 到达后
+     按偏移升序回 `0x9212`（缺失偏移列表，超 255 段截断待下一轮收敛）；全部到齐后
+     `rename` 为正式文件并生成元数据；
+  5. **索引**：区间集合持久化到 `*.part.state.json`，按 `fileName` 可恢复；启动时扫描目录做对账；
+  6. **超时**：`fileState` 30 分钟无进展则清理并记 `Warn`，防目录膨胀；已完成条目的
+     内存状态按 `alarmServer.completedTTL`（默认 20m，0 不淘汰）释放，`.meta.json` 保留。
 - **验收标准**：
   1. 单测：乱序 offset 写入 100 块，位图正确、缺口列表正确；
   2. 单测：重复块不重复计数；越界 offset 被拒绝；路径穿越文件名被拒绝；
