@@ -177,6 +177,16 @@ type alarmServerConf struct {
 	// CompletedTTL 是完成态内存状态的保留时长（如 "20m"）；
 	// 显式 "0" 表示不淘汰，留空使用默认值。
 	CompletedTTL string `yaml:"completedTTL"`
+	// AutoUpload 控制报警首次上报时是否自动下发 0x9208。
+	// 默认 false，保持既有手动下发行为不变。
+	AutoUpload bool `yaml:"autoUpload"`
+	// UploadIP 是 0x9208 中携带的附件服务器 IP，autoUpload 开启时必填。
+	UploadIP string `yaml:"uploadIP"`
+	// UploadPort 是 0x9208 中携带的附件服务器 TCP 端口；
+	// 0 表示复用 alarmServer.port。
+	UploadPort int `yaml:"uploadPort"`
+	// UploadUDPPort 是 0x9208 中携带的附件服务器 UDP 端口，0 表示不提供。
+	UploadUDPPort int `yaml:"uploadUDPPort"`
 }
 
 // AlarmServerOptions 是附件服务器的归一化配置。
@@ -186,44 +196,80 @@ type AlarmServerOptions struct {
 	MaxFileSize   int64
 	MaxConcurrent int
 	CompletedTTL  time.Duration
+	AutoUpload    bool
+	UploadIP      string
+	UploadPort    uint16
+	UploadUDPPort uint16
 }
 
 // ParseAlarmServer 解析并校验 alarmServer 配置。
-// 返回 enabled=false 表示未配置端口，服务不启动，行为与旧版本一致。
+// 返回 enabled=false 表示未配置端口，附件服务器不启动，行为与旧版本一致。
+// 即使 enabled=false，只要开启了 autoUpload，仍会返回自动下发所需的地址参数。
 func (c *Config) ParseAlarmServer() (options AlarmServerOptions, enabled bool, err error) {
-	if c == nil || c.AlarmServer == nil || strings.TrimSpace(c.AlarmServer.Port) == "" {
+	if c == nil || c.AlarmServer == nil {
 		return AlarmServerOptions{}, false, nil
 	}
-	rawPort := strings.TrimSpace(c.AlarmServer.Port)
-	port, parseErr := strconv.Atoi(rawPort)
-	if parseErr != nil || port < 1 || port > 65535 {
-		return AlarmServerOptions{}, false, fmt.Errorf("alarmServer.port must be a TCP port between 1 and 65535, got %q", rawPort)
+	conf := c.AlarmServer
+	rawPort := strings.TrimSpace(conf.Port)
+	// 未配置端口且未开启自动下发时，整段配置视为未启用，保持历史行为。
+	if rawPort == "" && !conf.AutoUpload {
+		return AlarmServerOptions{}, false, nil
 	}
-	dir := strings.TrimSpace(c.AlarmServer.Dir)
+	port := 0
+	if rawPort != "" {
+		parsed, parseErr := strconv.Atoi(rawPort)
+		if parseErr != nil || parsed < 1 || parsed > 65535 {
+			return AlarmServerOptions{}, false, fmt.Errorf("alarmServer.port must be a TCP port between 1 and 65535, got %q", rawPort)
+		}
+		port = parsed
+	}
+	dir := strings.TrimSpace(conf.Dir)
 	if dir == "" {
 		dir = DefaultAlarmServerDir
 	}
-	if c.AlarmServer.MaxFileSize < 0 || c.AlarmServer.MaxFileSize > math.MaxUint32 {
-		return AlarmServerOptions{}, false, fmt.Errorf("alarmServer.maxFileSize must be between 0 and %d, got %d", uint32(math.MaxUint32), c.AlarmServer.MaxFileSize)
+	if conf.MaxFileSize < 0 || conf.MaxFileSize > math.MaxUint32 {
+		return AlarmServerOptions{}, false, fmt.Errorf("alarmServer.maxFileSize must be between 0 and %d, got %d", uint32(math.MaxUint32), conf.MaxFileSize)
 	}
-	maxFileSize := c.AlarmServer.MaxFileSize
+	maxFileSize := conf.MaxFileSize
 	if maxFileSize == 0 {
 		maxFileSize = DefaultAlarmServerMaxFileSize
 	}
-	if c.AlarmServer.MaxConcurrent < 0 {
-		return AlarmServerOptions{}, false, fmt.Errorf("alarmServer.maxConcurrent must be >= 0, got %d", c.AlarmServer.MaxConcurrent)
+	if conf.MaxConcurrent < 0 {
+		return AlarmServerOptions{}, false, fmt.Errorf("alarmServer.maxConcurrent must be >= 0, got %d", conf.MaxConcurrent)
 	}
-	maxConcurrent := c.AlarmServer.MaxConcurrent
+	maxConcurrent := conf.MaxConcurrent
 	if maxConcurrent == 0 {
 		maxConcurrent = DefaultAlarmServerMaxConcurrent
 	}
 	completedTTL := DefaultAlarmServerCompletedTTL
-	if raw := strings.TrimSpace(c.AlarmServer.CompletedTTL); raw != "" {
+	if raw := strings.TrimSpace(conf.CompletedTTL); raw != "" {
 		parsed, parseErr := time.ParseDuration(raw)
 		if parseErr != nil || parsed < 0 {
 			return AlarmServerOptions{}, false, fmt.Errorf("alarmServer.completedTTL must be a non-negative duration (e.g. 20m), got %q", raw)
 		}
 		completedTTL = parsed
+	}
+	if conf.UploadPort < 0 || conf.UploadPort > 65535 {
+		return AlarmServerOptions{}, false, fmt.Errorf("alarmServer.uploadPort must be between 0 and 65535, got %d", conf.UploadPort)
+	}
+	if conf.UploadUDPPort < 0 || conf.UploadUDPPort > 65535 {
+		return AlarmServerOptions{}, false, fmt.Errorf("alarmServer.uploadUDPPort must be between 0 and 65535, got %d", conf.UploadUDPPort)
+	}
+	uploadIP := strings.TrimSpace(conf.UploadIP)
+	uploadPort := conf.UploadPort
+	if conf.AutoUpload {
+		if uploadIP == "" {
+			return AlarmServerOptions{}, false, fmt.Errorf("alarmServer.uploadIP is required when alarmServer.autoUpload is enabled")
+		}
+		if len([]byte(uploadIP)) > 255 {
+			return AlarmServerOptions{}, false, fmt.Errorf("alarmServer.uploadIP must contain at most 255 bytes")
+		}
+		if uploadPort == 0 {
+			if port == 0 {
+				return AlarmServerOptions{}, false, fmt.Errorf("alarmServer.uploadPort is required when alarmServer.port is not configured")
+			}
+			uploadPort = port
+		}
 	}
 	return AlarmServerOptions{
 		Port:          uint16(port),
@@ -231,7 +277,11 @@ func (c *Config) ParseAlarmServer() (options AlarmServerOptions, enabled bool, e
 		MaxFileSize:   maxFileSize,
 		MaxConcurrent: maxConcurrent,
 		CompletedTTL:  completedTTL,
-	}, true, nil
+		AutoUpload:    conf.AutoUpload,
+		UploadIP:      uploadIP,
+		UploadPort:    uint16(uploadPort),
+		UploadUDPPort: uint16(conf.UploadUDPPort),
+	}, rawPort != "", nil
 }
 
 // 保留期默认值。未配置 retention 段时使用，保证与已有的进程内窗口一致：

@@ -532,6 +532,7 @@ func (mp *JT808MsgProcessor) notifyLocation(ctx context.Context, in *model.Msg02
 			Time:      in.Time,
 			ExtItems:  extItems,
 			ExtRaw:    model.ExtRawBytes(extItems),
+			AlarmID:   in.AlarmIDNumberBytes(),
 		})
 	}
 }

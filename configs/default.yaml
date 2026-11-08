@@ -38,6 +38,14 @@ alarmServer:
   # 已完成附件的内存状态保留时长；到期后仅释放内存，.meta.json 仍可查询。
   # 显式 0 表示不淘汰，留空使用默认值 20m。
   completedTTL: "20m"
+  # 报警首次上报时是否自动下发 0x9208（报警附件上传指令）。
+  # 默认 false，保持仅通过 API 手动下发的既有行为。
+  autoUpload: false
+  # autoUpload 开启时必填：写入 0x9208 的附件服务器 IP。
+  # uploadPort 为 0 时复用上面的 port；UDP 端口 0 表示不提供。
+  uploadIP: ""
+  uploadPort: 0
+  uploadUDPPort: 0
 
 # 持久化数据保留策略。整段缺省时使用代码内置默认值，行为与之前的进程内实现一致。
 # 显式写 0 表示关闭对应策略（0 天不做时间清理、0 条不限制上限、0 毫秒不去重）。

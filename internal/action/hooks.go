@@ -60,6 +60,9 @@ type AlarmEvent struct {
 	ExtItems []any `json:"extItems,omitempty"`
 	// ExtRaw 汇总无法结构化解析的附加信息项原始字节（仅 raw 兜底项）。
 	ExtRaw []byte `json:"extRaw,omitempty"`
+	// AlarmID 是 0x0200 扩展项（0x64~0x67）中提取的苏标 16 字节报警标识号。
+	// 取不到时为 nil；调用方不得自行拼装该标识号。
+	AlarmID []byte `json:"alarmId,omitempty"`
 }
 
 // DisconnectEvent 连接断开事件。

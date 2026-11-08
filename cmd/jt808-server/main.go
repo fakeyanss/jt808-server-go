@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"os"
@@ -14,6 +15,8 @@ import (
 	"github.com/fakeyanss/jt808-server-go/internal/alarmserver"
 	"github.com/fakeyanss/jt808-server-go/internal/api"
 	"github.com/fakeyanss/jt808-server-go/internal/config"
+	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
+	"github.com/fakeyanss/jt808-server-go/internal/runtime"
 	"github.com/fakeyanss/jt808-server-go/internal/server"
 	"github.com/fakeyanss/jt808-server-go/internal/storage"
 	"github.com/fakeyanss/jt808-server-go/pkg/logger"
@@ -62,9 +65,37 @@ func main() {
 		fmt.Println(banner)
 	}
 
+	alarmOptions, alarmEnabled, alarmErr := cfg.ParseAlarmServer()
+	if alarmErr != nil {
+		log.Error().Err(alarmErr).Msg("Invalid alarmServer configuration")
+		os.Exit(1)
+	}
+
 	serv := server.NewTCPServer()
-	serv.SetHooks(hooks)
 	serv.SetReliability(time.Duration(cfg.Server.AckTimeoutMS)*time.Millisecond, cfg.Server.MaxRetransmissions)
+	if alarmOptions.AutoUpload {
+		hooks = alarmserver.NewUploadTrigger(hooks, alarmserver.UploadTriggerOptions{
+			IP:      alarmOptions.UploadIP,
+			TCPPort: alarmOptions.UploadPort,
+			UDPPort: alarmOptions.UploadUDPPort,
+		}, func(phone string, msg *model.Msg9208) error {
+			ctx := context.Background()
+			device, err := storage.Default().Devices.GetByPhone(ctx, phone)
+			if err != nil {
+				return fmt.Errorf("device is offline: %w", err)
+			}
+			session, err := runtime.Default().Conn.Get(ctx, device.SessionID)
+			if err != nil {
+				return fmt.Errorf("session is unavailable: %w", err)
+			}
+			msg.Header = model.GenMsgHeader(device, 0x9208, session.GetNextSerialNum())
+			serv.Send(session.ID, msg)
+			return nil
+		})
+		log.Info().Str("ip", alarmOptions.UploadIP).Uint16("port", alarmOptions.UploadPort).
+			Msg("Automatic 0x9208 attachment upload trigger enabled")
+	}
+	serv.SetHooks(hooks)
 	addr := ":" + cfg.Server.Port.TCPPort
 	err := serv.Listen(addr)
 	if err != nil {
@@ -84,11 +115,6 @@ func main() {
 		routines.GoSafe(func() { udpServ.Start() })
 	}
 
-	alarmOptions, alarmEnabled, alarmErr := cfg.ParseAlarmServer()
-	if alarmErr != nil {
-		log.Error().Err(alarmErr).Msg("Invalid alarmServer configuration")
-		os.Exit(1)
-	}
 	var alarmServ *alarmserver.Server
 	if alarmEnabled {
 		alarmServ = alarmserver.NewServer(alarmserver.Config{
