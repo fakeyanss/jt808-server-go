@@ -132,7 +132,7 @@ func main() {
 			if err != nil {
 				return fmt.Errorf("device is offline: %w", err)
 			}
-			session, err := deps.Runtime.Conn.Get(ctx, device.SessionID)
+			session, err := deps.Runtime.Conn.GetByPhone(ctx, device.Phone)
 			if err != nil {
 				return fmt.Errorf("session is unavailable: %w", err)
 			}

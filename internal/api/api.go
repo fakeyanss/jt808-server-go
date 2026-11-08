@@ -146,7 +146,7 @@ func Run(serv *server.TCPServer, cfg *config.Config, alarmServ *alarmserver.Serv
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
 		}
-		session, err := connRegistry.Get(c.Request.Context(), device.SessionID)
+		session, err := lookupSessionByPhone(c.Request.Context(), connRegistry, device)
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
@@ -201,7 +201,7 @@ func Run(serv *server.TCPServer, cfg *config.Config, alarmServ *alarmserver.Serv
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
 		}
-		session, err := connRegistry.Get(c.Request.Context(), device.SessionID)
+		session, err := lookupSessionByPhone(c.Request.Context(), connRegistry, device)
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
@@ -234,7 +234,7 @@ func Run(serv *server.TCPServer, cfg *config.Config, alarmServ *alarmserver.Serv
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
 		}
-		session, err := connRegistry.Get(c.Request.Context(), device.SessionID)
+		session, err := lookupSessionByPhone(c.Request.Context(), connRegistry, device)
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
@@ -284,7 +284,7 @@ func Run(serv *server.TCPServer, cfg *config.Config, alarmServ *alarmserver.Serv
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
 		}
-		session, err := connRegistry.Get(c.Request.Context(), device.SessionID)
+		session, err := lookupSessionByPhone(c.Request.Context(), connRegistry, device)
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
@@ -325,7 +325,7 @@ func Run(serv *server.TCPServer, cfg *config.Config, alarmServ *alarmserver.Serv
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
 		}
-		session, err := connRegistry.Get(c.Request.Context(), device.SessionID)
+		session, err := lookupSessionByPhone(c.Request.Context(), connRegistry, device)
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
@@ -359,7 +359,7 @@ func Run(serv *server.TCPServer, cfg *config.Config, alarmServ *alarmserver.Serv
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
 		}
-		session, err := connRegistry.Get(c.Request.Context(), device.SessionID)
+		session, err := lookupSessionByPhone(c.Request.Context(), connRegistry, device)
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
@@ -419,7 +419,7 @@ func Run(serv *server.TCPServer, cfg *config.Config, alarmServ *alarmserver.Serv
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
 		}
-		session, err := connRegistry.Get(c.Request.Context(), device.SessionID)
+		session, err := lookupSessionByPhone(c.Request.Context(), connRegistry, device)
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
@@ -452,7 +452,7 @@ func Run(serv *server.TCPServer, cfg *config.Config, alarmServ *alarmserver.Serv
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
 		}
-		session, err := connRegistry.Get(c.Request.Context(), device.SessionID)
+		session, err := lookupSessionByPhone(c.Request.Context(), connRegistry, device)
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
@@ -485,7 +485,7 @@ func Run(serv *server.TCPServer, cfg *config.Config, alarmServ *alarmserver.Serv
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
 		}
-		session, err := connRegistry.Get(c.Request.Context(), device.SessionID)
+		session, err := lookupSessionByPhone(c.Request.Context(), connRegistry, device)
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
@@ -510,7 +510,7 @@ func Run(serv *server.TCPServer, cfg *config.Config, alarmServ *alarmserver.Serv
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
 		}
-		session, err := connRegistry.Get(c.Request.Context(), device.SessionID)
+		session, err := lookupSessionByPhone(c.Request.Context(), connRegistry, device)
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
@@ -535,7 +535,7 @@ func Run(serv *server.TCPServer, cfg *config.Config, alarmServ *alarmserver.Serv
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
 		}
-		session, err := connRegistry.Get(c.Request.Context(), device.SessionID)
+		session, err := lookupSessionByPhone(c.Request.Context(), connRegistry, device)
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
@@ -569,7 +569,7 @@ func Run(serv *server.TCPServer, cfg *config.Config, alarmServ *alarmserver.Serv
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
 		}
-		session, err := connRegistry.Get(c.Request.Context(), device.SessionID)
+		session, err := lookupSessionByPhone(c.Request.Context(), connRegistry, device)
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
@@ -629,7 +629,7 @@ func Run(serv *server.TCPServer, cfg *config.Config, alarmServ *alarmserver.Serv
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
 		}
-		session, err := connRegistry.Get(c.Request.Context(), device.SessionID)
+		session, err := lookupSessionByPhone(c.Request.Context(), connRegistry, device)
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
@@ -665,7 +665,7 @@ func Run(serv *server.TCPServer, cfg *config.Config, alarmServ *alarmserver.Serv
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
 		}
-		session, err := connRegistry.Get(c.Request.Context(), device.SessionID)
+		session, err := lookupSessionByPhone(c.Request.Context(), connRegistry, device)
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
@@ -690,7 +690,7 @@ func Run(serv *server.TCPServer, cfg *config.Config, alarmServ *alarmserver.Serv
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
 		}
-		session, err := connRegistry.Get(c.Request.Context(), device.SessionID)
+		session, err := lookupSessionByPhone(c.Request.Context(), connRegistry, device)
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
@@ -717,7 +717,7 @@ func Run(serv *server.TCPServer, cfg *config.Config, alarmServ *alarmserver.Serv
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
 		}
-		session, err := connRegistry.Get(c.Request.Context(), device.SessionID)
+		session, err := lookupSessionByPhone(c.Request.Context(), connRegistry, device)
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
@@ -743,7 +743,7 @@ func Run(serv *server.TCPServer, cfg *config.Config, alarmServ *alarmserver.Serv
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
 		}
-		session, err := connRegistry.Get(c.Request.Context(), device.SessionID)
+		session, err := lookupSessionByPhone(c.Request.Context(), connRegistry, device)
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
@@ -769,7 +769,7 @@ func Run(serv *server.TCPServer, cfg *config.Config, alarmServ *alarmserver.Serv
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
 		}
-		session, err := connRegistry.Get(c.Request.Context(), device.SessionID)
+		session, err := lookupSessionByPhone(c.Request.Context(), connRegistry, device)
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
@@ -795,7 +795,7 @@ func Run(serv *server.TCPServer, cfg *config.Config, alarmServ *alarmserver.Serv
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
 		}
-		session, err := connRegistry.Get(c.Request.Context(), device.SessionID)
+		session, err := lookupSessionByPhone(c.Request.Context(), connRegistry, device)
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
@@ -821,7 +821,7 @@ func Run(serv *server.TCPServer, cfg *config.Config, alarmServ *alarmserver.Serv
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
 		}
-		session, err := connRegistry.Get(c.Request.Context(), device.SessionID)
+		session, err := lookupSessionByPhone(c.Request.Context(), connRegistry, device)
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
@@ -851,7 +851,7 @@ func Run(serv *server.TCPServer, cfg *config.Config, alarmServ *alarmserver.Serv
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
 		}
-		session, err := connRegistry.Get(c.Request.Context(), device.SessionID)
+		session, err := lookupSessionByPhone(c.Request.Context(), connRegistry, device)
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
@@ -881,7 +881,7 @@ func Run(serv *server.TCPServer, cfg *config.Config, alarmServ *alarmserver.Serv
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
 		}
-		session, err := connRegistry.Get(c.Request.Context(), device.SessionID)
+		session, err := lookupSessionByPhone(c.Request.Context(), connRegistry, device)
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
@@ -911,7 +911,7 @@ func Run(serv *server.TCPServer, cfg *config.Config, alarmServ *alarmserver.Serv
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
 		}
-		session, err := connRegistry.Get(c.Request.Context(), device.SessionID)
+		session, err := lookupSessionByPhone(c.Request.Context(), connRegistry, device)
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
@@ -944,7 +944,7 @@ func Run(serv *server.TCPServer, cfg *config.Config, alarmServ *alarmserver.Serv
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
 		}
-		session, err := connRegistry.Get(c.Request.Context(), device.SessionID)
+		session, err := lookupSessionByPhone(c.Request.Context(), connRegistry, device)
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
@@ -986,7 +986,7 @@ func Run(serv *server.TCPServer, cfg *config.Config, alarmServ *alarmserver.Serv
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
 		}
-		session, err := connRegistry.Get(c.Request.Context(), device.SessionID)
+		session, err := lookupSessionByPhone(c.Request.Context(), connRegistry, device)
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
@@ -1071,7 +1071,7 @@ func Run(serv *server.TCPServer, cfg *config.Config, alarmServ *alarmserver.Serv
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
 		}
-		session, err := connRegistry.Get(c.Request.Context(), device.SessionID)
+		session, err := lookupSessionByPhone(c.Request.Context(), connRegistry, device)
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
@@ -1129,6 +1129,13 @@ func Run(serv *server.TCPServer, cfg *config.Config, alarmServ *alarmserver.Serv
 		log.Error().Err(err).Str("addr", httpAddr).Msg("Fail to run gin router")
 		os.Exit(1)
 	}
+}
+
+// lookupSessionByPhone 按终端手机号在运行时会话注册表中定位当前活连接。
+// SQL 后端不再持久化运行时字段，Device.SessionID 读出来是零值；
+// 下行路由因此必须走手机号索引，不能依赖该字段。
+func lookupSessionByPhone(ctx context.Context, conn runtime.ConnectionRegistry, device *model.Device) (*model.Session, error) {
+	return conn.GetByPhone(ctx, device.Phone)
 }
 
 // enqueueDownlinkCommand 把下行命令写入 outbox 后再发送。
