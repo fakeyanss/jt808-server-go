@@ -1,0 +1,342 @@
+package command
+
+import (
+	"context"
+	"errors"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/stretchr/testify/require"
+
+	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
+	"github.com/fakeyanss/jt808-server-go/internal/repository"
+	"github.com/fakeyanss/jt808-server-go/internal/runtime"
+)
+
+const (
+	testPhone     = "188765470101"
+	testSessionID = "session-1"
+)
+
+// fakeClock 让重投测试使用固定时间，避免真实时钟导致的偶发失败。
+type fakeClock struct {
+	now time.Time
+}
+
+func (c *fakeClock) Now() time.Time { return c.now }
+
+func (c *fakeClock) advance(d time.Duration) { c.now = c.now.Add(d) }
+
+type sentMessage struct {
+	sessionID string
+	msgID     uint16
+	serial    uint16
+	body      []byte
+}
+
+// fakeSender 记录重投下发的报文，并可按需注入同步写失败。
+type fakeSender struct {
+	mu      sync.Mutex
+	sent    []sentMessage
+	sendErr error
+}
+
+func (f *fakeSender) send(_ context.Context, sessionID string, msg model.JT808Msg, serial uint16) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.sendErr != nil {
+		return f.sendErr
+	}
+	header := msg.GetHeader()
+	body := []byte(nil)
+	if raw, ok := msg.(*model.MsgRawBody); ok {
+		body = append([]byte(nil), raw.Body...)
+	}
+	f.sent = append(f.sent, sentMessage{
+		sessionID: sessionID,
+		msgID:     header.MsgID,
+		serial:    serial,
+		body:      body,
+	})
+	return nil
+}
+
+func (f *fakeSender) count() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.sent)
+}
+
+type harness struct {
+	service *Service
+	repo    repository.CommandRepository
+	devices repository.DeviceRepository
+	conn    runtime.ConnectionRegistry
+	sender  *fakeSender
+	clock   *fakeClock
+	options Options
+}
+
+func newHarness(t *testing.T, options Options) *harness {
+	t.Helper()
+	ctx := context.Background()
+	repo := repository.NewCommandRepository()
+	devices := repository.NewDeviceRepository()
+	conn := runtime.NewConnectionRegistry()
+	sender := &fakeSender{}
+	clock := &fakeClock{now: time.Date(2026, 11, 8, 12, 0, 0, 0, time.UTC)}
+	require.NoError(t, devices.Upsert(ctx, &model.Device{
+		Phone:           testPhone,
+		SessionID:       testSessionID,
+		VersionDesc:     model.Version2013,
+		ProtocolVersion: 0,
+	}))
+	service, err := NewService(Dependencies{
+		Commands: repo,
+		Devices:  devices,
+		Conn:     conn,
+		Send: func(sessionID string, msg model.JT808Msg, serial uint16) error {
+			return sender.send(ctx, sessionID, msg, serial)
+		},
+		Owner: "test-node",
+		Clock: clock.Now,
+	}, options)
+	require.NoError(t, err)
+	return &harness{
+		service: service,
+		repo:    repo,
+		devices: devices,
+		conn:    conn,
+		sender:  sender,
+		clock:   clock,
+		options: options,
+	}
+}
+
+func (h *harness) bindOnline(t *testing.T) {
+	t.Helper()
+	ctx := context.Background()
+	require.NoError(t, h.conn.Bind(ctx, &model.Session{ID: testSessionID}))
+	_, err := h.conn.BindPhone(ctx, testPhone, testSessionID)
+	require.NoError(t, err)
+}
+
+func (h *harness) enqueue(t *testing.T, commandID string, attempts int, next, expires time.Time) *repository.DownlinkCommand {
+	t.Helper()
+	command, created, err := h.repo.Enqueue(context.Background(), &repository.DownlinkCommand{
+		CommandID:      commandID,
+		IdempotencyKey: commandID,
+		Phone:          testPhone,
+		MsgID:          0x8105,
+		Serial:         77,
+		Payload:        []byte{0x02},
+		Attempts:       attempts,
+		NextAttemptAt:  next,
+		ExpiresAt:      expires,
+	})
+	require.NoError(t, err)
+	require.True(t, created)
+	return command
+}
+
+func defaultTestOptions() Options {
+	return Options{
+		PollInterval:  time.Second,
+		BatchSize:     10,
+		MaxAttempts:   5,
+		LeaseDuration: time.Minute,
+		RetryBase:     5 * time.Second,
+		RetryMax:      time.Minute,
+	}
+}
+
+// TestReplayAfterRestart 覆盖进程重启后的重投：持久化的 pending 命令重新下发，
+// 并复用原始流水号，使终端应答还能回填到原记录。
+func TestReplayAfterRestart(t *testing.T) {
+	ctx := context.Background()
+	h := newHarness(t, defaultTestOptions())
+	h.bindOnline(t)
+	command := h.enqueue(t, "cmd-restart", 1, h.clock.now.Add(-time.Minute), h.clock.now.Add(time.Hour))
+
+	require.NoError(t, h.service.Tick(ctx))
+	require.Equal(t, 1, h.sender.count())
+
+	h.sender.mu.Lock()
+	sent := h.sender.sent[0]
+	h.sender.mu.Unlock()
+	require.Equal(t, testSessionID, sent.sessionID)
+	require.Equal(t, uint16(0x8105), sent.msgID)
+	// 重投复用原始流水号。
+	require.Equal(t, command.Serial, sent.serial)
+	require.Equal(t, []byte{0x02}, sent.body)
+
+	stored, err := h.repo.Get(ctx, command.CommandID)
+	require.NoError(t, err)
+	require.Equal(t, 2, stored.Attempts)
+	require.Equal(t, h.clock.now, stored.LastAttemptAt)
+	require.NotEmpty(t, stored.LeaseOwner)
+
+	h.service.HandleResult(model.ReliableResult{
+		MsgID:  command.MsgID,
+		Serial: command.Serial,
+		Phone:  command.Phone,
+		Status: model.ReliableStatusAcked,
+	})
+	stored, err = h.repo.Get(ctx, command.CommandID)
+	require.NoError(t, err)
+	require.Equal(t, repository.CommandStatusAcked, stored.Status)
+	require.Empty(t, stored.LeaseOwner)
+}
+
+// TestReplayKeepsWaitingWhileDeviceOffline 覆盖设备离线：命令保持 pending 等待上线，
+// 不消耗重投次数，设备上线后补发。
+func TestReplayKeepsWaitingWhileDeviceOffline(t *testing.T) {
+	ctx := context.Background()
+	h := newHarness(t, defaultTestOptions())
+	command := h.enqueue(t, "cmd-offline", 1, h.clock.now.Add(-time.Minute), h.clock.now.Add(time.Hour))
+
+	require.NoError(t, h.service.Tick(ctx))
+	require.Equal(t, 0, h.sender.count())
+
+	stored, err := h.repo.Get(ctx, command.CommandID)
+	require.NoError(t, err)
+	require.Equal(t, repository.CommandStatusPending, stored.Status)
+	require.Equal(t, 1, stored.Attempts)
+	require.Equal(t, "device offline", stored.LastError)
+	require.Empty(t, stored.LeaseOwner)
+
+	// 设备上线后下一轮补发。
+	h.bindOnline(t)
+	require.NoError(t, h.service.Tick(ctx))
+	require.Equal(t, 1, h.sender.count())
+	stored, err = h.repo.Get(ctx, command.CommandID)
+	require.NoError(t, err)
+	require.Equal(t, 2, stored.Attempts)
+}
+
+// TestReplayMarksFailedWhenAttemptsExhausted 覆盖重投上限：达到 maxAttempts 后转 failed。
+func TestReplayMarksFailedWhenAttemptsExhausted(t *testing.T) {
+	ctx := context.Background()
+	options := defaultTestOptions()
+	options.MaxAttempts = 2
+	h := newHarness(t, options)
+	h.bindOnline(t)
+	command := h.enqueue(t, "cmd-exhausted", 1, h.clock.now.Add(-time.Minute), h.clock.now.Add(time.Hour))
+
+	// 第一次重投把 attempts 推到 2，即上限。
+	require.NoError(t, h.service.Tick(ctx))
+	require.Equal(t, 1, h.sender.count())
+	stored, err := h.repo.Get(ctx, command.CommandID)
+	require.NoError(t, err)
+	require.Equal(t, 2, stored.Attempts)
+
+	// 会话重传耗尽后的失败事件不再安排重投，而是转 failed。
+	h.service.HandleResult(model.ReliableResult{
+		MsgID:  command.MsgID,
+		Serial: command.Serial,
+		Phone:  command.Phone,
+		Status: model.ReliableStatusFailed,
+		Reason: "retransmission exhausted",
+	})
+	stored, err = h.repo.Get(ctx, command.CommandID)
+	require.NoError(t, err)
+	require.Equal(t, repository.CommandStatusFailed, stored.Status)
+	require.Equal(t, "retransmission exhausted", stored.LastError)
+}
+
+// TestReplayIsIdempotentAcrossInstances 覆盖多实例/重复启动：租约有效期内同一命令
+// 只会被一个实例下发，后续 Tick 不会重复投递。
+func TestReplayIsIdempotentAcrossInstances(t *testing.T) {
+	ctx := context.Background()
+	options := defaultTestOptions()
+	h := newHarness(t, options)
+	h.bindOnline(t)
+	h.enqueue(t, "cmd-idempotent", 1, h.clock.now.Add(-time.Minute), h.clock.now.Add(time.Hour))
+
+	second, err := NewService(Dependencies{
+		Commands: h.repo,
+		Devices:  h.devices,
+		Conn:     h.conn,
+		Send: func(sessionID string, msg model.JT808Msg, serial uint16) error {
+			return h.sender.send(ctx, sessionID, msg, serial)
+		},
+		Owner: "other-node",
+		Clock: h.clock.Now,
+	}, options)
+	require.NoError(t, err)
+
+	require.NoError(t, h.service.Tick(ctx))
+	require.Equal(t, 1, h.sender.count())
+
+	// 另一个实例抢不到已租约的命令。
+	require.NoError(t, second.Tick(ctx))
+	require.Equal(t, 1, h.sender.count())
+
+	// 同一实例在租约内再次 Tick 也不会重复下发。
+	require.NoError(t, h.service.Tick(ctx))
+	require.Equal(t, 1, h.sender.count())
+
+	// 租约到期后允许重新占用，体现 at-least-once。
+	h.clock.advance(options.LeaseDuration + time.Second)
+	require.NoError(t, second.Tick(ctx))
+	require.Equal(t, 2, h.sender.count())
+}
+
+// TestReplayExpiresCommand 覆盖过期兜底：长期离线且超过有效期后转 failed。
+func TestReplayExpiresCommand(t *testing.T) {
+	ctx := context.Background()
+	h := newHarness(t, defaultTestOptions())
+	command := h.enqueue(t, "cmd-expired", 1, h.clock.now.Add(-time.Minute), h.clock.now.Add(-time.Second))
+
+	require.NoError(t, h.service.Tick(ctx))
+	require.Equal(t, 0, h.sender.count())
+
+	stored, err := h.repo.Get(ctx, command.CommandID)
+	require.NoError(t, err)
+	require.Equal(t, repository.CommandStatusFailed, stored.Status)
+	require.Equal(t, "expired before delivery", stored.LastError)
+}
+
+// TestReplaySchedulesBackoffOnFailure 覆盖失败后的退避重排：未到上限时保持 pending，
+// 并按尝试次数设置下一次可投时刻。
+func TestReplaySchedulesBackoffOnFailure(t *testing.T) {
+	ctx := context.Background()
+	options := defaultTestOptions()
+	h := newHarness(t, options)
+	h.bindOnline(t)
+	command := h.enqueue(t, "cmd-backoff", 1, h.clock.now.Add(-time.Minute), h.clock.now.Add(time.Hour))
+
+	require.NoError(t, h.service.Tick(ctx))
+	h.service.HandleResult(model.ReliableResult{
+		MsgID:  command.MsgID,
+		Serial: command.Serial,
+		Phone:  command.Phone,
+		Status: model.ReliableStatusFailed,
+		Reason: "write failed",
+	})
+
+	stored, err := h.repo.Get(ctx, command.CommandID)
+	require.NoError(t, err)
+	require.Equal(t, repository.CommandStatusPending, stored.Status)
+	require.Equal(t, "write failed", stored.LastError)
+	require.Empty(t, stored.LeaseOwner)
+	// attempts=2 时退避为 2×RetryBase。
+	require.Equal(t, h.clock.now.Add(2*options.RetryBase), stored.NextAttemptAt)
+}
+
+// TestReplaySynchronousSendFailureSchedulesRetry 覆盖同步写失败：不直接判死，保持 pending。
+func TestReplaySynchronousSendFailureSchedulesRetry(t *testing.T) {
+	ctx := context.Background()
+	h := newHarness(t, defaultTestOptions())
+	h.bindOnline(t)
+	h.sender.sendErr = errors.New("write failed")
+	command := h.enqueue(t, "cmd-send-fail", 1, h.clock.now.Add(-time.Minute), h.clock.now.Add(time.Hour))
+
+	require.NoError(t, h.service.Tick(ctx))
+	stored, err := h.repo.Get(ctx, command.CommandID)
+	require.NoError(t, err)
+	require.Equal(t, repository.CommandStatusPending, stored.Status)
+	require.Equal(t, "write failed", stored.LastError)
+	require.Empty(t, stored.LeaseOwner)
+}

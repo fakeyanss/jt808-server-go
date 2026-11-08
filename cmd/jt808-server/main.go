@@ -15,6 +15,7 @@ import (
 	"github.com/fakeyanss/jt808-server-go/internal/adminapi"
 	"github.com/fakeyanss/jt808-server-go/internal/alarmserver"
 	"github.com/fakeyanss/jt808-server-go/internal/api"
+	"github.com/fakeyanss/jt808-server-go/internal/command"
 	"github.com/fakeyanss/jt808-server-go/internal/config"
 	"github.com/fakeyanss/jt808-server-go/internal/media"
 	"github.com/fakeyanss/jt808-server-go/internal/protocol"
@@ -40,6 +41,11 @@ func main() {
 
 	if err := cfg.ValidateRetention(); err != nil {
 		log.Error().Err(err).Msg("invalid retention configuration")
+		os.Exit(1)
+	}
+	outboxOptions, outboxErr := cfg.ParseCommandOutbox()
+	if outboxErr != nil {
+		log.Error().Err(outboxErr).Msg("Invalid commandOutbox configuration")
 		os.Exit(1)
 	}
 
@@ -90,6 +96,31 @@ func main() {
 	serv := server.NewTCPServer()
 	serv.SetDeps(deps)
 	serv.SetReliability(time.Duration(cfg.Server.AckTimeoutMS)*time.Millisecond, cfg.Server.MaxRetransmissions)
+
+	// 进程重启后把 pending 命令重新投给已上线会话；首次 Tick 立即执行，之后周期调度。
+	replay, replayErr := command.NewService(command.Dependencies{
+		Commands: stores.Commands,
+		Devices:  stores.Devices,
+		Conn:     deps.Runtime.Conn,
+		Send: func(sessionID string, msg model.JT808Msg, serial uint16) error {
+			return serv.Send(sessionID, msg, server.WithSerial(serial))
+		},
+	}, command.Options{
+		PollInterval:  outboxOptions.PollInterval,
+		BatchSize:     outboxOptions.BatchSize,
+		MaxAttempts:   outboxOptions.MaxAttempts,
+		LeaseDuration: outboxOptions.LeaseDuration,
+		RetryBase:     outboxOptions.RetryBase,
+		RetryMax:      outboxOptions.RetryMax,
+	})
+	if replayErr != nil {
+		log.Error().Err(replayErr).Msg("Fail to create command replay service")
+		os.Exit(1)
+	}
+	// 由重投服务负责把应答/失败事件落回 outbox，并在失败时决定重试还是终结。
+	serv.SetReliableResultHandler(replay.HandleResult)
+	outboxCtx, cancelOutbox := context.WithCancel(context.Background())
+	routines.GoSafe(func() { replay.Run(outboxCtx) })
 	if alarmOptions.AutoUpload {
 		hooks = alarmserver.NewUploadTrigger(hooks, alarmserver.UploadTriggerOptions{
 			IP:      alarmOptions.UploadIP,
@@ -211,6 +242,7 @@ func main() {
 	if mediaServ != nil {
 		mediaServ.Stop()
 	}
+	cancelOutbox()
 	if err := storage.Close(); err != nil {
 		log.Warn().Err(err).Msg("Fail to close storage backend")
 	}

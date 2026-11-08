@@ -26,9 +26,20 @@ type TCPServer struct {
 	maxRetransmissions int
 	hooks              action.Hooks
 	deps               protocol.ProcessorDeps
+	// reliableResultHandler 覆盖默认的 outbox 回填逻辑；
+	// 设置后由重投服务决定失败结果是立即重试还是转 failed。
+	reliableResultHandler func(model.ReliableResult)
 
 	// sessions map[string]*model.Session
 	mutex *sync.Mutex
+}
+
+// SetReliableResultHandler 设置可靠投递结果处理器，必须在 Start 之前调用。
+// 未设置时回退到默认行为：直接按 (Phone, MsgID, Serial) 回填 outbox 终态。
+func (serv *TCPServer) SetReliableResultHandler(handler func(model.ReliableResult)) {
+	serv.mutex.Lock()
+	defer serv.mutex.Unlock()
+	serv.reliableResultHandler = handler
 }
 
 // SetDeps 设置处理器依赖；未注入的字段回退到包级默认单例。
@@ -108,7 +119,12 @@ func (serv *TCPServer) accept(conn net.Conn) *model.Session {
 		AckTimeout:  serv.ackTimeout,
 		MaxRetries:  serv.maxRetransmissions,
 	}
-	if commands := serv.commandRepository(); commands != nil {
+	handler := serv.reliableResultHandler
+	if handler != nil {
+		session.OnReliableResult = func(result model.ReliableResult) {
+			go handler(result)
+		}
+	} else if commands := serv.commandRepository(); commands != nil {
 		session.OnReliableResult = func(result model.ReliableResult) {
 			go recordReliableResult(commands, result)
 		}
