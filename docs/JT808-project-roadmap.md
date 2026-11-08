@@ -327,7 +327,7 @@
     `msg_9208.go`、`msg_9212.go`；
   - `internal/protocol/msg_processor.go`：注册上行 `0x1210/0x1211/0x1212`；
   - `internal/api/api.go`：新增报警附件下发（`0x9208`）与附件查询；
-  - `internal/config/config.go`：新增 `alarmServer.{port,dir,maxFileSize,maxConcurrent}`。
+  - `internal/config/config.go`：新增 `alarmServer.{port,dir,maxFileSize,maxConcurrent,completedTTL}`。
 - **技术方案要点**：
   1. **独立端口**（参考 yezhihao 的 7200），不复用 8080；帧头魔数 `0x30 0x31 0x63 0x64`，
      帧内为 `offset(uint32) + length(uint32) + data`；
@@ -335,10 +335,12 @@
      文件名 `filepath.Base` + 白名单字符，拒绝 `../` 与绝对路径；
   3. **随机写**：`WriteAt(data, offset)`；同一文件用 `sync.Map[fileName]*fileState` +
      单文件互斥，禁止两个 goroutine 同时改位图；
-  4. **完整性**：块位图（每块 1 bit）字节数与期望大小对比；`0x1211` 到达后
-     排序找缺口，回 `0x9212`（缺失偏移列表）；全部到齐后 `rename` 为正式文件并生成元数据；
-  5. **索引**：位图存 SQLite/内存，按 `fileName` 可恢复；启动时扫描目录做对账；
-  6. **超时**：`fileState` 30 分钟无进展则清理并记 `Warn`，防目录膨胀。
+  4. **完整性**：按字节区间记录已覆盖范围，与期望大小求补得到缺口；`0x1212` 到达后
+     按偏移升序回 `0x9212`（缺失偏移列表，超 255 段截断待下一轮收敛）；全部到齐后
+     `rename` 为正式文件并生成元数据；
+  5. **索引**：区间集合持久化到 `*.part.state.json`，按 `fileName` 可恢复；启动时扫描目录做对账；
+  6. **超时**：`fileState` 30 分钟无进展则清理并记 `Warn`，防目录膨胀；已完成条目的
+     内存状态按 `alarmServer.completedTTL`（默认 20m，0 不淘汰）释放，`.meta.json` 保留。
 - **验收标准**：
   1. 单测：乱序 offset 写入 100 块，位图正确、缺口列表正确；
   2. 单测：重复块不重复计数；越界 offset 被拒绝；路径穿越文件名被拒绝；

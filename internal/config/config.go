@@ -164,6 +164,7 @@ const (
 	DefaultAlarmServerDir           = "./data/alarms"
 	DefaultAlarmServerMaxFileSize   = 100 * 1024 * 1024
 	DefaultAlarmServerMaxConcurrent = 16
+	DefaultAlarmServerCompletedTTL  = 20 * time.Minute
 )
 
 // alarmServerConf 配置苏标主动安全附件服务器。
@@ -173,6 +174,9 @@ type alarmServerConf struct {
 	Dir           string `yaml:"dir"`
 	MaxFileSize   int64  `yaml:"maxFileSize"`
 	MaxConcurrent int    `yaml:"maxConcurrent"`
+	// CompletedTTL 是完成态内存状态的保留时长（如 "20m"）；
+	// 显式 "0" 表示不淘汰，留空使用默认值。
+	CompletedTTL string `yaml:"completedTTL"`
 }
 
 // AlarmServerOptions 是附件服务器的归一化配置。
@@ -181,6 +185,7 @@ type AlarmServerOptions struct {
 	Dir           string
 	MaxFileSize   int64
 	MaxConcurrent int
+	CompletedTTL  time.Duration
 }
 
 // ParseAlarmServer 解析并校验 alarmServer 配置。
@@ -212,11 +217,20 @@ func (c *Config) ParseAlarmServer() (options AlarmServerOptions, enabled bool, e
 	if maxConcurrent == 0 {
 		maxConcurrent = DefaultAlarmServerMaxConcurrent
 	}
+	completedTTL := DefaultAlarmServerCompletedTTL
+	if raw := strings.TrimSpace(c.AlarmServer.CompletedTTL); raw != "" {
+		parsed, parseErr := time.ParseDuration(raw)
+		if parseErr != nil || parsed < 0 {
+			return AlarmServerOptions{}, false, fmt.Errorf("alarmServer.completedTTL must be a non-negative duration (e.g. 20m), got %q", raw)
+		}
+		completedTTL = parsed
+	}
 	return AlarmServerOptions{
 		Port:          uint16(port),
 		Dir:           dir,
 		MaxFileSize:   maxFileSize,
 		MaxConcurrent: maxConcurrent,
+		CompletedTTL:  completedTTL,
 	}, true, nil
 }
 

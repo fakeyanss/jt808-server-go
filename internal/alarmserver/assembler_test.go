@@ -455,3 +455,82 @@ func TestAssemblerRangeBoundaries(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, result.Complete)
 }
+
+// completeTestFile 写入完整文件并触发完成收尾。
+func completeTestFile(t *testing.T, assembler *Assembler, phone, fileName string, size int) {
+	t.Helper()
+	source := buildSource(size)
+	registerTestFile(t, assembler, phone, fileName, size)
+	for index := 0; index*DefaultBlockSize < size; index++ {
+		writeBlock(t, assembler, phone, fileName, source, index)
+	}
+	result, err := assembler.CompleteCheck(phone, fileName)
+	require.NoError(t, err)
+	require.True(t, result.Complete)
+}
+
+// 完成态 TTL 到期只释放内存状态，落盘文件与 .meta.json 仍可查询。
+func TestAssemblerCompletedTTLReleasesMemoryAndKeepsMetadata(t *testing.T) {
+	assembler, _ := newTestAssembler(t)
+	clock := time.Date(2026, 1, 7, 12, 0, 0, 0, time.UTC)
+	assembler.now = func() time.Time { return clock }
+	phone := "013800000012"
+	fileName := "ttl.jpg"
+	size := 2 * DefaultBlockSize
+	completeTestFile(t, assembler, phone, fileName, size)
+
+	// 未到 TTL 不淘汰。
+	require.Equal(t, 0, assembler.CleanupCompleted(clock.Add(19*time.Minute), 20*time.Minute))
+	require.NotNil(t, assembler.lookup(phone, fileName))
+
+	// 到期释放内存。
+	require.Equal(t, 1, assembler.CleanupCompleted(clock.Add(20*time.Minute), 20*time.Minute))
+	require.Nil(t, assembler.lookup(phone, fileName))
+
+	// GET /api/device/:phone/attachments 与单文件查询都走 Select/FindMetadata，
+	// 淘汰后仍由 .meta.json 扫描兜底，行为保持一致。
+	list := assembler.Select(phone)
+	require.Len(t, list, 1)
+	require.Equal(t, fileName, list[0].FileName)
+	meta, err := assembler.FindMetadata(phone, fileName)
+	require.NoError(t, err)
+	require.Equal(t, list[0].Path, meta.Path)
+	_, statErr := os.Stat(meta.Path)
+	require.NoError(t, statErr)
+
+	// 淘汰后再次收到 0x1212：RegisterFile 会从落盘文件重建完成态，结果仍为完成。
+	info := AttachmentInfo{Phone: phone, TerminalID: "ABC1234", AlarmSign: testAlarmSign(), AlarmNo: "ALARM-0001"}
+	_, err = assembler.RegisterFile(info, fileName, 0, uint32(size))
+	require.NoError(t, err)
+	result, err := assembler.CompleteCheck(phone, fileName)
+	require.NoError(t, err)
+	require.True(t, result.Complete)
+}
+
+// TTL 配置为 0 时不淘汰。
+func TestAssemblerCompletedTTLDisabled(t *testing.T) {
+	assembler, _ := newTestAssembler(t)
+	clock := time.Date(2026, 1, 7, 12, 0, 0, 0, time.UTC)
+	assembler.now = func() time.Time { return clock }
+	phone := "013800000013"
+
+	completeTestFile(t, assembler, phone, "keep.jpg", DefaultBlockSize)
+	require.Equal(t, 0, assembler.CleanupCompleted(clock.Add(24*time.Hour), 0))
+	require.NotNil(t, assembler.lookup(phone, "keep.jpg"))
+}
+
+// 未完成文件不受完成态 TTL 影响。
+func TestAssemblerCompletedTTLDoesNotEvictIncomplete(t *testing.T) {
+	assembler, _ := newTestAssembler(t)
+	clock := time.Date(2026, 1, 7, 12, 0, 0, 0, time.UTC)
+	assembler.now = func() time.Time { return clock }
+	phone := "013800000014"
+
+	incomplete := "pending.jpg"
+	size := 2 * DefaultBlockSize
+	source := buildSource(size)
+	registerTestFile(t, assembler, phone, incomplete, size)
+	writeBlock(t, assembler, phone, incomplete, source, 0)
+	require.Equal(t, 0, assembler.CleanupCompleted(clock.Add(24*time.Hour), 20*time.Minute))
+	require.NotNil(t, assembler.lookup(phone, incomplete))
+}

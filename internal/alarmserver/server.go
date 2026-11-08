@@ -67,6 +67,7 @@ type Server struct {
 	closeOnce sync.Once
 	done      chan struct{}
 	wg        sync.WaitGroup
+	cleanupWG sync.WaitGroup
 
 	connMu sync.Mutex
 	conns  map[net.Conn]struct{}
@@ -74,13 +75,20 @@ type Server struct {
 
 func NewServer(cfg Config) *Server {
 	cfg = cfg.Normalize()
-	return &Server{
+	s := &Server{
 		cfg:       cfg,
 		assembler: NewAssembler(cfg),
 		codec:     protocol.NewJT808PacketCodec(),
 		done:      make(chan struct{}),
 		conns:     make(map[net.Conn]struct{}),
 	}
+	// 清理任务与服务器生命周期绑定：Stop 关闭 done 后等待其退出。
+	s.cleanupWG.Add(1)
+	routines.GoSafe(func() {
+		defer s.cleanupWG.Done()
+		s.cleanupLoop()
+	})
+	return s
 }
 
 func (s *Server) Assembler() *Assembler { return s.assembler }
@@ -111,7 +119,6 @@ func (s *Server) Start() {
 	if err := s.assembler.Reconcile(); err != nil {
 		log.Warn().Err(err).Str("dir", s.cfg.Dir).Msg("Fail to reconcile attachment directory")
 	}
-	routines.GoSafe(s.cleanupLoop)
 
 	for {
 		conn, err := s.listener.Accept()
@@ -147,6 +154,7 @@ func (s *Server) Stop() {
 		}
 		s.connMu.Unlock()
 	})
+	s.cleanupWG.Wait()
 	s.assembler.Close()
 }
 
@@ -164,6 +172,9 @@ func (s *Server) untrack(conn net.Conn) {
 
 func (s *Server) cleanupLoop() {
 	interval := s.cfg.SessionTimeout / 2
+	if s.cfg.CompletedTTL > 0 && s.cfg.CompletedTTL/2 < interval {
+		interval = s.cfg.CompletedTTL / 2
+	}
 	if interval > time.Minute {
 		interval = time.Minute
 	}
@@ -178,6 +189,7 @@ func (s *Server) cleanupLoop() {
 			return
 		case now := <-ticker.C:
 			s.assembler.CleanupStale(now, s.cfg.SessionTimeout)
+			s.assembler.CleanupCompleted(now, s.cfg.CompletedTTL)
 		}
 	}
 }

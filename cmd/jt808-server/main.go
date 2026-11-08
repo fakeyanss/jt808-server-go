@@ -95,6 +95,7 @@ func main() {
 			Dir:           alarmOptions.Dir,
 			MaxFileSize:   alarmOptions.MaxFileSize,
 			MaxConcurrent: alarmOptions.MaxConcurrent,
+			CompletedTTL:  alarmOptions.CompletedTTL,
 		})
 		alarmAddr := fmt.Sprintf(":%d", alarmOptions.Port)
 		if err := alarmServ.Listen(alarmAddr); err != nil {

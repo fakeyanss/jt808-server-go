@@ -92,6 +92,7 @@ type fileState struct {
 	ranges       []byteRange
 	covered      int64
 	lastActivity time.Time
+	completedAt  time.Time
 
 	completed bool
 	removed   bool
@@ -273,7 +274,7 @@ func (st *fileState) writeAt(offset int64, data []byte) error {
 		return err
 	}
 	st.markRangeLocked(offset, int64(len(data)))
-	st.lastActivity = time.Now()
+	st.lastActivity = st.owner.nowTime()
 	return st.persistLocked()
 }
 
@@ -317,7 +318,7 @@ func (st *fileState) finishLocked() error {
 		Size:         st.size,
 		MD5:          sum,
 		Path:         st.finalPath,
-		CompletedAt:  time.Now(),
+		CompletedAt:  st.owner.nowTime(),
 	}
 	if err := writeMetadata(st.finalPath, st.meta); err != nil {
 		return fmt.Errorf("write attachment metadata: %w", err)
@@ -326,6 +327,7 @@ func (st *fileState) finishLocked() error {
 		log.Warn().Err(err).Str("file", st.partPath).Msg("Fail to remove attachment state file")
 	}
 	st.completed = true
+	st.completedAt = st.meta.CompletedAt
 	log.Info().Str("phone", st.phone).Str("file", st.fileName).Int64("size", st.size).
 		Str("md5", sum).Msg("Attachment file completed")
 	return nil
@@ -338,7 +340,7 @@ func (st *fileState) check() (CompletionResult, error) {
 	if st.removed {
 		return CompletionResult{}, ErrFileNotRegistered
 	}
-	st.lastActivity = time.Now()
+	st.lastActivity = st.owner.nowTime()
 	if st.completed {
 		return CompletionResult{Complete: true}, nil
 	}
@@ -382,6 +384,26 @@ func (st *fileState) expire(now time.Time, timeout time.Duration) bool {
 	return true
 }
 
+// expireCompleted 在完成态 TTL 到期后只释放内存状态，保留正式文件与 .meta.json。
+// ttl <= 0 表示不淘汰；未完成文件不在此路径处理。
+func (st *fileState) expireCompleted(now time.Time, ttl time.Duration) bool {
+	if ttl <= 0 {
+		return false
+	}
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	if st.removed || !st.completed {
+		return false
+	}
+	if st.completedAt.IsZero() || now.Sub(st.completedAt) < ttl {
+		return false
+	}
+	st.removed = true
+	log.Debug().Str("phone", st.phone).Str("file", st.fileName).Dur("ttl", ttl).
+		Msg("Evict completed attachment memory state")
+	return true
+}
+
 // Assembler 按手机号 + 文件名管理所有进行中的附件文件。
 type Assembler struct {
 	cfg   Config
@@ -389,14 +411,19 @@ type Assembler struct {
 	files map[string]*fileState
 	// active 统计当前持有文件句柄的附件数量，用原子操作避免与清理路径互相等待。
 	active atomic.Int64
+	// now 可注入时钟，测试据此验证完成态 TTL，无需等待真实时间。
+	now func() time.Time
 }
 
 func NewAssembler(cfg Config) *Assembler {
 	return &Assembler{
 		cfg:   cfg.Normalize(),
 		files: make(map[string]*fileState),
+		now:   time.Now,
 	}
 }
+
+func (a *Assembler) nowTime() time.Time { return a.now() }
 
 func (a *Assembler) Config() Config { return a.cfg }
 
@@ -505,6 +532,10 @@ func (a *Assembler) registerFile(info AttachmentInfo, date, dir string, entry At
 				CompletedAt:  fi.ModTime(),
 			}
 		}
+		state.completedAt = state.meta.CompletedAt
+		if state.completedAt.IsZero() {
+			state.completedAt = fi.ModTime()
+		}
 		a.mu.Lock()
 		if existing, ok := a.files[key]; ok {
 			a.mu.Unlock()
@@ -522,7 +553,7 @@ func (a *Assembler) registerFile(info AttachmentInfo, date, dir string, entry At
 	if persisted, err := readPersistedState(statePath(state.partPath)); err == nil {
 		state.adoptPersisted(persisted)
 	}
-	state.lastActivity = time.Now()
+	state.lastActivity = a.nowTime()
 
 	a.mu.Lock()
 	if existing, ok := a.files[key]; ok {
@@ -570,6 +601,42 @@ func (a *Assembler) CleanupStale(now time.Time, timeout time.Duration) int {
 	removed := 0
 	for _, st := range states {
 		if st.expire(now, timeout) {
+			removed++
+		}
+	}
+	if removed == 0 {
+		return 0
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	for key, st := range a.files {
+		st.mu.Lock()
+		removedNow := st.removed
+		st.mu.Unlock()
+		if removedNow {
+			delete(a.files, key)
+		}
+	}
+	return removed
+}
+
+// CleanupCompleted 淘汰完成态超过 ttl 的内存状态，返回淘汰数量。
+// 只释放内存，正式文件与 .meta.json 保留，Select/FindMetadata 仍可查询；
+// ttl <= 0 表示不淘汰。未完成文件不受影响，仍由 CleanupStale 按 SessionTimeout 清理。
+func (a *Assembler) CleanupCompleted(now time.Time, ttl time.Duration) int {
+	if ttl <= 0 {
+		return 0
+	}
+	a.mu.Lock()
+	states := make([]*fileState, 0, len(a.files))
+	for _, st := range a.files {
+		states = append(states, st)
+	}
+	a.mu.Unlock()
+
+	removed := 0
+	for _, st := range states {
+		if st.expireCompleted(now, ttl) {
 			removed++
 		}
 	}

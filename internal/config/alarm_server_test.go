@@ -3,6 +3,7 @@ package config
 import (
 	"math"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 )
@@ -31,7 +32,33 @@ func TestParseAlarmServerDefaults(t *testing.T) {
 		Dir:           DefaultAlarmServerDir,
 		MaxFileSize:   DefaultAlarmServerMaxFileSize,
 		MaxConcurrent: DefaultAlarmServerMaxConcurrent,
+		CompletedTTL:  DefaultAlarmServerCompletedTTL,
 	}, options)
+}
+
+func TestParseAlarmServerCompletedTTL(t *testing.T) {
+	cases := []struct {
+		raw      string
+		expected time.Duration
+	}{
+		{raw: "", expected: DefaultAlarmServerCompletedTTL},
+		{raw: "5m", expected: 5 * time.Minute},
+		{raw: "0", expected: 0},
+	}
+	for _, item := range cases {
+		cfg := &Config{AlarmServer: &alarmServerConf{Port: "7200", CompletedTTL: item.raw}}
+		options, enabled, err := cfg.ParseAlarmServer()
+		assert.NoError(t, err)
+		assert.True(t, enabled)
+		assert.Equal(t, item.expected, options.CompletedTTL, item.raw)
+	}
+
+	for _, raw := range []string{"-1m", "abc"} {
+		cfg := &Config{AlarmServer: &alarmServerConf{Port: "7200", CompletedTTL: raw}}
+		_, enabled, err := cfg.ParseAlarmServer()
+		assert.Error(t, err, raw)
+		assert.False(t, enabled)
+	}
 }
 
 func TestParseAlarmServerExplicitValues(t *testing.T) {
@@ -40,6 +67,7 @@ func TestParseAlarmServerExplicitValues(t *testing.T) {
 		Dir:           "/var/lib/jt808/alarms",
 		MaxFileSize:   1024,
 		MaxConcurrent: 3,
+		CompletedTTL:  "7m",
 	}}
 	options, enabled, err := cfg.ParseAlarmServer()
 	assert.NoError(t, err)
@@ -49,6 +77,7 @@ func TestParseAlarmServerExplicitValues(t *testing.T) {
 		Dir:           "/var/lib/jt808/alarms",
 		MaxFileSize:   1024,
 		MaxConcurrent: 3,
+		CompletedTTL:  7 * time.Minute,
 	}, options)
 }
 

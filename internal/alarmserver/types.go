@@ -47,6 +47,7 @@ type Config struct {
 	MaxFileSize    int64         // 单文件大小上限（字节）
 	MaxConcurrent  int           // 同时进行中的文件数上限
 	SessionTimeout time.Duration // 文件无进展清理阈值
+	CompletedTTL   time.Duration // 完成态内存状态保留时长；0 表示不淘汰
 }
 
 // Normalize 填充未配置或非法为零值的字段，保证零值 Config 可用。

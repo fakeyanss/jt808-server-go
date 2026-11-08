@@ -218,3 +218,22 @@ func TestServerRejectsDataBeforeRegistration(t *testing.T) {
 	ack := readJT808Message(t, bufio.NewReader(clientConn))
 	require.Equal(t, uint16(0x0001), ack.Header.MsgID)
 }
+
+// 清理任务必须与服务器生命周期绑定：Stop 后应关闭 done 并等待清理 goroutine 退出。
+func TestServerStopStopsCleanupLoop(t *testing.T) {
+	server := NewServer(Config{Dir: t.TempDir(), SessionTimeout: time.Minute, CompletedTTL: time.Minute})
+	require.NoError(t, server.Listen("127.0.0.1:0"))
+
+	done := make(chan struct{})
+	go func() {
+		server.Start()
+		close(done)
+	}()
+
+	server.Stop()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("attachment server did not stop after Stop")
+	}
+}
