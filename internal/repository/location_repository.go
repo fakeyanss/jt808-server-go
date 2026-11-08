@@ -31,4 +31,7 @@ type LocationRepository interface {
 	Record(ctx context.Context, records []LocationRecord) error
 	// List 返回设备定位历史，按接收时间倒序；limit <= 0 表示不限制条数。
 	List(ctx context.Context, phone string, limit int) ([]LocationRecord, error)
+	// ListPage 返回设备在时间区间内的定位历史与总条数，按上报时间倒序。
+	// 用于管理面分页查询，必须同时返回总数以便调用方判断是否还有下一页。
+	ListPage(ctx context.Context, query HistoryQuery) ([]LocationRecord, int, error)
 }

@@ -95,6 +95,35 @@ func TestSQLiteAlarmMaxPerDevice(t *testing.T) {
 	require.Equal(t, uint16(3), events[1].MessageSerial)
 }
 
+// SQLite 报警分页：按接收时间半开区间过滤，返回倒序页与总数。
+func TestSQLiteAlarmListPageFiltersAndPaginates(t *testing.T) {
+	const phone = "188765600003"
+	ctx := context.Background()
+	store := openTestSQLite(t)
+	repo := store.AlarmRepository(repository.AlarmRetention{})
+
+	from := time.Now().Add(-time.Second)
+	for serial := uint16(1); serial <= 3; serial++ {
+		require.NoError(t, repo.Record(ctx, phone, serial, 1, 0, 0, "261028204500"))
+	}
+	to := time.Now().Add(time.Second)
+
+	items, total, err := repo.ListPage(ctx, repository.HistoryQuery{
+		Phone: phone, From: from, To: to, Offset: 1, Limit: 1,
+	})
+	require.NoError(t, err)
+	require.Equal(t, 3, total)
+	require.Len(t, items, 1)
+	require.Equal(t, uint16(2), items[0].MessageSerial, "list must be ordered by received time desc")
+
+	items, total, err = repo.ListPage(ctx, repository.HistoryQuery{
+		Phone: phone, From: time.Now().Add(time.Hour), To: time.Now().Add(2 * time.Hour), Limit: 10,
+	})
+	require.NoError(t, err)
+	require.Equal(t, 0, total)
+	require.Empty(t, items)
+}
+
 // MySQL 需要外部实例；未设置 JT808_TEST_MYSQL_DSN 时跳过。
 func TestMySQLAlarmPersistence(t *testing.T) {
 	dsn := os.Getenv("JT808_TEST_MYSQL_DSN")

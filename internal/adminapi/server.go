@@ -56,6 +56,7 @@ func NewServer(opts config.AdminOptions, deps Dependencies) *Server {
 		c.JSON(http.StatusOK, gin.H{"status": "ok"})
 	})
 	registerSessionRoutes(secured, deps)
+	registerHistoryRoutes(secured, deps)
 
 	engine.NoRoute(func(c *gin.Context) {
 		writeJSONError(c, http.StatusNotFound, codeNotFound, "route not found")
