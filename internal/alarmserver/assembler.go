@@ -309,16 +309,18 @@ func (st *fileState) finishLocked() error {
 		return err
 	}
 	st.meta = Metadata{
-		Phone:        st.phone,
-		TerminalID:   st.terminalID,
-		AlarmNo:      st.alarmNo,
-		AlarmSignHex: hex.EncodeToString(st.alarmSign),
-		FileName:     st.fileName,
-		FileType:     st.fileType,
-		Size:         st.size,
-		MD5:          sum,
-		Path:         st.finalPath,
-		CompletedAt:  st.owner.nowTime(),
+		Phone:              st.phone,
+		TerminalID:         st.terminalID,
+		AlarmNo:            st.alarmNo,
+		AlarmSignHex:       hex.EncodeToString(st.alarmSign),
+		FileName:           st.fileName,
+		FileType:           st.fileType,
+		Size:               st.size,
+		MD5:                sum,
+		Path:               st.finalPath,
+		CompletedAt:        st.owner.nowTime(),
+		FileNameConformant: validateAttachmentFileNameFormat(st.fileName) == nil,
+		AlarmSignValid:     validateAlarmSign(st.alarmSign) == nil,
 	}
 	if err := writeMetadata(st.finalPath, st.meta); err != nil {
 		return fmt.Errorf("write attachment metadata: %w", err)
@@ -470,9 +472,19 @@ func (a *Assembler) RegisterAlarm(info AttachmentInfo) error {
 	}
 	date := alarmDate(info.AlarmSign, info.Date)
 	dir := filepath.Join(a.cfg.Dir, info.Phone, date, sanitizeLabel(info.AlarmNo))
+	if err := validateAlarmSign(info.AlarmSign); err != nil {
+		// 降级接收：报警标识号不合规只影响元数据标记与目录日期推导，
+		// 拒绝整条 0x1210 会让终端无法补传任何附件。
+		log.Warn().Err(err).Str("phone", info.Phone).Str("alarm", info.AlarmNo).
+			Msg("Accept 0x1210 with non-conformant alarm sign")
+	}
 	for _, entry := range info.Attachments {
 		if err := validateFileName(entry.FileName); err != nil {
 			return err
+		}
+		if err := validateAttachmentFileNameFormat(entry.FileName); err != nil {
+			log.Warn().Err(err).Str("phone", info.Phone).Str("file", entry.FileName).
+				Msg("Accept attachment with non-conformant file name")
 		}
 		if int64(entry.FileSize) > a.cfg.MaxFileSize {
 			return ErrFileTooLarge
@@ -495,6 +507,14 @@ func (a *Assembler) RegisterFile(info AttachmentInfo, fileName string, fileType 
 	if st := a.lookup(info.Phone, fileName); st != nil {
 		st.updateFileType(fileType)
 		return st, nil
+	}
+	if err := validateAttachmentFileNameFormat(fileName); err != nil {
+		log.Warn().Err(err).Str("phone", info.Phone).Str("file", fileName).
+			Msg("Accept attachment with non-conformant file name")
+	}
+	if err := validateAlarmSign(info.AlarmSign); err != nil {
+		log.Warn().Err(err).Str("phone", info.Phone).Str("alarm", info.AlarmNo).
+			Msg("Accept 0x1211 with non-conformant alarm sign")
 	}
 	date := alarmDate(info.AlarmSign, info.Date)
 	dir := filepath.Join(a.cfg.Dir, info.Phone, date, sanitizeLabel(info.AlarmNo))
@@ -521,15 +541,17 @@ func (a *Assembler) registerFile(info AttachmentInfo, date, dir string, entry At
 			state.meta = meta
 		} else {
 			state.meta = Metadata{
-				Phone:        info.Phone,
-				TerminalID:   info.TerminalID,
-				AlarmNo:      info.AlarmNo,
-				AlarmSignHex: hex.EncodeToString(info.AlarmSign),
-				FileName:     entry.FileName,
-				FileType:     fileType,
-				Size:         int64(entry.FileSize),
-				Path:         finalPath,
-				CompletedAt:  fi.ModTime(),
+				Phone:              info.Phone,
+				TerminalID:         info.TerminalID,
+				AlarmNo:            info.AlarmNo,
+				AlarmSignHex:       hex.EncodeToString(info.AlarmSign),
+				FileName:           entry.FileName,
+				FileType:           fileType,
+				Size:               int64(entry.FileSize),
+				Path:               finalPath,
+				CompletedAt:        fi.ModTime(),
+				FileNameConformant: validateAttachmentFileNameFormat(entry.FileName) == nil,
+				AlarmSignValid:     validateAlarmSign(info.AlarmSign) == nil,
 			}
 		}
 		state.completedAt = state.meta.CompletedAt

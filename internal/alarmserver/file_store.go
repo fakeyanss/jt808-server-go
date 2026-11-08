@@ -2,11 +2,13 @@ package alarmserver
 
 import (
 	"crypto/md5"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -97,29 +99,152 @@ func sanitizeLabel(label string) string {
 	return b.String()
 }
 
+// validateAttachmentFileNameFormat 校验苏标 4.6.2 的附件命名规则：
+//
+//	<文件类型>_<通道号>_<报警类型>_<序号>_<报警编号>.<后缀名>
+//
+// 文件类型为 00~04；通道号为 0~37、64、65；报警类型为外设 ID(64~67) 加两位模块报警类型。
+// 该函数只做格式标记，调用方仍以 validateFileName 作为路径安全边界。
+func validateAttachmentFileNameFormat(name string) error {
+	dot := strings.LastIndexByte(name, '.')
+	if dot <= 0 || dot == len(name)-1 {
+		return fmt.Errorf("%w: missing file type or suffix", ErrInvalidFileNameFormat)
+	}
+	if !isASCIIAlphaNumeric(name[dot+1:]) {
+		return fmt.Errorf("%w: suffix must contain only letters and digits", ErrInvalidFileNameFormat)
+	}
+	parts := strings.Split(name[:dot], "_")
+	if len(parts) != 5 {
+		return fmt.Errorf("%w: expected 5 underscore-separated fields, got %d", ErrInvalidFileNameFormat, len(parts))
+	}
+	if len(parts[0]) != 2 || !isASCIIDigits(parts[0]) {
+		return fmt.Errorf("%w: file type must be two digits", ErrInvalidFileNameFormat)
+	}
+	fileType, err := strconv.Atoi(parts[0])
+	if err != nil || fileType > 4 {
+		return fmt.Errorf("%w: file type must be between 00 and 04", ErrInvalidFileNameFormat)
+	}
+	if !isASCIIDigits(parts[1]) {
+		return fmt.Errorf("%w: channel must be a decimal number", ErrInvalidFileNameFormat)
+	}
+	channel, err := strconv.Atoi(parts[1])
+	if err != nil || !(channel <= 37 || channel == 64 || channel == 65) {
+		return fmt.Errorf("%w: channel must be 0~37, 64 or 65", ErrInvalidFileNameFormat)
+	}
+	if len(parts[2]) != 4 || !isASCIIHex(parts[2]) {
+		return fmt.Errorf("%w: alarm type must be four hexadecimal digits", ErrInvalidFileNameFormat)
+	}
+	peripheral, err := strconv.ParseUint(parts[2][:2], 16, 8)
+	if err != nil || peripheral < 0x64 || peripheral > 0x67 {
+		return fmt.Errorf("%w: alarm type must start with peripheral ID 64~67", ErrInvalidFileNameFormat)
+	}
+	if !isASCIIDigits(parts[3]) {
+		return fmt.Errorf("%w: sequence must be a decimal number", ErrInvalidFileNameFormat)
+	}
+	if parts[4] == "" {
+		return fmt.Errorf("%w: alarm number must not be empty", ErrInvalidFileNameFormat)
+	}
+	return nil
+}
+
+// validateAlarmSign 校验表 4-16 的 16 字节报警标识号：
+// 终端 ID(7) + 时间 BCD[6] + 序号(1) + 附件数量(1) + 预留(1)。
+// 终端 ID 允许 0x00 尾部填充；附件数量必须为 1~255。
+func validateAlarmSign(sign []byte) error {
+	const alarmSignLen = 16
+	if len(sign) != alarmSignLen {
+		return fmt.Errorf("%w: must be exactly %d bytes, got %d", ErrInvalidAlarmSign, alarmSignLen, len(sign))
+	}
+	terminalID := sign[:7]
+	allZero := true
+	for i, c := range terminalID {
+		if c != 0 {
+			allZero = false
+		}
+		if !(c >= 'A' && c <= 'Z') && !(c >= '0' && c <= '9') && c != 0 {
+			return fmt.Errorf("%w: terminal ID byte %d must be an uppercase letter, digit or 0x00", ErrInvalidAlarmSign, i)
+		}
+	}
+	if allZero {
+		return fmt.Errorf("%w: terminal ID must not be empty", ErrInvalidAlarmSign)
+	}
+	if _, err := parseAlarmSignTime(sign[7:13]); err != nil {
+		return err
+	}
+	if sign[14] == 0 {
+		return fmt.Errorf("%w: attachment count must be between 1 and 255", ErrInvalidAlarmSign)
+	}
+	return nil
+}
+
+// parseAlarmSignTime 解析报警标识号中的 BCD[6] 时间（YY-MM-DD-hh-mm-ss，GMT+8）。
+func parseAlarmSignTime(bcd []byte) (time.Time, error) {
+	if len(bcd) != 6 {
+		return time.Time{}, fmt.Errorf("%w: BCD time must be 6 bytes, got %d", ErrInvalidAlarmSign, len(bcd))
+	}
+	values := [6]int{}
+	for i, b := range bcd {
+		high, low := b>>4, b&0x0f
+		if high > 9 || low > 9 {
+			return time.Time{}, fmt.Errorf("%w: BCD time contains a non-decimal nibble at byte %d", ErrInvalidAlarmSign, i)
+		}
+		values[i] = int(high)*10 + int(low)
+	}
+	year := 2000 + values[0]
+	t := time.Date(year, time.Month(values[1]), values[2], values[3], values[4], values[5], 0, time.UTC)
+	// time.Date 会把越界值规范化，逐字段回比才能识别非法日期（如 2 月 30 日）。
+	if t.Year() != year || int(t.Month()) != values[1] || t.Day() != values[2] ||
+		t.Hour() != values[3] || t.Minute() != values[4] || t.Second() != values[5] {
+		return time.Time{}, fmt.Errorf("%w: BCD time is not a valid calendar time", ErrInvalidAlarmSign)
+	}
+	return t, nil
+}
+
+func isASCIIDigits(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		if s[i] < '0' || s[i] > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+func isASCIIHex(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if !(c >= '0' && c <= '9') && !(c >= 'a' && c <= 'f') && !(c >= 'A' && c <= 'F') {
+			return false
+		}
+	}
+	return true
+}
+
+func isASCIIAlphaNumeric(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if !(c >= '0' && c <= '9') && !(c >= 'a' && c <= 'z') && !(c >= 'A' && c <= 'Z') {
+			return false
+		}
+	}
+	return true
+}
+
 // alarmDate 从报警标识号中的 BCD 时间推导日期（YYYYMMDD）。
 // 报警标识号为：终端ID(7) + 时间(6 BCD) + 序号(1) + 附件数量(1) + 预留(1)。
 // 时间非法时回退到 fallback。
 func alarmDate(alarmSign []byte, fallback string) string {
 	if len(alarmSign) >= 13 {
-		bcd := alarmSign[7:13]
-		valid := true
-		for _, v := range bcd {
-			if v>>4 > 9 || v&0x0f > 9 {
-				valid = false
-				break
-			}
-		}
-		if valid {
-			year := 2000 + int(bcd[0]>>4)*10 + int(bcd[0]&0x0f)
-			month := int(bcd[1]>>4)*10 + int(bcd[1]&0x0f)
-			day := int(bcd[2]>>4)*10 + int(bcd[2]&0x0f)
-			if month >= 1 && month <= 12 && day >= 1 && day <= 31 {
-				date := fmt.Sprintf("%04d%02d%02d", year, month, day)
-				if _, err := parseDate(date); err == nil {
-					return date
-				}
-			}
+		if t, err := parseAlarmSignTime(alarmSign[7:13]); err == nil {
+			return t.Format("20060102")
 		}
 	}
 	if fallback != "" {
@@ -182,6 +307,12 @@ func readMetadata(path string) (Metadata, error) {
 	}
 	if err := json.Unmarshal(data, &meta); err != nil {
 		return meta, err
+	}
+	// 校验结果按文件名与报警标识号重新推导，兼容旧版本生成的 .meta.json。
+	meta.FileNameConformant = validateAttachmentFileNameFormat(meta.FileName) == nil
+	meta.AlarmSignValid = false
+	if sign, err := hex.DecodeString(meta.AlarmSignHex); err == nil {
+		meta.AlarmSignValid = validateAlarmSign(sign) == nil
 	}
 	return meta, nil
 }

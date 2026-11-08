@@ -31,14 +31,16 @@ const (
 var FrameMagic = [4]byte{0x30, 0x31, 0x63, 0x64}
 
 var (
-	ErrInvalidFileName    = errors.New("invalid attachment file name")
-	ErrInvalidDirectory   = errors.New("invalid attachment directory")
-	ErrFileNotRegistered  = errors.New("attachment file is not registered")
-	ErrOffsetOutOfRange   = errors.New("attachment chunk offset out of range")
-	ErrFileTooLarge       = errors.New("attachment file exceeds max file size")
-	ErrTooManyFiles       = errors.New("too many concurrent attachment files")
-	ErrInvalidChunkLength = errors.New("invalid attachment chunk length")
-	ErrFrameMagic         = errors.New("invalid attachment frame magic")
+	ErrInvalidFileName       = errors.New("invalid attachment file name")
+	ErrInvalidFileNameFormat = errors.New("attachment file name does not match T/JSATL 12-2017 4.6.2")
+	ErrInvalidDirectory      = errors.New("invalid attachment directory")
+	ErrInvalidAlarmSign      = errors.New("invalid attachment alarm sign")
+	ErrFileNotRegistered     = errors.New("attachment file is not registered")
+	ErrOffsetOutOfRange      = errors.New("attachment chunk offset out of range")
+	ErrFileTooLarge          = errors.New("attachment file exceeds max file size")
+	ErrTooManyFiles          = errors.New("too many concurrent attachment files")
+	ErrInvalidChunkLength    = errors.New("invalid attachment chunk length")
+	ErrFrameMagic            = errors.New("invalid attachment frame magic")
 )
 
 // Config 是附件服务器的运行参数。
@@ -108,4 +110,10 @@ type Metadata struct {
 	MD5          string    `json:"md5"`
 	Path         string    `json:"path"`
 	CompletedAt  time.Time `json:"completedAt"`
+	// FileNameConformant 标记文件名是否符合苏标 4.6.2 命名规则。
+	// 不合规文件仍会被接收并落盘，仅用于运维排查与数据质量统计。
+	FileNameConformant bool `json:"fileNameConformant"`
+	// AlarmSignValid 标记报警标识号是否符合表 4-16 的字段约束。
+	// 不合规时仍按降级策略接收，避免阻断终端补传。
+	AlarmSignValid bool `json:"alarmSignValid"`
 }
