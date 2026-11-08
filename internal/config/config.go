@@ -168,9 +168,12 @@ const (
 )
 
 // alarmServerConf 配置苏标主动安全附件服务器。
-// port 为空表示不启用；显式配置 port 后才监听独立 TCP 端口。
+// port 为 TCP 监听端口，udpPort 为 UDP 监听端口；两者都为空表示不启用。
+// 0x9208 通告的端口直接取自这两个监听端口，未配置的一侧以 0 表示不可用，
+// 避免通告地址与实际监听不一致。
 type alarmServerConf struct {
 	Port          string `yaml:"port"`
+	UDPPort       string `yaml:"udpPort"`
 	Dir           string `yaml:"dir"`
 	MaxFileSize   int64  `yaml:"maxFileSize"`
 	MaxConcurrent int    `yaml:"maxConcurrent"`
@@ -181,47 +184,53 @@ type alarmServerConf struct {
 	// 默认 false，保持既有手动下发行为不变。
 	AutoUpload bool `yaml:"autoUpload"`
 	// UploadIP 是 0x9208 中携带的附件服务器 IP，autoUpload 开启时必填。
+	// 端口不单独配置，始终使用 port / udpPort 的实际监听端口。
 	UploadIP string `yaml:"uploadIP"`
-	// UploadPort 是 0x9208 中携带的附件服务器 TCP 端口；
-	// 0 表示复用 alarmServer.port。
-	UploadPort int `yaml:"uploadPort"`
-	// UploadUDPPort 是 0x9208 中携带的附件服务器 UDP 端口，0 表示不提供。
-	UploadUDPPort int `yaml:"uploadUDPPort"`
 }
 
 // AlarmServerOptions 是附件服务器的归一化配置。
 type AlarmServerOptions struct {
-	Port          uint16
+	Port          uint16 // TCP 监听与通告端口，0 表示未启用
+	UDPPort       uint16 // UDP 监听与通告端口，0 表示未启用
 	Dir           string
 	MaxFileSize   int64
 	MaxConcurrent int
 	CompletedTTL  time.Duration
 	AutoUpload    bool
 	UploadIP      string
-	UploadPort    uint16
-	UploadUDPPort uint16
 }
 
 // ParseAlarmServer 解析并校验 alarmServer 配置。
-// 返回 enabled=false 表示未配置端口，附件服务器不启动，行为与旧版本一致。
-// 即使 enabled=false，只要开启了 autoUpload，仍会返回自动下发所需的地址参数。
+// 返回 enabled=false 表示未配置任何监听端口，附件服务器不启动，行为与旧版本一致。
+// port / udpPort 分别对应 TCP / UDP 的实际监听与 0x9208 通告端口，未配置的一侧通告为 0。
 func (c *Config) ParseAlarmServer() (options AlarmServerOptions, enabled bool, err error) {
 	if c == nil || c.AlarmServer == nil {
 		return AlarmServerOptions{}, false, nil
 	}
 	conf := c.AlarmServer
 	rawPort := strings.TrimSpace(conf.Port)
-	// 未配置端口且未开启自动下发时，整段配置视为未启用，保持历史行为。
-	if rawPort == "" && !conf.AutoUpload {
+	rawUDPPort := strings.TrimSpace(conf.UDPPort)
+	// 未配置任何端口且未开启自动下发时，整段配置视为未启用，保持历史行为。
+	if rawPort == "" && rawUDPPort == "" && !conf.AutoUpload {
 		return AlarmServerOptions{}, false, nil
 	}
-	port := 0
-	if rawPort != "" {
-		parsed, parseErr := strconv.Atoi(rawPort)
-		if parseErr != nil || parsed < 1 || parsed > 65535 {
-			return AlarmServerOptions{}, false, fmt.Errorf("alarmServer.port must be a TCP port between 1 and 65535, got %q", rawPort)
+	parsePort := func(name, raw string) (int, error) {
+		if raw == "" {
+			return 0, nil
 		}
-		port = parsed
+		parsed, parseErr := strconv.Atoi(raw)
+		if parseErr != nil || parsed < 1 || parsed > 65535 {
+			return 0, fmt.Errorf("alarmServer.%s must be a port between 1 and 65535, got %q", name, raw)
+		}
+		return parsed, nil
+	}
+	port, err := parsePort("port", rawPort)
+	if err != nil {
+		return AlarmServerOptions{}, false, err
+	}
+	udpPort, err := parsePort("udpPort", rawUDPPort)
+	if err != nil {
+		return AlarmServerOptions{}, false, err
 	}
 	dir := strings.TrimSpace(conf.Dir)
 	if dir == "" {
@@ -249,14 +258,7 @@ func (c *Config) ParseAlarmServer() (options AlarmServerOptions, enabled bool, e
 		}
 		completedTTL = parsed
 	}
-	if conf.UploadPort < 0 || conf.UploadPort > 65535 {
-		return AlarmServerOptions{}, false, fmt.Errorf("alarmServer.uploadPort must be between 0 and 65535, got %d", conf.UploadPort)
-	}
-	if conf.UploadUDPPort < 0 || conf.UploadUDPPort > 65535 {
-		return AlarmServerOptions{}, false, fmt.Errorf("alarmServer.uploadUDPPort must be between 0 and 65535, got %d", conf.UploadUDPPort)
-	}
 	uploadIP := strings.TrimSpace(conf.UploadIP)
-	uploadPort := conf.UploadPort
 	if conf.AutoUpload {
 		if uploadIP == "" {
 			return AlarmServerOptions{}, false, fmt.Errorf("alarmServer.uploadIP is required when alarmServer.autoUpload is enabled")
@@ -264,24 +266,20 @@ func (c *Config) ParseAlarmServer() (options AlarmServerOptions, enabled bool, e
 		if len([]byte(uploadIP)) > 255 {
 			return AlarmServerOptions{}, false, fmt.Errorf("alarmServer.uploadIP must contain at most 255 bytes")
 		}
-		if uploadPort == 0 {
-			if port == 0 {
-				return AlarmServerOptions{}, false, fmt.Errorf("alarmServer.uploadPort is required when alarmServer.port is not configured")
-			}
-			uploadPort = port
+		if port == 0 && udpPort == 0 {
+			return AlarmServerOptions{}, false, fmt.Errorf("alarmServer.port or alarmServer.udpPort is required when alarmServer.autoUpload is enabled")
 		}
 	}
 	return AlarmServerOptions{
 		Port:          uint16(port),
+		UDPPort:       uint16(udpPort),
 		Dir:           dir,
 		MaxFileSize:   maxFileSize,
 		MaxConcurrent: maxConcurrent,
 		CompletedTTL:  completedTTL,
 		AutoUpload:    conf.AutoUpload,
 		UploadIP:      uploadIP,
-		UploadPort:    uint16(uploadPort),
-		UploadUDPPort: uint16(conf.UploadUDPPort),
-	}, rawPort != "", nil
+	}, true, nil
 }
 
 // 保留期默认值。未配置 retention 段时使用，保证与已有的进程内窗口一致：

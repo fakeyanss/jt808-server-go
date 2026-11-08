@@ -975,15 +975,30 @@ func Run(serv *server.TCPServer, cfg *config.Config, alarmServ *alarmserver.Serv
 				return
 			}
 		}
-		tcpPort := request.TCPPort
-		if tcpPort == 0 {
-			_, portText, splitErr := net.SplitHostPort(alarmServ.Addr())
+		// 未显式指定端口时回落到附件服务器的实际监听端口，
+		// 保证 0x9208 通告的地址不会指向没有监听的协议端口。
+		resolvePort := func(addr string) uint16 {
+			if addr == "" {
+				return 0
+			}
+			_, portText, splitErr := net.SplitHostPort(addr)
 			parsed, parseErr := strconv.Atoi(portText)
 			if splitErr != nil || parseErr != nil || parsed < 1 || parsed > 65535 {
-				c.JSON(http.StatusServiceUnavailable, gin.H{"err": "alarm server port is unavailable"})
-				return
+				return 0
 			}
-			tcpPort = uint16(parsed)
+			return uint16(parsed)
+		}
+		tcpPort := request.TCPPort
+		if tcpPort == 0 {
+			tcpPort = resolvePort(alarmServ.Addr())
+		}
+		udpPort := request.UDPPort
+		if udpPort == 0 {
+			udpPort = resolvePort(alarmServ.UDPAddr())
+		}
+		if tcpPort == 0 && udpPort == 0 {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"err": "alarm server has no tcp or udp listener"})
+			return
 		}
 
 		phone := c.Param("phone")
@@ -1001,13 +1016,13 @@ func Run(serv *server.TCPServer, cfg *config.Config, alarmServ *alarmserver.Serv
 			Header:    model.GenMsgHeader(device, 0x9208, session.GetNextSerialNum()),
 			IP:        ip,
 			TCPPort:   tcpPort,
-			UDPPort:   request.UDPPort,
+			UDPPort:   udpPort,
 			AlarmSign: alarmSign,
 			AlarmNo:   request.AlarmNo,
 			Reserved:  reserved,
 		}
 		serv.Send(session.ID, msg)
-		c.JSON(http.StatusAccepted, gin.H{"messageId": "0x9208", "tcpPort": tcpPort})
+		c.JSON(http.StatusAccepted, gin.H{"messageId": "0x9208", "tcpPort": tcpPort, "udpPort": udpPort})
 	})
 
 	// 苏标主动安全附件：查询已完成附件的元数据。

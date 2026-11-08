@@ -81,6 +81,24 @@ func TestParseAlarmServerExplicitValues(t *testing.T) {
 	}, options)
 }
 
+func TestParseAlarmServerUDPOnly(t *testing.T) {
+	cfg := &Config{AlarmServer: &alarmServerConf{UDPPort: "7201"}}
+	options, enabled, err := cfg.ParseAlarmServer()
+	assert.NoError(t, err)
+	assert.True(t, enabled)
+	assert.Zero(t, options.Port)
+	assert.Equal(t, uint16(7201), options.UDPPort)
+}
+
+func TestParseAlarmServerDualListeners(t *testing.T) {
+	cfg := &Config{AlarmServer: &alarmServerConf{Port: "7200", UDPPort: "7201"}}
+	options, enabled, err := cfg.ParseAlarmServer()
+	assert.NoError(t, err)
+	assert.True(t, enabled)
+	assert.Equal(t, uint16(7200), options.Port)
+	assert.Equal(t, uint16(7201), options.UDPPort)
+}
+
 func TestParseAlarmServerInvalidValues(t *testing.T) {
 	cases := []struct {
 		name string
@@ -89,6 +107,9 @@ func TestParseAlarmServerInvalidValues(t *testing.T) {
 		{name: "non numeric port", conf: &alarmServerConf{Port: "tcp"}},
 		{name: "zero port", conf: &alarmServerConf{Port: "0"}},
 		{name: "port too large", conf: &alarmServerConf{Port: "70000"}},
+		{name: "non numeric udp port", conf: &alarmServerConf{UDPPort: "udp"}},
+		{name: "zero udp port", conf: &alarmServerConf{UDPPort: "0"}},
+		{name: "udp port too large", conf: &alarmServerConf{UDPPort: "70000"}},
 		{name: "negative max file size", conf: &alarmServerConf{Port: "7200", MaxFileSize: -1}},
 		{name: "max file size over uint32", conf: &alarmServerConf{Port: "7200", MaxFileSize: math.MaxUint32 + 1}},
 		{name: "negative max concurrent", conf: &alarmServerConf{Port: "7200", MaxConcurrent: -1}},
@@ -109,12 +130,12 @@ func TestParseAlarmServerAutoUpload(t *testing.T) {
 		assert.True(t, enabled)
 		assert.False(t, options.AutoUpload)
 		assert.Empty(t, options.UploadIP)
-		assert.Zero(t, options.UploadPort)
 	})
 
-	t.Run("upload port defaults to listen port", func(t *testing.T) {
+	t.Run("advertises listen ports", func(t *testing.T) {
 		options, enabled, err := (&Config{AlarmServer: &alarmServerConf{
 			Port:       "7200",
+			UDPPort:    "7201",
 			AutoUpload: true,
 			UploadIP:   "10.0.0.8",
 		}}).ParseAlarmServer()
@@ -122,29 +143,27 @@ func TestParseAlarmServerAutoUpload(t *testing.T) {
 		assert.True(t, enabled)
 		assert.True(t, options.AutoUpload)
 		assert.Equal(t, "10.0.0.8", options.UploadIP)
-		assert.Equal(t, uint16(7200), options.UploadPort)
+		assert.Equal(t, uint16(7200), options.Port)
+		assert.Equal(t, uint16(7201), options.UDPPort)
 	})
 
-	t.Run("explicit upload address without local listener", func(t *testing.T) {
+	t.Run("udp only listener", func(t *testing.T) {
 		options, enabled, err := (&Config{AlarmServer: &alarmServerConf{
-			AutoUpload:    true,
-			UploadIP:      "10.0.0.8",
-			UploadPort:    9000,
-			UploadUDPPort: 9001,
+			UDPPort:    "7201",
+			AutoUpload: true,
+			UploadIP:   "10.0.0.8",
 		}}).ParseAlarmServer()
 		assert.NoError(t, err)
-		assert.False(t, enabled)
-		assert.True(t, options.AutoUpload)
-		assert.Equal(t, uint16(9000), options.UploadPort)
-		assert.Equal(t, uint16(9001), options.UploadUDPPort)
+		assert.True(t, enabled)
+		assert.Zero(t, options.Port)
+		assert.Equal(t, uint16(7201), options.UDPPort)
 	})
 
 	t.Run("invalid auto upload values", func(t *testing.T) {
 		cases := []*alarmServerConf{
 			{Port: "7200", AutoUpload: true},
 			{AutoUpload: true, UploadIP: "10.0.0.8"},
-			{Port: "7200", AutoUpload: true, UploadIP: "10.0.0.8", UploadPort: 70000},
-			{Port: "7200", AutoUpload: true, UploadIP: "10.0.0.8", UploadUDPPort: -1},
+			{Port: "7200", AutoUpload: true, UploadIP: "10.0.0.8", UDPPort: "0"},
 		}
 		for i, conf := range cases {
 			_, _, err := (&Config{AlarmServer: conf}).ParseAlarmServer()

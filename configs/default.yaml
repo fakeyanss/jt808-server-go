@@ -28,10 +28,13 @@ server:
     enable: true
     bannerPath: "configs/banner.txt"
 
-# 苏标主动安全附件服务器。port 为空或整段缺省时不启动，行为与旧版本一致。
+# 苏标主动安全附件服务器。port / udpPort 都为空或整段缺省时不启动，行为与旧版本一致。
 # 附件落盘目录结构为 <dir>/<手机号>/<YYYYMMDD>/<报警编号>/<文件名>。
 alarmServer:
+  # TCP 监听端口；port 与 udpPort 都为空时附件服务器不启动。
   port: "7200"
+  # UDP 监听端口；与 TCP 共用同一套组装逻辑。留空表示只提供 TCP。
+  udpPort: "7201"
   dir: "./data/alarms"
   maxFileSize: 104857600
   maxConcurrent: 16
@@ -42,10 +45,9 @@ alarmServer:
   # 默认 false，保持仅通过 API 手动下发的既有行为。
   autoUpload: false
   # autoUpload 开启时必填：写入 0x9208 的附件服务器 IP。
-  # uploadPort 为 0 时复用上面的 port；UDP 端口 0 表示不提供。
+  # 端口不单独配置，0x9208 直接通告 port / udpPort 的实际监听端口；
+  # 未配置的一侧通告为 0，表示该协议不可用。
   uploadIP: ""
-  uploadPort: 0
-  uploadUDPPort: 0
 
 # 持久化数据保留策略。整段缺省时使用代码内置默认值，行为与之前的进程内实现一致。
 # 显式写 0 表示关闭对应策略（0 天不做时间清理、0 条不限制上限、0 毫秒不去重）。

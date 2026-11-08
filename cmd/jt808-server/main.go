@@ -76,8 +76,8 @@ func main() {
 	if alarmOptions.AutoUpload {
 		hooks = alarmserver.NewUploadTrigger(hooks, alarmserver.UploadTriggerOptions{
 			IP:      alarmOptions.UploadIP,
-			TCPPort: alarmOptions.UploadPort,
-			UDPPort: alarmOptions.UploadUDPPort,
+			TCPPort: alarmOptions.Port,
+			UDPPort: alarmOptions.UDPPort,
 		}, func(phone string, msg *model.Msg9208) error {
 			ctx := context.Background()
 			device, err := storage.Default().Devices.GetByPhone(ctx, phone)
@@ -92,7 +92,8 @@ func main() {
 			serv.Send(session.ID, msg)
 			return nil
 		})
-		log.Info().Str("ip", alarmOptions.UploadIP).Uint16("port", alarmOptions.UploadPort).
+		log.Info().Str("ip", alarmOptions.UploadIP).Uint16("tcp_port", alarmOptions.Port).
+			Uint16("udp_port", alarmOptions.UDPPort).
 			Msg("Automatic 0x9208 attachment upload trigger enabled")
 	}
 	serv.SetHooks(hooks)
@@ -123,10 +124,20 @@ func main() {
 			MaxConcurrent: alarmOptions.MaxConcurrent,
 			CompletedTTL:  alarmOptions.CompletedTTL,
 		})
-		alarmAddr := fmt.Sprintf(":%d", alarmOptions.Port)
-		if err := alarmServ.Listen(alarmAddr); err != nil {
-			log.Error().Err(err).Str("addr", alarmAddr).Msg("Fail to listen alarm server addr")
-			os.Exit(1)
+		// TCP 与 UDP 各自独立监听，0x9208 通告的端口即这里的监听端口。
+		if alarmOptions.Port != 0 {
+			alarmAddr := fmt.Sprintf(":%d", alarmOptions.Port)
+			if err := alarmServ.Listen(alarmAddr); err != nil {
+				log.Error().Err(err).Str("addr", alarmAddr).Msg("Fail to listen alarm server tcp addr")
+				os.Exit(1)
+			}
+		}
+		if alarmOptions.UDPPort != 0 {
+			alarmUDPAddr := fmt.Sprintf(":%d", alarmOptions.UDPPort)
+			if err := alarmServ.ListenUDP(alarmUDPAddr); err != nil {
+				log.Error().Err(err).Str("addr", alarmUDPAddr).Msg("Fail to listen alarm server udp addr")
+				os.Exit(1)
+			}
 		}
 		routines.GoSafe(func() { alarmServ.Start() })
 	}
