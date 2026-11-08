@@ -351,12 +351,6 @@ func (st *fileState) check() (CompletionResult, error) {
 	return CompletionResult{Complete: false, Missing: st.missingLocked()}, nil
 }
 
-func (st *fileState) hasProgress() bool {
-	st.mu.Lock()
-	defer st.mu.Unlock()
-	return st.covered > 0 || st.completed
-}
-
 func (st *fileState) updateFileType(fileType uint8) {
 	st.mu.Lock()
 	defer st.mu.Unlock()
@@ -553,12 +547,6 @@ func (a *Assembler) WriteChunk(phone, fileName string, offset uint32, data []byt
 		return ErrFileNotRegistered
 	}
 	return st.writeAt(int64(offset), data)
-}
-
-// HasProgress 报告文件是否已收到过数据，用于避免 0x1211 先于数据到达时误报整文件缺失。
-func (a *Assembler) HasProgress(phone, fileName string) bool {
-	st := a.lookup(phone, fileName)
-	return st != nil && st.hasProgress()
 }
 
 // CompleteCheck 检查文件完整性并返回缺口；文件到齐时在此完成落盘收尾。

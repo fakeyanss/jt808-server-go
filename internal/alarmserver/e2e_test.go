@@ -103,6 +103,13 @@ func TestServerEndToEndRetransmissionAndMD5(t *testing.T) {
 	ack = readJT808Message(t, reader)
 	require.Equal(t, uint16(0x0001), ack.Header.MsgID)
 
+	// 0x1211 只回通用应答，缺口回报由 0x1212 触发。
+	sendMsg(t, conn, &model.Msg1212{
+		Header:   newAlarmHeader(0x1212, 3),
+		FileName: fileName,
+		FileType: 0,
+		FileSize: uint32(size),
+	})
 	retransmit := receive9212(t, reader)
 	require.Equal(t, uint8(1), retransmit.Result)
 	require.Equal(t, fileName, retransmit.FileName)
@@ -122,7 +129,7 @@ func TestServerEndToEndRetransmissionAndMD5(t *testing.T) {
 	}
 
 	sendMsg(t, conn, &model.Msg1212{
-		Header:   newAlarmHeader(0x1212, 3),
+		Header:   newAlarmHeader(0x1212, 4),
 		FileName: fileName,
 		FileType: 0,
 		FileSize: uint32(size),
@@ -201,6 +208,14 @@ func TestServerEndToEndTwoFilesConcurrent(t *testing.T) {
 		})
 		ack = readJT808Message(t, reader)
 		require.Equal(t, uint16(0x0001), ack.Header.MsgID)
+
+		// 0x1211 只回通用应答，缺口回报由 0x1212 触发。
+		sendMsg(t, conn, &model.Msg1212{
+			Header:   newAlarmHeader(0x1212, uint16(4+serial)),
+			FileName: item.name,
+			FileType: 0,
+			FileSize: uint32(len(item.source)),
+		})
 		retransmit := receive9212(t, reader)
 		require.Equal(t, uint8(1), retransmit.Result)
 		require.Len(t, retransmit.RetransmitPackets, 1)

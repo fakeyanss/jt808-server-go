@@ -366,12 +366,8 @@ func (s *Server) handleFileInfo(conn net.Conn, state *connState, pkt *model.Pack
 		log.Warn().Err(err).Str("phone", info.Phone).Str("file", msg.FileName).Msg("Reject 0x1211 file registration")
 		result = uint8(model.ResultFail)
 	}
+	// 标准 4.6.3 只要求 0x1211 回通用应答；缺口回报仅由 0x1212 触发。
 	s.sendAck(conn, state, pkt, result)
-	// 标准流程中 0x1211 先于数据到达，此时只回通用应答；
-	// 若数据已经到达（部分厂商会在完成后补发 0x1211），顺带回报缺口以满足断点续传验收。
-	if result == uint8(model.ResultSuccess) && s.assembler.HasProgress(info.Phone, msg.FileName) {
-		s.sendCompletionCheck(conn, state, pkt, info.Phone, msg.FileName, msg.FileType)
-	}
 }
 
 func (s *Server) handleFileComplete(conn net.Conn, state *connState, pkt *model.PacketData) {

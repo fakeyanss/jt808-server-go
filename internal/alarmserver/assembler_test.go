@@ -178,7 +178,11 @@ func TestAssemblerPersistAndReconcile(t *testing.T) {
 	restored := NewAssembler(assembler.Config())
 	t.Cleanup(restored.Close)
 	require.NoError(t, restored.Reconcile())
-	require.True(t, restored.HasProgress(phone, fileName))
+	state := restored.lookup(phone, fileName)
+	require.NotNil(t, state)
+	state.mu.Lock()
+	require.Equal(t, int64(2*DefaultBlockSize), state.covered)
+	state.mu.Unlock()
 
 	for _, index := range []int{1, 3} {
 		writeBlock(t, restored, phone, fileName, source, index)

@@ -148,6 +148,17 @@ func TestServerHandlesAttachmentFlow(t *testing.T) {
 	require.NoError(t, err)
 	ack = readJT808Message(t, reader)
 	require.Equal(t, uint16(0x0001), ack.Header.MsgID)
+	require.Equal(t, uint8(0), ack.Body[len(ack.Body)-1])
+
+	// 0x1211 只回通用应答，缺口回报由 0x1212 触发。
+	complete := &model.Msg1212{
+		Header:   newAlarmHeader(0x1212, 3),
+		FileName: fileName,
+		FileType: 0,
+		FileSize: uint32(size),
+	}
+	_, err = clientConn.Write(buildJT808Frame(t, complete))
+	require.NoError(t, err)
 
 	retransmit := readJT808Message(t, reader)
 	require.Equal(t, uint16(0x9212), retransmit.Header.MsgID)
@@ -164,8 +175,8 @@ func TestServerHandlesAttachmentFlow(t *testing.T) {
 	_, err = clientConn.Write(buildDataFrame(fileName, uint32(offset), source[offset:offset+DefaultBlockSize]))
 	require.NoError(t, err)
 
-	complete := &model.Msg1212{
-		Header:   newAlarmHeader(0x1212, 3),
+	complete = &model.Msg1212{
+		Header:   newAlarmHeader(0x1212, 4),
 		FileName: fileName,
 		FileType: 0,
 		FileSize: uint32(size),
