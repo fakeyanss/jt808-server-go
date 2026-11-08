@@ -1,9 +1,9 @@
 # 终端上行数据业务处理与出口可插拔化设计（Uplink Business Processing & Pluggable Sink）
 
-- 状态：**设计阶段，未修改任何代码**
+- 状态：**设计文档；S1/S2 已实施，S3 及之后尚未开始**
 - 创建日期：2026-11-08
-- 代码基线：当前工作区分支 `dev/p2-admin-api`，HEAD `e241511`；上行处理、存储装配与运行时核心与 `dev/p1-1078` 一致，差异仅在 admin API 相关的配置、历史分页查询方法与运行时只读快照
-- 说明：核查期间该工作区存在其他并行会话的改动，相关文件随后被提交为 `e241511`；本文未修改任何非 `docs/` 文件
+- 代码基线：`main`（`fc16d3e`，已合入 PR #33 媒体链路与 PR #34 管理面）。本文首版核查基于 `dev/p2-admin-api` 的 `e241511`，实施前已按 `main` 复核并更新统计数值
+- 说明：本文未修改任何非 `docs/` 文件；代码改动见独立提交
 - 关联文档：
   - [storage-abstraction-design.md](storage-abstraction-design.md)（仓储接口与运行时状态的既有分层）
   - [gateway-mode-design.md](gateway-mode-design.md)（接入网关的边界与非目标）
@@ -18,12 +18,12 @@
 
 1. 现状是「协议处理 + 业务落库 + 旁路回调」三段黏在同一个函数调用里。
    [msg_processor.go](../internal/protocol/msg_processor.go) 中 `JT808MsgProcessor.Process` 依次完成解码、应答生成、业务处理、钩子分发；
-   业务处理函数通过 `storage.Default()` 直接读写仓储，通过 `runtime.Default()` 直接改运行时状态。
-2. 注册表实际覆盖 **74 个不同 MsgID**（66 个字面量键 + 两个循环各 4 个键）；
-   共 **39 个已注册处理函数**（32 个 `processMsg*` + 7 个通用函数），其中 **34 个已注册处理函数**直接依赖默认单例。
-3. 统计口径内 `msg_processor.go` 有 **33 处 `storage.Default()`** 和 **14 处 `runtime.Default()`**，
-   分布到 37 个函数（含 3 个辅助函数）。直接依赖的仓储字段为
-   `Industry`（13）、`Devices`（7）、`Params`（4）、`Regions`（3）、
+   业务处理函数通过 `storage.Default()` 直接读写仓储，通过 `runtime.Default()` 直接改运行时状态（S1/S2 之后已改为 `mp.deps` 注入，本节保留改造前事实）。
+2. 注册表实际覆盖 **81 个不同 MsgID**（73 个字面量键 + 两个循环各 4 个键）；
+   共 **42 个已注册处理函数**（32 个 `processMsg*` + 10 个通用函数），其中 **37 个已注册处理函数**直接依赖默认单例。
+3. 统计口径内 `msg_processor.go` 有 **38 处 `storage.Default()`** 和 **14 处 `runtime.Default()`**，
+   分布到 40 个函数（含 3 个辅助函数）。直接依赖的仓储字段为
+   `Industry`（15）、`Devices`（7）、`Params`（4）、`Regions`（3）、`Media`（3）、
    `Geo`（2）、`Alarms`（2）、`Properties`（1）、`Locations`（1）。
 4. 最大可靠性问题不是「能不能加 MQ」，而是**业务落库位于协议应答之前**：
    `processFunc` 同步执行完才进入 `encode`/`send`，数据库变慢会直接推迟 `0x8001`；
@@ -77,14 +77,14 @@ TCP Accept / UDP datagram
 
 | 指标 | 数值 | 说明 |
 |---|---|---|
-| `msg_processor.go` 行数 | 1538 | 含注册表、处理函数、若干辅助函数 |
-| 字面量 `options[0x....] = &action` 赋值 | 66 个 | 去重后仍为 66，无重复注册 |
+| `msg_processor.go` 行数 | 1611 | 含注册表、处理函数、若干辅助函数 |
+| 字面量 `options[0x....] = &action` 赋值 | 74 个 | 73 个不同键；`0x1205` 注册两次，后者覆盖前者 |
 | 循环注册 MsgID 数 | 8 个 | `0x8600/0x8602/0x8604/0x8606`、`0x8601/0x8603/0x8605/0x8607` |
-| 实际不同 MsgID | **74 个** | 66 + 8 |
+| 实际不同 MsgID | **81 个** | 73 + 8 |
 | `processMsg*` 函数 | 32 个 | 以 `func processMsg` 开头 |
-| 已注册处理函数（去重） | 39 个 | 32 个 `processMsg*` + `processIndustryReport` 等 7 个通用函数 |
-| 带 `process` 字段的注册项 | 59 个 | 其余注册项只声明 `genData`，由 Pipeline 早期分支处理 |
-| 直接依赖默认单例的已注册函数 | 34 个 | 另有 `bindPhoneSession`、`recordLocationHistory`、`retransmitCachedSegments` 3 个辅助函数 |
+| 已注册处理函数（去重） | 42 个 | 32 个 `processMsg*` + `processIndustryReport` 等 10 个通用函数 |
+| 带 `process` 字段的注册项 | 62 个 | 其余注册项只声明 `genData`，由 Pipeline 早期分支处理 |
+| 直接依赖默认单例的已注册函数 | 37 个 | 另有 `bindPhoneSession`、`recordLocationHistory`、`retransmitCachedSegments` 3 个辅助函数 |
 
 注册表本身还混合了三类语义：
 
@@ -113,8 +113,8 @@ type action struct {
 
 | 方案 | 做法 | 改动面 | 评价 |
 |---|---|---|---|
-| A（推荐） | 处理函数改为 `JT808MsgProcessor` 的方法，处理器持有 `ProcessorDeps{Storage, Runtime, Sinks}`；`initProcessOption` 改为方法，注册项写 `process: mp.processMsg0200` | 39 个已注册处理函数 + 3 个辅助函数、构造函数、Pipeline 选项、TCP/UDP 装配、客户端构造、相关单测构造点 | 注册表结构不变，改动机械、可分批；依赖显式 |
-| B | 保持包级函数，注册项改为 `process func(context.Context, *model.ProcessData, *ProcessorDeps) error` | `action` 类型、39 个处理函数、3 个辅助函数、全部注册项、调用点、测试 | 同样显式，但注册表每一项都要改，冲突面更大 |
+| A（推荐） | 处理函数改为 `JT808MsgProcessor` 的方法，处理器持有 `ProcessorDeps{Storage, Runtime, Sinks}`；`initProcessOption` 改为方法，注册项写 `process: mp.processMsg0200` | 42 个已注册处理函数 + 3 个辅助函数、构造函数、Pipeline 选项、TCP/UDP 装配、客户端构造、相关单测构造点 | 注册表结构不变，改动机械、可分批；依赖显式 |
+| B | 保持包级函数，注册项改为 `process func(context.Context, *model.ProcessData, *ProcessorDeps) error` | `action` 类型、42 个处理函数、3 个辅助函数、全部注册项、调用点、测试 | 同样显式，但注册表每一项都要改，冲突面更大 |
 | C | 通过 `context.Context` 注入依赖 | 仅调用点 | 依赖隐蔽、测试难断言，不推荐 |
 
 方案 A 的示意（仅签名，不含实现）：
@@ -170,10 +170,11 @@ func (mp *JT808MsgProcessor) initProcessOption() processOptions {
 
 | 仓储字段 | 引用次数 | 典型处理函数 | 语义 |
 |---|---|---|---|
-| `Industry` | 13 | `processIndustryReport`、`processMsg9205`、媒体回放（0x8803/0x8804/0x8805） | 行业上报最新值 / 模拟器目录 / 媒体上传缓存 |
+| `Industry` | 15 | `processIndustryReport`、`processMsg9205`、媒体回放（0x8803/0x8804/0x8805） | 行业上报最新值 / 模拟器目录 / 媒体上传缓存 |
 | `Devices` | 7 | `processMsg0002/0003/0100/0102/0200/8001/8100` | 设备静态档案与注册校验 |
 | `Params` | 4 | `processMsg0104/8103/8104/8106` | 终端参数应答/下发 |
 | `Regions` | 3 | `processRegionRouteSet/Delete/Query` | 区域路线目录 |
+| `Media` | 3 | `processMediaResourceList/MediaSignaling/MediaUploadTask` | 1078 媒体元数据 |
 | `Geo` | 2 | `processMsg0200/8201` | 最新定位投影 |
 | `Alarms` | 2 | `processMsg0200/0001` | 报警历史与确认关联 |
 | `Properties` | 1 | `processMsg0107` | 终端属性档案 |
@@ -193,7 +194,7 @@ func (mp *JT808MsgProcessor) initProcessOption() processOptions {
 
 | 文件 | `storage.Default()` | `runtime.Default()` |
 |---|---|---|
-| `internal/protocol/msg_processor.go` | 33 | 14 |
+| `internal/protocol/msg_processor.go` | 38 | 14 |
 | `internal/protocol/keepalive.go` | 2 | 4 |
 | `internal/protocol/pipeline.go` / `packet_codec.go` / `segment_retransmission.go` / `media_retransmission.go` | 0 | 各 1 |
 | `internal/api/api.go` | 5 | 5 |
@@ -205,7 +206,7 @@ func (mp *JT808MsgProcessor) initProcessOption() processOptions {
 
 ### 2.5 仓储接口与 `internal/storage` 装配
 
-`internal/repository` 定义 **8 个仓储接口**：
+`internal/repository` 定义 **9 个仓储接口**：
 
 | 接口 | 类别 | 主要方法 | 当前 SQL 后端 |
 |---|---|---|---|
@@ -217,20 +218,20 @@ func (mp *JT808MsgProcessor) initProcessOption() processOptions {
 | `RegionRepository` | B 耐用 | `ApplySet/Delete/Query` | 有；读路径仍为内存目录 |
 | `IndustryRepository` | B/C 混合 | `Record` + 30 余个按设备最新值读取方法 | 仅终端配置目录/升级/透传快照落库，绝大多数上报仍为内存 |
 | `LocationRepository` | B 耐用 | `Record/List/ListPage` | 有；memory 后端为 `nil` |
+| `MediaMetadataRepository` | B 类 | `ReplaceResourceList/ResourceList`、`SaveUploadTask/UploadTask`、`SaveUploadNotice/UploadNotice` | 有；1078 媒体元数据独立落库 |
 
-> 媒体元数据当前没有独立仓储：`0x0801` 上传片段与 `0x1205` 资源列表都保存在
-> `IndustryRepository` 的内存字段中（`MediaUploads` 按设备最多保留 100 条）。
-> 这意味着「媒体元数据」如果要成为独立 Sink 类别，需要先定义其落库目标。
+> 媒体元数据已由 `MediaMetadataRepository` 承载：`0x1205` 资源列表、`0x9206` 上传任务与
+> `0x1206` 上传完成通知分别写入独立仓储，不再复用 `IndustryRepository`。
 
 `internal/storage` 只做装配，不承载实现：
 
-- `Open(Config)` 按 `memory|sqlite|mysql` 选择后端，返回 `*Stores`（8 个仓储字段 + `Backend` + `close`）。
-- `Init(Config)` 把实例写入包级默认存储；`Default()` 未初始化时懒加载 memory。
+- `Open(Config)` 按 `memory|sqlite|mysql` 选择后端，返回 `*Stores`（9 个仓储字段 + `Backend` + `close`）。
+- `Init(Config)` 把实例写入包级默认存储并返回 `*Stores`；`Default()` 未初始化时懒加载 memory。
 - `FromConfig(cfg)` 将 `storage` 段与 `retention` 段映射为 `storage.Config`，主服务与迁移工具共用。
 - memory 后端下 `Locations` 为 `nil`，`recordLocationHistory` 直接跳过。
 
-> 现状评价：仓储接口化已经完成，但**业务层仍通过包级单例取仓储**。
-> 出口可插拔的第一道结构性障碍不是仓储接口本身，而是 `processFunc` 无法接收实例依赖。
+> 现状评价：仓储接口化已经完成。S1/S2 之后业务处理器已通过 `ProcessorDeps` 显式注入仓储与运行时，
+> `Default()` 仅保留为未注入时的回退与装配层之外的兼容取用点。
 
 ### 2.6 `internal/runtime` 的定位
 
@@ -754,7 +755,7 @@ CREATE TABLE uplink_outbox (
 |---|---|---|---|---|---|---|
 | S0 | 本文档与基线核查 | `docs/uplink-sink-design.md` | 无 | 否 | 无 | 删除文档 |
 | S1 | 注册表拆分与元数据标注：按「服务端上行 / 平台下行 / 模拟器」分组；为每个上行入口标注类别 | `internal/protocol/msg_processor.go`、相关测试 | 表结构可读性 | 是（仅注册表构造） | 低 | 还原注册表 |
-| S2 | 依赖注入骨架：`ProcessorDeps`、处理函数改方法、`initProcessOption` 改方法、Pipeline/Server/Client 传递依赖；保留 `Default()` 回退 | `msg_processor.go`、`pipeline.go`、`tcp_server.go`、`udp_server.go`、`internal/client/tcp_client.go`、`cmd/jt808-server/main.go`、测试 | 39 个处理函数 + 3 个辅助函数、74 个注册项 | 是（构造与签名） | 中（机械冲突多） | 保留旧构造函数薄封装 |
+| S2 | 依赖注入骨架：`ProcessorDeps`、处理函数改方法、`initProcessOption` 改方法、Pipeline/Server/Client 传递依赖；保留 `Default()` 回退 | `msg_processor.go`、`pipeline.go`、`tcp_server.go`、`udp_server.go`、`internal/client/tcp_client.go`、`cmd/jt808-server/main.go`、测试 | 42 个处理函数 + 3 个辅助函数、81 个注册项 | 是（构造与签名） | 中（机械冲突多） | 保留旧构造函数薄封装 |
 | S3 | 归一化记录与 `local-db` 适配器：按类别产出 `Record`，`localsink` 1:1 映射现有耐用仓储，投影保持直写；行为不变 | 新增 `internal/uplink/`；`msg_processor.go`；`storage` 装配 | 六类业务写入 | 是（处理函数内部） | 中 | 每个类别独立开关，可逐类回退 |
 | S3a | 位置与报警类别 | `processMsg0200/0704`、`recordLocationHistory` | `Geo` 投影直写 + `Locations`/`Alarms` 耐用事实 | 是 | 中 | 保留旧分支 |
 | S3b | 行业上报类别 | `processIndustryReport` 的 16 个上行注册项（该函数共注册 19 个 MsgID，其中 `0x8108/0x8400/0x8900` 为下行语义；`0x0801/0x1205` 的媒体元数据归 S3d） | `Industry` 投影直写 + 目录快照走 Sink | 是 | 中 | 同上 |
@@ -778,7 +779,7 @@ CREATE TABLE uplink_outbox (
 
 | 步骤 | 验收 |
 |---|---|
-| S1 | 注册项数量与行为快照一致（74 个 MsgID / 39 个处理函数）；按角色分组的表可枚举 |
+| S1 | 注册项数量与行为快照一致（81 个 MsgID / 42 个处理函数）；按角色分组的表可枚举 |
 | S2 | 不注入依赖时行为与改造前一致；注入独立 `storage.NewMemory()` 后测试互不污染；`Default()` 回退仅剩装配层 |
 | S3 | 同一组报文在改造前后产生相同的仓储状态（逐字段断言）；API 查询结果不变 |
 | S4 | 模拟仓储错误时仍返回 `0x8001`；设备不存在时仍关闭连接；错误计数可观测 |
@@ -866,24 +867,24 @@ CREATE TABLE uplink_outbox (
 
 ## 9. 附录：核查口径
 
-本文数值来自以下命令（在代码基线 `e241511` 上执行）：
+本文数值来自以下命令（在代码基线 `main` / `fc16d3e` 上执行，实施 S1/S2 之前）：
 
 ```bash
-grep -c "storage.Default()" internal/protocol/msg_processor.go   # 33
+grep -c "storage.Default()" internal/protocol/msg_processor.go   # 38
 grep -c "runtime.Default()" internal/protocol/msg_processor.go   # 14
 grep -c "^func processMsg" internal/protocol/msg_processor.go      # 32
-grep -o "options\[0x[0-9A-Fa-f]*\] = &action" internal/protocol/msg_processor.go | sort -u | wc -l  # 66
-grep -o "process: process[A-Za-z0-9_]*" internal/protocol/msg_processor.go | sort -u | wc -l       # 39
+grep -o "options\[0x[0-9A-Fa-f]*\] = &action" internal/protocol/msg_processor.go | sort -u | wc -l  # 73
+grep -o "process: process[A-Za-z0-9_]*" internal/protocol/msg_processor.go | sort -u | wc -l       # 42
 ```
 
-- 66 个字面量 MsgID 加上两个循环各 4 个 MsgID，得到 74 个不同 MsgID；
-  其中 59 个注册项声明了 `process`，其余只声明 `genData`。
-- 33 处 `storage.Default()` 按字段拆分：`Industry` 13、`Devices` 7、`Params` 4、`Regions` 3、
-  `Geo` 2、`Alarms` 2、`Properties` 1、`Locations` 1。
+- 73 个字面量 MsgID（`0x1205` 注册两次，实际 73 个不同键）加上两个循环各 4 个 MsgID，得到 81 个不同 MsgID；
+  其中 62 个注册项声明了 `process`，其余只声明 `genData`。
+- 38 处 `storage.Default()` 按字段拆分：`Industry` 15、`Devices` 7、`Params` 4、`Regions` 3、
+  `Media` 3、`Geo` 2、`Alarms` 2、`Properties` 1、`Locations` 1。
 - 14 处 `runtime.Default()` 按字段拆分：`Retrans` 3、`Heartbeat` 3、`Conn` 2、`Tracking` 1、
   四个 broker 各 1。
-- 37 个函数直接引用默认单例（含 `bindPhoneSession`、`recordLocationHistory`、
-  `retransmitCachedSegments` 三个辅助函数），其中 34 个是已注册处理函数。
+- 40 个函数直接引用默认单例（含 `bindPhoneSession`、`recordLocationHistory`、
+  `retransmitCachedSegments` 三个辅助函数），其中 37 个是已注册处理函数。
 - 全仓库（不含测试与文档）`storage.Default()` 共 48 处、`runtime.Default()` 共 39 处。
 
 ---
