@@ -144,6 +144,56 @@ func (r *locationRepository) List(ctx context.Context, phone string, limit int) 
 	return records, nil
 }
 
+// ListPage 按终端上报时间区间过滤，返回倒序分页结果与总数。
+// 时间条件使用 report_time_ms 索引；Limit/Offset 由 HistoryQuery 校验保证有界。
+func (r *locationRepository) ListPage(ctx context.Context, query repository.HistoryQuery) ([]repository.LocationRecord, int, error) {
+	if err := query.Validate(); err != nil {
+		return nil, 0, err
+	}
+	where := `phone = ?`
+	args := []interface{}{query.Phone}
+	if !query.From.IsZero() {
+		where += ` AND report_time_ms >= ?`
+		args = append(args, query.From.UnixMilli())
+	}
+	if !query.To.IsZero() {
+		where += ` AND report_time_ms < ?`
+		args = append(args, query.To.UnixMilli())
+	}
+
+	var total int
+	if err := r.store.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM locations WHERE `+where, args...).Scan(&total); err != nil {
+		return nil, 0, fmt.Errorf("count locations %s: %w", query.Phone, err)
+	}
+
+	pageArgs := append(append([]interface{}{}, args...), query.Limit, query.Offset)
+	rows, err := r.store.db.QueryContext(ctx,
+		`SELECT payload_json FROM locations WHERE `+where+
+			` ORDER BY report_time_ms DESC, record_id DESC LIMIT ? OFFSET ?`, pageArgs...)
+	if err != nil {
+		return nil, 0, fmt.Errorf("list locations page %s: %w", query.Phone, err)
+	}
+	defer rows.Close()
+
+	records := make([]repository.LocationRecord, 0, query.Limit)
+	for rows.Next() {
+		var payload []byte
+		if err := rows.Scan(&payload); err != nil {
+			return nil, 0, fmt.Errorf("scan location page %s: %w", query.Phone, err)
+		}
+		var record repository.LocationRecord
+		if err := json.Unmarshal(payload, &record); err != nil {
+			return nil, 0, fmt.Errorf("decode location page %s: %w", query.Phone, err)
+		}
+		records = append(records, record)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, 0, fmt.Errorf("iterate locations page %s: %w", query.Phone, err)
+	}
+	return records, total, nil
+}
+
 // cleanup 执行时间清理与每设备条数上限，两者在同一事务内完成。
 func (r *locationRepository) cleanup(ctx context.Context, phone string) error {
 	if r.policy.MaxAge <= 0 && r.policy.MaxPerDevice <= 0 {

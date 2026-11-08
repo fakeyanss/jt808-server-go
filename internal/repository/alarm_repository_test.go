@@ -8,6 +8,39 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestAlarmRepositoryListPageFiltersAndPaginates(t *testing.T) {
+	ctx := context.Background()
+	cache := NewAlarmRepository(AlarmRetention{})
+	for serial := uint16(1); serial <= 3; serial++ {
+		require.NoError(t, cache.Record(ctx, "phone", serial, 1, 0, 0, "261028204500"))
+	}
+
+	from := time.Now().Add(-time.Hour)
+	to := time.Now().Add(time.Hour)
+	events, total, err := cache.ListPage(ctx, HistoryQuery{
+		Phone: "phone", From: from, To: to, Offset: 1, Limit: 1,
+	})
+	require.NoError(t, err)
+	require.Equal(t, 3, total)
+	require.Len(t, events, 1)
+	require.Equal(t, uint16(2), events[0].MessageSerial, "list must be ordered by received time desc")
+
+	events, total, err = cache.ListPage(ctx, HistoryQuery{
+		Phone: "phone", From: time.Now().Add(time.Hour), To: time.Now().Add(2 * time.Hour), Limit: 10,
+	})
+	require.NoError(t, err)
+	require.Equal(t, 0, total)
+	require.Empty(t, events)
+
+	events, total, err = cache.ListPage(ctx, HistoryQuery{Phone: "phone", From: from, To: to, Offset: 3, Limit: 10})
+	require.NoError(t, err)
+	require.Equal(t, 3, total)
+	require.Empty(t, events, "offset beyond total must return an empty page")
+
+	_, _, err = cache.ListPage(ctx, HistoryQuery{Phone: "phone", Limit: 0})
+	require.Error(t, err, "repository must reject unbounded pagination")
+}
+
 func TestAlarmRepositoryRecordsDeduplicatesAndConfirmsAfterCommandAck(t *testing.T) {
 	ctx := context.Background()
 	cache := NewAlarmRepository()

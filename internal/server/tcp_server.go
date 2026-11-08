@@ -79,10 +79,11 @@ func (serv *TCPServer) accept(conn net.Conn) *model.Session {
 	remoteAddr := conn.RemoteAddr().String()
 	serv.mutex.Lock()
 	session := &model.Session{
-		Conn:       conn,
-		ID:         remoteAddr, // using remote addr default
-		AckTimeout: serv.ackTimeout,
-		MaxRetries: serv.maxRetransmissions,
+		Conn:        conn,
+		ID:          remoteAddr, // using remote addr default
+		ConnectedAt: time.Now(),
+		AckTimeout:  serv.ackTimeout,
+		MaxRetries:  serv.maxRetransmissions,
 	}
 	// serv.sessions[remoteAddr] = session
 	_ = runtime.Default().Conn.Bind(context.Background(), session)

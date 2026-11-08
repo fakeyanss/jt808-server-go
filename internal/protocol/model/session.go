@@ -30,9 +30,11 @@ type (
 )
 
 type Session struct {
-	ID           string // remote addr
-	Conn         net.Conn
-	Transport    TransportProtocol
+	ID        string // remote addr
+	Conn      net.Conn
+	Transport TransportProtocol
+	// ConnectedAt 是连接建立时间，仅在创建会话时写入一次，不参与消息处理热路径。
+	ConnectedAt  time.Time
 	WriteMu      sync.Mutex
 	serialMu     sync.Mutex
 	serialNumber uint16

@@ -10,6 +10,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/fakeyanss/jt808-server-go/internal/codec/hex"
 	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
 	"github.com/fakeyanss/jt808-server-go/internal/repository"
 )
@@ -69,6 +70,47 @@ func TestSQLitePersistsLocationsAcrossReopen(t *testing.T) {
 	require.Len(t, records, 3, "location history must survive restart")
 	require.Equal(t, uint32(1), records[2].AlarmSign)
 	require.Equal(t, base.UnixMilli(), records[2].ReceivedAt.UnixMilli())
+}
+
+// SQLite 定位分页：按上报时间半开区间过滤，返回倒序页与总数。
+func TestSQLiteLocationListPageFiltersByReportTime(t *testing.T) {
+	const phone = "188765700003"
+	ctx := context.Background()
+	store := openTestSQLite(t)
+	repo := store.LocationRepository(repository.LocationRetention{})
+
+	base := time.Date(2026, 10, 28, 20, 45, 0, 0, time.UTC)
+	occurred := make([]string, 5)
+	records := make([]repository.LocationRecord, 5)
+	for i := range records {
+		occurred[i] = hex.FormatTime(base.Add(time.Duration(i) * time.Second))
+		records[i] = sampleLocation(phone, int64(i+1), base.Add(time.Duration(i)*time.Second))
+		records[i].OccurredAt = occurred[i]
+	}
+	require.NoError(t, repo.Record(ctx, records))
+
+	items, total, err := repo.ListPage(ctx, repository.HistoryQuery{
+		Phone:  phone,
+		From:   hex.ParseTime(occurred[1]),
+		To:     hex.ParseTime(occurred[4]),
+		Offset: 1,
+		Limit:  1,
+	})
+	require.NoError(t, err)
+	require.Equal(t, 3, total, "half-open range [t1, t4) must contain t1, t2, t3")
+	require.Len(t, items, 1)
+	require.Equal(t, occurred[2], items[0].OccurredAt, "page must be ordered by report time desc")
+
+	items, total, err = repo.ListPage(ctx, repository.HistoryQuery{
+		Phone:  phone,
+		From:   hex.ParseTime(occurred[1]),
+		To:     hex.ParseTime(occurred[4]),
+		Offset: 3,
+		Limit:  10,
+	})
+	require.NoError(t, err)
+	require.Equal(t, 3, total)
+	require.Empty(t, items)
 }
 
 // SQLite 定位保留策略：超过保留期的记录在写入后清理，超过每设备上限的旧记录被裁剪。

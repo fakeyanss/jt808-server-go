@@ -12,6 +12,7 @@ import (
 	"github.com/rs/zerolog/log"
 
 	"github.com/fakeyanss/jt808-server-go/internal/action"
+	"github.com/fakeyanss/jt808-server-go/internal/adminapi"
 	"github.com/fakeyanss/jt808-server-go/internal/alarmserver"
 	"github.com/fakeyanss/jt808-server-go/internal/api"
 	"github.com/fakeyanss/jt808-server-go/internal/config"
@@ -74,6 +75,12 @@ func main() {
 	mediaOptions, mediaEnabled, mediaErr := cfg.ParseMediaServer()
 	if mediaErr != nil {
 		log.Error().Err(mediaErr).Msg("Invalid mediaServer configuration")
+		os.Exit(1)
+	}
+
+	adminOptions, adminEnabled, adminErr := cfg.ParseAdmin()
+	if adminErr != nil {
+		log.Error().Err(adminErr).Msg("Invalid admin configuration")
 		os.Exit(1)
 	}
 
@@ -162,6 +169,23 @@ func main() {
 		routines.GoSafe(func() { mediaServ.Start() })
 	}
 
+	var adminServ *adminapi.Server
+	if adminEnabled {
+		stores := storage.Default()
+		adminServ = adminapi.NewServer(adminOptions, adminapi.Dependencies{
+			Conn:      runtime.Default().Conn,
+			Heartbeat: runtime.Default().Heartbeat,
+			Devices:   stores.Devices,
+			Locations: stores.Locations,
+			Alarms:    stores.Alarms,
+		})
+		if err := adminServ.Listen(adminOptions.Addr); err != nil {
+			log.Error().Err(err).Str("addr", adminOptions.Addr).Msg("Fail to listen admin API addr")
+			os.Exit(1)
+		}
+		routines.GoSafe(func() { _ = adminServ.Start() })
+	}
+
 	routines.GoSafe(func() { api.Run(serv, cfg, alarmServ) })
 
 	// 运行时状态只存在于进程内，进程退出即自然归零；数据库无需、也不应被批量重置。
@@ -170,6 +194,13 @@ func main() {
 	sig := <-quit
 	log.Info().Str("signal", sig.String()).Msg("Shutting down")
 
+	if adminServ != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		if err := adminServ.Stop(ctx); err != nil {
+			log.Warn().Err(err).Msg("Fail to stop admin API server")
+		}
+		cancel()
+	}
 	if alarmServ != nil {
 		alarmServ.Stop()
 	}

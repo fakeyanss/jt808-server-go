@@ -3,6 +3,7 @@ package repository
 import (
 	"context"
 	"fmt"
+	"sort"
 	"sync"
 	"time"
 )
@@ -39,6 +40,9 @@ type alarmCommand struct {
 type AlarmRepository interface {
 	Record(ctx context.Context, phone string, serial uint16, alarmSign, latitude, longitude uint32, occurredAt string) error
 	List(ctx context.Context, phone string) ([]AlarmEvent, error)
+	// ListPage 返回设备在接收时间区间内的报警历史与总条数，按接收时间倒序。
+	// 用于管理面分页查询；memory 与 SQL 后端均实现。
+	ListPage(ctx context.Context, query HistoryQuery) ([]AlarmEvent, int, error)
 	RegisterConfirmation(ctx context.Context, phone string, commandSerial, alarmSerial uint16, alarmType uint32) error
 	ConfirmByCommand(ctx context.Context, phone string, commandSerial uint16) (bool, error)
 }
@@ -101,6 +105,42 @@ func (c *memoryAlarmRepository) List(_ context.Context, phone string) ([]AlarmEv
 		out = append(out, *event)
 	}
 	return out, nil
+}
+
+// ListPage 按接收时间区间过滤内存报警，按接收时间倒序分页。
+func (c *memoryAlarmRepository) ListPage(_ context.Context, query HistoryQuery) ([]AlarmEvent, int, error) {
+	if err := query.Validate(); err != nil {
+		return nil, 0, err
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	filtered := make([]AlarmEvent, 0, len(c.events[query.Phone]))
+	for _, event := range c.events[query.Phone] {
+		if !query.From.IsZero() && event.ReceivedAt.Before(query.From) {
+			continue
+		}
+		if !query.To.IsZero() && !event.ReceivedAt.Before(query.To) {
+			continue
+		}
+		filtered = append(filtered, *event)
+	}
+	sort.Slice(filtered, func(i, j int) bool {
+		if filtered[i].ReceivedAt.Equal(filtered[j].ReceivedAt) {
+			return filtered[i].MessageSerial > filtered[j].MessageSerial
+		}
+		return filtered[i].ReceivedAt.After(filtered[j].ReceivedAt)
+	})
+
+	total := len(filtered)
+	if query.Offset >= total {
+		return []AlarmEvent{}, total, nil
+	}
+	end := query.Offset + query.Limit
+	if end > total {
+		end = total
+	}
+	return filtered[query.Offset:end], total, nil
 }
 
 func (c *memoryAlarmRepository) RegisterConfirmation(_ context.Context, phone string, commandSerial, alarmSerial uint16, alarmType uint32) error {

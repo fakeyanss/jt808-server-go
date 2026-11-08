@@ -57,6 +57,21 @@ mediaServer:
   dir: "./data/media"
   maxConcurrent: 16
 
+# 独立管理面 HTTP 监听。enable 缺省 false，不启动管理端口，
+# 终端接入端口、既有 HTTP API 与苏标/媒体服务行为完全不变。
+# 开启后必须配置非空 token；所有管理接口要求 Authorization: Bearer <token>。
+# 会话运维只作用于当前进程实例，多实例部署时不具备跨节点语义。
+admin:
+  enable: false
+  addr: "127.0.0.1:9000"
+  token: ""
+  # 令牌桶限流：ratePerSecond 为每秒补充令牌数，burst 为桶容量。
+  # keyBy 可选 credential（按凭据，单 token 时等价全局）或 source（按来源 IP）。
+  rateLimit:
+    ratePerSecond: 10
+    burst: 20
+    keyBy: "credential"
+
 # 持久化数据保留策略。整段缺省时使用代码内置默认值，行为与之前的进程内实现一致。
 # 显式写 0 表示关闭对应策略（0 天不做时间清理、0 条不限制上限、0 毫秒不去重）。
 # JT/T 808 未规定平台侧保存期限，定位 7 天 / 10000 条为自行设定的工程默认值；

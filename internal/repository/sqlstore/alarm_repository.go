@@ -127,6 +127,65 @@ func (r *alarmRepository) List(ctx context.Context, phone string) ([]repository.
 	return events, nil
 }
 
+// ListPage 按服务端接收时间区间过滤，返回倒序分页结果与总数。
+// 时间条件使用 received_at_ms 索引；Limit/Offset 由 HistoryQuery 校验保证有界。
+func (r *alarmRepository) ListPage(ctx context.Context, query repository.HistoryQuery) ([]repository.AlarmEvent, int, error) {
+	if err := query.Validate(); err != nil {
+		return nil, 0, err
+	}
+	where := `phone = ?`
+	args := []interface{}{query.Phone}
+	if !query.From.IsZero() {
+		where += ` AND received_at_ms >= ?`
+		args = append(args, query.From.UnixMilli())
+	}
+	if !query.To.IsZero() {
+		where += ` AND received_at_ms < ?`
+		args = append(args, query.To.UnixMilli())
+	}
+
+	var total int
+	if err := r.store.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM alarms WHERE `+where, args...).Scan(&total); err != nil {
+		return nil, 0, fmt.Errorf("count alarms %s: %w", query.Phone, err)
+	}
+
+	pageArgs := append(append([]interface{}{}, args...), query.Limit, query.Offset)
+	rows, err := r.store.db.QueryContext(ctx,
+		`SELECT message_serial, alarm_sign, latitude, longitude, occurred_at_ms, received_at_ms, confirmed
+		 FROM alarms WHERE `+where+
+			` ORDER BY received_at_ms DESC, message_serial DESC LIMIT ? OFFSET ?`, pageArgs...)
+	if err != nil {
+		return nil, 0, fmt.Errorf("list alarms page %s: %w", query.Phone, err)
+	}
+	defer rows.Close()
+
+	events := make([]repository.AlarmEvent, 0, query.Limit)
+	for rows.Next() {
+		var (
+			serial, alarmSign, latitude, longitude, occurredMS, receivedMS int64
+			confirmed                                                      int64
+		)
+		if err := rows.Scan(&serial, &alarmSign, &latitude, &longitude, &occurredMS, &receivedMS, &confirmed); err != nil {
+			return nil, 0, fmt.Errorf("scan alarm page %s: %w", query.Phone, err)
+		}
+		events = append(events, repository.AlarmEvent{
+			Phone:         query.Phone,
+			MessageSerial: uint16(serial),
+			AlarmSign:     uint32(alarmSign),
+			Latitude:      uint32(latitude),
+			Longitude:     uint32(longitude),
+			OccurredAt:    time.UnixMilli(occurredMS).UTC().Format("060102150405"),
+			ReceivedAt:    time.UnixMilli(receivedMS),
+			Confirmed:     confirmed != 0,
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, 0, fmt.Errorf("iterate alarms page %s: %w", query.Phone, err)
+	}
+	return events, total, nil
+}
+
 func (r *alarmRepository) RegisterConfirmation(_ context.Context, phone string, commandSerial, alarmSerial uint16, alarmType uint32) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()

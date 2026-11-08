@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"math"
+	"net"
 	"strconv"
 	"strings"
 	"sync"
@@ -158,6 +159,7 @@ type Config struct {
 	Retention   *retentionConf   `yaml:"retention"`
 	AlarmServer *alarmServerConf `yaml:"alarmServer"`
 	MediaServer *mediaServerConf `yaml:"mediaServer"`
+	Admin       *adminConf       `yaml:"admin"`
 }
 
 // 苏标附件服务器的工程默认值。未配置 alarmServer.port 时服务不启动。
@@ -334,6 +336,101 @@ func (c *Config) ParseMediaServer() (options MediaServerOptions, enabled bool, e
 		Port:          uint16(port),
 		Dir:           dir,
 		MaxConcurrent: maxConcurrent,
+	}, true, nil
+}
+
+// 管理面默认值。未配置 admin 段或 enable=false 时不启动管理监听，
+// 现有终端接入端口、HTTP API 与苏标/媒体服务行为不变。
+const (
+	DefaultAdminAddr           = "127.0.0.1:9000"
+	DefaultAdminRatePerSecond  = 10.0
+	DefaultAdminBurst          = 20
+	AdminRateKeyByCredential   = "credential"
+	AdminRateKeyBySource       = "source"
+	defaultAdminRateLimitKeyBy = AdminRateKeyByCredential
+)
+
+// adminConf 配置独立的管理面 HTTP 监听。
+// enable 缺省 false；开启时必须显式配置非空 token，避免管理面裸奔。
+type adminConf struct {
+	Enable    bool                `yaml:"enable"`
+	Addr      string              `yaml:"addr"`
+	Token     string              `yaml:"token"`
+	RateLimit *adminRateLimitConf `yaml:"rateLimit"`
+}
+
+type adminRateLimitConf struct {
+	RatePerSecond *float64 `yaml:"ratePerSecond"`
+	Burst         *int     `yaml:"burst"`
+	KeyBy         string   `yaml:"keyBy"`
+}
+
+// AdminOptions 是管理面监听与鉴权限流的归一化配置。
+type AdminOptions struct {
+	Addr          string
+	Token         string
+	RatePerSecond float64
+	Burst         int
+	KeyBy         string
+}
+
+// ParseAdmin 解析并校验 admin 配置。
+// 返回 enabled=false 表示管理面未开启，进程不监听管理端口。
+// 开启时 token 必须非空、addr 必须是合法 host:port、限流参数必须为正数。
+func (c *Config) ParseAdmin() (options AdminOptions, enabled bool, err error) {
+	if c == nil || c.Admin == nil || !c.Admin.Enable {
+		return AdminOptions{}, false, nil
+	}
+	conf := c.Admin
+	token := strings.TrimSpace(conf.Token)
+	if token == "" {
+		return AdminOptions{}, false, fmt.Errorf("admin.token is required when admin.enable is true")
+	}
+	addr := strings.TrimSpace(conf.Addr)
+	if addr == "" {
+		addr = DefaultAdminAddr
+	}
+	host, portText, splitErr := net.SplitHostPort(addr)
+	if splitErr != nil || host == "" {
+		return AdminOptions{}, false, fmt.Errorf("admin.addr must be a host:port address, got %q", addr)
+	}
+	port, parseErr := strconv.Atoi(portText)
+	if parseErr != nil || port < 1 || port > 65535 {
+		return AdminOptions{}, false, fmt.Errorf("admin.addr must use a port between 1 and 65535, got %q", addr)
+	}
+
+	ratePerSecond := DefaultAdminRatePerSecond
+	burst := DefaultAdminBurst
+	keyBy := defaultAdminRateLimitKeyBy
+	if limit := conf.RateLimit; limit != nil {
+		if limit.RatePerSecond != nil {
+			if *limit.RatePerSecond <= 0 {
+				return AdminOptions{}, false, fmt.Errorf("admin.rateLimit.ratePerSecond must be > 0, got %v", *limit.RatePerSecond)
+			}
+			ratePerSecond = *limit.RatePerSecond
+		}
+		if limit.Burst != nil {
+			if *limit.Burst < 1 {
+				return AdminOptions{}, false, fmt.Errorf("admin.rateLimit.burst must be >= 1, got %d", *limit.Burst)
+			}
+			burst = *limit.Burst
+		}
+		if raw := strings.TrimSpace(limit.KeyBy); raw != "" {
+			switch raw {
+			case AdminRateKeyByCredential, AdminRateKeyBySource:
+				keyBy = raw
+			default:
+				return AdminOptions{}, false, fmt.Errorf("admin.rateLimit.keyBy must be %q or %q, got %q",
+					AdminRateKeyByCredential, AdminRateKeyBySource, raw)
+			}
+		}
+	}
+	return AdminOptions{
+		Addr:          addr,
+		Token:         token,
+		RatePerSecond: ratePerSecond,
+		Burst:         burst,
+		KeyBy:         keyBy,
 	}, true, nil
 }
 
