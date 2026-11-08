@@ -161,6 +161,97 @@ type Config struct {
 	MediaServer   *mediaServerConf   `yaml:"mediaServer"`
 	Admin         *adminConf         `yaml:"admin"`
 	CommandOutbox *commandOutboxConf `yaml:"commandOutbox"`
+	Uplink        *uplinkConf        `yaml:"uplink"`
+}
+
+// uplinkConf 配置上行可靠性。
+// reliability 按消息分类选择 best_effort / at_least_once；
+// at_least_once 必须在应答前把记录落盘到 spoolDir，进程重启后重放。
+type uplinkConf struct {
+	Reliability *uplinkReliabilityConf `yaml:"reliability"`
+	// SpoolDir 是本地 spool 目录；存在 at_least_once 分类时必填。
+	SpoolDir string `yaml:"spoolDir"`
+}
+
+type uplinkReliabilityConf struct {
+	Default       string `yaml:"default"`
+	Location      string `yaml:"location"`
+	BatchLocation string `yaml:"batchLocation"`
+	Alarm         string `yaml:"alarm"`
+}
+
+// UplinkOptions 是上行可靠性的归一化配置。
+type UplinkOptions struct {
+	Default       string
+	Location      string
+	BatchLocation string
+	Alarm         string
+	SpoolDir      string
+}
+
+const (
+	UplinkReliabilityBestEffort  = "best_effort"
+	UplinkReliabilityAtLeastOnce = "at_least_once"
+
+	DefaultUplinkSpoolDir = "./data/uplink-spool"
+)
+
+// DefaultUplinkOptions 返回默认上行可靠性配置：
+// 实时定位 best-effort（几十秒后就有下一条），批量定位与报警 at-least-once。
+func DefaultUplinkOptions() UplinkOptions {
+	return UplinkOptions{
+		Default:       UplinkReliabilityBestEffort,
+		Location:      UplinkReliabilityBestEffort,
+		BatchLocation: UplinkReliabilityAtLeastOnce,
+		Alarm:         UplinkReliabilityAtLeastOnce,
+		SpoolDir:      DefaultUplinkSpoolDir,
+	}
+}
+
+// ParseUplink 归一化上行可靠性配置。
+func (c *Config) ParseUplink() (UplinkOptions, error) {
+	options := DefaultUplinkOptions()
+	if c == nil || c.Uplink == nil {
+		return options, nil
+	}
+	if conf := c.Uplink.Reliability; conf != nil {
+		options.Default = firstNonEmpty(conf.Default, options.Default)
+		options.Location = firstNonEmpty(conf.Location, options.Location)
+		options.BatchLocation = firstNonEmpty(conf.BatchLocation, options.BatchLocation)
+		options.Alarm = firstNonEmpty(conf.Alarm, options.Alarm)
+	}
+	if dir := strings.TrimSpace(c.Uplink.SpoolDir); dir != "" {
+		options.SpoolDir = dir
+	}
+
+	for name, value := range map[string]string{
+		"default":       options.Default,
+		"location":      options.Location,
+		"batchLocation": options.BatchLocation,
+		"alarm":         options.Alarm,
+	} {
+		normalized := strings.ToLower(strings.TrimSpace(value))
+		if normalized != UplinkReliabilityBestEffort && normalized != UplinkReliabilityAtLeastOnce {
+			return UplinkOptions{}, fmt.Errorf(
+				"uplink.reliability.%s must be best_effort or at_least_once, got %q", name, value)
+		}
+	}
+	options.Default = strings.ToLower(strings.TrimSpace(options.Default))
+	options.Location = strings.ToLower(strings.TrimSpace(options.Location))
+	options.BatchLocation = strings.ToLower(strings.TrimSpace(options.BatchLocation))
+	options.Alarm = strings.ToLower(strings.TrimSpace(options.Alarm))
+
+	if options.SpoolDir == "" {
+		return UplinkOptions{}, fmt.Errorf("uplink.spoolDir must not be empty")
+	}
+	return options, nil
+}
+
+func firstNonEmpty(value, fallback string) string {
+	if trimmed := strings.TrimSpace(value); trimmed != "" {
+		return trimmed
+	}
+	return fallback
 }
 
 // 苏标附件服务器的工程默认值。未配置 alarmServer.port 时服务不启动。

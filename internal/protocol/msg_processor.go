@@ -19,6 +19,7 @@ import (
 	"github.com/fakeyanss/jt808-server-go/internal/repository"
 	"github.com/fakeyanss/jt808-server-go/internal/runtime"
 	"github.com/fakeyanss/jt808-server-go/internal/storage"
+	"github.com/fakeyanss/jt808-server-go/internal/uplink"
 )
 
 var (
@@ -45,6 +46,8 @@ type action struct {
 type ProcessorDeps struct {
 	Storage *storage.Stores
 	Runtime *runtime.Stores
+	// Uplink 为空表示上行可靠性未启用（全部 best_effort）。
+	Uplink *uplink.Service
 }
 
 // ProcessorOption 配置消息处理器。
@@ -478,6 +481,9 @@ func NewJT808MsgProcessor(hooks actionpkg.Hooks, opts ...ProcessorOption) *JT808
 	}
 	if settings.deps.Runtime != nil {
 		deps.Runtime = settings.deps.Runtime
+	}
+	if settings.deps.Uplink != nil {
+		deps.Uplink = settings.deps.Uplink
 	}
 	mp := &JT808MsgProcessor{
 		hooks: hooks,

@@ -24,6 +24,7 @@ import (
 	"github.com/fakeyanss/jt808-server-go/internal/runtime"
 	"github.com/fakeyanss/jt808-server-go/internal/server"
 	"github.com/fakeyanss/jt808-server-go/internal/storage"
+	"github.com/fakeyanss/jt808-server-go/internal/uplink"
 	"github.com/fakeyanss/jt808-server-go/pkg/logger"
 	"github.com/fakeyanss/jt808-server-go/pkg/routines"
 )
@@ -49,6 +50,11 @@ func main() {
 		log.Error().Err(outboxErr).Msg("Invalid commandOutbox configuration")
 		os.Exit(1)
 	}
+	uplinkOptions, uplinkErr := cfg.ParseUplink()
+	if uplinkErr != nil {
+		log.Error().Err(uplinkErr).Msg("Invalid uplink reliability configuration")
+		os.Exit(1)
+	}
 
 	storageCfg := storage.FromConfig(cfg)
 	stores, storageErr := storage.Init(storageCfg)
@@ -70,7 +76,27 @@ func main() {
 	}
 	log.Info().Str("mode", outboxOptions.Mode).Msg("Command outbox mode resolved")
 
-	deps := protocol.ProcessorDeps{Storage: stores, Runtime: runtime.Default()}
+	// 上行可靠性：at_least_once 分类在应答前落 spool，启动时重放遗留记录。
+	uplinkService, uplinkSvcErr := uplink.NewService(
+		uplink.NewPolicy(uplinkOptions.Default, uplinkOptions.Location,
+			uplinkOptions.BatchLocation, uplinkOptions.Alarm),
+		uplinkOptions.SpoolDir, stores.Locations, stores.Alarms)
+	if uplinkSvcErr != nil {
+		log.Error().Err(uplinkSvcErr).Msg("Fail to initialize uplink reliability service")
+		os.Exit(1)
+	}
+	if replayErr := uplinkService.Replay(context.Background()); replayErr != nil {
+		// 重放失败不阻塞启动：记录仍在 spool，下次启动会再次尝试，不会丢数据。
+		log.Error().Err(replayErr).Msg("Fail to replay uplink spool records")
+	}
+	log.Info().
+		Str("spool_dir", uplinkOptions.SpoolDir).
+		Str("location", uplinkOptions.Location).
+		Str("batch_location", uplinkOptions.BatchLocation).
+		Str("alarm", uplinkOptions.Alarm).
+		Msg("Uplink reliability configured")
+
+	deps := protocol.ProcessorDeps{Storage: stores, Runtime: runtime.Default(), Uplink: uplinkService}
 
 	var hooks action.Hooks = action.Noop{}
 	if cfg.Server.Action != nil && cfg.Server.Action.HTTP != nil && cfg.Server.Action.HTTP.URL != "" {

@@ -107,6 +107,17 @@ commandOutbox:
   # 首次下发后等待应答/会话重传的窗口，到期前不重投。
   initialWait: "1m"
 
+# 上行可靠性：按消息分类选择 best_effort / at_least_once。
+# at_least_once 必须在应答前把记录落盘到 spoolDir；进程重启后启动重放。
+# 默认实时定位 best-effort（很快就有下一条），批量定位与报警 at-least-once。
+uplink:
+  reliability:
+    default: "best_effort"
+    location: "best_effort"
+    batchLocation: "at_least_once"
+    alarm: "at_least_once"
+  spoolDir: "./data/uplink-spool"
+
 # 持久化后端：memory | sqlite | mysql，缺省 memory（行为与旧版本一致）
 storage:
   type: "memory"
