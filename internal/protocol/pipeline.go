@@ -9,7 +9,6 @@ import (
 
 	actionpkg "github.com/fakeyanss/jt808-server-go/internal/action"
 	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
-	"github.com/fakeyanss/jt808-server-go/internal/runtime"
 )
 
 const maxJT808BodyLength = 1023
@@ -21,17 +20,25 @@ type Pipeline struct {
 	mp *JT808MsgProcessor // MsgHandler instance
 }
 
-// PipelineOption 配置 Pipeline 的生命周期钩子。
+// PipelineOption 配置 Pipeline 的生命周期钩子与依赖。
 type PipelineOption func(*pipelineSettings)
 
 type pipelineSettings struct {
 	hooks actionpkg.Hooks
+	deps  ProcessorDeps
 }
 
 // WithHooks 指定生命周期钩子，默认 action.Noop。
 func WithHooks(hooks actionpkg.Hooks) PipelineOption {
 	return func(s *pipelineSettings) {
 		s.hooks = hooks
+	}
+}
+
+// WithDeps 指定处理器依赖；未注入的字段回退到包级默认单例。
+func WithDeps(deps ProcessorDeps) PipelineOption {
+	return func(s *pipelineSettings) {
+		s.deps = deps
 	}
 }
 
@@ -43,7 +50,7 @@ func NewPipeline(conn net.Conn, opts ...PipelineOption) *Pipeline {
 	return &Pipeline{
 		fh: NewJT808FrameHandler(conn),
 		pc: NewJT808PacketCodec(),
-		mp: NewJT808MsgProcessor(settings.hooks),
+		mp: NewJT808MsgProcessor(settings.hooks, WithProcessorDeps(settings.deps)),
 	}
 }
 
@@ -181,7 +188,7 @@ func encode() delegateFunc {
 			if err != nil {
 				return nil, err
 			}
-			runtime.Default().Retrans.CacheFrame(context.Background(), header.PhoneNumber, serials[0], uint16(i+1), uint16(total), frames[i])
+			p.mp.deps.Runtime.Retrans.CacheFrame(context.Background(), header.PhoneNumber, serials[0], uint16(i+1), uint16(total), frames[i])
 		}
 		return context.WithValue(ctx, model.PacketEncodeCtxKey{}, frames), nil
 	})

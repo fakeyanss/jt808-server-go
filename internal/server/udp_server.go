@@ -25,6 +25,19 @@ type UDPServer struct {
 	ackTimeout         time.Duration
 	maxRetransmissions int
 	hooks              action.Hooks
+	deps               protocol.ProcessorDeps
+}
+
+// SetDeps 设置处理器依赖；未注入的字段回退到包级默认单例。
+func (s *UDPServer) SetDeps(deps protocol.ProcessorDeps) {
+	s.deps = deps
+}
+
+func (s *UDPServer) runtimeStores() *runtime.Stores {
+	if s.deps.Runtime != nil {
+		return s.deps.Runtime
+	}
+	return runtime.Default()
 }
 
 func NewUDPServer() *UDPServer {
@@ -67,8 +80,8 @@ func (s *UDPServer) Start() {
 			conn = newUDPSessionConn(s.listener, remote, func() { s.remove(key) })
 			s.sessions[key] = conn
 			session := &model.Session{ID: key, Conn: conn, Transport: model.UDPProto, ConnectedAt: time.Now(), AckTimeout: s.ackTimeout, MaxRetries: s.maxRetransmissions}
-			_ = runtime.Default().Conn.Bind(context.Background(), session)
-			routines.GoSafe(func() { serveSession(session, s.hooks) })
+			_ = s.runtimeStores().Conn.Bind(context.Background(), session)
+			routines.GoSafe(func() { serveSession(session, s.hooks, s.deps) })
 		}
 		s.mu.Unlock()
 		if !conn.deliver(buf[:n]) {
@@ -96,7 +109,7 @@ func (s *UDPServer) remove(key string) {
 	s.mu.Lock()
 	delete(s.sessions, key)
 	s.mu.Unlock()
-	runtime.Default().Conn.Unbind(context.Background(), key)
+	s.runtimeStores().Conn.Unbind(context.Background(), key)
 }
 
 type udpSessionConn struct {

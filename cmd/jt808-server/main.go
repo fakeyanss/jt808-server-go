@@ -17,6 +17,7 @@ import (
 	"github.com/fakeyanss/jt808-server-go/internal/api"
 	"github.com/fakeyanss/jt808-server-go/internal/config"
 	"github.com/fakeyanss/jt808-server-go/internal/media"
+	"github.com/fakeyanss/jt808-server-go/internal/protocol"
 	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
 	"github.com/fakeyanss/jt808-server-go/internal/runtime"
 	"github.com/fakeyanss/jt808-server-go/internal/server"
@@ -43,12 +44,14 @@ func main() {
 	}
 
 	storageCfg := storage.FromConfig(cfg)
-	backend, storageErr := storage.Init(storageCfg)
+	stores, storageErr := storage.Init(storageCfg)
 	if storageErr != nil {
 		log.Error().Err(storageErr).Msg("Fail to initialize storage backend")
 		os.Exit(1)
 	}
-	log.Info().Str("backend", backend).Msg("Storage backend initialized")
+	log.Info().Str("backend", stores.Backend).Msg("Storage backend initialized")
+
+	deps := protocol.ProcessorDeps{Storage: stores, Runtime: runtime.Default()}
 
 	var hooks action.Hooks = action.Noop{}
 	if cfg.Server.Action != nil && cfg.Server.Action.HTTP != nil && cfg.Server.Action.HTTP.URL != "" {
@@ -85,6 +88,7 @@ func main() {
 	}
 
 	serv := server.NewTCPServer()
+	serv.SetDeps(deps)
 	serv.SetReliability(time.Duration(cfg.Server.AckTimeoutMS)*time.Millisecond, cfg.Server.MaxRetransmissions)
 	if alarmOptions.AutoUpload {
 		hooks = alarmserver.NewUploadTrigger(hooks, alarmserver.UploadTriggerOptions{
@@ -93,11 +97,11 @@ func main() {
 			UDPPort: alarmOptions.UDPPort,
 		}, func(phone string, msg *model.Msg9208) error {
 			ctx := context.Background()
-			device, err := storage.Default().Devices.GetByPhone(ctx, phone)
+			device, err := deps.Storage.Devices.GetByPhone(ctx, phone)
 			if err != nil {
 				return fmt.Errorf("device is offline: %w", err)
 			}
-			session, err := runtime.Default().Conn.Get(ctx, device.SessionID)
+			session, err := deps.Runtime.Conn.Get(ctx, device.SessionID)
 			if err != nil {
 				return fmt.Errorf("session is unavailable: %w", err)
 			}
@@ -119,6 +123,7 @@ func main() {
 	routines.GoSafe(func() { serv.Start() })
 	if cfg.Server.Port.UDPPort != "" {
 		udpServ := server.NewUDPServer()
+		udpServ.SetDeps(deps)
 		udpServ.SetHooks(hooks)
 		udpServ.SetReliability(time.Duration(cfg.Server.AckTimeoutMS)*time.Millisecond, cfg.Server.MaxRetransmissions)
 		udpAddr := ":" + cfg.Server.Port.UDPPort
@@ -171,10 +176,9 @@ func main() {
 
 	var adminServ *adminapi.Server
 	if adminEnabled {
-		stores := storage.Default()
 		adminServ = adminapi.NewServer(adminOptions, adminapi.Dependencies{
-			Conn:      runtime.Default().Conn,
-			Heartbeat: runtime.Default().Heartbeat,
+			Conn:      deps.Runtime.Conn,
+			Heartbeat: deps.Runtime.Heartbeat,
 			Devices:   stores.Devices,
 			Locations: stores.Locations,
 			Alarms:    stores.Alarms,

@@ -23,9 +23,22 @@ type TCPServer struct {
 	ackTimeout         time.Duration
 	maxRetransmissions int
 	hooks              action.Hooks
+	deps               protocol.ProcessorDeps
 
 	// sessions map[string]*model.Session
 	mutex *sync.Mutex
+}
+
+// SetDeps 设置处理器依赖；未注入的字段回退到包级默认单例。
+func (serv *TCPServer) SetDeps(deps protocol.ProcessorDeps) {
+	serv.deps = deps
+}
+
+func (serv *TCPServer) runtimeStores() *runtime.Stores {
+	if serv.deps.Runtime != nil {
+		return serv.deps.Runtime
+	}
+	return runtime.Default()
 }
 
 // SetHooks 设置生命周期钩子。未设置时使用 action.Noop。
@@ -86,7 +99,7 @@ func (serv *TCPServer) accept(conn net.Conn) *model.Session {
 		MaxRetries:  serv.maxRetransmissions,
 	}
 	// serv.sessions[remoteAddr] = session
-	_ = runtime.Default().Conn.Bind(context.Background(), session)
+	_ = serv.runtimeStores().Conn.Bind(context.Background(), session)
 	serv.mutex.Unlock()
 
 	return session
@@ -97,7 +110,7 @@ func (serv *TCPServer) remove(session *model.Session) {
 	defer serv.mutex.Unlock()
 
 	session.Conn.Close()
-	runtime.Default().Conn.Unbind(context.Background(), session.ID)
+	serv.runtimeStores().Conn.Unbind(context.Background(), session.ID)
 	// delete(serv.sessions, session.ID)
 
 	log.Debug().Str("id", session.ID).Msg("Closing connection from remote.")
@@ -105,22 +118,25 @@ func (serv *TCPServer) remove(session *model.Session) {
 
 // 处理每个session的消息
 func (serv *TCPServer) serve(session *model.Session) {
-	serveSession(session, serv.hooks)
+	serveSession(session, serv.hooks, serv.deps)
 }
 
-func serveSession(session *model.Session, hooks action.Hooks) {
+func serveSession(session *model.Session, hooks action.Hooks, deps protocol.ProcessorDeps) {
 	if hooks == nil {
 		hooks = action.Noop{}
+	}
+	if deps.Runtime == nil {
+		deps.Runtime = runtime.Default()
 	}
 	defer func() {
 		session.ClosePending()
 		session.Conn.Close()
-		runtime.Default().Conn.Unbind(context.Background(), session.ID)
+		deps.Runtime.Conn.Unbind(context.Background(), session.ID)
 		hooks.OnDisconnect(context.Background(), action.DisconnectEvent{SessionID: session.ID, Transport: string(session.GetTransProto())})
 		log.Debug().Str("id", session.ID).Msg("Closing connection from remote.")
 	}()
 
-	pg := protocol.NewPipeline(session.Conn, protocol.WithHooks(hooks))
+	pg := protocol.NewPipeline(session.Conn, protocol.WithHooks(hooks), protocol.WithDeps(deps))
 	for {
 		_ = session.Conn.SetReadDeadline(time.Now().Add(2 * time.Minute))
 		// 记录value ctx
@@ -158,13 +174,13 @@ func isTimeout(err error) bool {
 // 发送消息到终端设备, 外部调用
 func (serv *TCPServer) Send(id string, msg model.JT808Msg) {
 	// session := serv.sessions[id]
-	session, err := runtime.Default().Conn.Get(context.Background(), id)
+	session, err := serv.runtimeStores().Conn.Get(context.Background(), id)
 	if err != nil && errors.Is(err, runtime.ErrSessionClosed) {
 		log.Warn().Str("id", id).Msg("Fail to get session from cache, maybe conn was closed.")
 		return
 	}
 
-	pg := protocol.NewPipeline(session.Conn, protocol.WithHooks(serv.hooks))
+	pg := protocol.NewPipeline(session.Conn, protocol.WithHooks(serv.hooks), protocol.WithDeps(serv.deps))
 
 	// 记录value ctx
 	ctx := context.WithValue(context.Background(), model.SessionCtxKey{}, session)

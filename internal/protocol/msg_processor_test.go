@@ -62,7 +62,7 @@ func TestProcessMsg0107PersistsAndDeliversTerminalProperties(t *testing.T) {
 		TerminalID:      "TERM-107",
 		FirmwareVersion: "FW-1.0",
 	}
-	require.NoError(t, processMsg0107(ctx, &model.ProcessData{Incoming: msg}))
+	require.NoError(t, NewJT808MsgProcessor(nil).processMsg0107(ctx, &model.ProcessData{Incoming: msg}))
 
 	select {
 	case got := <-waiter:
@@ -94,7 +94,7 @@ func TestHeartbeatDoesNotPersistRuntime(t *testing.T) {
 	})
 
 	msg := &model.Msg0002{Header: &model.MsgHeader{MsgID: 0x0002, PhoneNumber: phone, Attr: &model.MsgBodyAttr{}}}
-	require.NoError(t, processMsg0002(ctx, &model.ProcessData{Incoming: msg}))
+	require.NoError(t, NewJT808MsgProcessor(nil).processMsg0002(ctx, &model.ProcessData{Incoming: msg}))
 
 	stored, err := devices.GetByPhone(ctx, phone)
 	require.NoError(t, err)
