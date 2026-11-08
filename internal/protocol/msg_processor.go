@@ -40,126 +40,266 @@ type action struct {
 	process func(context.Context, *model.ProcessData) error // 处理消息的逻辑。可以设置消息字段、根据消息做相应处理逻辑
 }
 
+// ProcessorDeps 聚合消息处理器的显式依赖。
+// 字段为零值时由构造函数回退到包级默认单例，保证既有装配路径行为不变。
+type ProcessorDeps struct {
+	Storage *storage.Stores
+	Runtime *runtime.Stores
+}
+
+// ProcessorOption 配置消息处理器。
+type ProcessorOption func(*processorSettings)
+
+type processorSettings struct {
+	deps ProcessorDeps
+}
+
+// WithProcessorDeps 注入处理器依赖。未注入的字段保持默认单例。
+func WithProcessorDeps(deps ProcessorDeps) ProcessorOption {
+	return func(s *processorSettings) {
+		s.deps = deps
+	}
+}
+
+func defaultProcessorDeps() ProcessorDeps {
+	return ProcessorDeps{Storage: storage.Default(), Runtime: runtime.Default()}
+}
+
 // 表驱动，初始化消息处理方法组。
-func initProcessOption() processOptions {
+// 注册项按语义分组：会话与设备档案、位置与报警、参数与属性、行业上报、
+// 多媒体与附件、区域路线、平台下行与模拟器行为。
+// 所有 process 字段均为处理器方法值，存储与运行时依赖通过 mp.deps 显式注入。
+func (mp *JT808MsgProcessor) initProcessOption() processOptions {
 	options := make(processOptions)
+	mp.registerSessionAndDevice(options)
+	mp.registerPositionAndAlarm(options)
+	mp.registerParamsAndProperties(options)
+	mp.registerIndustryReports(options)
+	mp.registerMediaAndAttachment(options)
+	mp.registerRegionRoutes(options)
+	mp.registerDownlinkAndSimulator(options)
+	return options
+}
+
+// registerSessionAndDevice 注册会话、注册鉴权、通用应答与传输可靠性相关的入口。
+func (mp *JT808MsgProcessor) registerSessionAndDevice(options processOptions) {
 	options[0x0001] = &action{ // 通用应答
 		genData: func() *model.ProcessData {
 			return &model.ProcessData{Incoming: &model.Msg0001{}} // 无需回复
 		},
-		process: processMsg0001,
+		process: mp.processMsg0001,
 	}
 	options[0x0002] = &action{ // 心跳
 		genData: func() *model.ProcessData {
 			return &model.ProcessData{Incoming: &model.Msg0002{}, Outgoing: &model.Msg8001{}}
 		},
-		process: processMsg0002,
+		process: mp.processMsg0002,
 	}
 	options[0x0003] = &action{ // 注销
 		genData: func() *model.ProcessData {
 			return &model.ProcessData{Incoming: &model.Msg0003{}, Outgoing: &model.Msg8001{}}
 		},
-		process: processMsg0003,
+		process: mp.processMsg0003,
 	}
 	options[0x0004] = &action{genData: func() *model.ProcessData {
 		return &model.ProcessData{Incoming: &model.Msg0004{}, Outgoing: &model.Msg8004{}}
 	}}
-	options[0x0005] = &action{genData: func() *model.ProcessData { return &model.ProcessData{Incoming: &model.Msg0005{}} }, process: processMsg0005}
+	options[0x0005] = &action{genData: func() *model.ProcessData { return &model.ProcessData{Incoming: &model.Msg0005{}} }, process: mp.processMsg0005}
 	options[0x0100] = &action{ // 注册
 		genData: func() *model.ProcessData {
 			return &model.ProcessData{Incoming: &model.Msg0100{}, Outgoing: &model.Msg8100{}}
 		},
-		process: processMsg0100,
+		process: mp.processMsg0100,
 	}
 	options[0x0102] = &action{ // 鉴权
 		genData: func() *model.ProcessData {
 			return &model.ProcessData{Incoming: &model.Msg0102{}, Outgoing: &model.Msg8001{}}
 		},
-		process: processMsg0102,
+		process: mp.processMsg0102,
 	}
-	options[0x0104] = &action{ // 查询终端参数应答
+	options[0x8001] = &action{ // 通用应答
 		genData: func() *model.ProcessData {
-			return &model.ProcessData{Incoming: &model.Msg0104{}} // 无需回复
+			return &model.ProcessData{Incoming: &model.Msg8001{}}
 		},
-		process: processMsg0104,
+		process: mp.processMsg8001,
 	}
-	options[0x0107] = &action{genData: func() *model.ProcessData { return &model.ProcessData{Incoming: &model.Msg0107{}} }, process: processMsg0107}
-	options[0x0201] = &action{genData: func() *model.ProcessData { return &model.ProcessData{Incoming: &model.Msg0201{}} }, process: processMsg0201}
+	options[0x8003] = &action{ // 补传分包请求
+		genData: func() *model.ProcessData {
+			return &model.ProcessData{Incoming: &model.Msg8003{}, Outgoing: &model.Msg0001{}}
+		},
+		process: mp.processMsg8003,
+	}
+	options[0x8004] = &action{genData: func() *model.ProcessData { return &model.ProcessData{Incoming: &model.Msg8004{}} }}
+	options[0x8100] = &action{ // 注册应答
+		genData: func() *model.ProcessData {
+			return &model.ProcessData{Incoming: &model.Msg8100{}, Outgoing: &model.Msg0102{}}
+		},
+		process: mp.processMsg8100,
+	}
+}
+
+// registerPositionAndAlarm 注册位置、报警与跟踪相关的上行入口。
+func (mp *JT808MsgProcessor) registerPositionAndAlarm(options processOptions) {
+	options[0x0200] = &action{ // 位置信息上报
+		genData: func() *model.ProcessData {
+			return &model.ProcessData{Incoming: &model.Msg0200{}, Outgoing: &model.Msg8001{}}
+		},
+		process: mp.processMsg0200,
+	}
+	options[0x0201] = &action{genData: func() *model.ProcessData { return &model.ProcessData{Incoming: &model.Msg0201{}} }, process: mp.processMsg0201}
+	options[0x0704] = &action{ // 批量定位数据上传
+		genData: func() *model.ProcessData {
+			return &model.ProcessData{Incoming: &model.Msg0704{}, Outgoing: &model.Msg8001{}}
+		},
+		process: mp.processMsg0704,
+	}
+	options[0x8201] = &action{genData: func() *model.ProcessData {
+		return &model.ProcessData{Incoming: &model.Msg8201{}, Outgoing: &model.Msg0201{}}
+	}, process: mp.processMsg8201}
 	options[0x8202] = &action{genData: func() *model.ProcessData {
 		return &model.ProcessData{Incoming: &model.Msg8202{}, Outgoing: &model.Msg0001{}}
-	}, process: processMsg8202}
+	}, process: mp.processMsg8202}
 	options[0x8203] = &action{genData: func() *model.ProcessData {
 		return &model.ProcessData{Incoming: &model.Msg8203{}, Outgoing: &model.Msg0001{}}
 	}}
 	options[0x8204] = &action{genData: func() *model.ProcessData {
 		return &model.ProcessData{Incoming: &model.Msg8204{}, Outgoing: &model.Msg0001{}}
 	}}
-	options[0x0200] = &action{ // 位置信息上报
+}
+
+// registerParamsAndProperties 注册终端参数与终端属性档案相关的入口。
+func (mp *JT808MsgProcessor) registerParamsAndProperties(options processOptions) {
+	options[0x0104] = &action{ // 查询终端参数应答
 		genData: func() *model.ProcessData {
-			return &model.ProcessData{Incoming: &model.Msg0200{}, Outgoing: &model.Msg8001{}}
+			return &model.ProcessData{Incoming: &model.Msg0104{}} // 无需回复
 		},
-		process: processMsg0200,
+		process: mp.processMsg0104,
 	}
-	for _, messageID := range []uint16{0x8600, 0x8602, 0x8604, 0x8606} {
-		options[messageID] = &action{genData: func() *model.ProcessData {
-			return &model.ProcessData{Incoming: &model.MsgRegionRouteSet{}, Outgoing: &model.Msg0001{}}
-		}, process: processRegionRouteSet}
+	options[0x0107] = &action{genData: func() *model.ProcessData { return &model.ProcessData{Incoming: &model.Msg0107{}} }, process: mp.processMsg0107}
+	options[0x8103] = &action{ // 查询终端参数
+		genData: func() *model.ProcessData {
+			return &model.ProcessData{Incoming: &model.Msg8103{}, Outgoing: &model.Msg0001{}}
+		},
+		process: mp.processMsg8103,
 	}
-	options[0x8608] = &action{genData: func() *model.ProcessData {
-		return &model.ProcessData{Incoming: &model.Msg8608{}, Outgoing: &model.Msg0608{}}
-	}, process: processRegionRouteQuery}
-	options[0x0608] = &action{genData: func() *model.ProcessData { return &model.ProcessData{Incoming: &model.Msg0608{}} }, process: processRegionResponse}
-	options[0x0702] = &action{genData: func() *model.ProcessData {
-		return &model.ProcessData{Incoming: &model.Msg0702{}, Outgoing: &model.Msg8001{}}
-	}, process: processIndustryReport}
-	options[0x0705] = &action{genData: func() *model.ProcessData {
-		return &model.ProcessData{Incoming: &model.Msg0705{}, Outgoing: &model.Msg8001{}}
-	}, process: processIndustryReport}
+	options[0x8104] = &action{ // 查询终端参数
+		genData: func() *model.ProcessData {
+			return &model.ProcessData{Incoming: &model.Msg8104{}, Outgoing: &model.Msg0104{}}
+		},
+		process: mp.processMsg8104,
+	}
+	options[0x8106] = &action{genData: func() *model.ProcessData {
+		return &model.ProcessData{Incoming: &model.Msg8106{}, Outgoing: &model.Msg0104{}}
+	}, process: mp.processMsg8106}
+	options[0x8107] = &action{genData: func() *model.ProcessData {
+		return &model.ProcessData{Incoming: &model.Msg8107{}, Outgoing: &model.Msg0107{}}
+	}, process: mp.processMsg8107}
+}
+
+// registerIndustryReports 注册行业上报与行业目录相关的入口。
+func (mp *JT808MsgProcessor) registerIndustryReports(options processOptions) {
+	options[0x0108] = &action{ // 升级结果通知
+		genData: func() *model.ProcessData {
+			return &model.ProcessData{Incoming: &model.Msg0108{}, Outgoing: &model.Msg8001{}}
+		},
+		process: mp.processIndustryReport,
+	}
+	options[0x0301] = &action{ // 事件上报
+		genData: func() *model.ProcessData {
+			return &model.ProcessData{Incoming: &model.Msg0301{}, Outgoing: &model.Msg8001{}}
+		},
+		process: mp.processIndustryReport,
+	}
+	options[0x0302] = &action{ // 提问应答
+		genData: func() *model.ProcessData {
+			return &model.ProcessData{Incoming: &model.Msg0302{}, Outgoing: &model.Msg8001{}}
+		},
+		process: mp.processIndustryReport,
+	}
+	options[0x0303] = &action{ // 信息点播/取消
+		genData: func() *model.ProcessData {
+			return &model.ProcessData{Incoming: &model.Msg0303{}, Outgoing: &model.Msg8001{}}
+		},
+		process: mp.processIndustryReport,
+	}
+	options[0x0500] = &action{ // 车辆控制应答
+		genData: func() *model.ProcessData {
+			return &model.ProcessData{Incoming: &model.Msg0500{}, Outgoing: &model.Msg8001{}}
+		},
+		process: mp.processIndustryReport,
+	}
 	options[0x0700] = &action{genData: func() *model.ProcessData {
 		return &model.ProcessData{Incoming: &model.Msg0700{}, Outgoing: &model.Msg8001{}}
-	}, process: processIndustryReport}
-	options[0x8700] = &action{genData: func() *model.ProcessData {
-		return &model.ProcessData{Incoming: &model.MsgRecordCommand{}, Outgoing: &model.Msg0700{}}
-	}, process: processMsg8700}
-	options[0x8701] = &action{genData: func() *model.ProcessData {
-		return &model.ProcessData{Incoming: &model.MsgRecordCommand{}, Outgoing: &model.Msg0001{}}
-	}}
-	options[0x8702] = &action{genData: func() *model.ProcessData {
-		return &model.ProcessData{Incoming: &model.Msg8702{}, Outgoing: &model.Msg0702{}}
-	}}
+	}, process: mp.processIndustryReport}
+	options[0x0701] = &action{ // 电子运单上报
+		genData: func() *model.ProcessData {
+			return &model.ProcessData{Incoming: &model.Msg0701{}, Outgoing: &model.Msg8001{}}
+		},
+		process: mp.processIndustryReport,
+	}
+	options[0x0702] = &action{genData: func() *model.ProcessData {
+		return &model.ProcessData{Incoming: &model.Msg0702{}, Outgoing: &model.Msg8001{}}
+	}, process: mp.processIndustryReport}
+	options[0x0705] = &action{genData: func() *model.ProcessData {
+		return &model.ProcessData{Incoming: &model.Msg0705{}, Outgoing: &model.Msg8001{}}
+	}, process: mp.processIndustryReport}
 	options[0x0800] = &action{genData: func() *model.ProcessData {
 		return &model.ProcessData{Incoming: &model.Msg0800{}, Outgoing: &model.Msg8001{}}
-	}, process: processIndustryReport}
+	}, process: mp.processIndustryReport}
 	options[0x0801] = &action{genData: func() *model.ProcessData {
 		return &model.ProcessData{Incoming: &model.Msg0801{}, Outgoing: &model.Msg8800{}}
-	}, process: processIndustryReport}
-	options[0x8800] = &action{genData: func() *model.ProcessData { return &model.ProcessData{Incoming: &model.Msg8800{}} }, process: processMsg8800}
-	options[0x8801] = &action{genData: func() *model.ProcessData {
-		return &model.ProcessData{Incoming: &model.Msg8801{}, Outgoing: &model.Msg0805{}}
-	}}
-	options[0x8802] = &action{genData: func() *model.ProcessData {
-		return &model.ProcessData{Incoming: &model.Msg8802{}, Outgoing: &model.Msg0802{}}
-	}, process: processMediaSearchResponse}
-	options[0x0805] = &action{genData: func() *model.ProcessData {
-		return &model.ProcessData{Incoming: &model.Msg0805{}, Outgoing: &model.Msg8001{}}
-	}, process: processIndustryReport}
+	}, process: mp.processIndustryReport}
 	options[0x0802] = &action{genData: func() *model.ProcessData {
 		return &model.ProcessData{Incoming: &model.Msg0802{}, Outgoing: &model.Msg8001{}}
-	}, process: processIndustryReport}
-	options[0x8803] = &action{genData: func() *model.ProcessData {
-		return &model.ProcessData{Incoming: &model.Msg8803{}, Outgoing: &model.Msg0001{}}
-	}, process: processMsg8803}
-	options[0x8804] = &action{genData: func() *model.ProcessData {
-		return &model.ProcessData{Incoming: &model.Msg8804{}, Outgoing: &model.Msg0001{}}
-	}, process: processMsg8804}
-	options[0x8805] = &action{genData: func() *model.ProcessData {
-		return &model.ProcessData{Incoming: &model.Msg8805{}, Outgoing: &model.Msg0001{}}
-	}, process: processMsg8805}
+	}, process: mp.processIndustryReport}
+	options[0x0805] = &action{genData: func() *model.ProcessData {
+		return &model.ProcessData{Incoming: &model.Msg0805{}, Outgoing: &model.Msg8001{}}
+	}, process: mp.processIndustryReport}
+	options[0x0900] = &action{ // 数据上行透传
+		genData: func() *model.ProcessData {
+			return &model.ProcessData{Incoming: &model.Msg0900{}, Outgoing: &model.Msg8001{}}
+		},
+		process: mp.processIndustryReport,
+	}
+	options[0x0901] = &action{ // 数据压缩上报
+		genData: func() *model.ProcessData {
+			return &model.ProcessData{Incoming: &model.Msg0901{}, Outgoing: &model.Msg8001{}}
+		},
+		process: mp.processIndustryReport,
+	}
+	options[0x8108] = &action{ // 终端升级
+		genData: func() *model.ProcessData {
+			return &model.ProcessData{Incoming: &model.Msg8108{}, Outgoing: &model.Msg0001{}}
+		},
+		process: mp.processIndustryReport,
+	}
+	options[0x8400] = &action{ // 电话回拨
+		genData: func() *model.ProcessData {
+			return &model.ProcessData{Incoming: &model.Msg8400{}, Outgoing: &model.Msg0001{}}
+		},
+		process: mp.processIndustryReport,
+	}
+	options[0x8900] = &action{ // 数据下行透传
+		genData: func() *model.ProcessData {
+			return &model.ProcessData{Incoming: &model.Msg8900{}, Outgoing: &model.Msg0001{}}
+		},
+		process: mp.processIndustryReport,
+	}
+}
+
+// registerMediaAndAttachment 注册多媒体元数据、音视频信令与苏标附件相关的入口。
+func (mp *JT808MsgProcessor) registerMediaAndAttachment(options processOptions) {
 	options[0x1205] = &action{ // 终端上传音视频资源列表
 		genData: func() *model.ProcessData {
-			return &model.ProcessData{Incoming: &model.Msg1205{}, Outgoing: &model.Msg8001{}} // 无需回复
+			return &model.ProcessData{Incoming: &model.Msg1205{}}
 		},
-		process: processIndustryReport,
+		process: mp.processMediaResourceList,
+	}
+	options[0x1206] = &action{ // 文件上传完成通知，终端上行，无需应答
+		genData: func() *model.ProcessData {
+			return &model.ProcessData{Incoming: &model.Msg1206{}}
+		},
+		process: mp.processMediaSignaling,
 	}
 	// 苏标附件信令实际由独立附件服务器端口处理；主链路注册解码与通用应答，
 	// 避免终端误发到 8080 时被判为不支持消息。0x1212 的 0x9212 应答由附件服务器负责。
@@ -167,195 +307,36 @@ func initProcessOption() processOptions {
 		genData: func() *model.ProcessData {
 			return &model.ProcessData{Incoming: &model.Msg1210{}, Outgoing: &model.Msg0001{}}
 		},
-		process: processAttachmentSignaling,
+		process: mp.processAttachmentSignaling,
 	}
 	options[0x1211] = &action{
 		genData: func() *model.ProcessData {
 			return &model.ProcessData{Incoming: &model.Msg1211{}, Outgoing: &model.Msg0001{}}
 		},
-		process: processAttachmentSignaling,
+		process: mp.processAttachmentSignaling,
 	}
 	options[0x1212] = &action{
 		genData: func() *model.ProcessData {
 			return &model.ProcessData{Incoming: &model.Msg1212{}}
 		},
-		process: processAttachmentSignaling,
+		process: mp.processAttachmentSignaling,
 	}
-	options[0x8001] = &action{ // 通用应答
-		genData: func() *model.ProcessData {
-			return &model.ProcessData{Incoming: &model.Msg8001{}}
-		},
-		process: processMsg8001,
-	}
-	options[0x8003] = &action{ // 补传分包请求
-		genData: func() *model.ProcessData {
-			return &model.ProcessData{Incoming: &model.Msg8003{}, Outgoing: &model.Msg0001{}}
-		},
-		process: processMsg8003,
-	}
-	options[0x8004] = &action{genData: func() *model.ProcessData { return &model.ProcessData{Incoming: &model.Msg8004{}} }}
-	options[0x8100] = &action{ // 注册应答
-		genData: func() *model.ProcessData {
-			return &model.ProcessData{Incoming: &model.Msg8100{}, Outgoing: &model.Msg0102{}}
-		},
-		process: processMsg8100,
-	}
-	options[0x8103] = &action{ // 查询终端参数
-		genData: func() *model.ProcessData {
-			return &model.ProcessData{Incoming: &model.Msg8103{}, Outgoing: &model.Msg0001{}}
-		},
-		process: processMsg8103,
-	}
-	options[0x8104] = &action{ // 查询终端参数
-		genData: func() *model.ProcessData {
-			return &model.ProcessData{Incoming: &model.Msg8104{}, Outgoing: &model.Msg0104{}}
-		},
-		process: processMsg8104,
-	}
-	options[0x8105] = &action{ // 终端控制，由终端模拟器自动确认
-		genData: func() *model.ProcessData {
-			return &model.ProcessData{Incoming: &model.Msg8105{}, Outgoing: &model.Msg0001{}}
-		},
-	}
-	options[0x8300] = &action{ // 文本信息下发
-		genData: func() *model.ProcessData {
-			return &model.ProcessData{Incoming: &model.Msg8300{}, Outgoing: &model.Msg0001{}}
-		},
-	}
-	options[0x8301] = &action{ // 事件设置
-		genData: func() *model.ProcessData {
-			return &model.ProcessData{Incoming: &model.Msg8301{}, Outgoing: &model.Msg0001{}}
-		},
-		process: processMsg8301,
-	}
-	options[0x0301] = &action{ // 事件上报
-		genData: func() *model.ProcessData {
-			return &model.ProcessData{Incoming: &model.Msg0301{}, Outgoing: &model.Msg8001{}}
-		},
-		process: processIndustryReport,
-	}
-	options[0x8302] = &action{ // 提问下发
-		genData: func() *model.ProcessData {
-			return &model.ProcessData{Incoming: &model.Msg8302{}, Outgoing: &model.Msg0001{}}
-		},
-		process: processMsg8302,
-	}
-	options[0x0302] = &action{ // 提问应答
-		genData: func() *model.ProcessData {
-			return &model.ProcessData{Incoming: &model.Msg0302{}, Outgoing: &model.Msg8001{}}
-		},
-		process: processIndustryReport,
-	}
-	options[0x8303] = &action{ // 信息点播菜单设置
-		genData: func() *model.ProcessData {
-			return &model.ProcessData{Incoming: &model.Msg8303{}, Outgoing: &model.Msg0001{}}
-		},
-		process: processMsg8303,
-	}
-	options[0x0303] = &action{ // 信息点播/取消
-		genData: func() *model.ProcessData {
-			return &model.ProcessData{Incoming: &model.Msg0303{}, Outgoing: &model.Msg8001{}}
-		},
-		process: processIndustryReport,
-	}
-	options[0x8304] = &action{ // 信息服务
-		genData: func() *model.ProcessData {
-			return &model.ProcessData{Incoming: &model.Msg8304{}, Outgoing: &model.Msg0001{}}
-		},
-		process: processMsg8304,
-	}
-	options[0x8400] = &action{ // 电话回拨
-		genData: func() *model.ProcessData {
-			return &model.ProcessData{Incoming: &model.Msg8400{}, Outgoing: &model.Msg0001{}}
-		},
-		process: processIndustryReport,
-	}
-	options[0x8401] = &action{ // 设置电话本
-		genData: func() *model.ProcessData {
-			return &model.ProcessData{Incoming: &model.Msg8401{}, Outgoing: &model.Msg0001{}}
-		},
-		process: processMsg8401,
-	}
-	options[0x8108] = &action{ // 终端升级
-		genData: func() *model.ProcessData {
-			return &model.ProcessData{Incoming: &model.Msg8108{}, Outgoing: &model.Msg0001{}}
-		},
-		process: processIndustryReport,
-	}
-	options[0x0108] = &action{ // 升级结果通知
-		genData: func() *model.ProcessData {
-			return &model.ProcessData{Incoming: &model.Msg0108{}, Outgoing: &model.Msg8001{}}
-		},
-		process: processIndustryReport,
-	}
-	options[0x8900] = &action{ // 数据下行透传
-		genData: func() *model.ProcessData {
-			return &model.ProcessData{Incoming: &model.Msg8900{}, Outgoing: &model.Msg0001{}}
-		},
-		process: processIndustryReport,
-	}
-	options[0x0900] = &action{ // 数据上行透传
-		genData: func() *model.ProcessData {
-			return &model.ProcessData{Incoming: &model.Msg0900{}, Outgoing: &model.Msg8001{}}
-		},
-		process: processIndustryReport,
-	}
-	options[0x0901] = &action{ // 数据压缩上报
-		genData: func() *model.ProcessData {
-			return &model.ProcessData{Incoming: &model.Msg0901{}, Outgoing: &model.Msg8001{}}
-		},
-		process: processIndustryReport,
-	}
-	options[0x8500] = &action{ // 车辆控制
-		genData: func() *model.ProcessData {
-			return &model.ProcessData{Incoming: &model.Msg8500{}, Outgoing: &model.Msg0500{}}
-		},
-		process: processMsg8500,
-	}
-	options[0x0500] = &action{ // 车辆控制应答
-		genData: func() *model.ProcessData {
-			return &model.ProcessData{Incoming: &model.Msg0500{}, Outgoing: &model.Msg8001{}}
-		},
-		process: processIndustryReport,
-	}
-	options[0x0701] = &action{ // 电子运单上报
-		genData: func() *model.ProcessData {
-			return &model.ProcessData{Incoming: &model.Msg0701{}, Outgoing: &model.Msg8001{}}
-		},
-		process: processIndustryReport,
-	}
-	options[0x0704] = &action{ // 批量定位数据上传
-		genData: func() *model.ProcessData {
-			return &model.ProcessData{Incoming: &model.Msg0704{}, Outgoing: &model.Msg8001{}}
-		},
-		process: processMsg0704,
-	}
-	for _, messageID := range []uint16{0x8601, 0x8603, 0x8605, 0x8607} {
-		options[messageID] = &action{genData: func() *model.ProcessData {
-			return &model.ProcessData{Incoming: &model.Msg860Delete{}, Outgoing: &model.Msg0001{}}
-		}, process: processRegionRouteDelete}
-	}
-	options[0x8106] = &action{genData: func() *model.ProcessData {
-		return &model.ProcessData{Incoming: &model.Msg8106{}, Outgoing: &model.Msg0104{}}
-	}, process: processMsg8106}
-	options[0x8107] = &action{genData: func() *model.ProcessData {
-		return &model.ProcessData{Incoming: &model.Msg8107{}, Outgoing: &model.Msg0107{}}
-	}, process: processMsg8107}
-	options[0x8201] = &action{genData: func() *model.ProcessData {
-		return &model.ProcessData{Incoming: &model.Msg8201{}, Outgoing: &model.Msg0201{}}
-	}, process: processMsg8201}
-	options[0x9205] = &action{ // 查询终端音视频资源列表
-		genData: func() *model.ProcessData {
-			return &model.ProcessData{Incoming: &model.Msg9205{}, Outgoing: &model.Msg1205{}}
-		},
-		process: processMsg9205,
-	}
-	options[0x1205] = &action{ // 终端上传音视频资源列表
-		genData: func() *model.ProcessData {
-			return &model.ProcessData{Incoming: &model.Msg1205{}}
-		},
-		process: processMediaResourceList,
-	}
+	options[0x8800] = &action{genData: func() *model.ProcessData { return &model.ProcessData{Incoming: &model.Msg8800{}} }, process: mp.processMsg8800}
+	options[0x8801] = &action{genData: func() *model.ProcessData {
+		return &model.ProcessData{Incoming: &model.Msg8801{}, Outgoing: &model.Msg0805{}}
+	}}
+	options[0x8802] = &action{genData: func() *model.ProcessData {
+		return &model.ProcessData{Incoming: &model.Msg8802{}, Outgoing: &model.Msg0802{}}
+	}, process: mp.processMediaSearchResponse}
+	options[0x8803] = &action{genData: func() *model.ProcessData {
+		return &model.ProcessData{Incoming: &model.Msg8803{}, Outgoing: &model.Msg0001{}}
+	}, process: mp.processMsg8803}
+	options[0x8804] = &action{genData: func() *model.ProcessData {
+		return &model.ProcessData{Incoming: &model.Msg8804{}, Outgoing: &model.Msg0001{}}
+	}, process: mp.processMsg8804}
+	options[0x8805] = &action{genData: func() *model.ProcessData {
+		return &model.ProcessData{Incoming: &model.Msg8805{}, Outgoing: &model.Msg0001{}}
+	}, process: mp.processMsg8805}
 	options[0x9101] = &action{ // 实时音视频传输请求，接收方（终端）按协议回通用应答
 		genData: func() *model.ProcessData {
 			return &model.ProcessData{Incoming: &model.Msg9101{}, Outgoing: &model.Msg0001{}}
@@ -370,7 +351,7 @@ func initProcessOption() processOptions {
 		genData: func() *model.ProcessData {
 			return &model.ProcessData{Incoming: &model.Msg9105{}}
 		},
-		process: processMediaSignaling,
+		process: mp.processMediaSignaling,
 	}
 	options[0x9201] = &action{ // 平台下发远程录像回放请求
 		genData: func() *model.ProcessData {
@@ -382,41 +363,169 @@ func initProcessOption() processOptions {
 			return &model.ProcessData{Incoming: &model.Msg9202{}, Outgoing: &model.Msg0001{}}
 		},
 	}
+	options[0x9205] = &action{ // 查询终端音视频资源列表
+		genData: func() *model.ProcessData {
+			return &model.ProcessData{Incoming: &model.Msg9205{}, Outgoing: &model.Msg1205{}}
+		},
+		process: mp.processMsg9205,
+	}
 	options[0x9206] = &action{ // 文件上传指令
 		genData: func() *model.ProcessData {
 			return &model.ProcessData{Incoming: &model.Msg9206{}, Outgoing: &model.Msg0001{}}
 		},
-		process: processMediaUploadTask,
+		process: mp.processMediaUploadTask,
 	}
-	options[0x1206] = &action{ // 文件上传完成通知，终端上行，无需应答
-		genData: func() *model.ProcessData {
-			return &model.ProcessData{Incoming: &model.Msg1206{}}
-		},
-		process: processMediaSignaling,
-	}
+}
 
-	return options
+// registerRegionRoutes 注册区域路线设置、删除与查询相关的入口。
+func (mp *JT808MsgProcessor) registerRegionRoutes(options processOptions) {
+	for _, messageID := range []uint16{0x8600, 0x8602, 0x8604, 0x8606} {
+		options[messageID] = &action{genData: func() *model.ProcessData {
+			return &model.ProcessData{Incoming: &model.MsgRegionRouteSet{}, Outgoing: &model.Msg0001{}}
+		}, process: mp.processRegionRouteSet}
+	}
+	options[0x8608] = &action{genData: func() *model.ProcessData {
+		return &model.ProcessData{Incoming: &model.Msg8608{}, Outgoing: &model.Msg0608{}}
+	}, process: mp.processRegionRouteQuery}
+	options[0x0608] = &action{genData: func() *model.ProcessData { return &model.ProcessData{Incoming: &model.Msg0608{}} }, process: mp.processRegionResponse}
+	for _, messageID := range []uint16{0x8601, 0x8603, 0x8605, 0x8607} {
+		options[messageID] = &action{genData: func() *model.ProcessData {
+			return &model.ProcessData{Incoming: &model.Msg860Delete{}, Outgoing: &model.Msg0001{}}
+		}, process: mp.processRegionRouteDelete}
+	}
+}
+
+// registerDownlinkAndSimulator 注册平台下行命令与终端模拟器专属行为。
+func (mp *JT808MsgProcessor) registerDownlinkAndSimulator(options processOptions) {
+	options[0x8105] = &action{ // 终端控制，由终端模拟器自动确认
+		genData: func() *model.ProcessData {
+			return &model.ProcessData{Incoming: &model.Msg8105{}, Outgoing: &model.Msg0001{}}
+		},
+	}
+	options[0x8300] = &action{ // 文本信息下发
+		genData: func() *model.ProcessData {
+			return &model.ProcessData{Incoming: &model.Msg8300{}, Outgoing: &model.Msg0001{}}
+		},
+	}
+	options[0x8301] = &action{ // 事件设置
+		genData: func() *model.ProcessData {
+			return &model.ProcessData{Incoming: &model.Msg8301{}, Outgoing: &model.Msg0001{}}
+		},
+		process: mp.processMsg8301,
+	}
+	options[0x8302] = &action{ // 提问下发
+		genData: func() *model.ProcessData {
+			return &model.ProcessData{Incoming: &model.Msg8302{}, Outgoing: &model.Msg0001{}}
+		},
+		process: mp.processMsg8302,
+	}
+	options[0x8303] = &action{ // 信息点播菜单设置
+		genData: func() *model.ProcessData {
+			return &model.ProcessData{Incoming: &model.Msg8303{}, Outgoing: &model.Msg0001{}}
+		},
+		process: mp.processMsg8303,
+	}
+	options[0x8304] = &action{ // 信息服务
+		genData: func() *model.ProcessData {
+			return &model.ProcessData{Incoming: &model.Msg8304{}, Outgoing: &model.Msg0001{}}
+		},
+		process: mp.processMsg8304,
+	}
+	options[0x8401] = &action{ // 设置电话本
+		genData: func() *model.ProcessData {
+			return &model.ProcessData{Incoming: &model.Msg8401{}, Outgoing: &model.Msg0001{}}
+		},
+		process: mp.processMsg8401,
+	}
+	options[0x8500] = &action{ // 车辆控制
+		genData: func() *model.ProcessData {
+			return &model.ProcessData{Incoming: &model.Msg8500{}, Outgoing: &model.Msg0500{}}
+		},
+		process: mp.processMsg8500,
+	}
+	options[0x8700] = &action{genData: func() *model.ProcessData {
+		return &model.ProcessData{Incoming: &model.MsgRecordCommand{}, Outgoing: &model.Msg0700{}}
+	}, process: mp.processMsg8700}
+	options[0x8701] = &action{genData: func() *model.ProcessData {
+		return &model.ProcessData{Incoming: &model.MsgRecordCommand{}, Outgoing: &model.Msg0001{}}
+	}}
+	options[0x8702] = &action{genData: func() *model.ProcessData {
+		return &model.ProcessData{Incoming: &model.Msg8702{}, Outgoing: &model.Msg0702{}}
+	}}
 }
 
 // 处理jt808消息的Handler方法
 type JT808MsgProcessor struct {
 	hooks   actionpkg.Hooks
+	deps    ProcessorDeps
 	options processOptions
 }
 
 // NewJT808MsgProcessor 创建消息处理器。
 // hooks 为 nil 时使用 action.Noop，保证不影响协议主流程。
-func NewJT808MsgProcessor(hooks actionpkg.Hooks) *JT808MsgProcessor {
+// 未通过 ProcessorOption 注入的依赖回退到包级默认单例。
+func NewJT808MsgProcessor(hooks actionpkg.Hooks, opts ...ProcessorOption) *JT808MsgProcessor {
 	if hooks == nil {
 		hooks = actionpkg.Noop{}
 	}
-	return &JT808MsgProcessor{
-		hooks:   hooks,
-		options: initProcessOption(),
+	settings := processorSettings{}
+	for _, opt := range opts {
+		opt(&settings)
 	}
+	deps := defaultProcessorDeps()
+	if settings.deps.Storage != nil {
+		deps.Storage = settings.deps.Storage
+	}
+	if settings.deps.Runtime != nil {
+		deps.Runtime = settings.deps.Runtime
+	}
+	mp := &JT808MsgProcessor{
+		hooks: hooks,
+		deps:  deps,
+	}
+	mp.options = mp.initProcessOption()
+	return mp
 }
 
-func (mp *JT808MsgProcessor) Process(ctx context.Context, pkt *model.PacketData) (*model.ProcessData, error) {
+// ackFirstMsgIDs 列出「应答内容固定、业务结果不参与应答」的上行业务消息。
+// 圈定依据是协议语义而非业务类别：应答体在解码阶段即可确定，业务处理只产生
+// 落库或运行时副作用。绝大多数应答为 0x8001；0x0801 的应答固定为 0x8800，
+// 0x1210/0x1211 为苏标扩展固定 0x0001。0x9105 等无需应答的终端上行不在其中。
+// 查询类与业务结果相关的消息必须保持业务先行：
+// 0x0100→0x8100、0x0102→0x8001、0x0608/0x0702 等各类查询应答、0x0004 时间查询。
+var ackFirstMsgIDs = map[uint16]struct{}{
+	0x0002: {}, // 心跳
+	0x0003: {}, // 注销
+	0x0108: {}, // 升级结果通知
+	0x0200: {}, // 位置信息汇报
+	0x0301: {}, // 事件上报
+	0x0302: {}, // 提问应答
+	0x0303: {}, // 信息点播/取消
+	0x0500: {}, // 车辆控制应答
+	0x0700: {}, // 定位数据批量上传（记录仪）
+	0x0701: {}, // 电子运单上报
+	0x0702: {}, // 驾驶员身份信息上报
+	0x0704: {}, // 批量定位数据上传
+	0x0705: {}, // CAN 总线数据上传
+	0x0800: {}, // 多媒体事件信息上传
+	0x0801: {}, // 多媒体数据上传
+	0x0802: {}, // 多媒体数据上传应答
+	0x0805: {}, // 摄像头立即拍摄命令应答
+	0x0900: {}, // 数据上行透传
+	0x0901: {}, // 数据压缩上报
+	0x1210: {}, // 苏标附件信息
+	0x1211: {}, // 苏标附件信息
+}
+
+// AckFirst 报告该消息是否允许先发应答再执行业务。
+func (mp *JT808MsgProcessor) AckFirst(msgID uint16) bool {
+	_, ok := ackFirstMsgIDs[msgID]
+	return ok
+}
+
+// Decode 完成查表、分包处理、消息体解码与应答构造，不执行业务逻辑。
+// 分包未完成时返回仅含 Outgoing 的 ProcessData，调用方不应再执行业务。
+func (mp *JT808MsgProcessor) Decode(ctx context.Context, pkt *model.PacketData) (*model.ProcessData, error) {
 	msgID := pkt.Header.MsgID
 	if session, ok := ctx.Value(model.SessionCtxKey{}).(*model.Session); ok && session != nil {
 		log.Debug().Str("session", session.ID).Uint16("msg_id", msgID).Msg("Processing JT808 message")
@@ -487,18 +596,46 @@ func (mp *JT808MsgProcessor) Process(ctx context.Context, pkt *model.PacketData)
 				Msg("Generating jt808 outgoing msg.")
 		}()
 	}
+	return data, nil
+}
 
-	// 对消息按类别做特殊处理
-	processFunc := act.process
-	if processFunc != nil {
-		err = processFunc(ctx, data)
-		if err != nil {
-			return data, errors.Wrap(err, "Fail to process data")
+// ApplyBusiness 执行消息对应的业务处理，并分发生命周期钩子。
+// msgID 必须由调用方在 Decode 之前捕获：部分 Outgoing.GenOutgoing 会复用
+// incoming 的 Header 指针并改写 MsgID，解码后不能再依赖 Header 查表。
+// 钩子基于已解码数据，业务失败时仍会触发（旁路观察语义）。
+func (mp *JT808MsgProcessor) ApplyBusiness(ctx context.Context, msgID uint16, data *model.ProcessData) error {
+	if data == nil || data.Incoming == nil {
+		return nil
+	}
+	var businessErr error
+	if act, ok := mp.options[msgID]; ok && act.process != nil {
+		businessErr = act.process(ctx, data)
+	}
+	mp.dispatchHooks(ctx, data)
+	return businessErr
+}
+
+// Process 是 Decode 与 ApplyBusiness 的组合入口，保持既有调用方语义：
+// 业务错误返回给调用方，由 Pipeline 决定是否中断应答。
+func (mp *JT808MsgProcessor) Process(ctx context.Context, pkt *model.PacketData) (*model.ProcessData, error) {
+	msgID := pkt.Header.MsgID
+	data, err := mp.Decode(ctx, pkt)
+	if err != nil {
+		return data, err
+	}
+	if data == nil {
+		return nil, nil
+	}
+	if data.Incoming == nil {
+		if data.Outgoing == nil {
+			return nil, nil
 		}
+		return data, nil
 	}
 
-	// 生命周期钩子只做旁路通知，与是否写入缓存无关。
-	mp.dispatchHooks(ctx, data)
+	if businessErr := mp.ApplyBusiness(ctx, msgID, data); businessErr != nil {
+		return data, errors.Wrap(businessErr, "Fail to process data")
+	}
 
 	if data.Outgoing == nil {
 		return nil, nil // 此类型msg不需要回复
@@ -633,10 +770,10 @@ func processSegmentPacket(ctx context.Context, pkt *model.PacketData) (*model.Pr
 
 // 收到心跳，刷新进程内最近通信时间。
 // 运行时状态不落库：心跳只更新 runtime.Heartbeat，供保活判定与 API 展示使用。
-func processMsg0002(_ context.Context, data *model.ProcessData) error {
+func (mp *JT808MsgProcessor) processMsg0002(_ context.Context, data *model.ProcessData) error {
 	ctx := context.Background()
 	phone := data.Incoming.GetHeader().PhoneNumber
-	devices := storage.Default().Devices
+	devices := mp.deps.Storage.Devices
 	_, err := devices.GetByPhone(ctx, phone)
 
 	// 缓存不存在，说明设备不合法，需要返回错误，让服务层处理关闭
@@ -644,14 +781,14 @@ func processMsg0002(_ context.Context, data *model.ProcessData) error {
 		return errors.Wrapf(err, "Fail to find device cache, phoneNumber=%s", phone)
 	}
 
-	runtime.Default().Heartbeat.Touch(ctx, phone, time.Now())
+	mp.deps.Runtime.Heartbeat.Touch(ctx, phone, time.Now())
 	return nil
 }
 
 // 收到注销，应清除缓存，断开连接。
-func processMsg0003(_ context.Context, data *model.ProcessData) error {
+func (mp *JT808MsgProcessor) processMsg0003(_ context.Context, data *model.ProcessData) error {
 	ctx := context.Background()
-	devices := storage.Default().Devices
+	devices := mp.deps.Storage.Devices
 	device, err := devices.GetByPhone(ctx, data.Incoming.GetHeader().PhoneNumber)
 	// 缓存不存在，说明设备不合法，需要返回错误，让服务层处理关闭
 	if errors.Is(err, repository.ErrDeviceNotFound) {
@@ -662,16 +799,16 @@ func processMsg0003(_ context.Context, data *model.ProcessData) error {
 	timer.Cancel(device.Phone)
 	// 清楚缓存
 	_ = devices.DeleteByPhone(ctx, device.Phone)
-	runtime.Default().Heartbeat.Remove(ctx, device.Phone)
+	mp.deps.Runtime.Heartbeat.Remove(ctx, device.Phone)
 	// 为避免连接TIMEWAIT，应等待对方主动关闭
 	return nil
 }
 
 // 收到注册，应校验设备ID，如果可注册，则缓存设备信息并返回鉴权码
-func processMsg0100(ctx context.Context, data *model.ProcessData) error {
+func (mp *JT808MsgProcessor) processMsg0100(ctx context.Context, data *model.ProcessData) error {
 	in := data.Incoming.(*model.Msg0100)
 
-	devices := storage.Default().Devices
+	devices := mp.deps.Storage.Devices
 	// 校验注册逻辑
 	out := data.Outgoing.(*model.Msg8100)
 	// 车辆已被注册
@@ -693,7 +830,7 @@ func processMsg0100(ctx context.Context, data *model.ProcessData) error {
 
 	// 手机号未被其它活会话占用时立即绑定；已被占用则不在注册阶段踢旧连接，
 	// 留到 0x0102 鉴权通过后再顶替，避免伪造注册报文把在线终端踢下线。
-	bound, bindErr := runtime.Default().Conn.BindPhoneIfFree(ctx, device.Phone, session.ID)
+	bound, bindErr := mp.deps.Runtime.Conn.BindPhoneIfFree(ctx, device.Phone, session.ID)
 	if bindErr != nil {
 		log.Warn().Err(bindErr).Str("phone", device.Phone).Str("session", session.ID).Msg("Fail to bind phone on registration")
 	} else if !bound {
@@ -706,10 +843,10 @@ func processMsg0100(ctx context.Context, data *model.ProcessData) error {
 }
 
 // 收到鉴权，应校验鉴权token
-func processMsg0102(ctx context.Context, data *model.ProcessData) error {
+func (mp *JT808MsgProcessor) processMsg0102(ctx context.Context, data *model.ProcessData) error {
 	in := data.Incoming.(*model.Msg0102)
 
-	devices := storage.Default().Devices
+	devices := mp.deps.Storage.Devices
 	device, err := devices.GetByPhone(ctx, in.Header.PhoneNumber)
 	// 缓存不存在，说明设备不合法，需要返回错误，让服务层处理关闭
 	if errors.Is(err, repository.ErrDeviceNotFound) {
@@ -724,7 +861,7 @@ func processMsg0102(ctx context.Context, data *model.ProcessData) error {
 		// 手机号已被其它活会话占用：本次鉴权只可能来自冒名连接。
 		// 保留原连接与设备档案，只拒绝当前连接，避免伪造报文头把在线终端踢下线。
 		if session != nil {
-			if owner, ownerErr := runtime.Default().Conn.GetByPhone(ctx, in.Header.PhoneNumber); ownerErr == nil && owner.ID != session.ID {
+			if owner, ownerErr := mp.deps.Runtime.Conn.GetByPhone(ctx, in.Header.PhoneNumber); ownerErr == nil && owner.ID != session.ID {
 				log.Warn().Str("phone", in.Header.PhoneNumber).Str("session", session.ID).Str("owner", owner.ID).
 					Msg("Reject authentication from superseded session")
 				session.MarkCloseAfterResponse()
@@ -735,12 +872,12 @@ func processMsg0102(ctx context.Context, data *model.ProcessData) error {
 		timer := NewKeepaliveTimer()
 		timer.Cancel(device.Phone)
 		_ = devices.DeleteByPhone(ctx, device.Phone)
-		runtime.Default().Heartbeat.Remove(ctx, device.Phone)
+		mp.deps.Runtime.Heartbeat.Remove(ctx, device.Phone)
 	} else {
 		// 鉴权通过。先完成绑定再写设备档案：若本连接已被并发顶替，
 		// 绑定会失败，此时不能用它覆盖新会话的设备状态。
 		if session != nil {
-			if bindErr := bindPhoneSession(ctx, in.Header.PhoneNumber, session); bindErr != nil {
+			if bindErr := mp.bindPhoneSession(ctx, in.Header.PhoneNumber, session); bindErr != nil {
 				log.Warn().Err(bindErr).Str("phone", in.Header.PhoneNumber).Str("session", session.ID).
 					Msg("Session was superseded during authentication, skip device update")
 				return nil
@@ -762,8 +899,8 @@ func processMsg0102(ctx context.Context, data *model.ProcessData) error {
 // bindPhoneSession 在鉴权成功后把手机号绑定到当前会话。
 // 若该手机号已有其它活会话，顶替它：关闭旧连接、清空旧会话的等待项，
 // 并清理该手机号的分包与重传缓存（缓存按手机号组织，无法区分会话，见设计文档）。
-func bindPhoneSession(ctx context.Context, phone string, session *model.Session) error {
-	stores := runtime.Default()
+func (mp *JT808MsgProcessor) bindPhoneSession(ctx context.Context, phone string, session *model.Session) error {
+	stores := mp.deps.Runtime
 	superseded, err := stores.Conn.BindPhone(ctx, phone, session.ID)
 	if err != nil {
 		log.Warn().Err(err).Str("phone", phone).Str("session", session.ID).Msg("Fail to bind phone after authentication")
@@ -797,30 +934,30 @@ func genAuthCode(d *model.Device) string {
 
 // processMsg0104 routes a terminal parameter response to the API request that
 // issued the matching 0x8104 query.
-func processMsg0104(_ context.Context, data *model.ProcessData) error {
+func (mp *JT808MsgProcessor) processMsg0104(_ context.Context, data *model.ProcessData) error {
 	in := data.Incoming.(*model.Msg0104)
 	if in.Parameters != nil {
-		_ = storage.Default().Params.Replace(context.Background(), in.Parameters)
+		_ = mp.deps.Storage.Params.Replace(context.Background(), in.Parameters)
 	}
-	runtime.Default().ParamResponses.Deliver(in)
+	mp.deps.Runtime.ParamResponses.Deliver(in)
 	return nil
 }
 
 // processMsg0107 将属性应答落成属性档案、更新内存最新值，再投递给等待的查询方。
 // 三者互不阻断：落库失败只告警，不改变协议应答行为。
-func processMsg0107(_ context.Context, data *model.ProcessData) error {
+func (mp *JT808MsgProcessor) processMsg0107(_ context.Context, data *model.ProcessData) error {
 	in := data.Incoming.(*model.Msg0107)
-	if err := storage.Default().Properties.Replace(context.Background(), model.NewTerminalProperties(in)); err != nil {
+	if err := mp.deps.Storage.Properties.Replace(context.Background(), model.NewTerminalProperties(in)); err != nil {
 		log.Warn().Err(err).Str("phone", in.Header.PhoneNumber).Msg("Fail to persist terminal properties")
 	}
-	runtime.Default().PropertyResponses.Deliver(in)
+	mp.deps.Runtime.PropertyResponses.Deliver(in)
 	return nil
 }
 
-func processMsg8201(_ context.Context, data *model.ProcessData) error {
+func (mp *JT808MsgProcessor) processMsg8201(_ context.Context, data *model.ProcessData) error {
 	in := data.Incoming.(*model.Msg8201)
 	out := data.Outgoing.(*model.Msg0201)
-	geo, err := storage.Default().Geo.Latest(context.Background(), in.Header.PhoneNumber)
+	geo, err := mp.deps.Storage.Geo.Latest(context.Background(), in.Header.PhoneNumber)
 	if err != nil {
 		return err
 	}
@@ -848,28 +985,28 @@ func processMsg8201(_ context.Context, data *model.ProcessData) error {
 	return nil
 }
 
-func processMsg0201(_ context.Context, data *model.ProcessData) error {
-	runtime.Default().LocationResponses.Deliver(data.Incoming.(*model.Msg0201))
+func (mp *JT808MsgProcessor) processMsg0201(_ context.Context, data *model.ProcessData) error {
+	mp.deps.Runtime.LocationResponses.Deliver(data.Incoming.(*model.Msg0201))
 	return nil
 }
 
-func processMsg8202(_ context.Context, data *model.ProcessData) error {
+func (mp *JT808MsgProcessor) processMsg8202(_ context.Context, data *model.ProcessData) error {
 	in := data.Incoming.(*model.Msg8202)
-	runtime.Default().Tracking.Set(in.Header.PhoneNumber, in.TimeInterval, in.ValidityPeriod)
+	mp.deps.Runtime.Tracking.Set(in.Header.PhoneNumber, in.TimeInterval, in.ValidityPeriod)
 	return nil
 }
 
 // 收到位置信息汇报，回复通用应答
-func processMsg0200(ctx context.Context, data *model.ProcessData) error {
+func (mp *JT808MsgProcessor) processMsg0200(ctx context.Context, data *model.ProcessData) error {
 	in := data.Incoming.(*model.Msg0200)
 
-	devices := storage.Default().Devices
+	devices := mp.deps.Storage.Devices
 	device, err := devices.GetByPhone(ctx, in.Header.PhoneNumber)
 	// 缓存不存在，说明设备不合法，需要返回错误，让服务层处理关闭
 	if errors.Is(err, repository.ErrDeviceNotFound) {
 		return errors.Wrapf(err, "Fail to find device cache, phoneNumber=%s", in.Header.PhoneNumber)
 	}
-	if err := storage.Default().Alarms.Record(ctx, in.Header.PhoneNumber, in.Header.SerialNumber, in.AlarmSign, in.Latitude, in.Longitude, in.Time); err != nil {
+	if err := mp.deps.Storage.Alarms.Record(ctx, in.Header.PhoneNumber, in.Header.SerialNumber, in.AlarmSign, in.Latitude, in.Longitude, in.Time); err != nil {
 		log.Error().Err(err).Str("phone", in.Header.PhoneNumber).Msg("record alarm")
 	}
 
@@ -886,29 +1023,29 @@ func processMsg0200(ctx context.Context, data *model.ProcessData) error {
 		_ = devices.Upsert(ctx, device)
 	}
 
-	_ = storage.Default().Geo.Append(ctx, dg)
-	recordLocationHistory(ctx, 0x0200, []*model.Msg0200{in})
+	_ = mp.deps.Storage.Geo.Append(ctx, dg)
+	mp.recordLocationHistory(ctx, 0x0200, []*model.Msg0200{in})
 
 	return nil
 }
 
 // processMsg0704 保存批量定位快照，并把每个数据项写入定位历史。
 // 0x0704 数据项内没有独立消息流水号，无法与报警去重口径对齐，因此只记定位、不记报警。
-func processMsg0704(ctx context.Context, data *model.ProcessData) error {
+func (mp *JT808MsgProcessor) processMsg0704(ctx context.Context, data *model.ProcessData) error {
 	in := data.Incoming.(*model.Msg0704)
-	storage.Default().Industry.Record(in)
+	mp.deps.Storage.Industry.Record(in)
 
 	locs := make([]*model.Msg0200, 0, len(in.Items))
 	for i := range in.Items {
 		locs = append(locs, &in.Items[i].Loc)
 	}
-	recordLocationHistory(ctx, 0x0704, locs)
+	mp.recordLocationHistory(ctx, 0x0704, locs)
 	return nil
 }
 
 // recordLocationHistory 写入定位历史；memory 后端未启用 Locations 时跳过。
-func recordLocationHistory(ctx context.Context, msgID uint16, locs []*model.Msg0200) {
-	repo := storage.Default().Locations
+func (mp *JT808MsgProcessor) recordLocationHistory(ctx context.Context, msgID uint16, locs []*model.Msg0200) {
+	repo := mp.deps.Storage.Locations
 	if repo == nil || len(locs) == 0 {
 		return
 	}
@@ -964,17 +1101,17 @@ func acknowledgeResponse(session *model.Session, in model.JT808Msg) {
 	}
 }
 
-func processMsg0001(ctx context.Context, data *model.ProcessData) error {
+func (mp *JT808MsgProcessor) processMsg0001(ctx context.Context, data *model.ProcessData) error {
 	in := data.Incoming.(*model.Msg0001)
 	if in.AnswerMessageID == 0x8203 {
-		if _, err := storage.Default().Alarms.ConfirmByCommand(ctx, in.Header.PhoneNumber, in.AnswerSerialNumber); err != nil {
+		if _, err := mp.deps.Storage.Alarms.ConfirmByCommand(ctx, in.Header.PhoneNumber, in.AnswerSerialNumber); err != nil {
 			log.Error().Err(err).Str("phone", in.Header.PhoneNumber).Msg("confirm alarm by command")
 		}
 	}
 	return nil
 }
 
-func processMsg8001(ctx context.Context, data *model.ProcessData) error {
+func (mp *JT808MsgProcessor) processMsg8001(ctx context.Context, data *model.ProcessData) error {
 	in := data.Incoming.(*model.Msg8001)
 	if in.AnswerMessageID != 0x0102 {
 		return nil
@@ -982,7 +1119,7 @@ func processMsg8001(ctx context.Context, data *model.ProcessData) error {
 	// 收到8001消息，说明此时是作为终端设备
 	if in.Result == model.ResultSuccess {
 		// 回复成功，说明之前注册成功，为方便后续处理，将设备状态改为Online并缓存
-		devices := storage.Default().Devices
+		devices := mp.deps.Storage.Devices
 		device, err := devices.GetByPhone(context.Background(), in.Header.PhoneNumber)
 		if errors.Is(err, repository.ErrDeviceNotFound) {
 			return nil
@@ -1002,13 +1139,13 @@ func processMsg8001(ctx context.Context, data *model.ProcessData) error {
 
 // processMsg8003 is used by the client simulator to replay requested fragment
 // frames. A production terminal handles the same downlink command itself.
-func processMsg8003(ctx context.Context, data *model.ProcessData) error {
+func (mp *JT808MsgProcessor) processMsg8003(ctx context.Context, data *model.ProcessData) error {
 	request := data.Incoming.(*model.Msg8003)
 	session, ok := ctx.Value(model.SessionCtxKey{}).(*model.Session)
 	if !ok || session == nil {
 		return nil
 	}
-	frames := runtime.Default().Retrans.Frames(context.Background(), request.Header.PhoneNumber, request.OriginalSerialNumber, request.PacketIDs)
+	frames := mp.deps.Runtime.Retrans.Frames(context.Background(), request.Header.PhoneNumber, request.OriginalSerialNumber, request.PacketIDs)
 	if frames == nil {
 		log.Warn().Str("device", request.Header.PhoneNumber).Uint16("original_serial", request.OriginalSerialNumber).Msg("No cached simulator fragments for retransmission request")
 		return nil
@@ -1026,19 +1163,19 @@ func processMsg8003(ctx context.Context, data *model.ProcessData) error {
 }
 
 // processMsg0005 replays cached platform fragments requested by a terminal.
-func processMsg0005(ctx context.Context, data *model.ProcessData) error {
+func (mp *JT808MsgProcessor) processMsg0005(ctx context.Context, data *model.ProcessData) error {
 	request := data.Incoming.(*model.Msg0005)
 	session, ok := ctx.Value(model.SessionCtxKey{}).(*model.Session)
 	if !ok || session == nil {
 		return nil
 	}
-	retransmitCachedSegments(session, request.Header.PhoneNumber, request.OriginalSerialNumber, request.PacketIDs)
+	mp.retransmitCachedSegments(session, request.Header.PhoneNumber, request.OriginalSerialNumber, request.PacketIDs)
 	return nil
 }
 
 // processMsg8800 replays media upload fragments retained by the terminal
 // simulator. JT808 transport-level 0x8003 recovery remains independent.
-func processMsg8800(ctx context.Context, data *model.ProcessData) error {
+func (mp *JT808MsgProcessor) processMsg8800(ctx context.Context, data *model.ProcessData) error {
 	request := data.Incoming.(*model.Msg8800)
 	if len(request.RetransmitIDs) == 0 {
 		return nil
@@ -1047,17 +1184,17 @@ func processMsg8800(ctx context.Context, data *model.ProcessData) error {
 	if !ok || session == nil {
 		return nil
 	}
-	serial, ok := runtime.Default().Retrans.MediaSerial(context.Background(), request.Header.PhoneNumber, request.MultiMediaID)
+	serial, ok := mp.deps.Runtime.Retrans.MediaSerial(context.Background(), request.Header.PhoneNumber, request.MultiMediaID)
 	if !ok {
 		log.Warn().Str("device", request.Header.PhoneNumber).Uint32("media_id", request.MultiMediaID).Msg("No cached media fragments for retransmission request")
 		return nil
 	}
-	retransmitCachedSegments(session, request.Header.PhoneNumber, serial, request.RetransmitIDs)
+	mp.retransmitCachedSegments(session, request.Header.PhoneNumber, serial, request.RetransmitIDs)
 	return nil
 }
 
-func retransmitCachedSegments(session *model.Session, phone string, originalSerial uint16, packetIDs []uint16) {
-	frames := runtime.Default().Retrans.Frames(context.Background(), phone, originalSerial, packetIDs)
+func (mp *JT808MsgProcessor) retransmitCachedSegments(session *model.Session, phone string, originalSerial uint16, packetIDs []uint16) {
+	frames := mp.deps.Runtime.Retrans.Frames(context.Background(), phone, originalSerial, packetIDs)
 	if frames == nil {
 		log.Warn().Str("device", phone).Uint16("original_serial", originalSerial).Msg("No cached fragments for retransmission request")
 		return
@@ -1075,11 +1212,11 @@ func retransmitCachedSegments(session *model.Session, phone string, originalSeri
 }
 
 // 收到注册应答，回复鉴权
-func processMsg8100(_ context.Context, data *model.ProcessData) error {
+func (mp *JT808MsgProcessor) processMsg8100(_ context.Context, data *model.ProcessData) error {
 	in := data.Incoming.(*model.Msg8100)
 	out := data.Outgoing.(*model.Msg0102)
 
-	device, err := storage.Default().Devices.GetByPhone(context.Background(), in.Header.PhoneNumber)
+	device, err := mp.deps.Storage.Devices.GetByPhone(context.Background(), in.Header.PhoneNumber)
 	if errors.Is(err, repository.ErrDeviceNotFound) {
 		// JT808 2013 registration responses carry the auth code in the response.
 		// A simulator that does not keep a local device cache can still continue
@@ -1094,10 +1231,10 @@ func processMsg8100(_ context.Context, data *model.ProcessData) error {
 }
 
 // 收到设置终端参数请求，回复通用应答
-func processMsg8103(_ context.Context, data *model.ProcessData) error {
+func (mp *JT808MsgProcessor) processMsg8103(_ context.Context, data *model.ProcessData) error {
 	in := data.Incoming.(*model.Msg8103)
 	ctx := context.Background()
-	paramsRepo := storage.Default().Params
+	paramsRepo := mp.deps.Storage.Params
 	params, err := paramsRepo.Get(ctx, in.GetHeader().PhoneNumber)
 	if errors.Is(err, repository.ErrDeviceParamsNotFound) {
 		params = in.Parameters
@@ -1110,10 +1247,10 @@ func processMsg8103(_ context.Context, data *model.ProcessData) error {
 }
 
 // 收到查询终端参数请求，回复终端参数(此时是作为client进程)
-func processMsg8104(_ context.Context, data *model.ProcessData) error {
+func (mp *JT808MsgProcessor) processMsg8104(_ context.Context, data *model.ProcessData) error {
 	// todo: generate by config
 	out := data.Outgoing.(*model.Msg0104)
-	params, err := storage.Default().Params.Get(context.Background(), out.GetHeader().PhoneNumber)
+	params, err := mp.deps.Storage.Params.Get(context.Background(), out.GetHeader().PhoneNumber)
 	if errors.Is(err, repository.ErrDeviceParamsNotFound) {
 		out.Parameters = &model.DeviceParams{}
 		// 模拟一个固定的参数
@@ -1158,7 +1295,7 @@ func processMsg8104(_ context.Context, data *model.ProcessData) error {
 		if err := out.Parameters.Decode(out.Header.PhoneNumber, uint8(paramCnt), hex.Str2Byte(paramByteStr)); err != nil {
 			return err
 		}
-		_ = storage.Default().Params.Replace(context.Background(), out.Parameters)
+		_ = mp.deps.Storage.Params.Replace(context.Background(), out.Parameters)
 	} else {
 		out.Parameters = params
 	}
@@ -1166,8 +1303,8 @@ func processMsg8104(_ context.Context, data *model.ProcessData) error {
 	return nil
 }
 
-func processMsg8106(ctx context.Context, data *model.ProcessData) error {
-	if err := processMsg8104(ctx, data); err != nil {
+func (mp *JT808MsgProcessor) processMsg8106(ctx context.Context, data *model.ProcessData) error {
+	if err := mp.processMsg8104(ctx, data); err != nil {
 		return err
 	}
 	in := data.Incoming.(*model.Msg8106)
@@ -1186,7 +1323,7 @@ func processMsg8106(ctx context.Context, data *model.ProcessData) error {
 	return nil
 }
 
-func processMsg8107(_ context.Context, data *model.ProcessData) error {
+func (mp *JT808MsgProcessor) processMsg8107(_ context.Context, data *model.ProcessData) error {
 	in := data.Incoming.(*model.Msg8107)
 	id := in.Header.PhoneNumber
 	if in.Header.Attr.VersionDesc == model.Version2013 && len(id) > 7 {
@@ -1200,11 +1337,11 @@ func processMsg8107(_ context.Context, data *model.ProcessData) error {
 	return nil
 }
 
-func processMsg9205(_ context.Context, data *model.ProcessData) error {
+func (mp *JT808MsgProcessor) processMsg9205(_ context.Context, data *model.ProcessData) error {
 	in := data.Incoming.(*model.Msg9205)
 	out := data.Outgoing.(*model.Msg1205)
 	out.Items = nil
-	for _, media := range storage.Default().Industry.MediaUploads(in.Header.PhoneNumber) {
+	for _, media := range mp.deps.Storage.Industry.MediaUploads(in.Header.PhoneNumber) {
 		if in.LogicChannelID != 0 && media.LogicChannelID != in.LogicChannelID {
 			continue
 		}
@@ -1271,43 +1408,43 @@ func mediaTimeInRange(t string, start, end *time.Time) bool {
 	return true
 }
 
-func processIndustryReport(_ context.Context, data *model.ProcessData) error {
-	storage.Default().Industry.Record(data.Incoming)
+func (mp *JT808MsgProcessor) processIndustryReport(_ context.Context, data *model.ProcessData) error {
+	mp.deps.Storage.Industry.Record(data.Incoming)
 	return nil
 }
 
 // processMediaSignaling 记录终端上行的 1078 音视频信令状态，
 // 供 API 查询与后续媒体接入使用；0x1206 同时落媒体元数据仓储。
-func processMediaSignaling(ctx context.Context, data *model.ProcessData) error {
-	storage.Default().Industry.Record(data.Incoming)
+func (mp *JT808MsgProcessor) processMediaSignaling(ctx context.Context, data *model.ProcessData) error {
+	mp.deps.Storage.Industry.Record(data.Incoming)
 	if notice, ok := data.Incoming.(*model.Msg1206); ok {
-		return storage.Default().Media.SaveUploadNotice(ctx, notice.Header.PhoneNumber, notice)
+		return mp.deps.Storage.Media.SaveUploadNotice(ctx, notice.Header.PhoneNumber, notice)
 	}
 	return nil
 }
 
 // processMediaResourceList 记录 0x1205 音视频资源列表，并整包覆盖媒体元数据仓储。
-func processMediaResourceList(ctx context.Context, data *model.ProcessData) error {
-	storage.Default().Industry.Record(data.Incoming)
+func (mp *JT808MsgProcessor) processMediaResourceList(ctx context.Context, data *model.ProcessData) error {
+	mp.deps.Storage.Industry.Record(data.Incoming)
 	list, ok := data.Incoming.(*model.Msg1205)
 	if !ok || list.Header == nil {
 		return nil
 	}
-	return storage.Default().Media.ReplaceResourceList(ctx, list.Header.PhoneNumber, list)
+	return mp.deps.Storage.Media.ReplaceResourceList(ctx, list.Header.PhoneNumber, list)
 }
 
 // processMediaUploadTask 保存 0x9206 文件上传指令的元数据。
-func processMediaUploadTask(ctx context.Context, data *model.ProcessData) error {
+func (mp *JT808MsgProcessor) processMediaUploadTask(ctx context.Context, data *model.ProcessData) error {
 	task, ok := data.Incoming.(*model.Msg9206)
 	if !ok || task.Header == nil {
 		return nil
 	}
-	return storage.Default().Media.SaveUploadTask(ctx, task.Header.PhoneNumber, task)
+	return mp.deps.Storage.Media.SaveUploadTask(ctx, task.Header.PhoneNumber, task)
 }
 
 // processAttachmentSignaling 记录主链路上的苏标附件信令。
 // 真正的附件接收、位图与 0x9212 应答在 internal/alarmserver 的独立端口完成。
-func processAttachmentSignaling(_ context.Context, data *model.ProcessData) error {
+func (mp *JT808MsgProcessor) processAttachmentSignaling(_ context.Context, data *model.ProcessData) error {
 	if data == nil || data.Incoming == nil || data.Incoming.GetHeader() == nil {
 		return nil
 	}
@@ -1319,79 +1456,79 @@ func processAttachmentSignaling(_ context.Context, data *model.ProcessData) erro
 
 // processMsg8301 stores configured event items in the terminal simulator's
 // event catalog according to the 0x8301 set type.
-func processMsg8301(_ context.Context, data *model.ProcessData) error {
+func (mp *JT808MsgProcessor) processMsg8301(_ context.Context, data *model.ProcessData) error {
 	in := data.Incoming.(*model.Msg8301)
-	storage.Default().Industry.ApplyEventSet(in.Header.PhoneNumber, in.SetType, in.Items)
+	mp.deps.Storage.Industry.ApplyEventSet(in.Header.PhoneNumber, in.SetType, in.Items)
 	return nil
 }
 
 // processMsg8302 stores the issued question so the latest question and its
 // candidate answers are available to the terminal simulator.
-func processMsg8302(_ context.Context, data *model.ProcessData) error {
-	storage.Default().Industry.Record(data.Incoming)
+func (mp *JT808MsgProcessor) processMsg8302(_ context.Context, data *model.ProcessData) error {
+	mp.deps.Storage.Industry.Record(data.Incoming)
 	return nil
 }
 
 // processMsg8303 updates the terminal simulator's information on-demand menu
 // catalog according to the 0x8303 set type.
-func processMsg8303(_ context.Context, data *model.ProcessData) error {
+func (mp *JT808MsgProcessor) processMsg8303(_ context.Context, data *model.ProcessData) error {
 	in := data.Incoming.(*model.Msg8303)
-	storage.Default().Industry.ApplyInfoMenuSet(in.Header.PhoneNumber, in.SetType, in.Items)
+	mp.deps.Storage.Industry.ApplyInfoMenuSet(in.Header.PhoneNumber, in.SetType, in.Items)
 	return nil
 }
 
 // processMsg8304 stores the latest information-service message for a device.
-func processMsg8304(_ context.Context, data *model.ProcessData) error {
-	storage.Default().Industry.Record(data.Incoming)
+func (mp *JT808MsgProcessor) processMsg8304(_ context.Context, data *model.ProcessData) error {
+	mp.deps.Storage.Industry.Record(data.Incoming)
 	return nil
 }
 
 // processMsg8401 updates the terminal simulator's phonebook according to the
 // 0x8401 set type.
-func processMsg8401(_ context.Context, data *model.ProcessData) error {
+func (mp *JT808MsgProcessor) processMsg8401(_ context.Context, data *model.ProcessData) error {
 	in := data.Incoming.(*model.Msg8401)
-	storage.Default().Industry.ApplyPhonebookSet(in.Header.PhoneNumber, in.SetType, in.Items)
+	mp.deps.Storage.Industry.ApplyPhonebookSet(in.Header.PhoneNumber, in.SetType, in.Items)
 	return nil
 }
 
 // processMsg8500 stores the vehicle control flags so the 0x0500 response echoes
 // them back to the platform.
-func processMsg8500(_ context.Context, data *model.ProcessData) error {
+func (mp *JT808MsgProcessor) processMsg8500(_ context.Context, data *model.ProcessData) error {
 	in := data.Incoming.(*model.Msg8500)
-	storage.Default().Industry.SetVehicleControl(in.Header.PhoneNumber, in.ControlFlags)
+	mp.deps.Storage.Industry.SetVehicleControl(in.Header.PhoneNumber, in.ControlFlags)
 	return nil
 }
 
-func processRegionResponse(_ context.Context, data *model.ProcessData) error {
-	runtime.Default().RegionResponses.Deliver(data.Incoming.(*model.Msg0608))
+func (mp *JT808MsgProcessor) processRegionResponse(_ context.Context, data *model.ProcessData) error {
+	mp.deps.Runtime.RegionResponses.Deliver(data.Incoming.(*model.Msg0608))
 	return nil
 }
 
 // processRegionRouteSet stores accepted area/route items in the terminal
 // simulator's catalog so a subsequent 0x8608 query returns typed records.
-func processRegionRouteSet(_ context.Context, data *model.ProcessData) error {
+func (mp *JT808MsgProcessor) processRegionRouteSet(_ context.Context, data *model.ProcessData) error {
 	in := data.Incoming.(*model.MsgRegionRouteSet)
-	storage.Default().Regions.ApplySet(in.Header.PhoneNumber, in)
+	mp.deps.Storage.Regions.ApplySet(in.Header.PhoneNumber, in)
 	return nil
 }
 
 // processRegionRouteDelete removes area/route items from the catalog.
-func processRegionRouteDelete(_ context.Context, data *model.ProcessData) error {
+func (mp *JT808MsgProcessor) processRegionRouteDelete(_ context.Context, data *model.ProcessData) error {
 	in := data.Incoming.(*model.Msg860Delete)
 	typ, ok := model.RegionRouteDeleteType(in.Header.MsgID)
 	if !ok {
 		return nil
 	}
-	storage.Default().Regions.Delete(in.Header.PhoneNumber, typ, in.IDs)
+	mp.deps.Storage.Regions.Delete(in.Header.PhoneNumber, typ, in.IDs)
 	return nil
 }
 
 // processRegionRouteQuery populates the outgoing 0x0608 with stored catalog
 // records, filtered by the requested IDs.
-func processRegionRouteQuery(_ context.Context, data *model.ProcessData) error {
+func (mp *JT808MsgProcessor) processRegionRouteQuery(_ context.Context, data *model.ProcessData) error {
 	query := data.Incoming.(*model.Msg8608)
 	resp := data.Outgoing.(*model.Msg0608)
-	stored := storage.Default().Regions.Query(query.Header.PhoneNumber, query.QueryType, query.IDs)
+	stored := mp.deps.Storage.Regions.Query(query.Header.PhoneNumber, query.QueryType, query.IDs)
 	resp.Circles = stored.Circles
 	resp.Rectangles = stored.Rectangles
 	resp.Polygons = stored.Polygons
@@ -1399,10 +1536,10 @@ func processRegionRouteQuery(_ context.Context, data *model.ProcessData) error {
 	return nil
 }
 
-func processMediaSearchResponse(_ context.Context, data *model.ProcessData) error {
+func (mp *JT808MsgProcessor) processMediaSearchResponse(_ context.Context, data *model.ProcessData) error {
 	query := data.Incoming.(*model.Msg8802)
 	response := data.Outgoing.(*model.Msg0802)
-	for _, media := range storage.Default().Industry.MediaUploads(query.Header.PhoneNumber) {
+	for _, media := range mp.deps.Storage.Industry.MediaUploads(query.Header.PhoneNumber) {
 		if media.MultiMediaType != query.MediaType || (query.ChannelID != 0 && media.LogicChannelID != query.ChannelID) || (query.EventID != 0 && media.EventID != query.EventID) {
 			continue
 		}
@@ -1461,14 +1598,14 @@ func mediaTimeMatches(geoBody []byte, start, end string) bool {
 // terminal simulator side: it replays every previously captured media item
 // that matches the requested type, channel, event and time range as 0x0801
 // upload messages.
-func processMsg8803(ctx context.Context, data *model.ProcessData) error {
+func (mp *JT808MsgProcessor) processMsg8803(ctx context.Context, data *model.ProcessData) error {
 	cmd := data.Incoming.(*model.Msg8803)
 	session, _ := ctx.Value(model.SessionCtxKey{}).(*model.Session)
 	if session == nil {
 		return nil
 	}
 	phone := cmd.Header.PhoneNumber
-	industry := storage.Default().Industry
+	industry := mp.deps.Storage.Industry
 	uploads := industry.MediaUploads(phone)
 	for i := range uploads {
 		media := uploads[i]
@@ -1504,11 +1641,11 @@ func processMsg8803(ctx context.Context, data *model.ProcessData) error {
 // processMsg8804 handles an audio recording command: it flips the simulator's
 // recording flag and, when starting, emits a small number of audio 0x0801
 // frames so the platform receives real media data.
-func processMsg8804(ctx context.Context, data *model.ProcessData) error {
+func (mp *JT808MsgProcessor) processMsg8804(ctx context.Context, data *model.ProcessData) error {
 	cmd := data.Incoming.(*model.Msg8804)
 	session, _ := ctx.Value(model.SessionCtxKey{}).(*model.Session)
 	phone := cmd.Header.PhoneNumber
-	industry := storage.Default().Industry
+	industry := mp.deps.Storage.Industry
 	industry.SetRecording(phone, cmd.Command == 1)
 	if cmd.Command != 1 || session == nil {
 		return nil
@@ -1535,14 +1672,14 @@ func processMsg8804(ctx context.Context, data *model.ProcessData) error {
 
 // processMsg8805 handles a single-item media upload command by replaying the
 // stored media item whose multimedia identifier matches the request.
-func processMsg8805(ctx context.Context, data *model.ProcessData) error {
+func (mp *JT808MsgProcessor) processMsg8805(ctx context.Context, data *model.ProcessData) error {
 	cmd := data.Incoming.(*model.Msg8805)
 	session, _ := ctx.Value(model.SessionCtxKey{}).(*model.Session)
 	if session == nil {
 		return nil
 	}
 	phone := cmd.Header.PhoneNumber
-	industry := storage.Default().Industry
+	industry := mp.deps.Storage.Industry
 	for _, media := range industry.MediaUploads(phone) {
 		if media.MultiMediaID != cmd.MediaID {
 			continue
@@ -1569,7 +1706,7 @@ func processMsg8805(ctx context.Context, data *model.ProcessData) error {
 // processMsg8700 populates the outgoing 0x0700 with a typed GB/T 19056 response
 // data block matching the platform command. Unsupported commands leave the
 // response data empty.
-func processMsg8700(_ context.Context, data *model.ProcessData) error {
+func (mp *JT808MsgProcessor) processMsg8700(_ context.Context, data *model.ProcessData) error {
 	cmd := data.Incoming.(*model.MsgRecordCommand)
 	resp := data.Outgoing.(*model.Msg0700)
 	now := time.Now()

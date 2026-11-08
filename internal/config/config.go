@@ -152,14 +152,15 @@ type DeviceParamsConf struct {
 }
 
 type Config struct {
-	Log         *logConf         `yaml:"log"`
-	Server      *serverConf      `yaml:"server"`
-	Client      *clientConf      `yaml:"client"`
-	Storage     *storageConf     `yaml:"storage"`
-	Retention   *retentionConf   `yaml:"retention"`
-	AlarmServer *alarmServerConf `yaml:"alarmServer"`
-	MediaServer *mediaServerConf `yaml:"mediaServer"`
-	Admin       *adminConf       `yaml:"admin"`
+	Log           *logConf           `yaml:"log"`
+	Server        *serverConf        `yaml:"server"`
+	Client        *clientConf        `yaml:"client"`
+	Storage       *storageConf       `yaml:"storage"`
+	Retention     *retentionConf     `yaml:"retention"`
+	AlarmServer   *alarmServerConf   `yaml:"alarmServer"`
+	MediaServer   *mediaServerConf   `yaml:"mediaServer"`
+	Admin         *adminConf         `yaml:"admin"`
+	CommandOutbox *commandOutboxConf `yaml:"commandOutbox"`
 }
 
 // 苏标附件服务器的工程默认值。未配置 alarmServer.port 时服务不启动。
@@ -549,6 +550,116 @@ func (c *Config) ValidateRetention() error {
 		}
 	}
 	return nil
+}
+
+// 下行命令 outbox 重投的工程默认值。
+// initialWait 必须覆盖一次下发到会话重传耗尽的窗口（ackTimeout × (maxRetransmissions+1)），
+// 否则重启后的重投会在会话仍在重传时重复下发。
+const (
+	DefaultCommandOutboxPollInterval  = 10 * time.Second
+	DefaultCommandOutboxBatchSize     = 50
+	DefaultCommandOutboxMaxAttempts   = 5
+	DefaultCommandOutboxLeaseDuration = time.Minute
+	DefaultCommandOutboxRetryBase     = 5 * time.Second
+	DefaultCommandOutboxRetryMax      = 5 * time.Minute
+	DefaultCommandOutboxExpireAfter   = 24 * time.Hour
+	DefaultCommandOutboxInitialWait   = time.Minute
+)
+
+// commandOutboxConf 配置 pending 命令的重投调度。
+// 整段缺省时使用内置默认值，重投始终开启：内存后端重启后 outbox 自然为空，
+// 不需要额外开关。
+type commandOutboxConf struct {
+	PollInterval  string `yaml:"pollInterval"`
+	BatchSize     int    `yaml:"batchSize"`
+	MaxAttempts   int    `yaml:"maxAttempts"`
+	LeaseDuration string `yaml:"leaseDuration"`
+	RetryBase     string `yaml:"retryBase"`
+	RetryMax      string `yaml:"retryMax"`
+	ExpireAfter   string `yaml:"expireAfter"`
+	InitialWait   string `yaml:"initialWait"`
+}
+
+// CommandOutboxOptions 是重投调度的归一化配置。
+type CommandOutboxOptions struct {
+	PollInterval  time.Duration
+	BatchSize     int
+	MaxAttempts   int
+	LeaseDuration time.Duration
+	RetryBase     time.Duration
+	RetryMax      time.Duration
+	ExpireAfter   time.Duration
+	InitialWait   time.Duration
+}
+
+// DefaultCommandOutboxOptions 返回未配置 commandOutbox 时的默认重投参数。
+func DefaultCommandOutboxOptions() CommandOutboxOptions {
+	return CommandOutboxOptions{
+		PollInterval:  DefaultCommandOutboxPollInterval,
+		BatchSize:     DefaultCommandOutboxBatchSize,
+		MaxAttempts:   DefaultCommandOutboxMaxAttempts,
+		LeaseDuration: DefaultCommandOutboxLeaseDuration,
+		RetryBase:     DefaultCommandOutboxRetryBase,
+		RetryMax:      DefaultCommandOutboxRetryMax,
+		ExpireAfter:   DefaultCommandOutboxExpireAfter,
+		InitialWait:   DefaultCommandOutboxInitialWait,
+	}
+}
+
+// ParseCommandOutbox 解析并校验 commandOutbox 配置。
+// 空字符串视为未配置，取默认值；显式 0 或负数视为非法。
+func (c *Config) ParseCommandOutbox() (CommandOutboxOptions, error) {
+	options := DefaultCommandOutboxOptions()
+	if c == nil || c.CommandOutbox == nil {
+		return options, nil
+	}
+	conf := c.CommandOutbox
+	parseDuration := func(name, raw string, fallback time.Duration) (time.Duration, error) {
+		if strings.TrimSpace(raw) == "" {
+			return fallback, nil
+		}
+		parsed, err := time.ParseDuration(raw)
+		if err != nil || parsed <= 0 {
+			return 0, fmt.Errorf("commandOutbox.%s must be a positive duration (e.g. 10s, 5m), got %q", name, raw)
+		}
+		return parsed, nil
+	}
+	var err error
+	if options.PollInterval, err = parseDuration("pollInterval", conf.PollInterval, options.PollInterval); err != nil {
+		return CommandOutboxOptions{}, err
+	}
+	if options.LeaseDuration, err = parseDuration("leaseDuration", conf.LeaseDuration, options.LeaseDuration); err != nil {
+		return CommandOutboxOptions{}, err
+	}
+	if options.RetryBase, err = parseDuration("retryBase", conf.RetryBase, options.RetryBase); err != nil {
+		return CommandOutboxOptions{}, err
+	}
+	if options.RetryMax, err = parseDuration("retryMax", conf.RetryMax, options.RetryMax); err != nil {
+		return CommandOutboxOptions{}, err
+	}
+	if options.ExpireAfter, err = parseDuration("expireAfter", conf.ExpireAfter, options.ExpireAfter); err != nil {
+		return CommandOutboxOptions{}, err
+	}
+	if options.InitialWait, err = parseDuration("initialWait", conf.InitialWait, options.InitialWait); err != nil {
+		return CommandOutboxOptions{}, err
+	}
+	if conf.BatchSize < 0 {
+		return CommandOutboxOptions{}, fmt.Errorf("commandOutbox.batchSize must be >= 0, got %d", conf.BatchSize)
+	}
+	if conf.BatchSize > 0 {
+		options.BatchSize = conf.BatchSize
+	}
+	if conf.MaxAttempts < 0 {
+		return CommandOutboxOptions{}, fmt.Errorf("commandOutbox.maxAttempts must be >= 0, got %d", conf.MaxAttempts)
+	}
+	if conf.MaxAttempts > 0 {
+		options.MaxAttempts = conf.MaxAttempts
+	}
+	if options.RetryMax < options.RetryBase {
+		return CommandOutboxOptions{}, fmt.Errorf("commandOutbox.retryMax must be >= retryBase, got %q < %q",
+			options.RetryMax, options.RetryBase)
+	}
+	return options, nil
 }
 
 // storageConf 配置持久化后端；type 缺省为 memory。

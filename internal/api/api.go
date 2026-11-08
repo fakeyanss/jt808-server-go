@@ -2,7 +2,10 @@ package api
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/hex"
+	"errors"
+	"fmt"
 	"net"
 	"net/http"
 	"os"
@@ -17,6 +20,7 @@ import (
 	"github.com/fakeyanss/jt808-server-go/internal/alarmserver"
 	"github.com/fakeyanss/jt808-server-go/internal/config"
 	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
+	"github.com/fakeyanss/jt808-server-go/internal/repository"
 	"github.com/fakeyanss/jt808-server-go/internal/runtime"
 	"github.com/fakeyanss/jt808-server-go/internal/server"
 	"github.com/fakeyanss/jt808-server-go/internal/storage"
@@ -30,6 +34,41 @@ func Run(serv *server.TCPServer, cfg *config.Config, alarmServ *alarmserver.Serv
 	devices := storage.Default().Devices
 	geo := storage.Default().Geo
 	connRegistry := runtime.Default().Conn
+	commands := storage.Default().Commands
+	// 入队时写入首次可重投时刻与过期时刻；配置非法时回退默认值
+	// （启动阶段已由 main 校验，这里仅做兜底）。
+	outboxOptions, outboxErr := cfg.ParseCommandOutbox()
+	if outboxErr != nil {
+		log.Error().Err(outboxErr).Msg("Invalid commandOutbox configuration, using defaults")
+		outboxOptions = config.DefaultCommandOutboxOptions()
+	}
+
+	// 下行命令投递状态查询；命令下发时返回的 commandId 可在此回查。
+	api.GET("/commands/:commandId", func(c *gin.Context) {
+		command, err := commands.Get(c.Request.Context(), c.Param("commandId"))
+		if errors.Is(err, repository.ErrCommandNotFound) {
+			c.JSON(http.StatusNotFound, gin.H{"err": "command not found"})
+			return
+		}
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"err": err.Error()})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{
+			"commandId":     command.CommandID,
+			"phone":         command.Phone,
+			"messageId":     fmt.Sprintf("0x%04X", command.MsgID),
+			"serial":        command.Serial,
+			"status":        command.Status,
+			"attempts":      command.Attempts,
+			"lastError":     command.LastError,
+			"createdAt":     command.CreatedAt,
+			"updatedAt":     command.UpdatedAt,
+			"lastAttemptAt": command.LastAttemptAt,
+			"nextAttemptAt": command.NextAttemptAt,
+			"expiresAt":     command.ExpiresAt,
+		})
+	})
 
 	api.GET("/device", func(c *gin.Context) {
 		list, err := devices.List(c.Request.Context())
@@ -255,8 +294,12 @@ func Run(serv *server.TCPServer, cfg *config.Config, alarmServ *alarmserver.Serv
 			return
 		}
 		msg := &model.Msg8105{Header: model.GenMsgHeader(device, 0x8105, session.GetNextSerialNum()), CommandWord: request.CommandWord, CommandParam: request.CommandParam}
-		serv.Send(session.ID, msg)
-		c.JSON(http.StatusAccepted, gin.H{"messageId": "0x8105", "commandWord": request.CommandWord})
+		command, created, err := enqueueDownlinkCommand(c, commands, serv, session, msg, outboxOptions)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"err": err.Error()})
+			return
+		}
+		writeCommandAccepted(c, command, created, gin.H{"messageId": "0x8105", "commandWord": request.CommandWord})
 	})
 
 	api.POST("/device/:phone/regions/delete", func(c *gin.Context) {
@@ -447,8 +490,13 @@ func Run(serv *server.TCPServer, cfg *config.Config, alarmServ *alarmserver.Serv
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
 		}
-		serv.Send(session.ID, &model.MsgRecordCommand{Header: model.GenMsgHeader(device, request.MessageID, session.GetNextSerialNum()), Command: request.Command, Data: data})
-		c.JSON(http.StatusAccepted, gin.H{"messageId": request.MessageID, "command": request.Command})
+		msg := &model.MsgRecordCommand{Header: model.GenMsgHeader(device, request.MessageID, session.GetNextSerialNum()), Command: request.Command, Data: data}
+		command, created, err := enqueueDownlinkCommand(c, commands, serv, session, msg, outboxOptions)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"err": err.Error()})
+			return
+		}
+		writeCommandAccepted(c, command, created, gin.H{"messageId": request.MessageID, "command": request.Command})
 	})
 	api.POST("/device/:phone/media/capture", func(c *gin.Context) {
 		var request model.Msg8801
@@ -783,8 +831,12 @@ func Run(serv *server.TCPServer, cfg *config.Config, alarmServ *alarmserver.Serv
 			c.JSON(http.StatusBadRequest, gin.H{"err": "invalid call callback fields"})
 			return
 		}
-		serv.Send(session.ID, &request)
-		c.JSON(http.StatusAccepted, gin.H{"messageId": "0x8400"})
+		command, created, err := enqueueDownlinkCommand(c, commands, serv, session, &request, outboxOptions)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"err": err.Error()})
+			return
+		}
+		writeCommandAccepted(c, command, created, gin.H{"messageId": "0x8400"})
 	})
 
 	api.POST("/device/:phone/phonebook/set", func(c *gin.Context) {
@@ -809,8 +861,12 @@ func Run(serv *server.TCPServer, cfg *config.Config, alarmServ *alarmserver.Serv
 			c.JSON(http.StatusBadRequest, gin.H{"err": "invalid phonebook set fields"})
 			return
 		}
-		serv.Send(session.ID, &request)
-		c.JSON(http.StatusAccepted, gin.H{"messageId": "0x8401"})
+		command, created, err := enqueueDownlinkCommand(c, commands, serv, session, &request, outboxOptions)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"err": err.Error()})
+			return
+		}
+		writeCommandAccepted(c, command, created, gin.H{"messageId": "0x8401"})
 	})
 
 	api.POST("/device/:phone/terminal/upgrade", func(c *gin.Context) {
@@ -835,8 +891,12 @@ func Run(serv *server.TCPServer, cfg *config.Config, alarmServ *alarmserver.Serv
 			c.JSON(http.StatusBadRequest, gin.H{"err": "invalid terminal upgrade fields"})
 			return
 		}
-		serv.Send(session.ID, &request)
-		c.JSON(http.StatusAccepted, gin.H{"messageId": "0x8108"})
+		command, created, err := enqueueDownlinkCommand(c, commands, serv, session, &request, outboxOptions)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"err": err.Error()})
+			return
+		}
+		writeCommandAccepted(c, command, created, gin.H{"messageId": "0x8108"})
 	})
 
 	api.POST("/device/:phone/transparent/down", func(c *gin.Context) {
@@ -861,8 +921,12 @@ func Run(serv *server.TCPServer, cfg *config.Config, alarmServ *alarmserver.Serv
 			c.JSON(http.StatusBadRequest, gin.H{"err": "invalid transparent downlink fields"})
 			return
 		}
-		serv.Send(session.ID, &request)
-		c.JSON(http.StatusAccepted, gin.H{"messageId": "0x8900"})
+		command, created, err := enqueueDownlinkCommand(c, commands, serv, session, &request, outboxOptions)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"err": err.Error()})
+			return
+		}
+		writeCommandAccepted(c, command, created, gin.H{"messageId": "0x8900"})
 	})
 
 	api.POST("/device/:phone/alarms/confirm", func(c *gin.Context) {
@@ -1065,4 +1129,93 @@ func Run(serv *server.TCPServer, cfg *config.Config, alarmServ *alarmserver.Serv
 		log.Error().Err(err).Str("addr", httpAddr).Msg("Fail to run gin router")
 		os.Exit(1)
 	}
+}
+
+// enqueueDownlinkCommand 把下行命令写入 outbox 后再发送。
+// Idempotency-Key 请求头重复时直接返回已有记录（duplicate=true），不会二次下发。
+// 返回的 created=false 表示命中了幂等键。
+func enqueueDownlinkCommand(
+	c *gin.Context,
+	commands repository.CommandRepository,
+	serv *server.TCPServer,
+	session *model.Session,
+	msg model.JT808Msg,
+	outbox config.CommandOutboxOptions,
+) (*repository.DownlinkCommand, bool, error) {
+	header := msg.GetHeader()
+	if header == nil {
+		return nil, false, errors.New("downlink message header is required")
+	}
+	idempotencyKey := strings.TrimSpace(c.GetHeader("Idempotency-Key"))
+	if len(idempotencyKey) > 128 {
+		return nil, false, errors.New("Idempotency-Key must not exceed 128 characters")
+	}
+	commandID, err := newCommandID()
+	if err != nil {
+		return nil, false, err
+	}
+	if idempotencyKey == "" {
+		idempotencyKey = commandID
+	}
+
+	serial := session.GetNextSerialNum()
+	header.SerialNumber = serial
+	encoded, err := msg.Encode()
+	if err != nil {
+		return nil, false, fmt.Errorf("encode downlink message: %w", err)
+	}
+	headerBytes, err := header.Encode()
+	if err != nil {
+		return nil, false, fmt.Errorf("encode downlink header: %w", err)
+	}
+	if len(headerBytes) >= len(encoded) {
+		return nil, false, errors.New("encoded downlink message has no body")
+	}
+
+	now := time.Now()
+	command, created, err := commands.Enqueue(c.Request.Context(), &repository.DownlinkCommand{
+		CommandID:      commandID,
+		IdempotencyKey: idempotencyKey,
+		Phone:          header.PhoneNumber,
+		MsgID:          header.MsgID,
+		Serial:         serial,
+		Payload:        encoded[len(headerBytes):],
+		Status:         repository.CommandStatusPending,
+		// initialWait 覆盖会话重传窗口，到期前不重投，避免与仍在重传的报文重复。
+		NextAttemptAt: now.Add(outbox.InitialWait),
+		ExpiresAt:     now.Add(outbox.ExpireAfter),
+	})
+	if err != nil {
+		return nil, false, fmt.Errorf("enqueue downlink command: %w", err)
+	}
+	if !created {
+		return command, false, nil
+	}
+
+	if err := serv.Send(session.ID, msg, server.WithSerial(serial)); err != nil {
+		// 首次下发失败不直接判死：保持 pending 并安排重投，设备重新上线后仍可补发。
+		next := time.Now().Add(outbox.RetryBase)
+		_, _ = commands.ScheduleRetry(c.Request.Context(), header.PhoneNumber, header.MsgID, serial, next, err.Error())
+		return command, true, fmt.Errorf("send downlink command: %w", err)
+	}
+	return command, true, nil
+}
+
+// writeCommandAccepted 返回下行命令受理结果；幂等命中用 200 与 202 区分。
+func writeCommandAccepted(c *gin.Context, command *repository.DownlinkCommand, created bool, fields gin.H) {
+	fields["commandId"] = command.CommandID
+	fields["duplicate"] = !created
+	status := http.StatusAccepted
+	if !created {
+		status = http.StatusOK
+	}
+	c.JSON(status, fields)
+}
+
+func newCommandID() (string, error) {
+	buffer := make([]byte, 16)
+	if _, err := rand.Read(buffer); err != nil {
+		return "", fmt.Errorf("generate command id: %w", err)
+	}
+	return hex.EncodeToString(buffer), nil
 }

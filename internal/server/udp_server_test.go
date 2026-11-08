@@ -1730,9 +1730,16 @@ func TestTCPServerHeartbeatFromUnknownDeviceClosesConn(t *testing.T) {
 
 	b := newBareTerminal(t, server.listener.Addr().String())
 	b.send(t, &model.Msg0002{Header: uplinkHeader(0x0002, "188765439999", 1)})
+
+	// 心跳属于「应答内容固定」的上行消息：服务端先回 0x8001，再因设备不存在关闭连接。
+	ack := &model.Msg8001{}
+	b.recvInto(t, 3*time.Second, 0x8001, ack)
+	require.Equal(t, uint16(0x0002), ack.AnswerMessageID)
+	require.Equal(t, model.ResultSuccess, ack.Result)
+
 	require.NoError(t, b.conn.SetReadDeadline(time.Now().Add(3*time.Second)))
 	_, err := b.fh.Recv(context.Background())
-	require.Error(t, err, "unknown-device heartbeat must close the connection")
+	require.Error(t, err, "unknown-device heartbeat must close the connection after acknowledging")
 }
 
 func TestTCPServerLogoutClearsCacheAndKeepsConn(t *testing.T) {
@@ -1759,6 +1766,40 @@ func TestTCPServerLogoutClearsCacheAndKeepsConn(t *testing.T) {
 	require.Error(t, err)
 	var netErr net.Error
 	require.True(t, errors.As(err, &netErr) && netErr.Timeout(), "expected read timeout on kept-open conn, got %v", err)
+}
+
+func TestTCPServerUpdatesCommandOutboxOnAck(t *testing.T) {
+	server, _, device := startSimulatorServer(t)
+	session, err := runtime.Default().Conn.Get(context.Background(), device.SessionID)
+	require.NoError(t, err)
+
+	commands := storage.Default().Commands
+	serial := session.GetNextSerialNum()
+	commandID := "test-command-" + device.Phone
+	command, created, err := commands.Enqueue(context.Background(), &repository.DownlinkCommand{
+		CommandID:      commandID,
+		IdempotencyKey: commandID,
+		Phone:          device.Phone,
+		MsgID:          0x8105,
+		Serial:         serial,
+		Payload:        []byte{0x02},
+	})
+	require.NoError(t, err)
+	require.True(t, created)
+	require.Equal(t, repository.CommandStatusPending, command.Status)
+
+	// 预分配流水号必须被编码阶段保留，否则终端 0x0001 无法回填到该命令。
+	msg := &model.Msg8105{Header: model.GenMsgHeader(device, 0x8105, serial), CommandWord: 2}
+	require.NoError(t, server.Send(session.ID, msg, WithSerial(serial)))
+
+	waitFor(t, 2*time.Second, func() bool {
+		stored, err := commands.Get(context.Background(), commandID)
+		return err == nil && stored.Status == repository.CommandStatusAcked
+	})
+	stored, err := commands.Get(context.Background(), commandID)
+	require.NoError(t, err)
+	require.Equal(t, repository.CommandStatusAcked, stored.Status)
+	require.Equal(t, serial, stored.Serial)
 }
 
 func TestTCPServerAnswersServerTimeQuery(t *testing.T) {

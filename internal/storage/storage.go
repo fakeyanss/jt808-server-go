@@ -50,6 +50,7 @@ type Stores struct {
 	Regions    repository.RegionRepository
 	Industry   repository.IndustryRepository
 	Media      repository.MediaMetadataRepository
+	Commands   repository.CommandRepository
 	// Locations 为定位历史仓储；memory 后端保持既有热读环形缓冲，本字段为 nil。
 	Locations repository.LocationRepository
 
@@ -73,13 +74,14 @@ func newStores(backend string) *Stores {
 		Regions:    repository.NewRegionRepository(),
 		Industry:   repository.NewIndustryRepository(),
 		Media:      repository.NewMediaMetadataRepository(),
+		Commands:   repository.NewCommandRepository(),
 		Backend:    backend,
 	}
 }
 
 // Open 按配置装配存储后端。
 // SQL 后端覆盖 Device、DeviceParams、TerminalProperties、Industry、Regions、
-// Alarms 与 Locations；memory 后端保持既有行为不变。
+// Alarms、Media、Commands 与 Locations；memory 后端保持既有行为不变。
 func Open(cfg Config) (*Stores, error) {
 	backend := normalizeBackend(cfg.Type)
 	switch backend {
@@ -106,6 +108,7 @@ func Open(cfg Config) (*Stores, error) {
 		stores.Properties = sqlStore.TerminalPropertiesRepository()
 		stores.Industry = industry
 		stores.Media = sqlStore.MediaMetadataRepository()
+		stores.Commands = sqlStore.CommandRepository()
 		stores.Regions = regions
 		stores.Alarms = sqlStore.AlarmRepository(cfg.AlarmRetention)
 		stores.Locations = sqlStore.LocationRepository(cfg.LocationRetention)
@@ -148,23 +151,22 @@ func normalizeBackend(name string) string {
 	return backend
 }
 
-// Init 按配置初始化进程默认存储，并返回实际后端。
+// Init 按配置初始化进程默认存储，并返回实际实例供装配层显式下传。
 // 必须在任何 storage.Default() 调用之前执行；非法配置返回错误，由调用方终止启动。
-func Init(cfg Config) (string, error) {
+func Init(cfg Config) (*Stores, error) {
 	stores, err := Open(cfg)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	defaultMu.Lock()
 	defer defaultMu.Unlock()
 	defaultStores = stores
-	return stores.Backend, nil
+	return stores, nil
 }
 
 // Default 返回进程默认存储实例；未调用 Init 时懒加载内存后端。
-// 保留为全局入口的理由：msg_processor 的 processFunc 注册表是包级函数，
-// 签名固定为 (ctx, data) error，无法逐条注入依赖；收口为单一 Default() 后，
-// 存储来源可追溯。其余组件通过构造函数注入 Stores。
+// 业务处理器已改为通过 ProcessorDeps 显式注入，Default 仅作为
+// 未注入时的回退入口与装配层之外的兼容取用点。
 func Default() *Stores {
 	defaultMu.RLock()
 	stores := defaultStores

@@ -21,12 +21,14 @@ func newTestDB(t *testing.T) *sql.DB {
 
 func TestExpectedVersionMatchesEmbeddedFiles(t *testing.T) {
 	// 开发阶段按批次追加版本；引导脚本不参与版本编号。
-	require.Len(t, migrations, 4)
+	require.Len(t, migrations, 6)
 	require.Equal(t, "20261101_init.sql", migrations[0].name)
 	require.Equal(t, "20261102_persistence_tables.sql", migrations[1].name)
 	require.Equal(t, "20261105_drop_device_runtime.sql", migrations[2].name)
 	require.Equal(t, "20261108_media_metadata.sql", migrations[3].name)
-	require.Equal(t, 20261108, ExpectedVersion())
+	require.Equal(t, "20261109_command_outbox.sql", migrations[4].name)
+	require.Equal(t, "20261110_command_outbox_replay.sql", migrations[5].name)
+	require.Equal(t, 20261110, ExpectedVersion())
 }
 
 // 同一库重复执行迁移只应用一次，版本记录不重复。
@@ -151,7 +153,7 @@ func TestApplyUpgradesLegacyDatabase(t *testing.T) {
 
 	applied, err := Apply(ctx, db)
 	require.NoError(t, err)
-	require.Equal(t, 2, applied)
+	require.Equal(t, 4, applied)
 	require.Equal(t, ExpectedVersion(), mustCurrentVersion(t, ctx, db))
 
 	var count int

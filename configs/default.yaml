@@ -85,6 +85,24 @@ retention:
     confirmExpireMs: 600000
     maxPerDevice: 1000
 
+# 下行命令 outbox 重投。进程重启后 pending 命令按下面的节奏重新投给在线会话。
+# 重投复用原始流水号，语义是 at-least-once：终端可能重复执行同一条命令。
+# initialWait 必须覆盖一次下发到会话重传耗尽的窗口（ackTimeout × (maxRetransmissions+1)），
+# 否则会在会话仍在重传时重复下发。
+commandOutbox:
+  pollInterval: "10s"
+  batchSize: 50
+  # 总下发次数上限（含首次下发）；达到上限后转 failed，不做无限重试。
+  maxAttempts: 5
+  # 单次投递的租约时长，覆盖下发到应答返回的窗口；到期后其它实例可重新占用。
+  leaseDuration: "1m"
+  retryBase: "5s"
+  retryMax: "5m"
+  # 设备长期不在线时的兜底：超过该时长仍未投递成功转 failed。
+  expireAfter: "24h"
+  # 首次下发后等待应答/会话重传的窗口，到期前不重投。
+  initialWait: "1m"
+
 # 持久化后端：memory | sqlite | mysql，缺省 memory（行为与旧版本一致）
 storage:
   type: "memory"
