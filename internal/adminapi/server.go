@@ -55,6 +55,7 @@ func NewServer(opts config.AdminOptions, deps Dependencies) *Server {
 	secured.GET("/ping", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"status": "ok"})
 	})
+	registerSessionRoutes(secured, deps)
 
 	engine.NoRoute(func(c *gin.Context) {
 		writeJSONError(c, http.StatusNotFound, codeNotFound, "route not found")

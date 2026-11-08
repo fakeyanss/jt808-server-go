@@ -33,6 +33,37 @@ func TestConnectionRegistryBindGetUnbind(t *testing.T) {
 	require.ErrorIs(t, err, ErrSessionClosed)
 }
 
+func TestConnectionRegistryListBindingsOnlyReturnsBoundSessions(t *testing.T) {
+	registry := NewConnectionRegistry()
+	ctx := context.Background()
+
+	bound1 := &model.Session{ID: "s1"}
+	bound2 := &model.Session{ID: "s2"}
+	unbound := &model.Session{ID: "s3"}
+	for _, session := range []*model.Session{bound1, bound2, unbound} {
+		require.NoError(t, registry.Bind(ctx, session))
+	}
+	require.True(t, mustBindPhone(t, registry, "18800000002", bound1.ID))
+	require.True(t, mustBindPhone(t, registry, "18800000001", bound2.ID))
+
+	bindings := registry.ListBindings(ctx)
+	require.Len(t, bindings, 2, "unbound sessions must not appear as online devices")
+	require.Equal(t, "18800000001", bindings[0].Phone, "bindings must be sorted by phone")
+	require.Same(t, bound2, bindings[0].Session)
+	require.Equal(t, "18800000002", bindings[1].Phone)
+	require.Same(t, bound1, bindings[1].Session)
+
+	registry.Unbind(ctx, bound1.ID)
+	require.Len(t, registry.ListBindings(ctx), 1)
+}
+
+func mustBindPhone(t *testing.T, registry ConnectionRegistry, phone, sessionID string) bool {
+	t.Helper()
+	bound, err := registry.BindPhoneIfFree(context.Background(), phone, sessionID)
+	require.NoError(t, err)
+	return bound
+}
+
 func TestConnectionRegistryPhoneIndexLifecycle(t *testing.T) {
 	registry := NewConnectionRegistry()
 	ctx := context.Background()

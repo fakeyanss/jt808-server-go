@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"sort"
 	"sync"
 	"time"
 
@@ -170,6 +171,26 @@ func (cache *memoryConnectionRegistry) Count(_ context.Context) int {
 	cache.mutex.Lock()
 	defer cache.mutex.Unlock()
 	return len(cache.cacheByID)
+}
+
+// ListBindings 返回手机号索引快照，按手机号升序，保证分页结果稳定可复现。
+func (cache *memoryConnectionRegistry) ListBindings(_ context.Context) []SessionBinding {
+	cache.mutex.Lock()
+	defer cache.mutex.Unlock()
+
+	bindings := make([]SessionBinding, 0, len(cache.phoneToID))
+	for phone, sessionID := range cache.phoneToID {
+		session, ok := cache.cacheByID[sessionID]
+		if !ok {
+			// 悬空索引不应存在；读取时顺带清理，避免管理面展示已失效会话。
+			delete(cache.phoneToID, phone)
+			delete(cache.phoneByID, sessionID)
+			continue
+		}
+		bindings = append(bindings, SessionBinding{Phone: phone, Session: session})
+	}
+	sort.Slice(bindings, func(i, j int) bool { return bindings[i].Phone < bindings[j].Phone })
+	return bindings
 }
 
 // 编译期确认内存实现满足接口。

@@ -33,6 +33,15 @@ type ConnectionRegistry interface {
 	BindPhoneIfFree(ctx context.Context, phone, sessionID string) (bool, error)
 	Unbind(ctx context.Context, id string)
 	Count(ctx context.Context) int
+	// ListBindings 返回“手机号 → 活会话”的当前快照，按手机号升序排列。
+	// 只包含已完成手机号绑定的会话；未注册或鉴权未通过的连接不属于在线设备。
+	ListBindings(ctx context.Context) []SessionBinding
+}
+
+// SessionBinding 是手机号与活会话的只读快照，供管理面展示与运维使用。
+type SessionBinding struct {
+	Phone   string
+	Session *model.Session
 }
 
 // FragmentAssembler 终端上行分包重组器（A 类，仅进程内存）。
