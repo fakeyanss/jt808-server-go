@@ -104,7 +104,7 @@
 | 2 | R1 | 发布基线守卫：CI 覆盖 dev + race + outbox 回归 | 绿灯目前只在本机成立；CI 只在 `main` 触发，刚合入的重投测试没有持续保护 | R3 | 0.5–1 人日 | CI 在 `dev/*` 触发；`gofmt/build/vet/test -race` 全跑；outbox/replay 测试纳入回归并确认实际被执行 |
 | 3 | N1 | outbox 分档：`off` / `memory` / `durable` | durable 不应对所有部署形态都是唯一主路径：单机部署为可重启恢复承担了额外的表、租约与重投复杂度 | R1 | 1.5–2 人日 | `commandOutbox.mode` 三档可配；`off` 直连 `serv.Send`；`memory` 保留幂等键与 `GET /commands/:commandId` 状态查询、重启即丢；`durable` 保持当前实现不回退；单机默认 `memory` |
 | 4 | R2 | outbox 覆盖收尾与豁免清单（下行入口审计） | 仍有多条下行入口直发，命令可能丢且失败不可见；业务 API 无测试 | N1 | 2–3 人日 | 逐条审计剩余下行入口，接入 outbox 或列入白名单并写明理由；`internal/api` 覆盖幂等头、202、查询、错误返回 |
-| 5 | N2 | 上行可靠性配置化 | 当前所有固定应答上行统一 ack-first（at-most-once），0x0704 批量定位与报警一旦丢失不可恢复 | R2 | 2–3 人日 | `uplink.reliability` 可按消息分类配 `best_effort` / `at_least_once`；默认定位 best-effort、0x0704 与报警 at-least-once；at-least-once 必须**先落本地 spool 再应答**，测试验证「应答前已落盘」 |
+| 5 | N2 | 上行可靠性配置化 | 当前所有固定应答上行统一 ack-first（at-most-once），0x0704 批量定位与报警一旦丢失不可恢复 | R2 | 2–3 人日 | `uplink.reliability` 可按消息分类配 `best_effort` / `at_least_once`；默认定位 best-effort、0x0704 与报警 at-least-once；at-least-once 必须**先完成落库再应答**（不引入文件队列），测试验证「落库失败不应答、成功才回 `0x8001`」 |
 | 6 | R4 | 可观测性、健康检查与优雅关机 | 现无 `/metrics`、无 `/readyz`；outbox、连接、媒体、附件均不可观测 | N2 | 2–3 人日 | `/healthz`、`/readyz`、`/metrics`；连接数、应答超时、outbox pending、媒体会话、附件完成数；关机时停止接入并排空 outbox/媒体写入 |
 | 7 | R5 | 其余生产化项 | 鉴权与审计（原 R3 剩余部分）、部署运维与保留期清理未闭环 | R4 | 3–5 人日 | 业务 API 鉴权/限流/审计；保留期清理**实际生效**（媒体/附件/历史表）；compose/迁移/备份恢复/回滚手册；压测基线与结论 |
 
@@ -186,7 +186,7 @@ P2.x 仅在触发条件满足后启动
 2. R1 紧随其后，否则无法判断后续改动是否引入回归。
 3. N1 必须先于 R2：分档决定了 R2 各入口接入的目标模式与白名单口径。
 4. N2 在 R2 之后：上行可靠性配置需要复用下行入口审计后统一的配置与错误处理约定。
-5. R4 接在 N2 之后，指标要覆盖已稳定的 outbox 与上行 spool。
+5. R4 接在 N2 之后，指标要覆盖已稳定的 outbox 与上行落库路径。
 6. R5 最后收口鉴权、部署与保留期。
 
 可并行（非本轮范围）：R6/R7 可并行；U3 必须在其一完成后启动；S3 的四类可在底座完成后并行。
@@ -266,6 +266,6 @@ P2.x 仅在触发条件满足后启动
 2. **再做 R1**：把 `dev/*` 分支纳入 CI，跑 `gofmt/build/vet/test -race`，并确认 outbox/replay 测试在 CI 中真实执行。本机绿灯只是起点，不是发布基线。
 3. **再做 N1**：给 `commandOutbox.mode` 分档（`off`/`memory`/`durable`），单机默认 `memory`；`durable` 保留当前重启重投能力，不再是唯一主路径。
 4. **再做 R2**：以 N1 的分档为前提审计全部下行入口，接入 outbox 或写入豁免白名单；补 `internal/api` 测试。
-5. **再做 N2**：`uplink.reliability` 按消息分类配置；at-least-once 必须先落本地 spool 再应答，测试要验证「应答前已落盘」。
+5. **再做 N2**：`uplink.reliability` 按消息分类配置；at-least-once 必须先完成落库再应答，落库失败不应答，由终端重传；不引入文件队列。
 6. **再做 R4 与 R5**：可观测性/健康检查/优雅关机收口后，再补鉴权审计、部署产物、保留期清理与压测。
 7. **同时做范围决策**：明确 v1 是否包含视频、拍照、远程升级。若不包含，直接按核心最小集推进；若包含，提前把 R6/R7 → U3 与 R8 排进队列，避免上线前临时补链路。

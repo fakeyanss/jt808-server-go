@@ -166,11 +166,9 @@ type Config struct {
 
 // uplinkConf 配置上行可靠性。
 // reliability 按消息分类选择 best_effort / at_least_once；
-// at_least_once 必须在应答前把记录落盘到 spoolDir，进程重启后重放。
+// at_least_once 先完成落库再应答，落库失败由终端按协议重传。
 type uplinkConf struct {
 	Reliability *uplinkReliabilityConf `yaml:"reliability"`
-	// SpoolDir 是本地 spool 目录；存在 at_least_once 分类时必填。
-	SpoolDir string `yaml:"spoolDir"`
 }
 
 type uplinkReliabilityConf struct {
@@ -186,14 +184,11 @@ type UplinkOptions struct {
 	Location      string
 	BatchLocation string
 	Alarm         string
-	SpoolDir      string
 }
 
 const (
 	UplinkReliabilityBestEffort  = "best_effort"
 	UplinkReliabilityAtLeastOnce = "at_least_once"
-
-	DefaultUplinkSpoolDir = "./data/uplink-spool"
 )
 
 // DefaultUplinkOptions 返回默认上行可靠性配置：
@@ -204,7 +199,6 @@ func DefaultUplinkOptions() UplinkOptions {
 		Location:      UplinkReliabilityBestEffort,
 		BatchLocation: UplinkReliabilityAtLeastOnce,
 		Alarm:         UplinkReliabilityAtLeastOnce,
-		SpoolDir:      DefaultUplinkSpoolDir,
 	}
 }
 
@@ -219,9 +213,6 @@ func (c *Config) ParseUplink() (UplinkOptions, error) {
 		options.Location = firstNonEmpty(conf.Location, options.Location)
 		options.BatchLocation = firstNonEmpty(conf.BatchLocation, options.BatchLocation)
 		options.Alarm = firstNonEmpty(conf.Alarm, options.Alarm)
-	}
-	if dir := strings.TrimSpace(c.Uplink.SpoolDir); dir != "" {
-		options.SpoolDir = dir
 	}
 
 	for name, value := range map[string]string{
@@ -241,9 +232,6 @@ func (c *Config) ParseUplink() (UplinkOptions, error) {
 	options.BatchLocation = strings.ToLower(strings.TrimSpace(options.BatchLocation))
 	options.Alarm = strings.ToLower(strings.TrimSpace(options.Alarm))
 
-	if options.SpoolDir == "" {
-		return UplinkOptions{}, fmt.Errorf("uplink.spoolDir must not be empty")
-	}
 	return options, nil
 }
 

@@ -1,14 +1,19 @@
 package uplink
 
-import "strings"
+import (
+	"strings"
+
+	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
+)
 
 // Reliability 是单条上行业务记录的投递语义。
 type Reliability string
 
 const (
-	// BestEffort 在业务处理前应答：进程崩溃或存储失败时本条记录丢失。
+	// BestEffort 先应答后落库：落库失败只记日志，不等终端重传。
 	BestEffort Reliability = "best_effort"
-	// AtLeastOnce 在应答前先落本地 spool：业务失败或崩溃后由重启重放兜底。
+	// AtLeastOnce 先落库后应答：落库失败不应答，终端会按协议重传。
+	// 依赖现有 SQL 持久化，不引入本地文件队列。
 	AtLeastOnce Reliability = "at_least_once"
 )
 
@@ -78,4 +83,14 @@ func (p Policy) For(class Class) Reliability {
 	default:
 		return p.Default
 	}
+}
+
+// AtLeastOnce 判定该条上行消息是否必须先完成落库再应答。
+// 报警分类需要看消息体里的报警标志位，其余分类只依赖消息 ID。
+func (p Policy) AtLeastOnce(msgID uint16, incoming model.JT808Msg) bool {
+	var alarmSign uint32
+	if msg, ok := incoming.(*model.Msg0200); ok && msg != nil {
+		alarmSign = msg.AlarmSign
+	}
+	return p.For(p.Classify(msgID, alarmSign)) == AtLeastOnce
 }

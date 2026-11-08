@@ -159,18 +159,10 @@ func process() delegateFunc {
 		}
 
 		ackFirst := pd.Outgoing != nil && p.mp.AckFirst(msgID)
-		var spoolIDs []string
-		if ackFirst && p.mp.deps.Uplink != nil {
-			// at_least_once 分类先落盘再应答；落盘失败直接中断，让终端重传。
-			ids, spoolErr := p.mp.deps.Uplink.BeforeAck(ctx, msgID, pd)
-			if spoolErr != nil {
-				return nxtCtx, spoolErr
-			}
-			spoolIDs = ids
-		}
-		if ackFirst {
-			// best_effort 分类仍是先应答后落库（at-most-once）；
-			// at_least_once 分类此时记录已落盘，崩溃后由启动重放兜底。
+		// at_least_once 分类改为先落库后应答：落库失败不发出应答，终端会按协议重传。
+		atLeastOnce := ackFirst && p.mp.deps.Uplink != nil && p.mp.deps.Uplink.AtLeastOnce(msgID, pd.Incoming)
+		if ackFirst && !atLeastOnce {
+			// best_effort 分类先应答后落库；落库失败只记日志，不等终端重传。
 			if sendErr := p.sendOutgoingNow(nxtCtx); sendErr != nil {
 				return nxtCtx, sendErr
 			}
@@ -179,10 +171,9 @@ func process() delegateFunc {
 
 		businessErr := p.mp.ApplyBusiness(ctx, msgID, pd)
 		if businessErr != nil {
-			// 未先应答的消息保持旧语义：业务错误中断本轮应答。
-			// 已先应答的消息只记录日志，连接继续；设备不存在仍作为例外向上返回。
-			// spool 记录保留不删，重启后会重放，保证 at-least-once。
-			if !ackFirst || stderrors.Is(businessErr, repository.ErrDeviceNotFound) {
+			// at_least_once 未发应答：直接中断，让终端重传本条数据。
+			// best_effort 已先应答：只记录日志，连接继续；设备不存在仍作为例外向上返回。
+			if atLeastOnce || !ackFirst || stderrors.Is(businessErr, repository.ErrDeviceNotFound) {
 				return nxtCtx, businessErr
 			}
 			log.Error().Err(businessErr).
@@ -190,9 +181,6 @@ func process() delegateFunc {
 				Str("phone", packet.Header.PhoneNumber).
 				Msg("Business processing failed after acknowledgement was sent")
 			return nxtCtx, nil
-		}
-		if len(spoolIDs) > 0 {
-			p.mp.deps.Uplink.AfterBusiness(spoolIDs)
 		}
 		return nxtCtx, nil
 	})

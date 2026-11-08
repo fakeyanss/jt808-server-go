@@ -25,14 +25,12 @@ func TestParseUplinkOverridesAndNormalizes(t *testing.T) {
 			BatchLocation: "",
 			Alarm:         "best_effort",
 		},
-		SpoolDir: " ./data/custom-spool ",
 	}}).ParseUplink()
 	require.NoError(t, err)
 	require.Equal(t, DefaultUplinkOptions().Default, options.Default)
 	require.Equal(t, UplinkReliabilityAtLeastOnce, options.Location)
 	require.Equal(t, DefaultUplinkOptions().BatchLocation, options.BatchLocation)
 	require.Equal(t, UplinkReliabilityBestEffort, options.Alarm)
-	require.Equal(t, "./data/custom-spool", options.SpoolDir)
 }
 
 func TestParseUplinkRejectsUnknownReliability(t *testing.T) {
@@ -43,8 +41,8 @@ func TestParseUplinkRejectsUnknownReliability(t *testing.T) {
 	require.Contains(t, err.Error(), "uplink.reliability.alarm")
 }
 
-func TestParseUplinkKeepsDefaultSpoolDirWhenUnset(t *testing.T) {
+func TestParseUplinkMatchesDefaultsWhenSectionEmpty(t *testing.T) {
 	options, err := (&Config{Uplink: &uplinkConf{}}).ParseUplink()
 	require.NoError(t, err)
-	require.Equal(t, DefaultUplinkSpoolDir, options.SpoolDir)
+	require.Equal(t, DefaultUplinkOptions(), options)
 }
