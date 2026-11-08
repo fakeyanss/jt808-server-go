@@ -5,9 +5,9 @@ name: CI
 
 on:
   push:
-    branches: [ "main" ]
+    branches: [ "main", "dev/**" ]
   pull_request:
-    branches: [ "main" ]
+    branches: [ "main", "dev/**" ]
   workflow_dispatch:
 
 jobs:
@@ -24,3 +24,16 @@ jobs:
 
     - name: Build and Test
       run: make all
+
+    # make all 已在 -race 下跑全量测试；这里再显式点名 outbox 回归，
+    # 避免后续重构把 replay 测试移出默认包列表后只剩「绿灯但没跑」。
+    - name: Outbox replay regression
+      run: |
+        set -eo pipefail
+        go test -race -count=1 -v \
+          ./internal/command/ \
+          ./internal/repository/ \
+          ./internal/repository/sqlstore/ | tee outbox-regression.log
+        grep -q -- '--- PASS: TestReplayAfterRestart' outbox-regression.log
+        grep -q -- '--- PASS: TestCommandRepositoryMemoryPendingScanAndLease' outbox-regression.log
+        grep -q -- '--- PASS: TestSQLiteCommandOutboxIdempotencyAndResult' outbox-regression.log
