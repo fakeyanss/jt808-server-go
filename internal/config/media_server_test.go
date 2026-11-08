@@ -2,6 +2,7 @@ package config
 
 import (
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 )
@@ -29,7 +30,22 @@ func TestParseMediaServerDefaults(t *testing.T) {
 		Port:          7300,
 		Dir:           DefaultMediaServerDir,
 		MaxConcurrent: DefaultMediaServerMaxConcurrent,
+		Retention:     DefaultMediaServerRetentionDays * 24 * time.Hour,
 	}, options)
+}
+
+func TestParseMediaServerRetentionDays(t *testing.T) {
+	days := 30
+	options, enabled, err := (&Config{MediaServer: &mediaServerConf{Port: "7300", RetentionDays: &days}}).ParseMediaServer()
+	assert.NoError(t, err)
+	assert.True(t, enabled)
+	assert.Equal(t, 30*24*time.Hour, options.Retention)
+
+	disabled := 0
+	options, enabled, err = (&Config{MediaServer: &mediaServerConf{Port: "7300", RetentionDays: &disabled}}).ParseMediaServer()
+	assert.NoError(t, err)
+	assert.True(t, enabled)
+	assert.Zero(t, options.Retention)
 }
 
 func TestParseMediaServerExplicitValues(t *testing.T) {
@@ -45,15 +61,18 @@ func TestParseMediaServerExplicitValues(t *testing.T) {
 		Port:          7611,
 		Dir:           "/var/lib/jt808/media",
 		MaxConcurrent: 3,
+		Retention:     DefaultMediaServerRetentionDays * 24 * time.Hour,
 	}, options)
 }
 
 func TestParseMediaServerInvalidValues(t *testing.T) {
+	negative := -1
 	cases := map[string]*mediaServerConf{
 		"non numeric port":     {Port: "udp"},
 		"zero port":            {Port: "0"},
 		"port too large":       {Port: "70000"},
 		"negative concurrency": {Port: "7300", MaxConcurrent: -1},
+		"negative retention":   {Port: "7300", RetentionDays: &negative},
 	}
 	for name, conf := range cases {
 		t.Run(name, func(t *testing.T) {

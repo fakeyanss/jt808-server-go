@@ -1,0 +1,36 @@
+name: jt808
+
+services:
+  jt808:
+    build:
+      context: ..
+      dockerfile: build/Dockerfile
+    image: fakeyanss/jt808-server-go:local
+    restart: unless-stopped
+    working_dir: /app/output
+    command: ["/app/output/jt808-server-go", "-c", "/app/output/configs/default.yaml"]
+    ports:
+      - "8080:8080"
+      - "8081:8081/udp"
+      - "8008:8008"
+      - "7200:7200"
+      - "7201:7201/udp"
+      # 管理面默认只监听容器内 127.0.0.1:9000，不发布到宿主机；
+      # 需要用 `docker exec jt808 wget -qO- http://127.0.0.1:9000/readyz` 访问。
+      # 若确需对外暴露，请同时把配置中的 admin.addr 改为 0.0.0.0:9000 并配置 token。
+    volumes:
+      # 运行时配置由部署方维护；镜像内自带的默认配置会被这里覆盖。
+      - ../configs:/app/output/configs:ro
+      - jt808-data:/app/output/data
+      - jt808-logs:/app/output/logs
+    healthcheck:
+      # 需在配置里开启 admin（127.0.0.1:9000），健康检查只依赖存活语义。
+      test: ["CMD", "wget", "-q", "-O-", "http://127.0.0.1:9000/healthz"]
+      interval: 15s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  jt808-data:
+  jt808-logs:

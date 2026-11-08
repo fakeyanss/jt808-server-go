@@ -160,8 +160,68 @@ type Config struct {
 	AlarmServer   *alarmServerConf   `yaml:"alarmServer"`
 	MediaServer   *mediaServerConf   `yaml:"mediaServer"`
 	Admin         *adminConf         `yaml:"admin"`
+	API           *apiConf           `yaml:"api"`
 	CommandOutbox *commandOutboxConf `yaml:"commandOutbox"`
 	Uplink        *uplinkConf        `yaml:"uplink"`
+}
+
+// 业务 API 的默认限流参数；token 为空表示未开启鉴权，启动时会打警告。
+const (
+	DefaultAPIRatePerSecond = 50.0
+	DefaultAPIBurst         = 100
+)
+
+// apiConf 配置业务 API 的鉴权与限流。
+// token 为空表示鉴权关闭，仅建议在可信内网临时使用。
+type apiConf struct {
+	Auth      *apiAuthConf      `yaml:"auth"`
+	RateLimit *apiRateLimitConf `yaml:"rateLimit"`
+}
+
+type apiAuthConf struct {
+	Token string `yaml:"token"`
+}
+
+type apiRateLimitConf struct {
+	RatePerSecond *float64 `yaml:"ratePerSecond"`
+	Burst         *int     `yaml:"burst"`
+}
+
+// APIOptions 是业务 API 鉴权与限流的归一化配置。
+type APIOptions struct {
+	Token         string
+	RatePerSecond float64
+	Burst         int
+}
+
+// ParseAPI 解析业务 API 配置；未配置时返回默认限流与空 token（鉴权关闭）。
+func (c *Config) ParseAPI() (APIOptions, error) {
+	options := APIOptions{
+		RatePerSecond: DefaultAPIRatePerSecond,
+		Burst:         DefaultAPIBurst,
+	}
+	if c == nil || c.API == nil {
+		return options, nil
+	}
+	conf := c.API
+	if conf.Auth != nil {
+		options.Token = strings.TrimSpace(conf.Auth.Token)
+	}
+	if limit := conf.RateLimit; limit != nil {
+		if limit.RatePerSecond != nil {
+			if *limit.RatePerSecond <= 0 {
+				return APIOptions{}, fmt.Errorf("api.rateLimit.ratePerSecond must be > 0, got %v", *limit.RatePerSecond)
+			}
+			options.RatePerSecond = *limit.RatePerSecond
+		}
+		if limit.Burst != nil {
+			if *limit.Burst < 1 {
+				return APIOptions{}, fmt.Errorf("api.rateLimit.burst must be >= 1, got %d", *limit.Burst)
+			}
+			options.Burst = *limit.Burst
+		}
+	}
+	return options, nil
 }
 
 // uplinkConf 配置上行可靠性。
@@ -247,6 +307,8 @@ const (
 	DefaultAlarmServerDir           = "./data/alarms"
 	DefaultAlarmServerMaxFileSize   = 100 * 1024 * 1024
 	DefaultAlarmServerMaxConcurrent = 16
+	// DefaultAlarmServerRetentionDays 是已完成附件文件的默认落盘保留天数。
+	DefaultAlarmServerRetentionDays = 7
 	DefaultAlarmServerCompletedTTL  = 20 * time.Minute
 )
 
@@ -263,6 +325,8 @@ type alarmServerConf struct {
 	// CompletedTTL 是完成态内存状态的保留时长（如 "20m"）；
 	// 显式 "0" 表示不淘汰，留空使用默认值。
 	CompletedTTL string `yaml:"completedTTL"`
+	// RetentionDays 是已完成附件文件的落盘保留天数；显式 0 表示不清理。
+	RetentionDays *int `yaml:"retentionDays"`
 	// AutoUpload 控制报警首次上报时是否自动下发 0x9208。
 	// 默认 false，保持既有手动下发行为不变。
 	AutoUpload bool `yaml:"autoUpload"`
@@ -279,6 +343,7 @@ type AlarmServerOptions struct {
 	MaxFileSize   int64
 	MaxConcurrent int
 	CompletedTTL  time.Duration
+	Retention     time.Duration
 	AutoUpload    bool
 	UploadIP      string
 }
@@ -341,6 +406,13 @@ func (c *Config) ParseAlarmServer() (options AlarmServerOptions, enabled bool, e
 		}
 		completedTTL = parsed
 	}
+	retentionDays := DefaultAlarmServerRetentionDays
+	if conf.RetentionDays != nil {
+		if *conf.RetentionDays < 0 {
+			return AlarmServerOptions{}, false, fmt.Errorf("alarmServer.retentionDays must be >= 0, got %d", *conf.RetentionDays)
+		}
+		retentionDays = *conf.RetentionDays
+	}
 	uploadIP := strings.TrimSpace(conf.UploadIP)
 	if conf.AutoUpload {
 		if uploadIP == "" {
@@ -360,6 +432,7 @@ func (c *Config) ParseAlarmServer() (options AlarmServerOptions, enabled bool, e
 		MaxFileSize:   maxFileSize,
 		MaxConcurrent: maxConcurrent,
 		CompletedTTL:  completedTTL,
+		Retention:     time.Duration(retentionDays) * 24 * time.Hour,
 		AutoUpload:    conf.AutoUpload,
 		UploadIP:      uploadIP,
 	}, true, nil
@@ -369,6 +442,7 @@ func (c *Config) ParseAlarmServer() (options AlarmServerOptions, enabled bool, e
 const (
 	DefaultMediaServerDir           = "./data/media"
 	DefaultMediaServerMaxConcurrent = 16
+	DefaultMediaServerRetentionDays = 7
 )
 
 // mediaServerConf 配置 1078 RTP 音视频接入服务器。
@@ -377,6 +451,8 @@ type mediaServerConf struct {
 	Port          string `yaml:"port"`
 	Dir           string `yaml:"dir"`
 	MaxConcurrent int    `yaml:"maxConcurrent"`
+	// RetentionDays 是 .h264 文件的落盘保留天数；显式 0 表示不清理。
+	RetentionDays *int `yaml:"retentionDays"`
 }
 
 // MediaServerOptions 是媒体接入服务器的归一化配置。
@@ -384,6 +460,7 @@ type MediaServerOptions struct {
 	Port          uint16
 	Dir           string
 	MaxConcurrent int
+	Retention     time.Duration
 }
 
 // ParseMediaServer 解析并校验 mediaServer 配置。
@@ -412,10 +489,18 @@ func (c *Config) ParseMediaServer() (options MediaServerOptions, enabled bool, e
 	if maxConcurrent == 0 {
 		maxConcurrent = DefaultMediaServerMaxConcurrent
 	}
+	retentionDays := DefaultMediaServerRetentionDays
+	if conf.RetentionDays != nil {
+		if *conf.RetentionDays < 0 {
+			return MediaServerOptions{}, false, fmt.Errorf("mediaServer.retentionDays must be >= 0, got %d", *conf.RetentionDays)
+		}
+		retentionDays = *conf.RetentionDays
+	}
 	return MediaServerOptions{
 		Port:          uint16(port),
 		Dir:           dir,
 		MaxConcurrent: maxConcurrent,
+		Retention:     time.Duration(retentionDays) * 24 * time.Hour,
 	}, true, nil
 }
 

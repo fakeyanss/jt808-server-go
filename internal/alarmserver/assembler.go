@@ -440,6 +440,24 @@ func (a *Assembler) Stats() (active, completed int64) {
 	return a.active.Load(), a.completed.Load()
 }
 
+// ActivePaths 返回仍在组装中的文件及其状态文件路径，供落盘清理跳过。
+func (a *Assembler) ActivePaths() map[string]struct{} {
+	if a == nil {
+		return nil
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	active := make(map[string]struct{}, len(a.files)*2)
+	for _, st := range a.files {
+		if st.completed || st.partPath == "" {
+			continue
+		}
+		active[st.partPath] = struct{}{}
+		active[statePath(st.partPath)] = struct{}{}
+	}
+	return active
+}
+
 func fileKey(phone, fileName string) string { return phone + "\x00" + fileName }
 
 func (a *Assembler) acquire() error {

@@ -218,3 +218,48 @@ func TestServerIgnoresUnsupportedPackets(t *testing.T) {
 func esFrame() []byte {
 	return []byte{0x00, 0x00, 0x00, 0x01, 0x65, 0x01}
 }
+
+func TestPruneExpiredMediaFiles(t *testing.T) {
+	dir := t.TempDir()
+	now := time.Now()
+
+	old := filepath.Join(dir, "old.h264")
+	newFile := filepath.Join(dir, "new.h264")
+	running := filepath.Join(dir, "running.h264")
+	for _, path := range []string{old, newFile, running} {
+		require.NoError(t, os.WriteFile(path, []byte("data"), 0o644))
+	}
+	past := now.Add(-8 * 24 * time.Hour)
+	require.NoError(t, os.Chtimes(old, past, past))
+	require.NoError(t, os.Chtimes(running, past, past))
+
+	server := NewServer(Config{Dir: dir, MaxConcurrent: 2, Retention: 7 * 24 * time.Hour})
+	defer server.Stop()
+	server.mu.Lock()
+	server.streams["running"] = &streamState{sink: &fileSink{path: running}, lastSeen: now}
+	server.mu.Unlock()
+
+	server.pruneExpired(now)
+
+	_, err := os.Stat(old)
+	require.True(t, os.IsNotExist(err), "expired file must be pruned")
+	_, err = os.Stat(newFile)
+	require.NoError(t, err, "file within retention must be kept")
+	_, err = os.Stat(running)
+	require.NoError(t, err, "active stream file must be kept")
+}
+
+func TestPruneExpiredKeepsFilesWhenRetentionDisabled(t *testing.T) {
+	dir := t.TempDir()
+	old := filepath.Join(dir, "old.h264")
+	require.NoError(t, os.WriteFile(old, []byte("data"), 0o644))
+	past := time.Now().Add(-8 * 24 * time.Hour)
+	require.NoError(t, os.Chtimes(old, past, past))
+
+	server := NewServer(Config{Dir: dir})
+	defer server.Stop()
+	server.pruneExpired(time.Now())
+
+	_, err := os.Stat(old)
+	require.NoError(t, err)
+}

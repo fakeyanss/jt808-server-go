@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -304,6 +306,7 @@ func (s *Server) cleanupLoop() {
 	}
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
+	var lastPrune time.Time
 	for {
 		select {
 		case <-s.done:
@@ -311,7 +314,54 @@ func (s *Server) cleanupLoop() {
 		case now := <-ticker.C:
 			s.assembler.CleanupStale(now, s.cfg.SessionTimeout)
 			s.assembler.CleanupCompleted(now, s.cfg.CompletedTTL)
+			// 每小时扫一次附件目录；保留期为 0 时不清理。
+			if s.cfg.Retention > 0 && (lastPrune.IsZero() || now.Sub(lastPrune) >= time.Hour) {
+				lastPrune = now
+				s.pruneExpiredFiles(now)
+			}
 		}
+	}
+}
+
+// pruneExpiredFiles 删除超过保留期且不在组装中的附件文件。
+func (s *Server) pruneExpiredFiles(now time.Time) {
+	if s.cfg.Retention <= 0 {
+		return
+	}
+	cutoff := now.Add(-s.cfg.Retention)
+	active := s.assembler.ActivePaths()
+
+	removed := 0
+	walkErr := filepath.WalkDir(s.cfg.Dir, func(path string, entry os.DirEntry, err error) error {
+		if err != nil {
+			log.Warn().Err(err).Str("path", path).Msg("Fail to scan attachment dir")
+			return nil
+		}
+		if entry.IsDir() {
+			return nil
+		}
+		if _, ok := active[path]; ok {
+			return nil
+		}
+		info, infoErr := entry.Info()
+		if infoErr != nil {
+			return nil
+		}
+		if !info.ModTime().Before(cutoff) {
+			return nil
+		}
+		if removeErr := os.Remove(path); removeErr != nil {
+			log.Warn().Err(removeErr).Str("path", path).Msg("Fail to prune expired attachment file")
+			return nil
+		}
+		removed++
+		return nil
+	})
+	if walkErr != nil {
+		log.Warn().Err(walkErr).Str("dir", s.cfg.Dir).Msg("Fail to walk attachment dir")
+	}
+	if removed > 0 {
+		log.Info().Int("removed", removed).Str("dir", s.cfg.Dir).Msg("Pruned expired attachment files")
 	}
 }
 

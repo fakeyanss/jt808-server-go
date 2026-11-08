@@ -41,6 +41,8 @@ alarmServer:
   # 已完成附件的内存状态保留时长；到期后仅释放内存，.meta.json 仍可查询。
   # 显式 0 表示不淘汰，留空使用默认值 20m。
   completedTTL: "20m"
+  # 已完成附件文件的落盘保留天数；每小时扫描一次目录，显式 0 表示不清理。
+  retentionDays: 7
   # 报警首次上报时是否自动下发 0x9208（报警附件上传指令）。
   # 默认 false，保持仅通过 API 手动下发的既有行为。
   autoUpload: false
@@ -56,6 +58,8 @@ mediaServer:
   port: ""
   dir: "./data/media"
   maxConcurrent: 16
+  # .h264 文件落盘保留天数；每小时扫描一次目录，显式 0 表示不清理。
+  retentionDays: 7
 
 # 独立管理面 HTTP 监听。enable 缺省 false，不启动管理端口，
 # 终端接入端口、既有 HTTP API 与苏标/媒体服务行为完全不变。
@@ -71,6 +75,17 @@ admin:
     ratePerSecond: 10
     burst: 20
     keyBy: "credential"
+
+# 业务 API 鉴权、限流与审计。
+# token 为空表示鉴权关闭，仅建议在可信内网临时使用；生产环境必须配置。
+# 变更类请求（POST/PUT/PATCH/DELETE）与鉴权失败会写入审计日志。
+api:
+  auth:
+    token: ""
+  rateLimit:
+    # 按来源 IP 的令牌桶；ratePerSecond 为每秒补充令牌数，burst 为桶容量。
+    ratePerSecond: 50
+    burst: 100
 
 # 持久化数据保留策略。整段缺省时使用代码内置默认值，行为与之前的进程内实现一致。
 # 显式写 0 表示关闭对应策略（0 天不做时间清理、0 条不限制上限、0 毫秒不去重）。

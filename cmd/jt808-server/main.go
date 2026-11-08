@@ -122,6 +122,14 @@ func main() {
 		log.Error().Err(adminErr).Msg("Invalid admin configuration")
 		os.Exit(1)
 	}
+	apiOptions, apiErr := cfg.ParseAPI()
+	if apiErr != nil {
+		log.Error().Err(apiErr).Msg("Invalid business API configuration")
+		os.Exit(1)
+	}
+	if apiOptions.Token == "" {
+		log.Warn().Msg("Business API authentication is disabled; set api.auth.token in production")
+	}
 
 	serv := server.NewTCPServer()
 	serv.SetDeps(deps)
@@ -213,6 +221,7 @@ func main() {
 			MaxFileSize:   alarmOptions.MaxFileSize,
 			MaxConcurrent: alarmOptions.MaxConcurrent,
 			CompletedTTL:  alarmOptions.CompletedTTL,
+			Retention:     alarmOptions.Retention,
 		})
 		// TCP 与 UDP 各自独立监听，0x9208 通告的端口即这里的监听端口。
 		if alarmOptions.Port != 0 {
@@ -237,6 +246,7 @@ func main() {
 		mediaServ = media.NewServer(media.Config{
 			Dir:           mediaOptions.Dir,
 			MaxConcurrent: mediaOptions.MaxConcurrent,
+			Retention:     mediaOptions.Retention,
 		})
 		mediaAddr := fmt.Sprintf(":%d", mediaOptions.Port)
 		if err := mediaServ.Listen(mediaAddr); err != nil {
@@ -324,7 +334,7 @@ func main() {
 	apiDone := make(chan struct{})
 	routines.GoSafe(func() {
 		defer close(apiDone)
-		api.Run(apiCtx, serv, cfg, alarmServ, outboxOptions, commandRepo)
+		api.Run(apiCtx, serv, cfg, apiOptions, alarmServ, outboxOptions, commandRepo)
 	})
 
 	// 运行时状态只存在于进程内，进程退出即自然归零；数据库无需、也不应被批量重置。
