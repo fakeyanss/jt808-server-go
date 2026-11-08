@@ -157,6 +157,7 @@ type Config struct {
 	Storage     *storageConf     `yaml:"storage"`
 	Retention   *retentionConf   `yaml:"retention"`
 	AlarmServer *alarmServerConf `yaml:"alarmServer"`
+	MediaServer *mediaServerConf `yaml:"mediaServer"`
 }
 
 // 苏标附件服务器的工程默认值。未配置 alarmServer.port 时服务不启动。
@@ -279,6 +280,60 @@ func (c *Config) ParseAlarmServer() (options AlarmServerOptions, enabled bool, e
 		CompletedTTL:  completedTTL,
 		AutoUpload:    conf.AutoUpload,
 		UploadIP:      uploadIP,
+	}, true, nil
+}
+
+// 媒体 RTP 接入服务器的工程默认值。未配置 mediaServer.port 时服务不启动。
+const (
+	DefaultMediaServerDir           = "./data/media"
+	DefaultMediaServerMaxConcurrent = 16
+)
+
+// mediaServerConf 配置 1078 RTP 音视频接入服务器。
+// port 为空表示不启用；显式配置后监听独立 UDP 端口。
+type mediaServerConf struct {
+	Port          string `yaml:"port"`
+	Dir           string `yaml:"dir"`
+	MaxConcurrent int    `yaml:"maxConcurrent"`
+}
+
+// MediaServerOptions 是媒体接入服务器的归一化配置。
+type MediaServerOptions struct {
+	Port          uint16
+	Dir           string
+	MaxConcurrent int
+}
+
+// ParseMediaServer 解析并校验 mediaServer 配置。
+// 返回 enabled=false 表示未配置端口，媒体接入不启动，行为与旧版本一致。
+func (c *Config) ParseMediaServer() (options MediaServerOptions, enabled bool, err error) {
+	if c == nil || c.MediaServer == nil {
+		return MediaServerOptions{}, false, nil
+	}
+	conf := c.MediaServer
+	rawPort := strings.TrimSpace(conf.Port)
+	if rawPort == "" {
+		return MediaServerOptions{}, false, nil
+	}
+	port, parseErr := strconv.Atoi(rawPort)
+	if parseErr != nil || port < 1 || port > 65535 {
+		return MediaServerOptions{}, false, fmt.Errorf("mediaServer.port must be a UDP port between 1 and 65535, got %q", rawPort)
+	}
+	dir := strings.TrimSpace(conf.Dir)
+	if dir == "" {
+		dir = DefaultMediaServerDir
+	}
+	if conf.MaxConcurrent < 0 {
+		return MediaServerOptions{}, false, fmt.Errorf("mediaServer.maxConcurrent must be >= 0, got %d", conf.MaxConcurrent)
+	}
+	maxConcurrent := conf.MaxConcurrent
+	if maxConcurrent == 0 {
+		maxConcurrent = DefaultMediaServerMaxConcurrent
+	}
+	return MediaServerOptions{
+		Port:          uint16(port),
+		Dir:           dir,
+		MaxConcurrent: maxConcurrent,
 	}, true, nil
 }
 

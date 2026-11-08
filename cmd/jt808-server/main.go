@@ -15,6 +15,7 @@ import (
 	"github.com/fakeyanss/jt808-server-go/internal/alarmserver"
 	"github.com/fakeyanss/jt808-server-go/internal/api"
 	"github.com/fakeyanss/jt808-server-go/internal/config"
+	"github.com/fakeyanss/jt808-server-go/internal/media"
 	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
 	"github.com/fakeyanss/jt808-server-go/internal/runtime"
 	"github.com/fakeyanss/jt808-server-go/internal/server"
@@ -68,6 +69,11 @@ func main() {
 	alarmOptions, alarmEnabled, alarmErr := cfg.ParseAlarmServer()
 	if alarmErr != nil {
 		log.Error().Err(alarmErr).Msg("Invalid alarmServer configuration")
+		os.Exit(1)
+	}
+	mediaOptions, mediaEnabled, mediaErr := cfg.ParseMediaServer()
+	if mediaErr != nil {
+		log.Error().Err(mediaErr).Msg("Invalid mediaServer configuration")
 		os.Exit(1)
 	}
 
@@ -142,6 +148,20 @@ func main() {
 		routines.GoSafe(func() { alarmServ.Start() })
 	}
 
+	var mediaServ *media.Server
+	if mediaEnabled {
+		mediaServ = media.NewServer(media.Config{
+			Dir:           mediaOptions.Dir,
+			MaxConcurrent: mediaOptions.MaxConcurrent,
+		})
+		mediaAddr := fmt.Sprintf(":%d", mediaOptions.Port)
+		if err := mediaServ.Listen(mediaAddr); err != nil {
+			log.Error().Err(err).Str("addr", mediaAddr).Msg("Fail to listen media server addr")
+			os.Exit(1)
+		}
+		routines.GoSafe(func() { mediaServ.Start() })
+	}
+
 	routines.GoSafe(func() { api.Run(serv, cfg, alarmServ) })
 
 	// 运行时状态只存在于进程内，进程退出即自然归零；数据库无需、也不应被批量重置。
@@ -152,6 +172,9 @@ func main() {
 
 	if alarmServ != nil {
 		alarmServ.Stop()
+	}
+	if mediaServ != nil {
+		mediaServ.Stop()
 	}
 	if err := storage.Close(); err != nil {
 		log.Warn().Err(err).Msg("Fail to close storage backend")
