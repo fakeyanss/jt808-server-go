@@ -82,9 +82,18 @@ func (p *Pipeline) ProcessConnWrite(ctx context.Context) error {
 	return p.callWithBlocking(ctx, actions)
 }
 
+// preassignedSerialCtxKey 标记下行报文流水号已由调用方预分配，编码阶段不再改写。
+// outbox 需要在下发前用确定的流水号落库，才能把终端应答精确回填到命令记录。
+type preassignedSerialCtxKey struct{}
+
+// WithPreassignedSerial 标记本次下行发送使用报文头中已设置的流水号。
+func WithPreassignedSerial(ctx context.Context) context.Context {
+	return context.WithValue(ctx, preassignedSerialCtxKey{}, true)
+}
+
 func assignSerialNumber() delegateFunc {
 	return delegateFunc(func(ctx context.Context, _ *Pipeline) (context.Context, error) {
-		if ctx.Value(earlyAckSentCtxKey{}) != nil {
+		if ctx.Value(earlyAckSentCtxKey{}) != nil || ctx.Value(preassignedSerialCtxKey{}) != nil {
 			return ctx, nil
 		}
 		pd, _ := ctx.Value(model.ProcessDataCtxKey{}).(*model.ProcessData)

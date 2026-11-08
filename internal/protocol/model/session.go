@@ -29,10 +29,32 @@ type (
 	PacketEncodeCtxKey struct{}
 )
 
+// ReliableStatus 描述可靠下行报文的最终投递结果。
+type ReliableStatus string
+
+const (
+	// ReliableStatusAcked 表示已收到终端应答。
+	ReliableStatusAcked ReliableStatus = "acked"
+	// ReliableStatusFailed 表示写失败、重传耗尽或会话关闭。
+	ReliableStatusFailed ReliableStatus = "failed"
+)
+
+// ReliableResult 是可靠下行报文的投递结果事件，供 outbox 回填状态。
+type ReliableResult struct {
+	MsgID  uint16
+	Serial uint16
+	Phone  string
+	Status ReliableStatus
+	Reason string
+}
+
 type Session struct {
 	ID        string // remote addr
 	Conn      net.Conn
 	Transport TransportProtocol
+	// OnReliableResult 在可靠报文确认、重传失败或会话关闭时回调。
+	// 必须在会话开始收发前设置；回调实现不得阻塞读路径。
+	OnReliableResult func(ReliableResult)
 	// ConnectedAt 是连接建立时间，仅在创建会话时写入一次，不参与消息处理热路径。
 	ConnectedAt  time.Time
 	WriteMu      sync.Mutex
@@ -133,10 +155,14 @@ func (s *Session) TrackReliable(msgID, serial uint16, phone string, frame []byte
 
 			if err := s.WriteFrame(pending.frame); err != nil {
 				s.pendingMu.Lock()
-				if s.pending[key] == pending {
+				matched := s.pending[key] == pending
+				if matched {
 					delete(s.pending, key)
 				}
 				s.pendingMu.Unlock()
+				if matched {
+					s.notifyReliable(ReliableResult{MsgID: msgID, Serial: serial, Phone: phone, Status: ReliableStatusFailed, Reason: "write failed"})
+				}
 				_ = s.Conn.Close()
 				return
 			}
@@ -146,6 +172,7 @@ func (s *Session) TrackReliable(msgID, serial uint16, phone string, frame []byte
 		if s.pending[key] == pending {
 			delete(s.pending, key)
 			s.pendingMu.Unlock()
+			s.notifyReliable(ReliableResult{MsgID: msgID, Serial: serial, Phone: phone, Status: ReliableStatusFailed, Reason: "retransmission exhausted"})
 			_ = s.Conn.Close()
 			return
 		}
@@ -153,18 +180,27 @@ func (s *Session) TrackReliable(msgID, serial uint16, phone string, frame []byte
 	}()
 }
 
+// notifyReliable 派发投递结果事件；回调必须非阻塞。
+func (s *Session) notifyReliable(result ReliableResult) {
+	if s.OnReliableResult != nil {
+		s.OnReliableResult(result)
+	}
+}
+
 // Acknowledge 按（消息 ID，流水号）精确清算一条待确认项，返回是否命中。
 // 重复应答、错会话应答或找不到等待项时返回 false，且不会清除任何等待项。
 func (s *Session) Acknowledge(msgID, serial uint16) bool {
 	key := uint32(msgID)<<16 | uint32(serial)
 	s.pendingMu.Lock()
-	defer s.pendingMu.Unlock()
 	pending := s.pending[key]
 	if pending == nil {
+		s.pendingMu.Unlock()
 		return false
 	}
 	delete(s.pending, key)
 	close(pending.done)
+	s.pendingMu.Unlock()
+	s.notifyReliable(ReliableResult{MsgID: msgID, Serial: serial, Phone: pending.phone, Status: ReliableStatusAcked})
 	return true
 }
 
@@ -172,24 +208,34 @@ func (s *Session) Acknowledge(msgID, serial uint16) bool {
 // 流水号在单个会话内唯一，无需再区分被应答的消息 ID；
 // 同时校验报文头手机号，避免同号多会话场景下错清其它会话的等待项。
 func (s *Session) AcknowledgeSerial(serial uint16, phone string) bool {
+	var (
+		msgID     uint16
+		serialHit uint16
+		matched   bool
+	)
 	s.pendingMu.Lock()
-	defer s.pendingMu.Unlock()
 	for key, pending := range s.pending {
 		if pending.phone != phone || uint16(key) != serial {
 			continue
 		}
 		delete(s.pending, key)
 		close(pending.done)
-		return true
+		msgID = uint16(key >> 16)
+		serialHit = uint16(key)
+		matched = true
+		break
 	}
-	return false
+	s.pendingMu.Unlock()
+	if matched {
+		s.notifyReliable(ReliableResult{MsgID: msgID, Serial: serialHit, Phone: phone, Status: ReliableStatusAcked})
+	}
+	return matched
 }
 
 // AcknowledgeTypedResponse 用于协议体不含应答流水号的应答（0x0608/0x0702/0x8800）。
 // 这类应答无法精确到单条，只有在同类等待项唯一时才清算，避免一条应答误清多条。
 func (s *Session) AcknowledgeTypedResponse(responseID uint16, phone string) bool {
 	s.pendingMu.Lock()
-	defer s.pendingMu.Unlock()
 	var matchedKey uint32
 	matched := 0
 	for key, pending := range s.pending {
@@ -199,11 +245,19 @@ func (s *Session) AcknowledgeTypedResponse(responseID uint16, phone string) bool
 		}
 	}
 	if matched != 1 {
+		s.pendingMu.Unlock()
 		return false
 	}
 	pending := s.pending[matchedKey]
 	delete(s.pending, matchedKey)
 	close(pending.done)
+	s.pendingMu.Unlock()
+	s.notifyReliable(ReliableResult{
+		MsgID:  uint16(matchedKey >> 16),
+		Serial: uint16(matchedKey),
+		Phone:  pending.phone,
+		Status: ReliableStatusAcked,
+	})
 	return true
 }
 
@@ -214,18 +268,46 @@ func (s *Session) PendingCount() int {
 	return len(s.pending)
 }
 
+// CancelReliable 放弃一条可靠报文（例如写帧失败），按投递失败上报。
 func (s *Session) CancelReliable(msgID, serial uint16) {
-	s.Acknowledge(msgID, serial)
+	key := uint32(msgID)<<16 | uint32(serial)
+	s.pendingMu.Lock()
+	pending := s.pending[key]
+	if pending == nil {
+		s.pendingMu.Unlock()
+		return
+	}
+	delete(s.pending, key)
+	close(pending.done)
+	s.pendingMu.Unlock()
+	s.notifyReliable(ReliableResult{
+		MsgID:  msgID,
+		Serial: serial,
+		Phone:  pending.phone,
+		Status: ReliableStatusFailed,
+		Reason: "send failed",
+	})
 }
 
 func (s *Session) ClosePending() {
 	s.pendingMu.Lock()
 	s.closed = true
+	results := make([]ReliableResult, 0, len(s.pending))
 	for key, pending := range s.pending {
 		delete(s.pending, key)
 		close(pending.done)
+		results = append(results, ReliableResult{
+			MsgID:  uint16(key >> 16),
+			Serial: uint16(key),
+			Phone:  pending.phone,
+			Status: ReliableStatusFailed,
+			Reason: "session closed",
+		})
 	}
 	s.pendingMu.Unlock()
+	for _, result := range results {
+		s.notifyReliable(result)
+	}
 }
 
 // MarkCloseAfterResponse 标记本会话在发送完当前应答后关闭，用于拒绝冒名连接。

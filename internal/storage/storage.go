@@ -50,6 +50,7 @@ type Stores struct {
 	Regions    repository.RegionRepository
 	Industry   repository.IndustryRepository
 	Media      repository.MediaMetadataRepository
+	Commands   repository.CommandRepository
 	// Locations 为定位历史仓储；memory 后端保持既有热读环形缓冲，本字段为 nil。
 	Locations repository.LocationRepository
 
@@ -73,13 +74,14 @@ func newStores(backend string) *Stores {
 		Regions:    repository.NewRegionRepository(),
 		Industry:   repository.NewIndustryRepository(),
 		Media:      repository.NewMediaMetadataRepository(),
+		Commands:   repository.NewCommandRepository(),
 		Backend:    backend,
 	}
 }
 
 // Open 按配置装配存储后端。
 // SQL 后端覆盖 Device、DeviceParams、TerminalProperties、Industry、Regions、
-// Alarms 与 Locations；memory 后端保持既有行为不变。
+// Alarms、Media、Commands 与 Locations；memory 后端保持既有行为不变。
 func Open(cfg Config) (*Stores, error) {
 	backend := normalizeBackend(cfg.Type)
 	switch backend {
@@ -106,6 +108,7 @@ func Open(cfg Config) (*Stores, error) {
 		stores.Properties = sqlStore.TerminalPropertiesRepository()
 		stores.Industry = industry
 		stores.Media = sqlStore.MediaMetadataRepository()
+		stores.Commands = sqlStore.CommandRepository()
 		stores.Regions = regions
 		stores.Alarms = sqlStore.AlarmRepository(cfg.AlarmRetention)
 		stores.Locations = sqlStore.LocationRepository(cfg.LocationRetention)

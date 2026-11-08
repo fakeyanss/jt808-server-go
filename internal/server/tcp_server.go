@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"net"
 	"sync"
@@ -15,6 +16,7 @@ import (
 	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
 	"github.com/fakeyanss/jt808-server-go/internal/repository"
 	"github.com/fakeyanss/jt808-server-go/internal/runtime"
+	"github.com/fakeyanss/jt808-server-go/internal/storage"
 	"github.com/fakeyanss/jt808-server-go/pkg/routines"
 )
 
@@ -39,6 +41,14 @@ func (serv *TCPServer) runtimeStores() *runtime.Stores {
 		return serv.deps.Runtime
 	}
 	return runtime.Default()
+}
+
+// commandRepository 返回下行命令 outbox；未注入时回退到进程默认存储。
+func (serv *TCPServer) commandRepository() repository.CommandRepository {
+	if serv.deps.Storage != nil {
+		return serv.deps.Storage.Commands
+	}
+	return storage.Default().Commands
 }
 
 // SetHooks 设置生命周期钩子。未设置时使用 action.Noop。
@@ -97,6 +107,11 @@ func (serv *TCPServer) accept(conn net.Conn) *model.Session {
 		ConnectedAt: time.Now(),
 		AckTimeout:  serv.ackTimeout,
 		MaxRetries:  serv.maxRetransmissions,
+	}
+	if commands := serv.commandRepository(); commands != nil {
+		session.OnReliableResult = func(result model.ReliableResult) {
+			go recordReliableResult(commands, result)
+		}
 	}
 	// serv.sessions[remoteAddr] = session
 	_ = serv.runtimeStores().Conn.Bind(context.Background(), session)
@@ -171,13 +186,37 @@ func isTimeout(err error) bool {
 	return errors.As(err, &netErr) && netErr.Timeout()
 }
 
-// 发送消息到终端设备, 外部调用
-func (serv *TCPServer) Send(id string, msg model.JT808Msg) {
+// SendOption 配置一次下行发送。
+type SendOption func(*sendSettings)
+
+type sendSettings struct {
+	serial    uint16
+	useSerial bool
+}
+
+// WithSerial 使用调用方预分配的流水号，编码阶段不再改写。
+// outbox 需要在下发前用确定的流水号落库，才能把应答精确回填到命令记录。
+func WithSerial(serial uint16) SendOption {
+	return func(settings *sendSettings) {
+		settings.serial = serial
+		settings.useSerial = true
+	}
+}
+
+// 发送消息到终端设备, 外部调用。
+// 返回错误供 outbox 标记失败；既有调用方可忽略返回值。
+func (serv *TCPServer) Send(id string, msg model.JT808Msg, opts ...SendOption) error {
+	var settings sendSettings
+	for _, opt := range opts {
+		opt(&settings)
+	}
 	// session := serv.sessions[id]
 	session, err := serv.runtimeStores().Conn.Get(context.Background(), id)
-	if err != nil && errors.Is(err, runtime.ErrSessionClosed) {
-		log.Warn().Str("id", id).Msg("Fail to get session from cache, maybe conn was closed.")
-		return
+	if err != nil {
+		if errors.Is(err, runtime.ErrSessionClosed) {
+			log.Warn().Str("id", id).Msg("Fail to get session from cache, maybe conn was closed.")
+		}
+		return fmt.Errorf("get session %s: %w", id, err)
 	}
 
 	pg := protocol.NewPipeline(session.Conn, protocol.WithHooks(serv.hooks), protocol.WithDeps(serv.deps))
@@ -185,11 +224,15 @@ func (serv *TCPServer) Send(id string, msg model.JT808Msg) {
 	// 记录value ctx
 	ctx := context.WithValue(context.Background(), model.SessionCtxKey{}, session)
 	ctx = context.WithValue(ctx, model.ProcessDataCtxKey{}, &model.ProcessData{Outgoing: msg})
+	if settings.useSerial && msg.GetHeader() != nil {
+		msg.GetHeader().SerialNumber = settings.serial
+		ctx = protocol.WithPreassignedSerial(ctx)
+	}
 
 	err = pg.ProcessConnWrite(ctx)
 
 	if err == nil {
-		return
+		return nil
 	}
 
 	if errors.Is(err, io.ErrClosedPipe) || errors.Is(err, net.ErrClosed) {
@@ -197,4 +240,5 @@ func (serv *TCPServer) Send(id string, msg model.JT808Msg) {
 	}
 
 	log.Error().Err(err).Str("device", id).Msg("Failed to send jtmsg to device")
+	return err
 }

@@ -1768,6 +1768,40 @@ func TestTCPServerLogoutClearsCacheAndKeepsConn(t *testing.T) {
 	require.True(t, errors.As(err, &netErr) && netErr.Timeout(), "expected read timeout on kept-open conn, got %v", err)
 }
 
+func TestTCPServerUpdatesCommandOutboxOnAck(t *testing.T) {
+	server, _, device := startSimulatorServer(t)
+	session, err := runtime.Default().Conn.Get(context.Background(), device.SessionID)
+	require.NoError(t, err)
+
+	commands := storage.Default().Commands
+	serial := session.GetNextSerialNum()
+	commandID := "test-command-" + device.Phone
+	command, created, err := commands.Enqueue(context.Background(), &repository.DownlinkCommand{
+		CommandID:      commandID,
+		IdempotencyKey: commandID,
+		Phone:          device.Phone,
+		MsgID:          0x8105,
+		Serial:         serial,
+		Payload:        []byte{0x02},
+	})
+	require.NoError(t, err)
+	require.True(t, created)
+	require.Equal(t, repository.CommandStatusPending, command.Status)
+
+	// 预分配流水号必须被编码阶段保留，否则终端 0x0001 无法回填到该命令。
+	msg := &model.Msg8105{Header: model.GenMsgHeader(device, 0x8105, serial), CommandWord: 2}
+	require.NoError(t, server.Send(session.ID, msg, WithSerial(serial)))
+
+	waitFor(t, 2*time.Second, func() bool {
+		stored, err := commands.Get(context.Background(), commandID)
+		return err == nil && stored.Status == repository.CommandStatusAcked
+	})
+	stored, err := commands.Get(context.Background(), commandID)
+	require.NoError(t, err)
+	require.Equal(t, repository.CommandStatusAcked, stored.Status)
+	require.Equal(t, serial, stored.Serial)
+}
+
 func TestTCPServerAnswersServerTimeQuery(t *testing.T) {
 	server := NewTCPServer()
 	require.NoError(t, server.Listen("127.0.0.1:0"))
