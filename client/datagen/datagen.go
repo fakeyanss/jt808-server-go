@@ -266,8 +266,8 @@ func GenMsg0704(device *model.Device) *model.Msg0704 {
 	return &model.Msg0704{Header: genMsgHeader(0x0704, device), ItemCount: uint16(len(items)), DataType: 0, Items: items}
 }
 
-func GenMsg0900(device *model.Device, typ uint32, data []byte) *model.Msg0900 {
-	return &model.Msg0900{Header: genMsgHeader(0x0900, device), Type: typ, Data: append([]byte(nil), data...)}
+func GenMsg0900(device *model.Device, typ uint8, items []model.PeripheralItem) *model.Msg0900 {
+	return &model.Msg0900{Header: genMsgHeader(0x0900, device), Type: typ, Items: items}
 }
 
 // GenMsg0901 zlib-compresses raw into a 0x0901 compressed report.

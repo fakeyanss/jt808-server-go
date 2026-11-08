@@ -63,8 +63,10 @@ func Run(serv *server.TCPServer, cfg *config.Config, alarmServ *alarmserver.Serv
 			result = industry.MediaSearch(phone)
 		case "media-uploads":
 			result = industry.MediaUploads(phone)
+		case "transparent", "peripheral":
+			result = industry.TransparentUp(phone)
 		default:
-			c.JSON(http.StatusBadRequest, gin.H{"err": "kind must be driver, can, recorder, media-event, media-capture, media-search, or media-uploads"})
+			c.JSON(http.StatusBadRequest, gin.H{"err": "kind must be driver, can, recorder, media-event, media-capture, media-search, media-uploads, transparent, or peripheral"})
 			return
 		}
 		if result == nil {

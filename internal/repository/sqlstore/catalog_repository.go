@@ -39,8 +39,8 @@ type upgradePayload struct {
 
 // transparentDownPayload 是 0x8900 落库时保存的字段。
 type transparentDownPayload struct {
-	Type uint32 `json:"type"`
-	Data []byte `json:"data"`
+	Type uint8   `json:"type"`
+	IDs  []uint8 `json:"ids"`
 }
 
 // industryRepository 在内存实现之上叠加配置类数据的整包落库。
@@ -147,7 +147,7 @@ func (r *industryRepository) load(ctx context.Context) error {
 			r.IndustryRepository.Record(&model.Msg8900{
 				Header: &model.MsgHeader{PhoneNumber: item.phone},
 				Type:   payload.Type,
-				Data:   payload.Data,
+				IDs:    payload.IDs,
 			})
 		}
 	}
@@ -187,7 +187,7 @@ func (r *industryRepository) Record(msg model.JT808Msg) {
 		}
 		r.persistSnapshot(phone, catalogTypeUpgrade, payload)
 	case *model.Msg8900:
-		payload, err := json.Marshal(transparentDownPayload{Type: m.Type, Data: m.Data})
+		payload, err := json.Marshal(transparentDownPayload{Type: m.Type, IDs: m.IDs})
 		if err != nil {
 			log.Error().Err(err).Str("phone", phone).Msg("encode transparent downlink catalog")
 			return
