@@ -20,6 +20,88 @@ func startTestServer(t *testing.T, dir string, maxConcurrent int) (*Server, stri
 	return server, server.Addr()
 }
 
+// 落盘文件按手机号/通道分目录，文件名为纳秒时间戳 + .h264。
+func TestFileSinkDirectoryAndFileName(t *testing.T) {
+	dir := t.TempDir()
+	sink, err := newFileSink(dir, "188765430101", 3)
+	require.NoError(t, err)
+
+	wantDir := filepath.Join(dir, "188765430101", "channel_3")
+	require.Equal(t, wantDir, filepath.Dir(sink.Path()))
+	require.Regexp(t, `^\d+\.h264$`, filepath.Base(sink.Path()))
+
+	es := []byte{0x00, 0x00, 0x00, 0x01, 0x65, 0x88}
+	require.NoError(t, sink.Write(es))
+	require.NoError(t, sink.Close())
+
+	content, err := os.ReadFile(sink.Path())
+	require.NoError(t, err)
+	require.Equal(t, es, content)
+}
+
+func TestNewFileSinkRejectsNonNumericPhone(t *testing.T) {
+	for _, phone := range []string{"", "18876543010a", "京A12345", "-188765430101"} {
+		_, err := newFileSink(t.TempDir(), phone, 1)
+		require.Error(t, err, "phone %q must be rejected", phone)
+	}
+}
+
+// 并发上限按“手机号+通道”计流，超限时直接拒绝新流，但已有流仍复用同一状态。
+func TestServerStreamForEnforcesConcurrencyLimit(t *testing.T) {
+	server := NewServer(Config{Dir: t.TempDir(), MaxConcurrent: 1})
+	t.Cleanup(server.Stop)
+
+	first := &Packet{Phone: "188765430111", LogicChannel: 1}
+	st := server.streamFor(first)
+	require.NotNil(t, st)
+	require.Same(t, st, server.streamFor(first), "existing stream must be reused")
+
+	require.Nil(t, server.streamFor(&Packet{Phone: "188765430112", LogicChannel: 1}), "second phone must be rejected")
+	require.Nil(t, server.streamFor(&Packet{Phone: "188765430111", LogicChannel: 2}), "second channel of same phone must be rejected")
+
+	server.mu.Lock()
+	defer server.mu.Unlock()
+	require.Len(t, server.streams, 1)
+}
+
+// 空闲回收必须关闭文件句柄，但已写内容保留在磁盘上。
+func TestServerIdleEvictionClosesFileHandle(t *testing.T) {
+	dir := t.TempDir()
+	server := NewServer(Config{Dir: dir, MaxConcurrent: 1, IdleTimeout: 10 * time.Minute})
+	t.Cleanup(server.Stop)
+
+	pkt := &Packet{Phone: "188765430121", LogicChannel: 1, DataType: DataTypeIFrame, SubpackageType: SubpackageAtomic}
+	st := server.streamFor(pkt)
+	require.NotNil(t, st)
+
+	es := []byte{0x00, 0x00, 0x00, 0x01, 0x65, 0x01}
+	require.NoError(t, st.sink.Write(es))
+	path := st.sink.Path()
+
+	server.mu.Lock()
+	st.lastSeen = time.Now().Add(-11 * time.Minute)
+	server.mu.Unlock()
+	server.evictIdle(time.Now())
+
+	require.Empty(t, server.streams)
+	require.Error(t, st.sink.Write([]byte{0xFF}), "evicted stream must release its file handle")
+
+	content, err := os.ReadFile(path)
+	require.NoError(t, err)
+	require.Equal(t, es, content)
+}
+
+// 仍活跃的流不能被空闲回收误杀。
+func TestServerIdleEvictionKeepsActiveStream(t *testing.T) {
+	server := NewServer(Config{Dir: t.TempDir(), MaxConcurrent: 1, IdleTimeout: 10 * time.Minute})
+	t.Cleanup(server.Stop)
+
+	pkt := &Packet{Phone: "188765430131", LogicChannel: 1, DataType: DataTypeIFrame}
+	require.NotNil(t, server.streamFor(pkt))
+	server.evictIdle(time.Now())
+	require.Len(t, server.streams, 1)
+}
+
 func sendUDP(t *testing.T, addr string, packets ...[]byte) {
 	t.Helper()
 	conn, err := net.Dial("udp", addr)
