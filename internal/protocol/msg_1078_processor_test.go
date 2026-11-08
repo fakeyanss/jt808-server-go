@@ -57,7 +57,65 @@ func TestProcess1078CommandsProduceGenericAcknowledgement(t *testing.T) {
 	}
 }
 
-// 终端上行的 1078 信令无需应答，但要落成可查询的状态记录。
+// 0x1205 / 0x9206 / 0x1206 的媒体元数据要进入持久化仓储抽象。
+func TestProcess1078MediaMetadataPersists(t *testing.T) {
+	ctx := context.Background()
+	const phone = "188765432120"
+
+	listHeader := new1078Header(0x1205, phone, 31)
+	list := &model.Msg1205{
+		Header:             listHeader,
+		AnswerSerialNumber: 8,
+		MediaCount:         1,
+		Items: []model.DeviceMedia{
+			{DeviceMediaQuery: model.DeviceMediaQuery{LogicChannelID: 1, MediaType: 2}, Size: 512},
+		},
+	}
+	_, listBody := encode1078Body(t, list)
+	result, err := NewJT808MsgProcessor(nil).Process(ctx, &model.PacketData{Header: listHeader, Body: listBody})
+	require.NoError(t, err)
+	require.Nil(t, result)
+
+	storedList, err := storage.Default().Media.ResourceList(ctx, phone)
+	require.NoError(t, err)
+	require.NotNil(t, storedList)
+	require.Equal(t, uint32(1), storedList.MediaCount)
+	require.Len(t, storedList.Items, 1)
+	require.Equal(t, uint32(512), storedList.Items[0].Size)
+
+	taskHeader := new1078Header(0x9206, phone, 32)
+	task := &model.Msg9206{
+		Header:     taskHeader,
+		ServerIP:   "127.0.0.1",
+		Port:       21,
+		Username:   "user",
+		Password:   "pass",
+		UploadPath: "/media",
+		MediaType:  2,
+	}
+	_, taskBody := encode1078Body(t, task)
+	result, err = NewJT808MsgProcessor(nil).Process(ctx, &model.PacketData{Header: taskHeader, Body: taskBody})
+	require.NoError(t, err)
+	require.IsType(t, &model.Msg0001{}, result.Outgoing)
+
+	storedTask, err := storage.Default().Media.UploadTask(ctx, phone, 32)
+	require.NoError(t, err)
+	require.NotNil(t, storedTask)
+	require.Equal(t, "127.0.0.1", storedTask.ServerIP)
+	require.Equal(t, "/media", storedTask.UploadPath)
+
+	noticeHeader := new1078Header(0x1206, phone, 33)
+	notice := &model.Msg1206{Header: noticeHeader, AnswerSerialNumber: 32, Result: 0}
+	_, noticeBody := encode1078Body(t, notice)
+	_, err = NewJT808MsgProcessor(nil).Process(ctx, &model.PacketData{Header: noticeHeader, Body: noticeBody})
+	require.NoError(t, err)
+
+	storedNotice, err := storage.Default().Media.UploadNotice(ctx, phone, 32)
+	require.NoError(t, err)
+	require.NotNil(t, storedNotice)
+	require.Equal(t, uint8(0), storedNotice.Result)
+}
+
 func TestProcess1078UplinkSignalingRecordsState(t *testing.T) {
 	const phone = "188765432119"
 	header := new1078Header(0x9105, phone, 21)

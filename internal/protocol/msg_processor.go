@@ -350,6 +350,12 @@ func initProcessOption() processOptions {
 		},
 		process: processMsg9205,
 	}
+	options[0x1205] = &action{ // 终端上传音视频资源列表
+		genData: func() *model.ProcessData {
+			return &model.ProcessData{Incoming: &model.Msg1205{}}
+		},
+		process: processMediaResourceList,
+	}
 	options[0x9101] = &action{ // 实时音视频传输请求，接收方（终端）按协议回通用应答
 		genData: func() *model.ProcessData {
 			return &model.ProcessData{Incoming: &model.Msg9101{}, Outgoing: &model.Msg0001{}}
@@ -380,6 +386,7 @@ func initProcessOption() processOptions {
 		genData: func() *model.ProcessData {
 			return &model.ProcessData{Incoming: &model.Msg9206{}, Outgoing: &model.Msg0001{}}
 		},
+		process: processMediaUploadTask,
 	}
 	options[0x1206] = &action{ // 文件上传完成通知，终端上行，无需应答
 		genData: func() *model.ProcessData {
@@ -1270,10 +1277,32 @@ func processIndustryReport(_ context.Context, data *model.ProcessData) error {
 }
 
 // processMediaSignaling 记录终端上行的 1078 音视频信令状态，
-// 供 API 查询与后续媒体接入使用。
-func processMediaSignaling(_ context.Context, data *model.ProcessData) error {
+// 供 API 查询与后续媒体接入使用；0x1206 同时落媒体元数据仓储。
+func processMediaSignaling(ctx context.Context, data *model.ProcessData) error {
 	storage.Default().Industry.Record(data.Incoming)
+	if notice, ok := data.Incoming.(*model.Msg1206); ok {
+		return storage.Default().Media.SaveUploadNotice(ctx, notice.Header.PhoneNumber, notice)
+	}
 	return nil
+}
+
+// processMediaResourceList 记录 0x1205 音视频资源列表，并整包覆盖媒体元数据仓储。
+func processMediaResourceList(ctx context.Context, data *model.ProcessData) error {
+	storage.Default().Industry.Record(data.Incoming)
+	list, ok := data.Incoming.(*model.Msg1205)
+	if !ok || list.Header == nil {
+		return nil
+	}
+	return storage.Default().Media.ReplaceResourceList(ctx, list.Header.PhoneNumber, list)
+}
+
+// processMediaUploadTask 保存 0x9206 文件上传指令的元数据。
+func processMediaUploadTask(ctx context.Context, data *model.ProcessData) error {
+	task, ok := data.Incoming.(*model.Msg9206)
+	if !ok || task.Header == nil {
+		return nil
+	}
+	return storage.Default().Media.SaveUploadTask(ctx, task.Header.PhoneNumber, task)
 }
 
 // processAttachmentSignaling 记录主链路上的苏标附件信令。
