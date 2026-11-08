@@ -20,6 +20,7 @@ import (
 	"github.com/fakeyanss/jt808-server-go/internal/media"
 	"github.com/fakeyanss/jt808-server-go/internal/protocol"
 	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
+	"github.com/fakeyanss/jt808-server-go/internal/repository"
 	"github.com/fakeyanss/jt808-server-go/internal/runtime"
 	"github.com/fakeyanss/jt808-server-go/internal/server"
 	"github.com/fakeyanss/jt808-server-go/internal/storage"
@@ -56,6 +57,18 @@ func main() {
 		os.Exit(1)
 	}
 	log.Info().Str("backend", stores.Backend).Msg("Storage backend initialized")
+
+	// mode 未显式配置时按存储后端归一化：memory 后端默认 memory，SQL 后端默认 durable。
+	outboxOptions.Mode = config.ResolveCommandOutboxMode(outboxOptions.Mode, stores.Backend)
+	var commandRepo repository.CommandRepository
+	switch outboxOptions.Mode {
+	case config.CommandOutboxModeOff:
+	case config.CommandOutboxModeMemory:
+		commandRepo = repository.NewCommandRepository()
+	case config.CommandOutboxModeDurable:
+		commandRepo = stores.Commands
+	}
+	log.Info().Str("mode", outboxOptions.Mode).Msg("Command outbox mode resolved")
 
 	deps := protocol.ProcessorDeps{Storage: stores, Runtime: runtime.Default()}
 
@@ -97,30 +110,35 @@ func main() {
 	serv.SetDeps(deps)
 	serv.SetReliability(time.Duration(cfg.Server.AckTimeoutMS)*time.Millisecond, cfg.Server.MaxRetransmissions)
 
-	// 进程重启后把 pending 命令重新投给已上线会话；首次 Tick 立即执行，之后周期调度。
-	replay, replayErr := command.NewService(command.Dependencies{
-		Commands: stores.Commands,
-		Devices:  stores.Devices,
-		Conn:     deps.Runtime.Conn,
-		Send: func(sessionID string, msg model.JT808Msg, serial uint16) error {
-			return serv.Send(sessionID, msg, server.WithSerial(serial))
-		},
-	}, command.Options{
-		PollInterval:  outboxOptions.PollInterval,
-		BatchSize:     outboxOptions.BatchSize,
-		MaxAttempts:   outboxOptions.MaxAttempts,
-		LeaseDuration: outboxOptions.LeaseDuration,
-		RetryBase:     outboxOptions.RetryBase,
-		RetryMax:      outboxOptions.RetryMax,
-	})
-	if replayErr != nil {
-		log.Error().Err(replayErr).Msg("Fail to create command replay service")
-		os.Exit(1)
+	// memory/durable 模式启动重投调度：进程重启后把 pending 命令重新投给已上线会话。
+	// off 模式不写 outbox，也不启动重投。
+	cancelOutbox := func() {}
+	if outboxOptions.Mode != config.CommandOutboxModeOff {
+		replay, replayErr := command.NewService(command.Dependencies{
+			Commands: commandRepo,
+			Devices:  stores.Devices,
+			Conn:     deps.Runtime.Conn,
+			Send: func(sessionID string, msg model.JT808Msg, serial uint16) error {
+				return serv.Send(sessionID, msg, server.WithSerial(serial))
+			},
+		}, command.Options{
+			PollInterval:  outboxOptions.PollInterval,
+			BatchSize:     outboxOptions.BatchSize,
+			MaxAttempts:   outboxOptions.MaxAttempts,
+			LeaseDuration: outboxOptions.LeaseDuration,
+			RetryBase:     outboxOptions.RetryBase,
+			RetryMax:      outboxOptions.RetryMax,
+		})
+		if replayErr != nil {
+			log.Error().Err(replayErr).Msg("Fail to create command replay service")
+			os.Exit(1)
+		}
+		// 由重投服务负责把应答/失败事件落回 outbox，并在失败时决定重试还是终结。
+		serv.SetReliableResultHandler(replay.HandleResult)
+		outboxCtx, cancel := context.WithCancel(context.Background())
+		cancelOutbox = cancel
+		routines.GoSafe(func() { replay.Run(outboxCtx) })
 	}
-	// 由重投服务负责把应答/失败事件落回 outbox，并在失败时决定重试还是终结。
-	serv.SetReliableResultHandler(replay.HandleResult)
-	outboxCtx, cancelOutbox := context.WithCancel(context.Background())
-	routines.GoSafe(func() { replay.Run(outboxCtx) })
 	if alarmOptions.AutoUpload {
 		hooks = alarmserver.NewUploadTrigger(hooks, alarmserver.UploadTriggerOptions{
 			IP:      alarmOptions.UploadIP,
@@ -221,7 +239,7 @@ func main() {
 		routines.GoSafe(func() { _ = adminServ.Start() })
 	}
 
-	routines.GoSafe(func() { api.Run(serv, cfg, alarmServ) })
+	routines.GoSafe(func() { api.Run(serv, cfg, alarmServ, outboxOptions, commandRepo) })
 
 	// 运行时状态只存在于进程内，进程退出即自然归零；数据库无需、也不应被批量重置。
 	quit := make(chan os.Signal, 1)

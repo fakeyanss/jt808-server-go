@@ -85,11 +85,15 @@ retention:
     confirmExpireMs: 600000
     maxPerDevice: 1000
 
-# 下行命令 outbox 重投。进程重启后 pending 命令按下面的节奏重新投给在线会话。
+# 下行命令 outbox 重投（memory / durable 模式）。
+# durable 下进程重启后 pending 命令按下面的节奏重新投给在线会话；memory 重启即丢。
 # 重投复用原始流水号，语义是 at-least-once：终端可能重复执行同一条命令。
 # initialWait 必须覆盖一次下发到会话重传耗尽的窗口（ackTimeout × (maxRetransmissions+1)），
 # 否则会在会话仍在重传时重复下发。
 commandOutbox:
+  # off | memory | durable；缺省按存储后端归一化：memory 后端默认 memory，SQL 后端默认 durable。
+  # off 直连下发，不落 outbox、不可查；memory 保留幂等与状态查询但重启即丢。
+  # mode: memory
   pollInterval: "10s"
   batchSize: 50
   # 总下发次数上限（含首次下发）；达到上限后转 failed，不做无限重试。

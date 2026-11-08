@@ -566,10 +566,21 @@ const (
 	DefaultCommandOutboxInitialWait   = time.Minute
 )
 
+// command_outbox 的三种运行模式。
+//   - off：不写 outbox，下行直接调用 Serv.Send，失败不可查、不可重投。
+//   - memory：outbox 只存在进程内，保留幂等键与状态查询，进程重启即丢。
+//   - durable：outbox 落在当前存储后端，支持进程重启后继续重投。
+const (
+	CommandOutboxModeOff     = "off"
+	CommandOutboxModeMemory  = "memory"
+	CommandOutboxModeDurable = "durable"
+)
+
 // commandOutboxConf 配置 pending 命令的重投调度。
-// 整段缺省时使用内置默认值，重投始终开启：内存后端重启后 outbox 自然为空，
-// 不需要额外开关。
+// mode 缺省时按存储后端归一化：memory 后端默认 memory，SQL 后端默认 durable；
+// 调度参数仅对 memory/durable 生效，off 模式忽略。
 type commandOutboxConf struct {
+	Mode          string `yaml:"mode"`
 	PollInterval  string `yaml:"pollInterval"`
 	BatchSize     int    `yaml:"batchSize"`
 	MaxAttempts   int    `yaml:"maxAttempts"`
@@ -582,6 +593,7 @@ type commandOutboxConf struct {
 
 // CommandOutboxOptions 是重投调度的归一化配置。
 type CommandOutboxOptions struct {
+	Mode          string
 	PollInterval  time.Duration
 	BatchSize     int
 	MaxAttempts   int
@@ -590,6 +602,19 @@ type CommandOutboxOptions struct {
 	RetryMax      time.Duration
 	ExpireAfter   time.Duration
 	InitialWait   time.Duration
+}
+
+// ResolveCommandOutboxMode 把未显式配置的 mode 按存储后端归一化。
+// memory 后端无法跨重启恢复，默认 memory；SQL 后端具备持久化能力，默认 durable。
+// 显式配置优先，调用方应保证值已通过 ParseCommandOutbox 校验。
+func ResolveCommandOutboxMode(mode, backend string) string {
+	if normalized := strings.ToLower(strings.TrimSpace(mode)); normalized != "" {
+		return normalized
+	}
+	if strings.EqualFold(strings.TrimSpace(backend), "memory") {
+		return CommandOutboxModeMemory
+	}
+	return CommandOutboxModeDurable
 }
 
 // DefaultCommandOutboxOptions 返回未配置 commandOutbox 时的默认重投参数。
@@ -614,6 +639,13 @@ func (c *Config) ParseCommandOutbox() (CommandOutboxOptions, error) {
 		return options, nil
 	}
 	conf := c.CommandOutbox
+	switch mode := strings.ToLower(strings.TrimSpace(conf.Mode)); mode {
+	case "", CommandOutboxModeOff, CommandOutboxModeMemory, CommandOutboxModeDurable:
+		options.Mode = mode
+	default:
+		return CommandOutboxOptions{}, fmt.Errorf(
+			"commandOutbox.mode must be one of off, memory, durable, got %q", conf.Mode)
+	}
 	parseDuration := func(name, raw string, fallback time.Duration) (time.Duration, error) {
 		if strings.TrimSpace(raw) == "" {
 			return fallback, nil
