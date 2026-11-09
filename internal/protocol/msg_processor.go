@@ -1407,7 +1407,7 @@ func mediaTimeInRange(t string, start, end *time.Time) bool {
 	if (start == nil && end == nil) || t == "" {
 		return true
 	}
-	loc, err := time.Parse("060102150405", t)
+	loc, err := time.ParseInLocation("060102150405", t, hex.ProtocolTimeZone)
 	if err != nil {
 		return true
 	}
@@ -1775,7 +1775,7 @@ func (mp *JT808MsgProcessor) processMsg8805(ctx context.Context, data *model.Pro
 func (mp *JT808MsgProcessor) processMsg8700(_ context.Context, data *model.ProcessData) error {
 	cmd := data.Incoming.(*model.MsgRecordCommand)
 	resp := data.Outgoing.(*model.Msg0700)
-	now := time.Now()
+	now := time.Now().In(hex.ProtocolTimeZone)
 	switch cmd.Command {
 	case model.RecorderCmdCollectInfo:
 		resp.DataBlock = &model.RecorderInfoResponse{

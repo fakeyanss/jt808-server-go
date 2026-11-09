@@ -55,7 +55,7 @@ func TestStoreSaveWritesFileAndMetadata(t *testing.T) {
 	require.Equal(t, uint32(0x00000002), file.AlarmSign)
 	require.Equal(t, uint8(2), file.ChannelID)
 	require.Equal(t, uint8(1), file.EventID)
-	require.True(t, time.Date(2026, 11, 12, 10, 30, 0, 0, MediaTimeZone).Equal(file.LocationTime))
+	require.True(t, time.Date(2026, 11, 12, 10, 30, 0, 0, hex.ProtocolTimeZone).Equal(file.LocationTime))
 
 	content, err := os.ReadFile(filepath.Join(store.Root(), file.RelativePath))
 	require.NoError(t, err)
@@ -129,7 +129,7 @@ func TestDecodeLocationIsTimezoneIndependent(t *testing.T) {
 	t.Cleanup(func() { time.Local = original })
 
 	body := testGeoBody(0x00000002, "261112103000")
-	expected := time.Date(2026, 11, 12, 10, 30, 0, 0, MediaTimeZone)
+	expected := time.Date(2026, 11, 12, 10, 30, 0, 0, hex.ProtocolTimeZone)
 	for _, location := range []*time.Location{
 		time.UTC,
 		time.FixedZone("UTC-5", -5*60*60),

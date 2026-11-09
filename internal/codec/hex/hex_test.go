@@ -3,9 +3,31 @@ package hex
 import (
 	"reflect"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 )
+
+// BCD 时间固定按 GMT+8 解析：改变 time.Local 不改变结果，且比“伪 UTC”早 8 小时。
+func TestParseTimeIsTimezoneIndependent(t *testing.T) {
+	original := time.Local
+	t.Cleanup(func() { time.Local = original })
+
+	expected := time.Date(2026, 11, 12, 10, 30, 0, 0, ProtocolTimeZone)
+	pseudoUTC := time.Date(2026, 11, 12, 10, 30, 0, 0, time.UTC)
+	require.Equal(t, pseudoUTC.Unix()-8*60*60, expected.Unix(), "GMT+8 wall clock is 8 hours earlier as an instant")
+
+	for _, location := range []*time.Location{
+		time.UTC,
+		time.FixedZone("UTC-5", -5*60*60),
+		time.FixedZone("UTC+13", 13*60*60),
+	} {
+		time.Local = location
+		got := ParseTime("261112103000")
+		require.True(t, expected.Equal(got), "time.Local=%s parsed %s, want %s", location, got, expected)
+		require.Equal(t, expected.Unix(), got.Unix(), "time.Local=%s produced different instant", location)
+	}
+}
 
 func TestStr2Byte(t *testing.T) {
 	type args struct {

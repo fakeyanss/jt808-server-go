@@ -127,5 +127,5 @@ func TestProcess0801LocationTimeUsesLocalTimezone(t *testing.T) {
 
 	file, err := stores.MediaFiles.Get(ctx, phone, 7201)
 	require.NoError(t, err)
-	require.True(t, time.Date(2026, 11, 12, 11, 0, 0, 0, mediaupload.MediaTimeZone).Equal(file.LocationTime))
+	require.True(t, time.Date(2026, 11, 12, 11, 0, 0, 0, hex.ProtocolTimeZone).Equal(file.LocationTime))
 }

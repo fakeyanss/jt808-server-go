@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/fakeyanss/jt808-server-go/internal/codec/hex"
 	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
 	"github.com/fakeyanss/jt808-server-go/internal/repository"
 )
@@ -25,11 +26,6 @@ var ErrInvalidMediaPath = errors.New("invalid media path")
 
 // locationTimeLayout 与 0x0200 位置体的 BCD 时间格式保持一致（YY-MM-DD-hh-mm-ss）。
 const locationTimeLayout = "060102150405"
-
-// MediaTimeZone 是 JT/T 808 BCD 时间的固定时区（GMT+8）。
-// 协议规定 BCD 时间为 GMT+8，不能按服务器时区解释；
-// 开发机常位于 Asia/Shanghai 会掩盖问题，部署到 UTC 容器后会产生 8 小时偏移。
-var MediaTimeZone = time.FixedZone("GMT+8", 8*60*60)
 
 // Store 是多媒体文件存储。
 type Store struct {
@@ -229,8 +225,8 @@ func decodeLocation(body []byte) mediaLocation {
 		speed:      location.Speed,
 		direction:  location.Direction,
 	}
-	// 固定按 GMT+8 解释，与业务 API 的时间参数保持同一口径，且不依赖服务器时区。
-	if parsed, err := time.ParseInLocation(locationTimeLayout, location.Time, MediaTimeZone); err == nil {
+	// 与全项目统一口径：协议 BCD 时间固定为 GMT+8，不随服务器时区变化。
+	if parsed, err := time.ParseInLocation(locationTimeLayout, location.Time, hex.ProtocolTimeZone); err == nil {
 		result.locationTime = parsed
 	}
 	return result

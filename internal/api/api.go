@@ -17,6 +17,7 @@ import (
 	"github.com/rs/zerolog/log"
 
 	"github.com/fakeyanss/jt808-server-go/internal/alarmserver"
+	protocolhex "github.com/fakeyanss/jt808-server-go/internal/codec/hex"
 	"github.com/fakeyanss/jt808-server-go/internal/config"
 	"github.com/fakeyanss/jt808-server-go/internal/httpguard"
 	"github.com/fakeyanss/jt808-server-go/internal/mediaupload"
@@ -610,7 +611,7 @@ func Run(ctx context.Context, serv *server.TCPServer, cfg *config.Config, apiOpt
 		msg.StreamType = request.StreamType
 		msg.StorageType = request.StorageType
 		if request.StartTime != "" {
-			t, err := time.Parse("2006-01-02 15:04:05", request.StartTime)
+			t, err := time.ParseInLocation("2006-01-02 15:04:05", request.StartTime, protocolhex.ProtocolTimeZone)
 			if err != nil {
 				c.JSON(http.StatusBadRequest, gin.H{"err": "startTime must be '2006-01-02 15:04:05' format"})
 				return
@@ -618,7 +619,7 @@ func Run(ctx context.Context, serv *server.TCPServer, cfg *config.Config, apiOpt
 			msg.StartTime = &t
 		}
 		if request.EndTime != "" {
-			t, err := time.Parse("2006-01-02 15:04:05", request.EndTime)
+			t, err := time.ParseInLocation("2006-01-02 15:04:05", request.EndTime, protocolhex.ProtocolTimeZone)
 			if err != nil {
 				c.JSON(http.StatusBadRequest, gin.H{"err": "endTime must be '2006-01-02 15:04:05' format"})
 				return

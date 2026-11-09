@@ -20,6 +20,11 @@ const (
 	timeBCDFormat = "%02d%02d%02d%02d%02d%02d"
 )
 
+// ProtocolTimeZone 是 JT/T 808 BCD 时间的固定时区（GMT+8）。
+// 协议规定终端上报的 BCD 时间为 GMT+8，不能按服务器本地时区解释；
+// 所有由 BCD 时间派生的时间都必须使用该时区，保证部署到任意时区结果一致。
+var ProtocolTimeZone = time.FixedZone("GMT+8", 8*60*60)
+
 func Str2Byte(src string) []byte {
 	dst, err := hex.DecodeString(src)
 	if err != nil {
@@ -186,8 +191,9 @@ func WriteTime(pkt []byte, timeIns time.Time) []byte {
 	return WriteBCD(pkt, FormatTime(timeIns))
 }
 
+// ParseTime 按协议固定的 GMT+8 解析 BCD 时间，返回真实瞬时值。
 func ParseTime(timeStr string) time.Time {
-	timeIns, err := time.Parse(timeBCDLayout, timeStr)
+	timeIns, err := time.ParseInLocation(timeBCDLayout, timeStr, ProtocolTimeZone)
 	if err != nil {
 		log.Warn().Msg("Fail to parse time str")
 		timeIns = time.Now()

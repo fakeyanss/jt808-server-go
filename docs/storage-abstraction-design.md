@@ -918,7 +918,10 @@ internal/storage/                 # 仅装配：后端选择与初始化
    若目标版本更高，可迁移到 `INSERT ... AS new ON DUPLICATE KEY UPDATE`。
 2. `VARCHAR(32)` 主键在 `utf8mb4` 下索引长度符合默认 `innodb_large_prefix`（3072 字节）限制。
 3. DSN 未强制 `parseTime`/`loc`，因为时间统一以毫秒整数读写，不依赖驱动时区解析。
-4. 并发写入依赖 InnoDB 行锁与主键冲突语义；未在真实 MySQL 上跑 8 并发用例。
+4. 终端 BCD 时间固定按 GMT+8 解析为真实瞬时值（`hex.ProtocolTimeZone`），服务端接收时间用
+   `time.Now()`；两类时间不得混用。迁移 `20261113_bcd_time_gmt8.sql` 负责把旧的“伪 UTC”
+   终端时间减去 8 小时。
+5. 并发写入依赖 InnoDB 行锁与主键冲突语义；未在真实 MySQL 上跑 8 并发用例。
 
 ### 19.6 属性档案 / 运行时拆分 / 迁移机制（2026-11-01，分支 `dev/p0-baseline`）
 
