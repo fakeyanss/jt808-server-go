@@ -1414,8 +1414,18 @@ func mediaTimeInRange(t string, start, end *time.Time) bool {
 	return true
 }
 
-func (mp *JT808MsgProcessor) processIndustryReport(_ context.Context, data *model.ProcessData) error {
+func (mp *JT808MsgProcessor) processIndustryReport(ctx context.Context, data *model.ProcessData) error {
 	mp.deps.Storage.Industry.Record(data.Incoming)
+	// 0x0108 升级结果需要跨重启保留，写入独立仓储而不是只留内存快照。
+	if result, ok := data.Incoming.(*model.Msg0108); ok && result.Header != nil {
+		return mp.deps.Storage.UpgradeResults.Save(ctx, &repository.UpgradeResult{
+			Phone:       result.Header.PhoneNumber,
+			UpgradeType: result.UpgradeType,
+			Result:      result.Result,
+			Serial:      result.Header.SerialNumber,
+			ReceivedAt:  time.Now(),
+		})
+	}
 	return nil
 }
 
