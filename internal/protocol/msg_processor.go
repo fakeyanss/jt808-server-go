@@ -15,6 +15,7 @@ import (
 	actionpkg "github.com/fakeyanss/jt808-server-go/internal/action"
 	"github.com/fakeyanss/jt808-server-go/internal/codec/hash"
 	"github.com/fakeyanss/jt808-server-go/internal/codec/hex"
+	"github.com/fakeyanss/jt808-server-go/internal/mediaupload"
 	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
 	"github.com/fakeyanss/jt808-server-go/internal/repository"
 	"github.com/fakeyanss/jt808-server-go/internal/runtime"
@@ -48,6 +49,8 @@ type ProcessorDeps struct {
 	Runtime *runtime.Stores
 	// Uplink 为空表示上行可靠性未配置（全部 best_effort）。
 	Uplink *uplink.Policy
+	// MediaUpload 为空表示 0x0801 只保留行业内存快照，不落盘也不写媒体文件仓储。
+	MediaUpload *mediaupload.Store
 }
 
 // ProcessorOption 配置消息处理器。
@@ -251,13 +254,13 @@ func (mp *JT808MsgProcessor) registerIndustryReports(options processOptions) {
 	}, process: mp.processIndustryReport}
 	options[0x0801] = &action{genData: func() *model.ProcessData {
 		return &model.ProcessData{Incoming: &model.Msg0801{}, Outgoing: &model.Msg8800{}}
-	}, process: mp.processIndustryReport}
+	}, process: mp.processMsg0801}
 	options[0x0802] = &action{genData: func() *model.ProcessData {
 		return &model.ProcessData{Incoming: &model.Msg0802{}, Outgoing: &model.Msg8001{}}
 	}, process: mp.processIndustryReport}
 	options[0x0805] = &action{genData: func() *model.ProcessData {
 		return &model.ProcessData{Incoming: &model.Msg0805{}, Outgoing: &model.Msg8001{}}
-	}, process: mp.processIndustryReport}
+	}, process: mp.processMsg0805}
 	options[0x0900] = &action{ // 数据上行透传
 		genData: func() *model.ProcessData {
 			return &model.ProcessData{Incoming: &model.Msg0900{}, Outgoing: &model.Msg8001{}}
@@ -484,6 +487,9 @@ func NewJT808MsgProcessor(hooks actionpkg.Hooks, opts ...ProcessorOption) *JT808
 	}
 	if settings.deps.Uplink != nil {
 		deps.Uplink = settings.deps.Uplink
+	}
+	if settings.deps.MediaUpload != nil {
+		deps.MediaUpload = settings.deps.MediaUpload
 	}
 	mp := &JT808MsgProcessor{
 		hooks: hooks,
@@ -1427,6 +1433,50 @@ func (mp *JT808MsgProcessor) processIndustryReport(ctx context.Context, data *mo
 		})
 	}
 	return nil
+}
+
+// processMsg0801 把多媒体数据落盘并写入媒体文件仓储。
+//
+// 到达这里的 0x0801 都是完整消息：分包由 runtime 重组完成后再进入业务，
+// 非分包单包即为完整文件，因此这里不需要再判断包序号。
+// 行业内存快照保留原有行为，落盘失败时仍可通过 Industry 查到最近一条上报。
+func (mp *JT808MsgProcessor) processMsg0801(ctx context.Context, data *model.ProcessData) error {
+	upload, ok := data.Incoming.(*model.Msg0801)
+	if !ok {
+		return nil
+	}
+	mp.deps.Storage.Industry.Record(upload)
+	if mp.deps.MediaUpload == nil {
+		log.Warn().Msg("media upload store not configured, skip 0x0801 persistence")
+		return nil
+	}
+	file, err := mp.deps.MediaUpload.Save(upload)
+	if err != nil {
+		return err
+	}
+	return mp.deps.Storage.MediaFiles.Save(ctx, file)
+}
+
+// processMsg0805 把摄像头立即拍摄命令应答写入拍摄记录，
+// mediaId 与 0x0801 落盘的文件通过 (phone, mediaId) 关联，查询时再判断文件是否已到达。
+func (mp *JT808MsgProcessor) processMsg0805(ctx context.Context, data *model.ProcessData) error {
+	reply, ok := data.Incoming.(*model.Msg0805)
+	if !ok || reply.Header == nil {
+		return nil
+	}
+	mp.deps.Storage.Industry.Record(reply)
+	capture := &repository.MediaCapture{
+		Phone:        reply.Header.PhoneNumber,
+		RecordID:     strconv.FormatUint(uint64(reply.AnswerSerial), 10),
+		AnswerSerial: reply.AnswerSerial,
+		Result:       reply.Result,
+		ReceivedAt:   time.Now(),
+		Items:        make([]repository.MediaCaptureItem, 0, len(reply.MediaIDs)),
+	}
+	for _, mediaID := range reply.MediaIDs {
+		capture.Items = append(capture.Items, repository.MediaCaptureItem{MediaID: mediaID})
+	}
+	return mp.deps.Storage.MediaCaptures.SaveCapture(ctx, capture)
 }
 
 // processMediaSignaling 记录终端上行的 1078 音视频信令状态，

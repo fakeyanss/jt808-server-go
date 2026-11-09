@@ -61,6 +61,12 @@ mediaServer:
   # .h264 文件落盘保留天数；每小时扫描一次目录，显式 0 表示不清理。
   retentionDays: 7
 
+# 0x0801 多媒体文件落盘目录。落盘始终启用，本段只决定存放位置。
+# 文件按 <dir>/<手机号>/<YYYYMMDD>/<媒体ID>.<扩展名> 分层；
+# 集群模式要求该目录位于所有节点可见的共享卷上。
+mediaUpload:
+  dir: "./data/media-uploads"
+
 # 独立管理面 HTTP 监听。enable 缺省 false，不启动管理端口，
 # 终端接入端口、既有 HTTP API 与苏标/媒体服务行为完全不变。
 # 开启后必须配置非空 token；所有管理接口要求 Authorization: Bearer <token>。

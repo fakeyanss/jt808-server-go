@@ -26,6 +26,8 @@ func TestWritePrometheusExposesRequiredMetrics(t *testing.T) {
 		MediaStreams:         7,
 		AttachmentsActive:    8,
 		AttachmentsCompleted: 9,
+		MediaFiles:           10,
+		MediaFileBytes:       11,
 	}
 	require.NoError(t, WritePrometheus(&buf, snapshot))
 
@@ -39,6 +41,8 @@ func TestWritePrometheusExposesRequiredMetrics(t *testing.T) {
 		"jt808_media_streams 7",
 		"jt808_attachments_active 8",
 		"jt808_attachments_completed_total 9",
+		"jt808_media_files 10",
+		"jt808_media_file_bytes 11",
 	} {
 		require.Contains(t, output, want)
 	}

@@ -19,6 +19,7 @@ import (
 	"github.com/fakeyanss/jt808-server-go/internal/alarmserver"
 	"github.com/fakeyanss/jt808-server-go/internal/config"
 	"github.com/fakeyanss/jt808-server-go/internal/httpguard"
+	"github.com/fakeyanss/jt808-server-go/internal/mediaupload"
 	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
 	"github.com/fakeyanss/jt808-server-go/internal/repository"
 	"github.com/fakeyanss/jt808-server-go/internal/runtime"
@@ -28,7 +29,7 @@ import (
 
 // Run 启动业务 API。commands 为 nil 表示 outbox 已关闭（mode=off），
 // 下行入口直接调用 Serv.Send，不提供命令状态查询。
-func Run(ctx context.Context, serv *server.TCPServer, cfg *config.Config, apiOptions config.APIOptions, alarmServ *alarmserver.Server, outboxOptions config.CommandOutboxOptions, commands repository.CommandRepository) {
+func Run(ctx context.Context, serv *server.TCPServer, cfg *config.Config, apiOptions config.APIOptions, alarmServ *alarmserver.Server, outboxOptions config.CommandOutboxOptions, commands repository.CommandRepository, mediaUpload *mediaupload.Store) {
 	// web server structure
 	gin.SetMode(gin.ReleaseMode)
 	router := gin.Default()
@@ -39,6 +40,9 @@ func Run(ctx context.Context, serv *server.TCPServer, cfg *config.Config, apiOpt
 	geo := storage.Default().Geo
 	connRegistry := runtime.Default().Conn
 	outboxEnabled := outboxOptions.Mode != config.CommandOutboxModeOff && commands != nil
+
+	// 0x0801 媒体文件与 0x0805 拍摄记录查询；文件下载由 mediaUpload 读取共享卷。
+	registerMediaRoutes(api, devices, storage.Default().MediaFiles, storage.Default().MediaCaptures, mediaUpload)
 
 	// 下行命令投递状态查询；命令下发时返回的 commandId 可在此回查。
 	api.GET("/commands/:commandId", func(c *gin.Context) {

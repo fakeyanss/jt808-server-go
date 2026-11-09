@@ -49,8 +49,9 @@ jt808-server-go 是一个用 Go 编写的 JT/T 808 终端接入服务。它把�
 | 苏标 | 附件可按手机号列出、按文件名查询元数据，没有文件内容下载接口；外设/透传的厂商扩展按原始或结构化模型处理，未做扩展分发；未实现粤标 `0x1FC4` |
 | `memory` 后端 | 重启丢失全部业务数据；不保存定位历史（管理面 `/locations` 返回 503）；outbox 默认 `memory`，重启丢失 pending 命令；`retention` 配置不生效 |
 | 定位投影 | 最新定位 `Geo` 始终在进程内，SQL 后端重启后需等下一次上报才恢复；SQL 只持久化定位历史 |
-| 行业媒体快照 | `0x0801/0x0802/0x0805` 等媒体快照只在内存；`0x1205/0x1206/0x9206` 才落库 |
-| 集群与分布式 | 会话、心跳、分包缓存与查询应答协调均为节点本地状态；当前代码未实现共享会话路由、跨节点下行投递、MQ Sink、Redis/Kafka 等分布式能力 |
+| 行业媒体快照 | `0x0801` 已落盘并落库，分包与非分包都覆盖；`0x0805` 拍摄记录落库，按 mediaId 关联文件是否到达；`0x0800/0x0802` 等其余快照仍只在内存 |
+| 媒体取证关联 | `0x0801` 位置体只有报警标志位、没有报警流水号，`alarmSign` 只表达报警类别，无法与某一条具体报警精确关联；本批不做保留期清理，磁盘占用需通过 `jt808_media_files` / `jt808_media_file_bytes` 指标监控 |
+| 集群与分布式 | 会话、心跳、分包缓存与查询应答协调均为节点本地状态；媒体文件按本地目录落盘，Cluster 形态要求 `mediaUpload.dir` 位于所有节点可见的共享卷；未实现共享会话路由、跨节点下行投递、节点路由、对象存储、MQ Sink、Redis/Kafka 等分布式能力 |
 | 升级工作流 | 只有 `0x8108` 下发与 `0x0108` 结果记录；没有升级包托管/下载 URL、版本与车型管理、灰度发布、失败重试与回滚 |
 | 投递保证 | 下行 outbox 为 at-least-once，可能重复执行；上行 `best_effort` 可能丢一条，`at_least_once` 依赖终端重传，不是 exactly-once |
 | 安全 | 业务 API 鉴权可关闭；TCP/UDP 接入与所有 HTTP 接口均未提供 TLS；管理面默认关闭，开启后要求 token |
@@ -297,6 +298,7 @@ make run
 | `alarmServer.autoUpload` / `uploadIP` | `false` / 空 | 报警首次上报时是否自动下发 `0x9208` |
 | `mediaServer.port` | 空 | 1078 RTP UDP 监听；空则不启动 |
 | `mediaServer.dir` / `retentionDays` | `./data/media` / `7` | `.h264` 落盘目录与保留天数；`0` 表示不清理 |
+| `mediaUpload.dir` | `./data/media-uploads` | `0x0801` 多媒体文件落盘目录，始终启用；Cluster 形态需指向共享卷 |
 
 ### 5.5 下行 outbox 与上行可靠性
 
@@ -402,8 +404,14 @@ commandOutbox:
 | POST | `/api/device/:phone/attachments/upload` | 下发 `0x9208` 报警附件上传指令 |
 | GET | `/api/device/:phone/attachments` | 列出已接收附件 |
 | GET | `/api/device/:phone/attachments/:fileName` | 查询单个附件的元数据（不返回文件内容） |
+| GET | `/api/device/:phone/media/files` | 查询 `0x0801` 媒体文件；参数 `channel`、`type`、`start`、`end`、`alarmOnly`、`limit` |
+| GET | `/api/device/:phone/media/files/:mediaId` | 查询单个媒体文件的元数据 |
+| GET | `/api/device/:phone/media/files/:mediaId/content` | 下载媒体文件内容，支持 HTTP Range |
+| GET | `/api/device/:phone/media/captures` | 查询 `0x0805` 拍摄记录及各 mediaId 的文件到达状态 |
 
 请求体字段直接复用协议模型，字段级定义见 `internal/protocol/model/`；路由与参数校验见 `internal/api/api.go`。
+
+媒体文件接口的时间参数统一使用 `YYYY-MM-DD HH:MM:SS`，固定按 GMT+8 解释（JT/T 808 的 BCD 时间口径，不随服务器时区变化）。**已知限制：`0x0801` 位置体只有报警标志位、没有报警流水号，返回的 `alarmSign` 只能表达报警类别，`alarmOnly=true` 也只能按类别筛选，不能与某一条具体报警精确关联。**
 
 ### 6.3 调用示例
 
@@ -459,7 +467,7 @@ curl -s http://localhost:8008/api/commands/0f8c2f6d9a1e4b7c8d3e5f60718293a4
 
 会话类接口只作用于当前进程，跨实例无效；`/locations`、`/alarms` 读取持久化历史（`memory` 后端下 `/locations` 不可用）。
 
-`/readyz` 依次检查 `storage`（SQL Ping）、`outbox_backlog`（过期 pending 命令数，默认阈值 100）、`media_disk`、`attachment_disk`；未启用的组件不参与判定，避免把“功能关闭”误报成“服务异常”。`/metrics` 当前导出：
+`/readyz` 依次检查 `storage`（SQL Ping）、`outbox_backlog`（过期 pending 命令数，默认阈值 100）、`media_disk`、`attachment_disk`、`media_upload_disk`；未启用的组件不参与判定，避免把“功能关闭”误报成“服务异常”。`/metrics` 当前导出：
 
 - `jt808_sessions_connected`
 - `jt808_ack_pending`
@@ -469,6 +477,8 @@ curl -s http://localhost:8008/api/commands/0f8c2f6d9a1e4b7c8d3e5f60718293a4
 - `jt808_media_streams`
 - `jt808_attachments_active`
 - `jt808_attachments_completed_total`
+- `jt808_media_files`（`0x0801` 落盘文件数量）
+- `jt808_media_file_bytes`（`0x0801` 落盘文件总字节数）
 
 业务 API 的变更类请求（POST/PUT/PATCH/DELETE）与鉴权失败、限流拒绝会写入审计日志（zerolog），只记录方法、路径、来源 IP、状态码、手机号与耗时，不记录请求体与 token。服务收到 `SIGINT`/`SIGTERM` 后按顺序优雅关机：停业务 API → 停终端接入并关闭会话 → 停 outbox 重投 → 刷盘媒体/附件 → 最后停管理面并关闭存储。
 
@@ -478,13 +488,15 @@ curl -s http://localhost:8008/api/commands/0f8c2f6d9a1e4b7c8d3e5f60718293a4
 
 **1078 媒体服务**在配置 `mediaServer.port` 后启用独立 UDP 端口接收 RTP 码流：仅支持 UDP 与 H.264，把 PS/ES 还原为 Annex B 裸流并落成 `.h264` 文件，路径为 `<mediaServer.dir>/<手机号>/channel_<通道号>/<时间戳>.h264`。不做转码、分发、播放器索引或回放。已实现的 1078 信令为 `0x9101`、`0x9102`、`0x9105`、`0x9201`、`0x9202`、`0x9205`、`0x9206`、`0x1205`、`0x1206`；`0x1205` 资源列表与 `0x1206/0x9206` 媒体元数据支持持久化。
 
+**0x0801 多媒体落盘**始终启用：完整消息（分包由运行时重组，非分包单包）写入 `<mediaUpload.dir>/<手机号>/<YYYYMMDD>/<媒体ID>.<扩展名>`，日期取位置体 BCD 时间，缺失时用接收日期；扩展名按格式映射为 `jpg/tif/mp3/wav/wmv`，未知格式回退 `bin`。写文件采用临时文件 + 原子 rename，同一 mediaId 重复上报幂等覆盖。元数据（含 MD5、字节数、位置与报警标志位）写入 `media_files` 表；`0x0805` 的 mediaId 列表写入 `media_captures` 与 `media_capture_items`，查询时关联 `media_files` 判断文件是否已到达。文件内容通过 `GET /api/device/:phone/media/files/:mediaId/content` 下载，支持 Range。本批不做保留期清理，请用 `jt808_media_files` 与 `jt808_media_file_bytes` 监控磁盘占用。
+
 ### 6.6 Action Hook
 
 `server.action.http.url` 用于把消息处理生命周期事件回调给第三方业务平台：注册、鉴权、定位、报警、断连五类事件以 JSON 异步 POST 到该地址。设计意图是让工单、风控、通知等业务逻辑留在平台侧，不必耦合进协议进程。回调队列容量 256，队列满时丢弃事件；HTTP 失败只记日志，不重试，也不影响应答。因此它适合通知型场景，不适合作为可靠事件总线。关闭时留空即可。
 
 ### 6.7 运维要点
 
-数据备份按后端处理：SQLite 直接备份 `storage.sqlite.path` 指向的库文件；MySQL 使用常规逻辑或物理备份。附件与媒体目录独立于数据库，需要一并备份 `alarmServer.dir` 与 `mediaServer.dir`。压测可用 `bash scripts/loadtest.sh [持续秒数]`（默认 60 秒、200 并发模拟终端、memory 后端），结束时从 `/metrics` 采集连接数、待应答数、应答超时与 outbox 指标。
+数据备份按后端处理：SQLite 直接备份 `storage.sqlite.path` 指向的库文件；MySQL 使用常规逻辑或物理备份。附件与媒体目录独立于数据库，需要一并备份 `alarmServer.dir`、`mediaServer.dir` 与 `mediaUpload.dir`。压测可用 `bash scripts/loadtest.sh [持续秒数]`（默认 60 秒、200 并发模拟终端、memory 后端），结束时从 `/metrics` 采集连接数、待应答数、应答超时与 outbox 指标。
 
 ## 7. 开发指导
 
