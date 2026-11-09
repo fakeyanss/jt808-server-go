@@ -439,45 +439,53 @@ func (c *Config) ParseAlarmServer() (options AlarmServerOptions, enabled bool, e
 	}, true, nil
 }
 
-// 媒体 RTP 接入服务器的工程默认值。未配置 mediaServer.port 时服务不启动。
+// 媒体 RTP 接入服务器的工程默认值。未配置 mediaServer.port 与 mediaServer.tcpPort 时服务不启动。
 const (
 	DefaultMediaServerDir           = "./data/media"
 	DefaultMediaServerMaxConcurrent = 16
+	DefaultMediaServerMaxTCPConns   = 64
 	DefaultMediaServerRetentionDays = 7
 )
 
-// mediaServerConf 配置 1078 RTP 音视频接入服务器。
-// port 为空表示不启用；显式配置后监听独立 UDP 端口。
+// mediaServerConf 配置 1078 音视频接入服务器。
+// port 为 UDP 端口，tcpPort 为 TCP 端口；任一非空即启用，可同时监听。
 type mediaServerConf struct {
 	Port          string `yaml:"port"`
+	TCPPort       string `yaml:"tcpPort"`
 	Dir           string `yaml:"dir"`
 	MaxConcurrent int    `yaml:"maxConcurrent"`
-	// RetentionDays 是 .h264 文件的落盘保留天数；显式 0 表示不清理。
+	MaxTCPConns   int    `yaml:"maxTCPConns"`
+	// RetentionDays 是音视频文件的落盘保留天数；显式 0 表示不清理。
 	RetentionDays *int `yaml:"retentionDays"`
 }
 
 // MediaServerOptions 是媒体接入服务器的归一化配置。
 type MediaServerOptions struct {
-	Port          uint16
+	Port          uint16 // UDP 端口，0 表示不启用
+	TCPPort       uint16 // TCP 端口，0 表示不启用
 	Dir           string
 	MaxConcurrent int
+	MaxTCPConns   int
 	Retention     time.Duration
 }
 
 // ParseMediaServer 解析并校验 mediaServer 配置。
-// 返回 enabled=false 表示未配置端口，媒体接入不启动，行为与旧版本一致。
+// 返回 enabled=false 表示未配置任何端口，媒体接入不启动，行为与旧版本一致。
 func (c *Config) ParseMediaServer() (options MediaServerOptions, enabled bool, err error) {
 	if c == nil || c.MediaServer == nil {
 		return MediaServerOptions{}, false, nil
 	}
 	conf := c.MediaServer
-	rawPort := strings.TrimSpace(conf.Port)
-	if rawPort == "" {
-		return MediaServerOptions{}, false, nil
+	udpPort, err := parseMediaPort("mediaServer.port", conf.Port, "UDP")
+	if err != nil {
+		return MediaServerOptions{}, false, err
 	}
-	port, parseErr := strconv.Atoi(rawPort)
-	if parseErr != nil || port < 1 || port > 65535 {
-		return MediaServerOptions{}, false, fmt.Errorf("mediaServer.port must be a UDP port between 1 and 65535, got %q", rawPort)
+	tcpPort, err := parseMediaPort("mediaServer.tcpPort", conf.TCPPort, "TCP")
+	if err != nil {
+		return MediaServerOptions{}, false, err
+	}
+	if udpPort == 0 && tcpPort == 0 {
+		return MediaServerOptions{}, false, nil
 	}
 	dir := strings.TrimSpace(conf.Dir)
 	if dir == "" {
@@ -490,6 +498,13 @@ func (c *Config) ParseMediaServer() (options MediaServerOptions, enabled bool, e
 	if maxConcurrent == 0 {
 		maxConcurrent = DefaultMediaServerMaxConcurrent
 	}
+	if conf.MaxTCPConns < 0 {
+		return MediaServerOptions{}, false, fmt.Errorf("mediaServer.maxTCPConns must be >= 0, got %d", conf.MaxTCPConns)
+	}
+	maxTCPConns := conf.MaxTCPConns
+	if maxTCPConns == 0 {
+		maxTCPConns = DefaultMediaServerMaxTCPConns
+	}
 	retentionDays := DefaultMediaServerRetentionDays
 	if conf.RetentionDays != nil {
 		if *conf.RetentionDays < 0 {
@@ -498,11 +513,26 @@ func (c *Config) ParseMediaServer() (options MediaServerOptions, enabled bool, e
 		retentionDays = *conf.RetentionDays
 	}
 	return MediaServerOptions{
-		Port:          uint16(port),
+		Port:          udpPort,
+		TCPPort:       tcpPort,
 		Dir:           dir,
 		MaxConcurrent: maxConcurrent,
+		MaxTCPConns:   maxTCPConns,
 		Retention:     time.Duration(retentionDays) * 24 * time.Hour,
 	}, true, nil
+}
+
+// parseMediaPort 解析可选的监听端口；空值返回 0。
+func parseMediaPort(key, raw, transport string) (uint16, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return 0, nil
+	}
+	port, err := strconv.Atoi(raw)
+	if err != nil || port < 1 || port > 65535 {
+		return 0, fmt.Errorf("%s must be a %s port between 1 and 65535, got %q", key, transport, raw)
+	}
+	return uint16(port), nil
 }
 
 // DefaultMediaUploadDir 是 0x0801 多媒体文件的默认落盘目录。
