@@ -18,6 +18,7 @@ import (
 	"github.com/fakeyanss/jt808-server-go/internal/command"
 	"github.com/fakeyanss/jt808-server-go/internal/config"
 	"github.com/fakeyanss/jt808-server-go/internal/media"
+	"github.com/fakeyanss/jt808-server-go/internal/mediaupload"
 	"github.com/fakeyanss/jt808-server-go/internal/observability"
 	"github.com/fakeyanss/jt808-server-go/internal/protocol"
 	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
@@ -116,6 +117,20 @@ func main() {
 		log.Error().Err(mediaErr).Msg("Invalid mediaServer configuration")
 		os.Exit(1)
 	}
+
+	// 0x0801 多媒体文件落盘始终启用；集群模式要求该目录位于共享卷上。
+	mediaUploadOptions, mediaUploadErr := cfg.ParseMediaUpload()
+	if mediaUploadErr != nil {
+		log.Error().Err(mediaUploadErr).Msg("Invalid mediaUpload configuration")
+		os.Exit(1)
+	}
+	mediaUploadStore, mediaUploadErr := mediaupload.NewStore(mediaUploadOptions.Dir)
+	if mediaUploadErr != nil {
+		log.Error().Err(mediaUploadErr).Msg("Fail to initialize media upload store")
+		os.Exit(1)
+	}
+	deps.MediaUpload = mediaUploadStore
+	log.Info().Str("dir", mediaUploadStore.Root()).Msg("Media upload store initialized")
 
 	adminOptions, adminEnabled, adminErr := cfg.ParseAdmin()
 	if adminErr != nil {
@@ -286,6 +301,10 @@ func main() {
 			Fn:   func(context.Context) error { return observability.CheckWritableDir(alarmOptions.Dir) },
 		})
 	}
+	checks = append(checks, observability.Check{
+		Name: "media_upload_disk",
+		Fn:   func(context.Context) error { return observability.CheckWritableDir(mediaUploadOptions.Dir) },
+	})
 	probes := &observability.Provider{
 		Metrics: metrics,
 		Checks:  checks,
@@ -308,6 +327,14 @@ func main() {
 			}
 			if alarmServ != nil {
 				snapshot.AttachmentsActive, snapshot.AttachmentsCompleted = alarmServ.Assembler().Stats()
+			}
+			// 媒体文件存量：数量与总字节数，用于发现磁盘无声膨胀。
+			count, bytes, err := stores.MediaFiles.Stats(ctx)
+			if err != nil {
+				log.Warn().Err(err).Msg("Fail to collect media file metrics")
+			} else {
+				snapshot.MediaFiles = count
+				snapshot.MediaFileBytes = bytes
 			}
 			return snapshot
 		},
@@ -334,7 +361,7 @@ func main() {
 	apiDone := make(chan struct{})
 	routines.GoSafe(func() {
 		defer close(apiDone)
-		api.Run(apiCtx, serv, cfg, apiOptions, alarmServ, outboxOptions, commandRepo)
+		api.Run(apiCtx, serv, cfg, apiOptions, alarmServ, outboxOptions, commandRepo, mediaUploadStore)
 	})
 
 	// 运行时状态只存在于进程内，进程退出即自然归零；数据库无需、也不应被批量重置。

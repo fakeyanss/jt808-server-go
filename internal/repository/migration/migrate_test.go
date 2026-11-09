@@ -21,7 +21,7 @@ func newTestDB(t *testing.T) *sql.DB {
 
 func TestExpectedVersionMatchesEmbeddedFiles(t *testing.T) {
 	// 开发阶段按批次追加版本；引导脚本不参与版本编号。
-	require.Len(t, migrations, 7)
+	require.Len(t, migrations, 8)
 	require.Equal(t, "20261101_init.sql", migrations[0].name)
 	require.Equal(t, "20261102_persistence_tables.sql", migrations[1].name)
 	require.Equal(t, "20261105_drop_device_runtime.sql", migrations[2].name)
@@ -29,7 +29,8 @@ func TestExpectedVersionMatchesEmbeddedFiles(t *testing.T) {
 	require.Equal(t, "20261109_command_outbox.sql", migrations[4].name)
 	require.Equal(t, "20261110_command_outbox_replay.sql", migrations[5].name)
 	require.Equal(t, "20261111_upgrade_results.sql", migrations[6].name)
-	require.Equal(t, 20261111, ExpectedVersion())
+	require.Equal(t, "20261112_media_files.sql", migrations[7].name)
+	require.Equal(t, 20261112, ExpectedVersion())
 }
 
 // 同一库重复执行迁移只应用一次，版本记录不重复。
@@ -54,6 +55,7 @@ func TestApplyIsIdempotent(t *testing.T) {
 		"devices", "device_params", "terminal_properties",
 		"terminal_catalogs", "region_items", "locations", "alarms",
 		"media_resource_lists", "media_upload_tasks", "media_upload_notices",
+		"media_files", "media_captures", "media_capture_items",
 		"upgrade_results",
 	} {
 		var name string
@@ -155,7 +157,7 @@ func TestApplyUpgradesLegacyDatabase(t *testing.T) {
 
 	applied, err := Apply(ctx, db)
 	require.NoError(t, err)
-	require.Equal(t, 5, applied)
+	require.Equal(t, 6, applied)
 	require.Equal(t, ExpectedVersion(), mustCurrentVersion(t, ctx, db))
 
 	var count int

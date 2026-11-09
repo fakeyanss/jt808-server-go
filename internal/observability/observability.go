@@ -60,7 +60,11 @@ type Snapshot struct {
 	MediaStreams         int
 	AttachmentsActive    int64
 	AttachmentsCompleted int64
-	AckTimeouts          int64
+	// MediaFiles 与 MediaFileBytes 是 0x0801 落盘文件的存量，
+	// 用于发现媒体目录在生产环境无声膨胀。
+	MediaFiles     int64
+	MediaFileBytes int64
+	AckTimeouts    int64
 }
 
 // Check 是一条带名称的就绪检查。
@@ -131,6 +135,8 @@ func WritePrometheus(w io.Writer, snapshot Snapshot) error {
 		{"jt808_media_streams", "Active 1078 media streams.", "gauge", fmt.Sprint(snapshot.MediaStreams)},
 		{"jt808_attachments_active", "Attachment files currently being assembled.", "gauge", fmt.Sprint(snapshot.AttachmentsActive)},
 		{"jt808_attachments_completed_total", "Attachment files completed since process start.", "counter", fmt.Sprint(snapshot.AttachmentsCompleted)},
+		{"jt808_media_files", "Media files persisted from 0x0801 uploads.", "gauge", fmt.Sprint(snapshot.MediaFiles)},
+		{"jt808_media_file_bytes", "Total bytes occupied by persisted 0x0801 media files.", "gauge", fmt.Sprint(snapshot.MediaFileBytes)},
 	}
 	for _, line := range lines {
 		if _, err := fmt.Fprintf(w, "# HELP %s %s\n# TYPE %s %s\n%s %s\n",

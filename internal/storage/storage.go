@@ -51,6 +51,8 @@ type Stores struct {
 	Regions        repository.RegionRepository
 	Industry       repository.IndustryRepository
 	Media          repository.MediaMetadataRepository
+	MediaFiles     repository.MediaFileRepository
+	MediaCaptures  repository.MediaCaptureRepository
 	UpgradeResults repository.UpgradeResultRepository
 	Commands       repository.CommandRepository
 	// Locations 为定位历史仓储；memory 后端保持既有热读环形缓冲，本字段为 nil。
@@ -69,6 +71,8 @@ func NewMemory() *Stores {
 }
 
 func newStores(backend string) *Stores {
+	// 文件与拍摄应答共用同一实现，才能在同一次查询里判断 mediaId 是否已落盘。
+	mediaFiles := repository.NewMediaFileRepository()
 	return &Stores{
 		Devices:        repository.NewDeviceRepository(),
 		Geo:            repository.NewGeoRepository(),
@@ -78,6 +82,8 @@ func newStores(backend string) *Stores {
 		Regions:        repository.NewRegionRepository(),
 		Industry:       repository.NewIndustryRepository(),
 		Media:          repository.NewMediaMetadataRepository(),
+		MediaFiles:     mediaFiles,
+		MediaCaptures:  mediaFiles,
 		UpgradeResults: repository.NewUpgradeResultRepository(),
 		Commands:       repository.NewCommandRepository(),
 		Backend:        backend,
@@ -113,6 +119,8 @@ func Open(cfg Config) (*Stores, error) {
 		stores.Properties = sqlStore.TerminalPropertiesRepository()
 		stores.Industry = industry
 		stores.Media = sqlStore.MediaMetadataRepository()
+		stores.MediaFiles = sqlStore.MediaFileRepository()
+		stores.MediaCaptures = sqlStore.MediaCaptureRepository()
 		stores.UpgradeResults = sqlStore.UpgradeResultRepository()
 		stores.Commands = sqlStore.CommandRepository()
 		stores.Regions = regions

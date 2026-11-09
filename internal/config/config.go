@@ -159,6 +159,7 @@ type Config struct {
 	Retention     *retentionConf     `yaml:"retention"`
 	AlarmServer   *alarmServerConf   `yaml:"alarmServer"`
 	MediaServer   *mediaServerConf   `yaml:"mediaServer"`
+	MediaUpload   *mediaUploadConf   `yaml:"mediaUpload"`
 	Admin         *adminConf         `yaml:"admin"`
 	API           *apiConf           `yaml:"api"`
 	CommandOutbox *commandOutboxConf `yaml:"commandOutbox"`
@@ -502,6 +503,32 @@ func (c *Config) ParseMediaServer() (options MediaServerOptions, enabled bool, e
 		MaxConcurrent: maxConcurrent,
 		Retention:     time.Duration(retentionDays) * 24 * time.Hour,
 	}, true, nil
+}
+
+// DefaultMediaUploadDir 是 0x0801 多媒体文件的默认落盘目录。
+const DefaultMediaUploadDir = "./data/media-uploads"
+
+// mediaUploadConf 配置 0x0801 多媒体文件落盘目录。
+// 与 mediaServer 不同，0x0801 落盘始终启用，本段只决定文件存放位置。
+type mediaUploadConf struct {
+	Dir string `yaml:"dir"`
+}
+
+// MediaUploadOptions 是 0x0801 多媒体文件落盘的归一化配置。
+type MediaUploadOptions struct {
+	Dir string
+}
+
+// ParseMediaUpload 解析媒体上传落盘配置；未配置时使用默认目录。
+func (c *Config) ParseMediaUpload() (MediaUploadOptions, error) {
+	options := MediaUploadOptions{Dir: DefaultMediaUploadDir}
+	if c == nil || c.MediaUpload == nil {
+		return options, nil
+	}
+	if dir := strings.TrimSpace(c.MediaUpload.Dir); dir != "" {
+		options.Dir = dir
+	}
+	return options, nil
 }
 
 // 管理面默认值。未配置 admin 段或 enable=false 时不启动管理监听，
