@@ -4,6 +4,8 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+
+	"github.com/fakeyanss/jt808-server-go/internal/codec/hex"
 )
 
 func TestMsg8600CircleRoundTrip(t *testing.T) {
@@ -138,4 +140,140 @@ func TestRegionRouteSetValidation(t *testing.T) {
 	// zero count rejected
 	err = (&MsgRegionRouteSet{}).Decode(&PacketData{Header: genMsgHeader(0x8600), Body: []byte{1, 0}})
 	require.Error(t, err)
+}
+
+// TestRegionRouteSet2013Layouts 校验 2011/2013 版本保持的既有布局：
+// 名称长度 BYTE，夜间最高速度由区域属性 bit15 触发。
+func TestRegionRouteSet2013Layouts(t *testing.T) {
+	const name = "圆"
+	gbk := hex.WriteGBK(nil, name)
+	msg := &MsgRegionRouteSet{
+		Header:      genMsgHeaderVersion(0x8600, Version2013),
+		SettingAttr: 1,
+		Circles: []CircleArea{{
+			ID:         1,
+			Attr:       AreaAttrSpeed | AreaAttrNightSpd,
+			Latitude:   31000000,
+			Longitude:  121000000,
+			Radius:     100,
+			MaxSpeed:   600,
+			Duration:   5,
+			NightSpeed: 500,
+			Name:       name,
+		}},
+	}
+	decoded := &MsgRegionRouteSet{}
+	pkt := roundTrip(t, msg, decoded)
+	// 设置属性(1)+区域数(1)+区域固定字段(18)+速度(3)+夜间速度(2)+名称长度(1)+名称
+	require.Len(t, pkt.Body, 2+18+5+1+len(gbk))
+	require.Equal(t, uint16(500), decoded.Circles[0].NightSpeed)
+	require.Equal(t, name, decoded.Circles[0].Name)
+}
+
+// TestRegionRouteSet2019Layouts 校验 2019 版本名称长度使用 WORD，
+// 夜间最高速度改由区域属性 bit1（限速）触发。
+func TestRegionRouteSet2019Layouts(t *testing.T) {
+	const name = "圆"
+	gbk := hex.WriteGBK(nil, name)
+
+	t.Run("speed bit carries night speed", func(t *testing.T) {
+		msg := &MsgRegionRouteSet{
+			Header:      genMsgHeaderVersion(0x8600, Version2019),
+			SettingAttr: 1,
+			Circles: []CircleArea{{
+				ID:         1,
+				Attr:       AreaAttrSpeed,
+				Latitude:   31000000,
+				Longitude:  121000000,
+				Radius:     100,
+				MaxSpeed:   600,
+				Duration:   5,
+				NightSpeed: 500,
+				Name:       name,
+			}},
+		}
+		decoded := &MsgRegionRouteSet{}
+		pkt := roundTrip(t, msg, decoded)
+		// 固定字段(18)+速度与超速持续时间(3)+夜间速度(2)+名称长度 WORD(2)+名称
+		require.Len(t, pkt.Body, 2+18+5+2+len(gbk))
+		require.Equal(t, uint16(500), decoded.Circles[0].NightSpeed)
+		require.Equal(t, name, decoded.Circles[0].Name)
+	})
+
+	t.Run("night bit is ignored", func(t *testing.T) {
+		msg := &MsgRegionRouteSet{
+			Header:      genMsgHeaderVersion(0x8600, Version2019),
+			SettingAttr: 1,
+			Circles: []CircleArea{{
+				ID:         1,
+				Attr:       AreaAttrNightSpd,
+				Latitude:   31000000,
+				Longitude:  121000000,
+				Radius:     100,
+				NightSpeed: 500,
+				Name:       name,
+			}},
+		}
+		decoded := &MsgRegionRouteSet{}
+		pkt := roundTrip(t, msg, decoded)
+		// 2019 版本 bit15 为 GNSS 采集标志，不再触发夜间速度字段
+		require.Len(t, pkt.Body, 2+18+2+len(gbk))
+		require.Equal(t, uint16(0), decoded.Circles[0].NightSpeed)
+	})
+}
+
+// TestRegionRouteSetRouteNightSpeedByVersion 校验收路段的夜间最高速度触发位。
+func TestRegionRouteSetRouteNightSpeedByVersion(t *testing.T) {
+	seg := func(attr uint16) RouteSegment {
+		return RouteSegment{
+			ID:         1,
+			Attr:       attr,
+			Length:     100,
+			MaxSpeed:   600,
+			Duration:   3,
+			NightSpeed: 400,
+			Vertices: []PolygonVertex{
+				{Latitude: 31000000, Longitude: 121000000},
+				{Latitude: 31100000, Longitude: 121100000},
+			},
+		}
+	}
+
+	t.Run("2013 bit15", func(t *testing.T) {
+		msg := &MsgRegionRouteSet{
+			Header:      genMsgHeaderVersion(0x8606, Version2013),
+			SettingAttr: 1,
+			Routes: []Route{{
+				ID:       5,
+				Segments: []RouteSegment{seg(uint16(AreaAttrSpeed | AreaAttrNightSpd))},
+				Name:     "路线",
+			}},
+		}
+		decoded := &MsgRegionRouteSet{}
+		roundTrip(t, msg, decoded)
+		require.Equal(t, uint16(400), decoded.Routes[0].Segments[0].NightSpeed)
+		require.Equal(t, "路线", decoded.Routes[0].Name)
+	})
+
+	t.Run("2019 bit1", func(t *testing.T) {
+		msg := &MsgRegionRouteSet{
+			Header:      genMsgHeaderVersion(0x8606, Version2019),
+			SettingAttr: 1,
+			Routes: []Route{{
+				ID:       5,
+				Segments: []RouteSegment{seg(uint16(AreaAttrSpeed))},
+				Name:     "路线",
+			}},
+		}
+		decoded := &MsgRegionRouteSet{}
+		roundTrip(t, msg, decoded)
+		require.Equal(t, uint16(400), decoded.Routes[0].Segments[0].NightSpeed)
+		require.Equal(t, "路线", decoded.Routes[0].Name)
+	})
+}
+
+// TestRegionRouteSetRejectsTruncatedBody 校验截断消息体不会触发越界读取。
+func TestRegionRouteSetRejectsTruncatedBody(t *testing.T) {
+	header := genMsgHeaderVersion(0x8600, Version2019)
+	require.Error(t, (&MsgRegionRouteSet{}).Decode(&PacketData{Header: header, Body: []byte{1, 1, 0, 0, 0}}))
 }
