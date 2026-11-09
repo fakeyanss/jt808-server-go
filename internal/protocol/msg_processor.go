@@ -182,7 +182,7 @@ func (mp *JT808MsgProcessor) registerParamsAndProperties(options processOptions)
 		process: mp.processMsg0104,
 	}
 	options[0x0107] = &action{genData: func() *model.ProcessData { return &model.ProcessData{Incoming: &model.Msg0107{}} }, process: mp.processMsg0107}
-	options[0x8103] = &action{ // 查询终端参数
+	options[0x8103] = &action{ // 设置终端参数
 		genData: func() *model.ProcessData {
 			return &model.ProcessData{Incoming: &model.Msg8103{}, Outgoing: &model.Msg0001{}}
 		},
