@@ -104,6 +104,11 @@ func (h *MsgHeader) IsFragmented() bool {
 	return h.Attr.PacketFragmented == 1
 }
 
+// Is2019 判断消息头是否使用 JT/T 808-2019 版本的消息体格式。
+func (h *MsgHeader) Is2019() bool {
+	return h != nil && h.Attr != nil && h.Attr.VersionDesc == Version2019
+}
+
 // 消息体属性字段的bit位
 const (
 	bodyLengthBit    uint16 = 0b0000001111111111
