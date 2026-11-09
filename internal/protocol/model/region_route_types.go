@@ -156,9 +156,29 @@ func RegionRouteDeleteType(msgID uint16) (RegionRouteType, bool) {
 	}
 }
 
-// encodeAttrFields writes the conditional time/speed/night-speed fields that
+// areaAttrFieldsLength 返回时间/速度/夜间速度条件字段占用的字节数。
+// 2019 版本的夜间最高速度由 bit1（限速）触发，且紧跟在最高速度与超速持续时间之后；
+// 2011/2013 版本保持仓库既有行为，由 bit15 触发。
+func areaAttrFieldsLength(attr AreaAttr, is2019 bool) int {
+	n := 0
+	if attr.HasTime() {
+		n += 12
+	}
+	if attr.HasSpeed() {
+		n += 3
+		if is2019 {
+			n += 2
+		}
+	}
+	if !is2019 && attr.HasNightSpeed() {
+		n += 2
+	}
+	return n
+}
+
+// encodeAreaAttrFields writes the conditional time/speed/night-speed fields that
 // are shared by circle, rectangle and polygon items.
-func encodeAreaAttrFields(pkt []byte, attr AreaAttr, start, end string, maxSpeed uint16, duration uint8, nightSpeed uint16) []byte {
+func encodeAreaAttrFields(pkt []byte, attr AreaAttr, start, end string, maxSpeed uint16, duration uint8, nightSpeed uint16, is2019 bool) []byte {
 	if attr.HasTime() {
 		pkt = hex.WriteBCD(pkt, start)
 		pkt = hex.WriteBCD(pkt, end)
@@ -166,14 +186,17 @@ func encodeAreaAttrFields(pkt []byte, attr AreaAttr, start, end string, maxSpeed
 	if attr.HasSpeed() {
 		pkt = hex.WriteWord(pkt, maxSpeed)
 		pkt = hex.WriteByte(pkt, duration)
+		if is2019 {
+			pkt = hex.WriteWord(pkt, nightSpeed)
+		}
 	}
-	if attr.HasNightSpeed() {
+	if !is2019 && attr.HasNightSpeed() {
 		pkt = hex.WriteWord(pkt, nightSpeed)
 	}
 	return pkt
 }
 
-func decodeAreaAttrFields(pkt []byte, idx *int, attr AreaAttr) (start, end string, maxSpeed uint16, duration uint8, nightSpeed uint16) {
+func decodeAreaAttrFields(pkt []byte, idx *int, attr AreaAttr, is2019 bool) (start, end string, maxSpeed uint16, duration uint8, nightSpeed uint16) {
 	if attr.HasTime() {
 		start = hex.ReadBCD(pkt, idx, 6)
 		end = hex.ReadBCD(pkt, idx, 6)
@@ -181,25 +204,42 @@ func decodeAreaAttrFields(pkt []byte, idx *int, attr AreaAttr) (start, end strin
 	if attr.HasSpeed() {
 		maxSpeed = hex.ReadWord(pkt, idx)
 		duration = hex.ReadByte(pkt, idx)
+		if is2019 {
+			nightSpeed = hex.ReadWord(pkt, idx)
+		}
 	}
-	if attr.HasNightSpeed() {
+	if !is2019 && attr.HasNightSpeed() {
 		nightSpeed = hex.ReadWord(pkt, idx)
 	}
 	return
 }
 
-func encodeName(pkt []byte, name string) []byte {
+// encodeName 写入名称。2019 版本名称长度字段为 WORD，2011/2013 版本保持
+// 仓库既有的 BYTE 长度。
+func encodeName(pkt []byte, name string, is2019 bool) []byte {
 	gbk := hex.WriteGBK(nil, name)
-	pkt = hex.WriteByte(pkt, uint8(len(gbk)))
+	if is2019 {
+		pkt = hex.WriteWord(pkt, uint16(len(gbk)))
+	} else {
+		pkt = hex.WriteByte(pkt, uint8(len(gbk)))
+	}
 	pkt = append(pkt, gbk...)
 	return pkt
 }
 
-func decodeName(pkt []byte, idx *int) (string, error) {
-	if *idx >= len(pkt) {
-		return "", errors.New("name length missing")
+func decodeName(pkt []byte, idx *int, is2019 bool) (string, error) {
+	var n int
+	if is2019 {
+		if *idx+2 > len(pkt) {
+			return "", errors.New("name length missing")
+		}
+		n = int(hex.ReadWord(pkt, idx))
+	} else {
+		if *idx >= len(pkt) {
+			return "", errors.New("name length missing")
+		}
+		n = int(hex.ReadByte(pkt, idx))
 	}
-	n := int(hex.ReadByte(pkt, idx))
 	if *idx+n > len(pkt) {
 		return "", errors.New("name bytes exceed payload")
 	}
@@ -219,9 +259,15 @@ func encodeVertices(pkt []byte, verts []PolygonVertex) []byte {
 }
 
 func decodeVertices(pkt []byte, idx *int) ([]PolygonVertex, error) {
+	if *idx+2 > len(pkt) {
+		return nil, errors.New("vertex count missing")
+	}
 	cnt := int(hex.ReadWord(pkt, idx))
 	if cnt == 0 {
 		return nil, errors.New("vertex count must be nonzero")
+	}
+	if *idx+cnt*8 > len(pkt) {
+		return nil, errors.New("vertex items exceed payload")
 	}
 	verts := make([]PolygonVertex, 0, cnt)
 	for i := 0; i < cnt; i++ {
@@ -235,26 +281,33 @@ func decodeVertices(pkt []byte, idx *int) ([]PolygonVertex, error) {
 
 // ---- Circle ----
 
-func (c *CircleArea) encode() []byte {
+func (c *CircleArea) encode(is2019 bool) []byte {
 	pkt := hex.WriteDoubleWord(nil, c.ID)
 	pkt = hex.WriteWord(pkt, uint16(c.Attr))
 	pkt = hex.WriteDoubleWord(pkt, c.Latitude)
 	pkt = hex.WriteDoubleWord(pkt, c.Longitude)
 	pkt = hex.WriteDoubleWord(pkt, c.Radius)
-	pkt = encodeAreaAttrFields(pkt, c.Attr, c.StartTime, c.EndTime, c.MaxSpeed, c.Duration, c.NightSpeed)
-	pkt = encodeName(pkt, c.Name)
+	pkt = encodeAreaAttrFields(pkt, c.Attr, c.StartTime, c.EndTime, c.MaxSpeed, c.Duration, c.NightSpeed, is2019)
+	pkt = encodeName(pkt, c.Name, is2019)
 	return pkt
 }
 
-func decodeCircle(pkt []byte, idx *int) (*CircleArea, error) {
+func decodeCircle(pkt []byte, idx *int, is2019 bool) (*CircleArea, error) {
+	const fixedLen = 4 + 2 + 4 + 4 + 4
+	if len(pkt)-*idx < fixedLen {
+		return nil, errors.New("circle area too short")
+	}
 	c := &CircleArea{}
 	c.ID = hex.ReadDoubleWord(pkt, idx)
 	c.Attr = AreaAttr(hex.ReadWord(pkt, idx))
 	c.Latitude = hex.ReadDoubleWord(pkt, idx)
 	c.Longitude = hex.ReadDoubleWord(pkt, idx)
 	c.Radius = hex.ReadDoubleWord(pkt, idx)
-	c.StartTime, c.EndTime, c.MaxSpeed, c.Duration, c.NightSpeed = decodeAreaAttrFields(pkt, idx, c.Attr)
-	name, err := decodeName(pkt, idx)
+	if len(pkt)-*idx < areaAttrFieldsLength(c.Attr, is2019) {
+		return nil, errors.New("circle area attr fields exceed payload")
+	}
+	c.StartTime, c.EndTime, c.MaxSpeed, c.Duration, c.NightSpeed = decodeAreaAttrFields(pkt, idx, c.Attr, is2019)
+	name, err := decodeName(pkt, idx, is2019)
 	if err != nil {
 		return nil, err
 	}
@@ -264,19 +317,23 @@ func decodeCircle(pkt []byte, idx *int) (*CircleArea, error) {
 
 // ---- Rectangle ----
 
-func (r *RectangleArea) encode() []byte {
+func (r *RectangleArea) encode(is2019 bool) []byte {
 	pkt := hex.WriteDoubleWord(nil, r.ID)
 	pkt = hex.WriteWord(pkt, uint16(r.Attr))
 	pkt = hex.WriteDoubleWord(pkt, r.LeftTopLat)
 	pkt = hex.WriteDoubleWord(pkt, r.LeftTopLng)
 	pkt = hex.WriteDoubleWord(pkt, r.RightBottomLat)
 	pkt = hex.WriteDoubleWord(pkt, r.RightBottomLng)
-	pkt = encodeAreaAttrFields(pkt, r.Attr, r.StartTime, r.EndTime, r.MaxSpeed, r.Duration, r.NightSpeed)
-	pkt = encodeName(pkt, r.Name)
+	pkt = encodeAreaAttrFields(pkt, r.Attr, r.StartTime, r.EndTime, r.MaxSpeed, r.Duration, r.NightSpeed, is2019)
+	pkt = encodeName(pkt, r.Name, is2019)
 	return pkt
 }
 
-func decodeRectangle(pkt []byte, idx *int) (*RectangleArea, error) {
+func decodeRectangle(pkt []byte, idx *int, is2019 bool) (*RectangleArea, error) {
+	const fixedLen = 4 + 2 + 4 + 4 + 4 + 4
+	if len(pkt)-*idx < fixedLen {
+		return nil, errors.New("rectangle area too short")
+	}
 	r := &RectangleArea{}
 	r.ID = hex.ReadDoubleWord(pkt, idx)
 	r.Attr = AreaAttr(hex.ReadWord(pkt, idx))
@@ -284,8 +341,11 @@ func decodeRectangle(pkt []byte, idx *int) (*RectangleArea, error) {
 	r.LeftTopLng = hex.ReadDoubleWord(pkt, idx)
 	r.RightBottomLat = hex.ReadDoubleWord(pkt, idx)
 	r.RightBottomLng = hex.ReadDoubleWord(pkt, idx)
-	r.StartTime, r.EndTime, r.MaxSpeed, r.Duration, r.NightSpeed = decodeAreaAttrFields(pkt, idx, r.Attr)
-	name, err := decodeName(pkt, idx)
+	if len(pkt)-*idx < areaAttrFieldsLength(r.Attr, is2019) {
+		return nil, errors.New("rectangle area attr fields exceed payload")
+	}
+	r.StartTime, r.EndTime, r.MaxSpeed, r.Duration, r.NightSpeed = decodeAreaAttrFields(pkt, idx, r.Attr, is2019)
+	name, err := decodeName(pkt, idx, is2019)
 	if err != nil {
 		return nil, err
 	}
@@ -295,16 +355,19 @@ func decodeRectangle(pkt []byte, idx *int) (*RectangleArea, error) {
 
 // ---- Polygon ----
 
-func (p *PolygonArea) encode() []byte {
+func (p *PolygonArea) encode(is2019 bool) []byte {
 	pkt := hex.WriteDoubleWord(nil, p.ID)
 	pkt = hex.WriteWord(pkt, uint16(p.Attr))
 	pkt = encodeVertices(pkt, p.Vertices)
-	pkt = encodeAreaAttrFields(pkt, p.Attr, p.StartTime, p.EndTime, p.MaxSpeed, p.Duration, p.NightSpeed)
-	pkt = encodeName(pkt, p.Name)
+	pkt = encodeAreaAttrFields(pkt, p.Attr, p.StartTime, p.EndTime, p.MaxSpeed, p.Duration, p.NightSpeed, is2019)
+	pkt = encodeName(pkt, p.Name, is2019)
 	return pkt
 }
 
-func decodePolygon(pkt []byte, idx *int) (*PolygonArea, error) {
+func decodePolygon(pkt []byte, idx *int, is2019 bool) (*PolygonArea, error) {
+	if len(pkt)-*idx < 4+2 {
+		return nil, errors.New("polygon area too short")
+	}
 	p := &PolygonArea{}
 	p.ID = hex.ReadDoubleWord(pkt, idx)
 	p.Attr = AreaAttr(hex.ReadWord(pkt, idx))
@@ -313,8 +376,11 @@ func decodePolygon(pkt []byte, idx *int) (*PolygonArea, error) {
 		return nil, err
 	}
 	p.Vertices = verts
-	p.StartTime, p.EndTime, p.MaxSpeed, p.Duration, p.NightSpeed = decodeAreaAttrFields(pkt, idx, p.Attr)
-	name, err := decodeName(pkt, idx)
+	if len(pkt)-*idx < areaAttrFieldsLength(p.Attr, is2019) {
+		return nil, errors.New("polygon area attr fields exceed payload")
+	}
+	p.StartTime, p.EndTime, p.MaxSpeed, p.Duration, p.NightSpeed = decodeAreaAttrFields(pkt, idx, p.Attr, is2019)
+	name, err := decodeName(pkt, idx, is2019)
 	if err != nil {
 		return nil, err
 	}
@@ -324,7 +390,7 @@ func decodePolygon(pkt []byte, idx *int) (*PolygonArea, error) {
 
 // ---- Route ----
 
-func (r *Route) encode() []byte {
+func (r *Route) encode(is2019 bool) []byte {
 	pkt := hex.WriteDoubleWord(nil, r.ID)
 	pkt = hex.WriteWord(pkt, uint16(r.Attr))
 	if r.Attr.HasTime() {
@@ -340,37 +406,64 @@ func (r *Route) encode() []byte {
 		if segAttr.HasSpeed() {
 			pkt = hex.WriteWord(pkt, s.MaxSpeed)
 			pkt = hex.WriteByte(pkt, s.Duration)
+			if is2019 {
+				pkt = hex.WriteWord(pkt, s.NightSpeed)
+			}
 		}
-		if segAttr.HasNightSpeed() {
+		if !is2019 && segAttr.HasNightSpeed() {
 			pkt = hex.WriteWord(pkt, s.NightSpeed)
 		}
 		pkt = encodeVertices(pkt, s.Vertices)
 	}
-	pkt = encodeName(pkt, r.Name)
+	pkt = encodeName(pkt, r.Name, is2019)
 	return pkt
 }
 
-func decodeRoute(pkt []byte, idx *int) (*Route, error) {
+func decodeRoute(pkt []byte, idx *int, is2019 bool) (*Route, error) {
+	if len(pkt)-*idx < 4+2 {
+		return nil, errors.New("route too short")
+	}
 	r := &Route{}
 	r.ID = hex.ReadDoubleWord(pkt, idx)
 	r.Attr = AreaAttr(hex.ReadWord(pkt, idx))
 	if r.Attr.HasTime() {
+		if len(pkt)-*idx < 12 {
+			return nil, errors.New("route time fields exceed payload")
+		}
 		r.StartTime = hex.ReadBCD(pkt, idx, 6)
 		r.EndTime = hex.ReadBCD(pkt, idx, 6)
+	}
+	if len(pkt)-*idx < 2 {
+		return nil, errors.New("route segment count missing")
 	}
 	segCnt := int(hex.ReadWord(pkt, idx))
 	r.Segments = make([]RouteSegment, 0, segCnt)
 	for i := 0; i < segCnt; i++ {
+		if len(pkt)-*idx < 4+2+2 {
+			return nil, errors.New("route segment too short")
+		}
 		s := RouteSegment{}
 		s.ID = hex.ReadDoubleWord(pkt, idx)
 		s.Attr = hex.ReadWord(pkt, idx)
 		s.Length = hex.ReadWord(pkt, idx)
 		segAttr := AreaAttr(s.Attr)
 		if segAttr.HasSpeed() {
+			if len(pkt)-*idx < 3 {
+				return nil, errors.New("route segment speed fields exceed payload")
+			}
 			s.MaxSpeed = hex.ReadWord(pkt, idx)
 			s.Duration = hex.ReadByte(pkt, idx)
+			if is2019 {
+				if len(pkt)-*idx < 2 {
+					return nil, errors.New("route segment night speed missing")
+				}
+				s.NightSpeed = hex.ReadWord(pkt, idx)
+			}
 		}
-		if segAttr.HasNightSpeed() {
+		if !is2019 && segAttr.HasNightSpeed() {
+			if len(pkt)-*idx < 2 {
+				return nil, errors.New("route segment night speed missing")
+			}
 			s.NightSpeed = hex.ReadWord(pkt, idx)
 		}
 		verts, err := decodeVertices(pkt, idx)
@@ -380,7 +473,7 @@ func decodeRoute(pkt []byte, idx *int) (*Route, error) {
 		s.Vertices = verts
 		r.Segments = append(r.Segments, s)
 	}
-	name, err := decodeName(pkt, idx)
+	name, err := decodeName(pkt, idx, is2019)
 	if err != nil {
 		return nil, err
 	}

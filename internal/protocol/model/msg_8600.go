@@ -55,29 +55,30 @@ func (m *MsgRegionRouteSet) Decode(packet *PacketData) error {
 	m.Header = packet.Header
 	m.SettingAttr = AreaSettingAttr(setting)
 	m.Type = typ
+	is2019 := packet.Header.Is2019()
 	idx := 2
 	for i := 0; i < count; i++ {
 		switch typ {
 		case RegionRouteCircle:
-			c, err := decodeCircle(body, &idx)
+			c, err := decodeCircle(body, &idx, is2019)
 			if err != nil {
 				return errors.Wrap(err, "decode circle area")
 			}
 			m.Circles = append(m.Circles, *c)
 		case RegionRouteRect:
-			r, err := decodeRectangle(body, &idx)
+			r, err := decodeRectangle(body, &idx, is2019)
 			if err != nil {
 				return errors.Wrap(err, "decode rectangle area")
 			}
 			m.Rectangles = append(m.Rectangles, *r)
 		case RegionRoutePolygon:
-			p, err := decodePolygon(body, &idx)
+			p, err := decodePolygon(body, &idx, is2019)
 			if err != nil {
 				return errors.Wrap(err, "decode polygon area")
 			}
 			m.Polygons = append(m.Polygons, *p)
 		case RegionRouteRoute:
-			rt, err := decodeRoute(body, &idx)
+			rt, err := decodeRoute(body, &idx, is2019)
 			if err != nil {
 				return errors.Wrap(err, "decode route")
 			}
@@ -104,22 +105,23 @@ func (m *MsgRegionRouteSet) Encode() ([]byte, error) {
 		return nil, errors.Wrap(ErrEncodeMsg, "item count out of range")
 	}
 	body := []byte{byte(m.SettingAttr), byte(count)}
+	is2019 := m.Header.Is2019()
 	switch typ {
 	case RegionRouteCircle:
 		for i := range m.Circles {
-			body = append(body, m.Circles[i].encode()...)
+			body = append(body, m.Circles[i].encode(is2019)...)
 		}
 	case RegionRouteRect:
 		for i := range m.Rectangles {
-			body = append(body, m.Rectangles[i].encode()...)
+			body = append(body, m.Rectangles[i].encode(is2019)...)
 		}
 	case RegionRoutePolygon:
 		for i := range m.Polygons {
-			body = append(body, m.Polygons[i].encode()...)
+			body = append(body, m.Polygons[i].encode(is2019)...)
 		}
 	case RegionRouteRoute:
 		for i := range m.Routes {
-			body = append(body, m.Routes[i].encode()...)
+			body = append(body, m.Routes[i].encode(is2019)...)
 		}
 	}
 	return writeHeader(m, body)

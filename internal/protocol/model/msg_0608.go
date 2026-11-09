@@ -24,28 +24,29 @@ func (m *Msg0608) decodeRecords(body []byte) error {
 		return errors.Wrap(ErrDecodeMsg, "invalid query type")
 	}
 	idx := 0
+	is2019 := m.Header.Is2019()
 	for i := uint32(0); i < m.Count; i++ {
 		switch typ {
 		case RegionRouteCircle:
-			c, err := decodeCircle(body, &idx)
+			c, err := decodeCircle(body, &idx, is2019)
 			if err != nil {
 				return err
 			}
 			m.Circles = append(m.Circles, *c)
 		case RegionRouteRect:
-			r, err := decodeRectangle(body, &idx)
+			r, err := decodeRectangle(body, &idx, is2019)
 			if err != nil {
 				return err
 			}
 			m.Rectangles = append(m.Rectangles, *r)
 		case RegionRoutePolygon:
-			p, err := decodePolygon(body, &idx)
+			p, err := decodePolygon(body, &idx, is2019)
 			if err != nil {
 				return err
 			}
 			m.Polygons = append(m.Polygons, *p)
 		case RegionRouteRoute:
-			rt, err := decodeRoute(body, &idx)
+			rt, err := decodeRoute(body, &idx, is2019)
 			if err != nil {
 				return err
 			}
@@ -87,26 +88,27 @@ func (m *Msg0608) Encode() ([]byte, error) {
 		return nil, ErrEncodeMsg
 	}
 	var records []byte
+	is2019 := m.Header.Is2019()
 	switch typ {
 	case RegionRouteCircle:
 		m.Count = uint32(len(m.Circles))
 		for i := range m.Circles {
-			records = append(records, m.Circles[i].encode()...)
+			records = append(records, m.Circles[i].encode(is2019)...)
 		}
 	case RegionRouteRect:
 		m.Count = uint32(len(m.Rectangles))
 		for i := range m.Rectangles {
-			records = append(records, m.Rectangles[i].encode()...)
+			records = append(records, m.Rectangles[i].encode(is2019)...)
 		}
 	case RegionRoutePolygon:
 		m.Count = uint32(len(m.Polygons))
 		for i := range m.Polygons {
-			records = append(records, m.Polygons[i].encode()...)
+			records = append(records, m.Polygons[i].encode(is2019)...)
 		}
 	case RegionRouteRoute:
 		m.Count = uint32(len(m.Routes))
 		for i := range m.Routes {
-			records = append(records, m.Routes[i].encode()...)
+			records = append(records, m.Routes[i].encode(is2019)...)
 		}
 	}
 	body := []byte{m.QueryType}
