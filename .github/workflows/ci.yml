@@ -25,6 +25,9 @@ jobs:
     - name: Build and Test
       run: make all
 
+    - name: Coverage matrix consistency
+      run: ./scripts/check-coverage.sh
+
     # make all 已在 -race 下跑全量测试；这里再显式点名 outbox 回归，
     # 避免后续重构把 replay 测试移出默认包列表后只剩「绿灯但没跑」。
     - name: Outbox replay regression
