@@ -1,11 +1,14 @@
 package media
 
 import (
+	"errors"
 	"fmt"
 	"net"
 	"os"
 	"path/filepath"
+	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/rs/zerolog/log"
@@ -16,6 +19,8 @@ import (
 const (
 	// DefaultIdleTimeout 是单路音视频流的空闲回收时长。
 	DefaultIdleTimeout = 30 * time.Second
+	// DefaultMaxTCPConns 是 1078 TCP 连接数默认上限。
+	DefaultMaxTCPConns = 64
 	// maxFrameBytes 限制单帧重组后的最大字节数，防止异常终端占满内存。
 	maxFrameBytes = 8 * 1024 * 1024
 	// udpReadBuffer 是 UDP 套接字读缓冲，1078 视频突发包较多。
@@ -24,10 +29,11 @@ const (
 
 // Config 是 1078 RTP 接入服务器配置。
 type Config struct {
-	Dir           string        // H.264 落盘根目录
-	MaxConcurrent int           // 并发通道上限
+	Dir           string        // 音视频落盘根目录
+	MaxConcurrent int           // 并发流上限（UDP 与 TCP 合计）
+	MaxTCPConns   int           // TCP 连接数上限
 	IdleTimeout   time.Duration // 空闲回收时长
-	Retention     time.Duration // .h264 文件保留时长；<=0 表示不清理
+	Retention     time.Duration // 落盘文件保留时长；<=0 表示不清理
 }
 
 func (c Config) normalize() Config {
@@ -37,43 +43,127 @@ func (c Config) normalize() Config {
 	if c.MaxConcurrent <= 0 {
 		c.MaxConcurrent = 16
 	}
+	if c.MaxTCPConns <= 0 {
+		c.MaxTCPConns = DefaultMaxTCPConns
+	}
 	if c.IdleTimeout <= 0 {
 		c.IdleTimeout = DefaultIdleTimeout
 	}
 	return c
 }
 
-// Server 接收终端按 0x9101 建立的 1078 RTP 音视频流。
+// transportKind 区分 1078 音视频的承载方式。
+type transportKind uint8
+
+const (
+	transportUDP transportKind = iota
+	transportTCP
+)
+
+// packetSource 标识一个包的来源；TCP 用连接 ID，UDP 用对端地址。
+type packetSource struct {
+	transport transportKind
+	remote    string
+	connID    uint64
+}
+
+func (s packetSource) key() string {
+	if s.transport == transportTCP {
+		return fmt.Sprintf("tcp/%d", s.connID)
+	}
+	// UDP 只按对端 IP 区分：终端可能在 NAT 下更换源端口，
+	// 但同一手机号/通道仍应视为同一路流。
+	host := s.remote
+	if h, _, err := net.SplitHostPort(s.remote); err == nil {
+		host = h
+	}
+	return "udp/" + host
+}
+
+// Server 接收终端按 0x9101 建立的 1078 音视频流。
 //
-// 当前实现范围：
-//   - 仅支持 UDP（0x9101 的 TCP 推送暂不支持）；
-//   - 仅解析 H.264；H.265 暂不支持；
-//   - 只把 PS/ES 还原为 H.264 Annex B 并落成 .h264 文件，不做转码、不做分发、不写播放器索引。
+// 支持范围：
+//   - UDP 与 TCP 承载，两者独立监听；
+//   - H.264 视频、G.711A/U 与 ADTS AAC 音频；
+//   - 视频还原为 Annex B H.264 并按 IDR 前置 SPS/PPS；
+//   - 不做转码、不做分发、不写播放器索引。
 type Server struct {
 	cfg Config
 
-	conn    *net.UDPConn
-	close   sync.Once
+	udpConn *net.UDPConn
+	tcpLn   *net.TCPListener
 	done    chan struct{}
+	close   sync.Once
 	cleanup sync.WaitGroup
+	serve   sync.WaitGroup
+
+	mu         sync.Mutex
+	streams    map[string]*streamState
+	lastLimit  time.Time
+	conns      map[uint64]*tcpConn
+	nextConnID uint64
+}
+
+// streamState 是一路“手机号 + 通道 + 来源”的音视频状态。
+// 视频与音频各有独立文件，共用同一个文件名主幹。
+type streamState struct {
+	source  packetSource
+	phone   string
+	channel uint8
+	dir     string
+	stem    string
+
+	assemble *frameAssembler
 
 	mu        sync.Mutex
-	streams   map[string]*streamState
-	lastLimit time.Time
+	videoSink *fileSink
+
+	lastSeen atomic.Int64
 }
 
-type streamState struct {
-	assemble *frameAssembler
-	sink     *fileSink
-	lastSeen time.Time
+func (st *streamState) touch() {
+	st.lastSeen.Store(time.Now().UnixNano())
 }
 
-// NewServer 创建 1078 RTP 接入服务器。
+func (st *streamState) idleFor(now time.Time) time.Duration {
+	return now.Sub(time.Unix(0, st.lastSeen.Load()))
+}
+
+// writeVideo 应用参数集缓存后写入视频文件；文件按需延迟创建。
+func (st *streamState) writeVideo(frame []byte) error {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+
+	if st.videoSink == nil {
+		sink, err := newSink(st.dir, st.phone, st.channel, st.stem, ".h264")
+		if err != nil {
+			return err
+		}
+		st.videoSink = sink
+	}
+	return st.videoSink.Write(frame)
+}
+
+func (st *streamState) close() error {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	var errs []error
+	if st.videoSink != nil {
+		if err := st.videoSink.Close(); err != nil {
+			errs = append(errs, err)
+		}
+		st.videoSink = nil
+	}
+	return errors.Join(errs...)
+}
+
+// NewServer 创建 1078 音视频接入服务器。
 func NewServer(cfg Config) *Server {
 	s := &Server{
 		cfg:     cfg.normalize(),
 		done:    make(chan struct{}),
 		streams: map[string]*streamState{},
+		conns:   map[uint64]*tcpConn{},
 	}
 	s.cleanup.Add(1)
 	routines.GoSafe(func() {
@@ -97,18 +187,45 @@ func (s *Server) Listen(addr string) error {
 		return fmt.Errorf("listen media udp addr %s: %w", addr, err)
 	}
 	_ = conn.SetReadBuffer(udpReadBuffer)
-	s.conn = conn
-	log.Info().Str("addr", conn.LocalAddr().String()).Str("dir", s.cfg.Dir).
-		Int("maxConcurrent", s.cfg.MaxConcurrent).Dur("retention", s.cfg.Retention).Msg("Media RTP server listening")
+	s.udpConn = conn
+	log.Info().Str("addr", conn.LocalAddr().String()).Str("transport", "udp").Str("dir", s.cfg.Dir).
+		Int("maxConcurrent", s.cfg.MaxConcurrent).Dur("retention", s.cfg.Retention).Msg("Media server listening")
 	return nil
 }
 
-// Addr 返回实际监听地址。
+// ListenTCP 绑定 TCP 端口。TCP 与 UDP 可同时监听。
+func (s *Server) ListenTCP(addr string) error {
+	if err := os.MkdirAll(s.cfg.Dir, 0o755); err != nil {
+		return fmt.Errorf("create media dir %s: %w", s.cfg.Dir, err)
+	}
+	tcpAddr, err := net.ResolveTCPAddr("tcp", addr)
+	if err != nil {
+		return fmt.Errorf("resolve media tcp addr %s: %w", addr, err)
+	}
+	ln, err := net.ListenTCP("tcp", tcpAddr)
+	if err != nil {
+		return fmt.Errorf("listen media tcp addr %s: %w", addr, err)
+	}
+	s.tcpLn = ln
+	log.Info().Str("addr", ln.Addr().String()).Str("transport", "tcp").Str("dir", s.cfg.Dir).
+		Int("maxTCPConns", s.cfg.MaxTCPConns).Dur("retention", s.cfg.Retention).Msg("Media server listening")
+	return nil
+}
+
+// Addr 返回 UDP 实际监听地址。
 func (s *Server) Addr() string {
-	if s.conn == nil {
+	if s.udpConn == nil {
 		return ""
 	}
-	return s.conn.LocalAddr().String()
+	return s.udpConn.LocalAddr().String()
+}
+
+// TCPAddr 返回 TCP 实际监听地址。
+func (s *Server) TCPAddr() string {
+	if s.tcpLn == nil {
+		return ""
+	}
+	return s.tcpLn.Addr().String()
 }
 
 // Streams 返回当前活跃的媒体流数量，供指标采集。
@@ -118,15 +235,58 @@ func (s *Server) Streams() int {
 	return len(s.streams)
 }
 
-// Start 进入阻塞式收包循环，由调用方放入独立 goroutine。
+// Start 进入阻塞式服务循环，由调用方放入独立 goroutine。
 func (s *Server) Start() {
-	if s.conn == nil {
-		log.Error().Msg("Media RTP server is not listening")
+	if s.udpConn == nil && s.tcpLn == nil {
+		log.Error().Msg("Media server is not listening")
 		return
 	}
+	if s.udpConn != nil {
+		s.serve.Add(1)
+		routines.GoSafe(func() {
+			defer s.serve.Done()
+			s.readUDP()
+		})
+	}
+	if s.tcpLn != nil {
+		s.serve.Add(1)
+		routines.GoSafe(func() {
+			defer s.serve.Done()
+			s.acceptTCP()
+		})
+	}
+	s.serve.Wait()
+}
+
+// Stop 停止收包、回收清理任务并关闭所有落盘文件。
+func (s *Server) Stop() {
+	s.close.Do(func() {
+		close(s.done)
+		if s.udpConn != nil {
+			_ = s.udpConn.Close()
+		}
+		if s.tcpLn != nil {
+			_ = s.tcpLn.Close()
+		}
+		s.mu.Lock()
+		conns := make([]*tcpConn, 0, len(s.conns))
+		for _, c := range s.conns {
+			conns = append(conns, c)
+		}
+		s.mu.Unlock()
+		for _, c := range conns {
+			_ = c.conn.Close()
+		}
+	})
+	s.serve.Wait()
+	s.cleanup.Wait()
+	s.closeAllStreams()
+}
+
+func (s *Server) readUDP() {
 	buf := make([]byte, 65535)
 	for {
-		n, _, err := s.conn.ReadFromUDP(buf)
+		n, addr, err := s.udpConn.ReadFromUDP(buf)
 		if err != nil {
 			select {
 			case <-s.done:
@@ -136,23 +296,11 @@ func (s *Server) Start() {
 			log.Error().Err(err).Msg("Fail to read media RTP packet")
 			continue
 		}
-		s.handlePacket(buf[:n])
+		s.handlePacket(buf[:n], packetSource{transport: transportUDP, remote: addr.String()})
 	}
 }
 
-// Stop 停止收包、回收清理任务并关闭所有落盘文件。
-func (s *Server) Stop() {
-	s.close.Do(func() {
-		close(s.done)
-		if s.conn != nil {
-			_ = s.conn.Close()
-		}
-	})
-	s.cleanup.Wait()
-	s.closeAllStreams()
-}
-
-func (s *Server) handlePacket(raw []byte) {
+func (s *Server) handlePacket(raw []byte, source packetSource) {
 	select {
 	case <-s.done:
 		return
@@ -164,18 +312,22 @@ func (s *Server) handlePacket(raw []byte) {
 		log.Debug().Err(err).Msg("Ignore invalid media RTP packet")
 		return
 	}
-	if pkt.DataType < DataTypeIFrame || pkt.DataType > DataTypeBFrame {
-		return
-	}
-	if pkt.PayloadType != PayloadTypeH264 {
+
+	switch pkt.DataType {
+	case DataTypeIFrame, DataTypePFrame, DataTypeBFrame:
+		if pkt.PayloadType != PayloadTypeH264 {
+			return
+		}
+	default:
+		// 音频与透传数据不属于本次视频落盘链路。
 		return
 	}
 
-	st := s.streamFor(pkt)
+	st := s.streamFor(pkt, source)
 	if st == nil {
 		return
 	}
-	st.lastSeen = time.Now()
+	st.touch()
 
 	frame, err := st.assemble.Push(pkt)
 	if err != nil {
@@ -187,6 +339,7 @@ func (s *Server) handlePacket(raw []byte) {
 	if len(frame) == 0 {
 		return // 分片未收齐，正常中间状态
 	}
+
 	h264, err := ExtractH264(frame)
 	if err != nil {
 		// 截断/损坏同样只丢帧不断流；不支持的载荷形态也无需写盘。
@@ -198,13 +351,13 @@ func (s *Server) handlePacket(raw []byte) {
 		// PS 正常结束且无 ES，不是错误。
 		return
 	}
-	if err := st.sink.Write(h264); err != nil {
-		log.Warn().Err(err).Str("path", st.sink.Path()).Msg("Fail to write media frame")
+	if err := st.writeVideo(h264); err != nil {
+		log.Warn().Err(err).Str("stem", st.stem).Msg("Fail to write media frame")
 	}
 }
 
-func (s *Server) streamFor(pkt *Packet) *streamState {
-	key := streamKey(pkt.Phone, pkt.LogicChannel)
+func (s *Server) streamFor(pkt *Packet, source packetSource) *streamState {
+	key := streamKey(pkt.Phone, pkt.LogicChannel, source)
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -220,20 +373,19 @@ func (s *Server) streamFor(pkt *Packet) *streamState {
 		}
 		return nil
 	}
-	sink, err := newFileSink(s.cfg.Dir, pkt.Phone, pkt.LogicChannel)
-	if err != nil {
-		log.Error().Err(err).Str("phone", pkt.Phone).Uint8("channel", pkt.LogicChannel).
-			Msg("Fail to create media file")
-		return nil
-	}
+
 	st := &streamState{
+		source:   source,
+		phone:    pkt.Phone,
+		channel:  pkt.LogicChannel,
+		dir:      s.cfg.Dir,
+		stem:     strconv.FormatInt(time.Now().UnixNano(), 10),
 		assemble: newFrameAssembler(maxFrameBytes),
-		sink:     sink,
-		lastSeen: time.Now(),
 	}
+	st.touch()
 	s.streams[key] = st
-	log.Info().Str("phone", pkt.Phone).Uint8("channel", pkt.LogicChannel).Str("path", sink.Path()).
-		Msg("Media stream started")
+	log.Info().Str("phone", pkt.Phone).Uint8("channel", pkt.LogicChannel).
+		Str("transport", source.key()).Msg("Media stream started")
 	return st
 }
 
@@ -260,19 +412,24 @@ func (s *Server) cleanupLoop() {
 	}
 }
 
-// pruneExpired 删除超过保留期且不在写入中的 .h264 文件。
+// prunableMediaExt 判断扩展名是否属于实时流落盘文件。
+func prunableMediaExt(ext string) bool {
+	switch ext {
+	case ".h264":
+		return true
+	default:
+		return false
+	}
+}
+
+// pruneExpired 删除超过保留期且不在写入中的音视频文件。
 // 正在写入的流即使修改时间较旧也跳过，避免删除已打开的文件。
 func (s *Server) pruneExpired(now time.Time) {
 	if s.cfg.Retention <= 0 {
 		return
 	}
 	cutoff := now.Add(-s.cfg.Retention)
-	active := make(map[string]struct{})
-	s.mu.Lock()
-	for _, st := range s.streams {
-		active[st.sink.Path()] = struct{}{}
-	}
-	s.mu.Unlock()
+	active := s.activeSinkPaths()
 
 	removed := 0
 	walkErr := filepath.WalkDir(s.cfg.Dir, func(path string, entry os.DirEntry, err error) error {
@@ -280,7 +437,7 @@ func (s *Server) pruneExpired(now time.Time) {
 			log.Warn().Err(err).Str("path", path).Msg("Fail to scan media dir")
 			return nil
 		}
-		if entry.IsDir() || filepath.Ext(entry.Name()) != ".h264" {
+		if entry.IsDir() || !prunableMediaExt(filepath.Ext(entry.Name())) {
 			return nil
 		}
 		if _, ok := active[path]; ok {
@@ -308,19 +465,60 @@ func (s *Server) pruneExpired(now time.Time) {
 	}
 }
 
+// activeSinkPaths 返回所有正在写入的视频文件路径。
+func (s *Server) activeSinkPaths() map[string]struct{} {
+	s.mu.Lock()
+	states := make([]*streamState, 0, len(s.streams))
+	for _, st := range s.streams {
+		states = append(states, st)
+	}
+	s.mu.Unlock()
+
+	active := make(map[string]struct{}, len(states))
+	for _, st := range states {
+		st.mu.Lock()
+		if st.videoSink != nil {
+			active[st.videoSink.Path()] = struct{}{}
+		}
+		st.mu.Unlock()
+	}
+	return active
+}
+
 func (s *Server) evictIdle(now time.Time) {
 	s.mu.Lock()
-	deleted := make([]*streamState, 0, len(s.streams))
+	expired := make([]*streamState, 0, len(s.streams))
 	for key, st := range s.streams {
-		if now.Sub(st.lastSeen) >= s.cfg.IdleTimeout {
-			deleted = append(deleted, st)
+		if st.idleFor(now) >= s.cfg.IdleTimeout {
+			expired = append(expired, st)
 			delete(s.streams, key)
 		}
 	}
 	s.mu.Unlock()
-	for _, st := range deleted {
-		if err := st.sink.Close(); err != nil {
-			log.Warn().Err(err).Str("path", st.sink.Path()).Msg("Fail to close idle media file")
+	for _, st := range expired {
+		if err := st.close(); err != nil {
+			log.Warn().Err(err).Str("phone", st.phone).Uint8("channel", st.channel).
+				Msg("Fail to close idle media file")
+		}
+	}
+}
+
+// closeConnectionStreams 在 TCP 连接断开时立即收尾该连接上的所有流。
+// 空闲回收按流判定，因此同一条连接上的其他通道仍在活跃时不会被误杀。
+func (s *Server) closeConnectionStreams(connID uint64) {
+	s.mu.Lock()
+	closed := make([]*streamState, 0)
+	for key, st := range s.streams {
+		if st.source.transport == transportTCP && st.source.connID == connID {
+			closed = append(closed, st)
+			delete(s.streams, key)
+		}
+	}
+	s.mu.Unlock()
+	for _, st := range closed {
+		if err := st.close(); err != nil {
+			log.Warn().Err(err).Str("phone", st.phone).Uint8("channel", st.channel).
+				Msg("Fail to close media file on connection close")
 		}
 	}
 }
@@ -334,23 +532,29 @@ func (s *Server) closeAllStreams() {
 	}
 	s.mu.Unlock()
 	for _, st := range all {
-		if err := st.sink.Close(); err != nil {
-			log.Warn().Err(err).Str("path", st.sink.Path()).Msg("Fail to close media file")
+		if err := st.close(); err != nil {
+			log.Warn().Err(err).Str("phone", st.phone).Uint8("channel", st.channel).
+				Msg("Fail to close media file")
 		}
 	}
 }
 
-func streamKey(phone string, channel uint8) string {
+func streamKeyBase(phone string, channel uint8) string {
 	return fmt.Sprintf("%s/%d", phone, channel)
 }
 
-// fileSink 把 H.264 Annex B 数据追加到单个 .h264 文件。
+func streamKey(phone string, channel uint8, source packetSource) string {
+	return streamKeyBase(phone, channel) + "/" + source.key()
+}
+
+// fileSink 把音视频数据追加到单个文件。
 type fileSink struct {
 	file *os.File
 	path string
 }
 
-func newFileSink(baseDir, phone string, channel uint8) (*fileSink, error) {
+// newSink 在 <baseDir>/<phone>/channel_<n>/ 下创建 <stem><ext>。
+func newSink(baseDir, phone string, channel uint8, stem, ext string) (*fileSink, error) {
 	if !isDigits(phone) {
 		return nil, fmt.Errorf("invalid phone for media file: %q", phone)
 	}
@@ -358,7 +562,7 @@ func newFileSink(baseDir, phone string, channel uint8) (*fileSink, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, fmt.Errorf("create media dir %s: %w", dir, err)
 	}
-	path := filepath.Join(dir, fmt.Sprintf("%d.h264", time.Now().UnixNano()))
+	path := filepath.Join(dir, stem+ext)
 	file, err := os.OpenFile(path, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o644)
 	if err != nil {
 		return nil, fmt.Errorf("create media file %s: %w", path, err)
@@ -389,4 +593,27 @@ func isDigits(value string) bool {
 		}
 	}
 	return true
+}
+
+// tcpConn 是一条 1078 媒体 TCP 连接。
+type tcpConn struct {
+	id     uint64
+	conn   net.Conn
+	remote string
+}
+
+// readTCP 读取一条连接并把完整帧交给 handle；抽成独立函数便于测试分帧器。
+func readTCP(conn net.Conn, scanner *frameScanner, handle func([]byte)) error {
+	buf := make([]byte, 64*1024)
+	for {
+		n, err := conn.Read(buf)
+		if n > 0 {
+			for _, raw := range scanner.Push(buf[:n]) {
+				handle(raw)
+			}
+		}
+		if err != nil {
+			return err
+		}
+	}
 }
