@@ -43,15 +43,16 @@ var (
 
 // Stores 聚合持久化仓储，作为业务组件的存储依赖入口。
 type Stores struct {
-	Devices    repository.DeviceRepository
-	Geo        repository.GeoRepository
-	Params     repository.DeviceParamsRepository
-	Properties repository.TerminalPropertiesRepository
-	Alarms     repository.AlarmRepository
-	Regions    repository.RegionRepository
-	Industry   repository.IndustryRepository
-	Media      repository.MediaMetadataRepository
-	Commands   repository.CommandRepository
+	Devices        repository.DeviceRepository
+	Geo            repository.GeoRepository
+	Params         repository.DeviceParamsRepository
+	Properties     repository.TerminalPropertiesRepository
+	Alarms         repository.AlarmRepository
+	Regions        repository.RegionRepository
+	Industry       repository.IndustryRepository
+	Media          repository.MediaMetadataRepository
+	UpgradeResults repository.UpgradeResultRepository
+	Commands       repository.CommandRepository
 	// Locations 为定位历史仓储；memory 后端保持既有热读环形缓冲，本字段为 nil。
 	Locations repository.LocationRepository
 
@@ -69,16 +70,17 @@ func NewMemory() *Stores {
 
 func newStores(backend string) *Stores {
 	return &Stores{
-		Devices:    repository.NewDeviceRepository(),
-		Geo:        repository.NewGeoRepository(),
-		Params:     repository.NewDeviceParamsRepository(),
-		Properties: repository.NewTerminalPropertiesRepository(),
-		Alarms:     repository.NewAlarmRepository(),
-		Regions:    repository.NewRegionRepository(),
-		Industry:   repository.NewIndustryRepository(),
-		Media:      repository.NewMediaMetadataRepository(),
-		Commands:   repository.NewCommandRepository(),
-		Backend:    backend,
+		Devices:        repository.NewDeviceRepository(),
+		Geo:            repository.NewGeoRepository(),
+		Params:         repository.NewDeviceParamsRepository(),
+		Properties:     repository.NewTerminalPropertiesRepository(),
+		Alarms:         repository.NewAlarmRepository(),
+		Regions:        repository.NewRegionRepository(),
+		Industry:       repository.NewIndustryRepository(),
+		Media:          repository.NewMediaMetadataRepository(),
+		UpgradeResults: repository.NewUpgradeResultRepository(),
+		Commands:       repository.NewCommandRepository(),
+		Backend:        backend,
 	}
 }
 
@@ -111,6 +113,7 @@ func Open(cfg Config) (*Stores, error) {
 		stores.Properties = sqlStore.TerminalPropertiesRepository()
 		stores.Industry = industry
 		stores.Media = sqlStore.MediaMetadataRepository()
+		stores.UpgradeResults = sqlStore.UpgradeResultRepository()
 		stores.Commands = sqlStore.CommandRepository()
 		stores.Regions = regions
 		stores.Alarms = sqlStore.AlarmRepository(cfg.AlarmRetention)

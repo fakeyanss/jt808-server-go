@@ -105,8 +105,19 @@ func Run(ctx context.Context, serv *server.TCPServer, cfg *config.Config, apiOpt
 			result = industry.MediaUploads(phone)
 		case "transparent", "peripheral":
 			result = industry.TransparentUp(phone)
+		case "upgrade-result":
+			upgrade, err := storage.Default().UpgradeResults.Latest(c.Request.Context(), phone)
+			if errors.Is(err, repository.ErrUpgradeResultNotFound) {
+				c.JSON(http.StatusNotFound, gin.H{"err": "no report received"})
+				return
+			}
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"err": err.Error()})
+				return
+			}
+			result = upgrade
 		default:
-			c.JSON(http.StatusBadRequest, gin.H{"err": "kind must be driver, can, recorder, media-event, media-capture, media-search, media-uploads, transparent, or peripheral"})
+			c.JSON(http.StatusBadRequest, gin.H{"err": "kind must be driver, can, recorder, media-event, media-capture, media-search, media-uploads, transparent, peripheral, or upgrade-result"})
 			return
 		}
 		if result == nil {

@@ -1071,6 +1071,20 @@ func TestSimulatorPhonebookAndUpgrade(t *testing.T) {
 	require.NotNil(t, result, "0x0108 should be stored")
 	require.Equal(t, uint8(0), result.UpgradeType)
 	require.Equal(t, uint8(0), result.Result)
+
+	// 升级结果同时写入独立仓储，供验收查询（SQL 后端下可跨重启）。
+	var persisted *repository.UpgradeResult
+	deadline = time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		persisted, err = storage.Default().UpgradeResults.Latest(context.Background(), phone)
+		if err == nil {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	require.NoError(t, err, "0x0108 should be persisted")
+	require.Equal(t, uint8(0), persisted.UpgradeType)
+	require.Equal(t, uint8(0), persisted.Result)
 }
 
 // TestSimulatorTransparentAndCompressed verifies 0x8900 downlink transparent,
