@@ -25,6 +25,8 @@ const (
 	maxFrameBytes = 8 * 1024 * 1024
 	// udpReadBuffer 是 UDP 套接字读缓冲，1078 视频突发包较多。
 	udpReadBuffer = 4 * 1024 * 1024
+	// paramSetTTL 是服务级“最后参数集”的保留时长。
+	paramSetTTL = 10 * time.Minute
 )
 
 // Config 是 1078 RTP 接入服务器配置。
@@ -103,6 +105,9 @@ type Server struct {
 	conns      map[uint64]*tcpConn
 	nextConnID uint64
 
+	paramMu    sync.Mutex
+	lastParams map[string]cachedParamSet
+
 	lastAACWarn atomic.Int64
 }
 
@@ -116,6 +121,7 @@ type streamState struct {
 	stem    string
 
 	assemble *frameAssembler
+	params   paramSetCache
 
 	mu        sync.Mutex
 	videoSink *fileSink
@@ -138,6 +144,11 @@ func (st *streamState) writeVideo(frame []byte) error {
 	st.mu.Lock()
 	defer st.mu.Unlock()
 
+	out, changed := st.params.apply(frame)
+	if changed {
+		log.Info().Str("phone", st.phone).Uint8("channel", st.channel).
+			Msg("H.264 parameter sets updated")
+	}
 	if st.videoSink == nil {
 		sink, err := newSink(st.dir, st.phone, st.channel, st.stem, ".h264")
 		if err != nil {
@@ -145,7 +156,7 @@ func (st *streamState) writeVideo(frame []byte) error {
 		}
 		st.videoSink = sink
 	}
-	return st.videoSink.Write(frame)
+	return st.videoSink.Write(out)
 }
 
 // writeAudio 按编码扩展名写入音频文件；编码变化时关闭旧文件并新建。
@@ -172,6 +183,12 @@ func (st *streamState) writeAudio(ext string, data []byte) error {
 	return st.audioSink.Write(data)
 }
 
+func (st *streamState) snapshotParams() ([]byte, []byte) {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	return st.params.snapshot()
+}
+
 func (st *streamState) close() error {
 	st.mu.Lock()
 	defer st.mu.Unlock()
@@ -194,10 +211,11 @@ func (st *streamState) close() error {
 // NewServer 创建 1078 音视频接入服务器。
 func NewServer(cfg Config) *Server {
 	s := &Server{
-		cfg:     cfg.normalize(),
-		done:    make(chan struct{}),
-		streams: map[string]*streamState{},
-		conns:   map[uint64]*tcpConn{},
+		cfg:        cfg.normalize(),
+		done:       make(chan struct{}),
+		streams:    map[string]*streamState{},
+		conns:      map[uint64]*tcpConn{},
+		lastParams: map[string]cachedParamSet{},
 	}
 	s.cleanup.Add(1)
 	routines.GoSafe(func() {
@@ -435,6 +453,7 @@ func (s *Server) streamFor(pkt *Packet, source packetSource) *streamState {
 		return nil
 	}
 
+	sps, pps := s.loadLastParams(pkt.Phone, pkt.LogicChannel)
 	st := &streamState{
 		source:   source,
 		phone:    pkt.Phone,
@@ -442,6 +461,7 @@ func (s *Server) streamFor(pkt *Packet, source packetSource) *streamState {
 		dir:      s.cfg.Dir,
 		stem:     strconv.FormatInt(time.Now().UnixNano(), 10),
 		assemble: newFrameAssembler(maxFrameBytes),
+		params:   paramSetCache{sps: sps, pps: pps},
 	}
 	st.touch()
 	s.streams[key] = st
@@ -468,6 +488,7 @@ func (s *Server) cleanupLoop() {
 			if s.cfg.Retention > 0 && (lastPrune.IsZero() || now.Sub(lastPrune) >= time.Hour) {
 				lastPrune = now
 				s.pruneExpired(now)
+				s.pruneLastParams(now)
 			}
 		}
 	}
@@ -564,6 +585,7 @@ func (s *Server) evictIdle(now time.Time) {
 			log.Warn().Err(err).Str("phone", st.phone).Uint8("channel", st.channel).
 				Msg("Fail to close idle media file")
 		}
+		s.rememberParams(st)
 	}
 }
 
@@ -584,6 +606,7 @@ func (s *Server) closeConnectionStreams(connID uint64) {
 			log.Warn().Err(err).Str("phone", st.phone).Uint8("channel", st.channel).
 				Msg("Fail to close media file on connection close")
 		}
+		s.rememberParams(st)
 	}
 }
 
@@ -599,6 +622,44 @@ func (s *Server) closeAllStreams() {
 		if err := st.close(); err != nil {
 			log.Warn().Err(err).Str("phone", st.phone).Uint8("channel", st.channel).
 				Msg("Fail to close media file")
+		}
+	}
+}
+
+// loadLastParams 取出服务级最后参数集；超过 TTL 视为失效。
+func (s *Server) loadLastParams(phone string, channel uint8) ([]byte, []byte) {
+	key := streamKeyBase(phone, channel)
+	s.paramMu.Lock()
+	defer s.paramMu.Unlock()
+	cached, ok := s.lastParams[key]
+	if !ok {
+		return nil, nil
+	}
+	if time.Since(cached.updatedAt) > paramSetTTL {
+		delete(s.lastParams, key)
+		return nil, nil
+	}
+	return append([]byte(nil), cached.sps...), append([]byte(nil), cached.pps...)
+}
+
+// rememberParams 在流结束时保存最后参数集，供暂停/重连后的新流补齐使用。
+func (s *Server) rememberParams(st *streamState) {
+	sps, pps := st.snapshotParams()
+	if len(sps) == 0 && len(pps) == 0 {
+		return
+	}
+	key := streamKeyBase(st.phone, st.channel)
+	s.paramMu.Lock()
+	s.lastParams[key] = cachedParamSet{sps: sps, pps: pps, updatedAt: time.Now()}
+	s.paramMu.Unlock()
+}
+
+func (s *Server) pruneLastParams(now time.Time) {
+	s.paramMu.Lock()
+	defer s.paramMu.Unlock()
+	for key, cached := range s.lastParams {
+		if now.Sub(cached.updatedAt) > paramSetTTL {
+			delete(s.lastParams, key)
 		}
 	}
 }
