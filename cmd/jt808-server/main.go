@@ -261,12 +261,22 @@ func main() {
 		mediaServ = media.NewServer(media.Config{
 			Dir:           mediaOptions.Dir,
 			MaxConcurrent: mediaOptions.MaxConcurrent,
+			MaxTCPConns:   mediaOptions.MaxTCPConns,
 			Retention:     mediaOptions.Retention,
 		})
-		mediaAddr := fmt.Sprintf(":%d", mediaOptions.Port)
-		if err := mediaServ.Listen(mediaAddr); err != nil {
-			log.Error().Err(err).Str("addr", mediaAddr).Msg("Fail to listen media server addr")
-			os.Exit(1)
+		if mediaOptions.Port != 0 {
+			mediaUDPAddr := fmt.Sprintf(":%d", mediaOptions.Port)
+			if err := mediaServ.Listen(mediaUDPAddr); err != nil {
+				log.Error().Err(err).Str("addr", mediaUDPAddr).Msg("Fail to listen media udp addr")
+				os.Exit(1)
+			}
+		}
+		if mediaOptions.TCPPort != 0 {
+			mediaTCPAddr := fmt.Sprintf(":%d", mediaOptions.TCPPort)
+			if err := mediaServ.ListenTCP(mediaTCPAddr); err != nil {
+				log.Error().Err(err).Str("addr", mediaTCPAddr).Msg("Fail to listen media tcp addr")
+				os.Exit(1)
+			}
 		}
 		routines.GoSafe(func() { mediaServ.Start() })
 	}

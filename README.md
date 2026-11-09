@@ -14,7 +14,7 @@ jt808-server-go 是一个用 Go 编写的 JT/T 808 终端接入服务。它把�
 
 - **JT/T 808 三版本接入**：支持 2011/2013/2019 的注册鉴权、心跳、定位与报警、参数与属性、文本/事件/提问、电话本、车辆控制、区域与路线、记录仪、司机身份/CAN/运单、多媒体、透传与压缩上报等消息族。
 - **苏标主动安全（T/JSATL 12）**：接收 `0x1210` 报警附件信令与 `0x30/0x31/0x63/0x64` 文件码流帧，提供附件服务器与手动/自动 `0x9208` 上传指令。
-- **JT/T 1078 信令与媒体**：808 的多媒体信令只承载图片，实时音视频与回放拆到 1078，避免长时间占用主连接。服务实现 9 条 1078 信令，并可用独立 UDP 端口接收 RTP、还原 H.264 裸流落盘。
+- **JT/T 1078 信令与媒体**：808 的多媒体信令只承载图片，实时音视频与回放拆到 1078，避免长时间占用主连接。服务实现 9 条 1078 信令，并可用独立 UDP/TCP 端口接收 RTP、还原 H.264 Annex B 与 G.711A/U、ADTS AAC 音频落盘。
 - **多存储后端**：`memory` 开箱即用；SQLite 适合单机持久化；MySQL 适合多实例共享业务数据。仓储接口统一，协议层不感知具体数据库。
 - **下行 outbox 重投**：`off` / `memory` / `durable` 三档，支持幂等键、命令状态查询、租约、退避与过期，语义为 at-least-once。
 - **上行可靠性语义**：按消息分类选择 `best_effort`（先应答）或 `at_least_once`（先落库再应答），用应答时机换取吞吐或可靠性。
@@ -45,7 +45,7 @@ jt808-server-go 是一个用 Go 编写的 JT/T 808 终端接入服务。它把�
 | 808 版本 | 消息头无法区分 2011/2013，2011 仅在 `0x0100` 注册时按长度启发式识别；其余消息会按 2013 处理 |
 | 808 消息 | 81 个 MsgID 包含服务端上行、平台下行与模拟器行为，并非全部已完整实现；部分消息只有模型与应答，业务未闭环 |
 | 808 扩展 | 保留字段/厂商自定义扩展没有通用分发；2019 第 1 号修改单未做符合性评估 |
-| 1078 | 仅 UDP、仅 H.264；TCP 推送、H.265、音频、转码、分发、播放器索引与回放服务均未实现；平台侧无发起实时传输/回放的 API |
+| 1078 | UDP 与 TCP 均已支持，音视频限 H.264 + G.711A/U/ADTS AAC；H.265、转码、分发、播放器索引与回放服务均未实现；平台侧无发起实时传输/回放的 API |
 | 苏标 | 附件可按手机号列出、按文件名查询元数据，没有文件内容下载接口；外设/透传的厂商扩展按原始或结构化模型处理，未做扩展分发；未实现粤标 `0x1FC4` |
 | `memory` 后端 | 重启丢失全部业务数据；不保存定位历史（管理面 `/locations` 返回 503）；outbox 默认 `memory`，重启丢失 pending 命令；`retention` 配置不生效 |
 | 定位投影 | 最新定位 `Geo` 始终在进程内，SQL 后端重启后需等下一次上报才恢复；SQL 只持久化定位历史 |
@@ -101,8 +101,8 @@ TCP 与 UDP 复用同一条 `Pipeline`，每个会话一个协程串行处理：
 | 参数/属性/位置查询的应答协调 | 节点内存 | 节点本地；下行请求需路由到持有会话的节点 |
 | 设备档案、参数、属性、报警、定位历史 | `memory` 或 SQL | 外置到 MySQL 后可在实例间共享 |
 | 下行命令 outbox | `memory` 或 SQL | 用 `durable` 落 SQL，靠租约避免重复占用；跨节点投递仍依赖会话路由 |
-| 附件文件、H.264 文件 | 本地磁盘 | 需要对象存储或共享文件系统 |
-| 1078 RTP 码流 | 节点 UDP 端口 | 终端与节点需保持对应关系，或在上层做流路由 |
+| 附件文件、1078 音视频文件 | 本地磁盘 | 需要对象存储或共享文件系统 |
+| 1078 RTP 码流 | 节点 UDP/TCP 端口 | 终端与节点需保持对应关系，或在上层做流路由 |
 
 当前仓库默认以 Standalone 形态运行；Cluster 所需的外部化存储与 outbox 租约已具备，共享会话路由与跨节点下行投递尚未实现，属于已知边界。
 
@@ -116,7 +116,7 @@ TCP 与 UDP 复用同一条 `Pipeline`，每个会话一个协程串行处理：
 | 下行投递 | outbox 落库、幂等、租约、退避、过期与重投 | 不建立终端连接，不编码协议帧 |
 | 存储 | 仓储接口与 `memory`/SQLite/MySQL 实现、迁移版本校验 | 不理解协议消息与应答语义 |
 | 附件服务 | 苏标附件 TCP/UDP 组装、落盘、保留期清理 | 不参与 808 主连接的会话管理 |
-| 媒体服务 | 1078 RTP 接收、PS 解复用、H.264 落盘与清理 | 不做转码、分发与回放 |
+| 媒体服务 | 1078 RTP UDP/TCP 接收、PS 解复用、H.264 与音频落盘、SPS/PPS 前置与清理 | 不做转码、分发与回放 |
 | 业务 API | 设备/历史查询、下行命令入口、附件元数据查询 | 不直接操作数据库，不持有协议会话 |
 | 管理面 | 探针、指标、会话运维、历史分页 | 不参与终端协议处理链路 |
 | 生命周期 Hook | 把注册、鉴权、定位、报警、断连事件异步通知第三方 | 不保证送达，不阻塞协议处理 |
@@ -298,8 +298,9 @@ make run
 | `alarmServer.completedTTL` | `20m` | 已完成附件的内存状态保留时长 |
 | `alarmServer.retentionDays` | `7` | 已完成附件文件保留天数；`0` 表示不清理 |
 | `alarmServer.autoUpload` / `uploadIP` | `false` / 空 | 报警首次上报时是否自动下发 `0x9208` |
-| `mediaServer.port` | 空 | 1078 RTP UDP 监听；空则不启动 |
-| `mediaServer.dir` / `retentionDays` | `./data/media` / `7` | `.h264` 落盘目录与保留天数；`0` 表示不清理 |
+| `mediaServer.port` / `tcpPort` | 空 / 空 | 1078 RTP UDP / TCP 监听；均为空则不启动，可只启用一个 |
+| `mediaServer.maxConcurrent` / `maxTCPConns` | `16` / `64` | 并发流上限与独立 TCP 连接数上限 |
+| `mediaServer.dir` / `retentionDays` | `./data/media` / `7` | `.h264/.g711a/.g711u/.aac` 落盘目录与保留天数；`0` 表示不清理 |
 | `mediaUpload.dir` | `./data/media-uploads` | `0x0801` 多媒体文件落盘目录，始终启用；Cluster 形态需指向共享卷 |
 
 ### 5.5 下行 outbox 与上行可靠性
@@ -365,7 +366,7 @@ commandOutbox:
 | 业务 HTTP API | `:8008` | `server.port.httpPort` | `/api`，Token 鉴权 + 按 IP 限流 + 审计 |
 | 管理面 | `127.0.0.1:9000` | `admin.addr` | 默认不启动；开启后要求 Bearer token |
 | 苏标附件 TCP/UDP | `:7200` / `:7201/udp` | `alarmServer.port` / `udpPort` | 两者都为空时不启动 |
-| 1078 RTP | 配置值 | `mediaServer.port` | 独立 UDP 端口，空则不启动 |
+| 1078 RTP | 配置值 | `mediaServer.port` / `tcpPort` | 独立 UDP / TCP 端口，分别可空 |
 
 ### 6.2 业务 API
 
@@ -520,7 +521,7 @@ curl -s http://localhost:8008/api/commands/0f8c2f6d9a1e4b7c8d3e5f60718293a4
 | `internal/uplink` | 上行可靠性分类与 `best_effort` / `at_least_once` 策略 |
 | `internal/command` | 下行命令 outbox 重投循环 |
 | `internal/alarmserver` | 苏标附件服务器（TCP/UDP、文件组装、保留期清理） |
-| `internal/media` | 1078 RTP UDP 接收、PS 解复用、H.264 落盘 |
+| `internal/media` | 1078 RTP UDP/TCP 接收与分帧、PS 解复用、H.264 与音频落盘 |
 | `internal/api` | 业务 HTTP API（`/api`） |
 | `internal/adminapi` | 独立管理面、探针、指标与会话运维 |
 | `internal/observability` | 健康检查、就绪检查、Prometheus 文本指标 |

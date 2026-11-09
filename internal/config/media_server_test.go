@@ -13,6 +13,8 @@ func TestParseMediaServerDisabled(t *testing.T) {
 		{},
 		{MediaServer: &mediaServerConf{}},
 		{MediaServer: &mediaServerConf{Port: "   "}},
+		{MediaServer: &mediaServerConf{TCPPort: "   "}},
+		{MediaServer: &mediaServerConf{Port: "  ", TCPPort: "  "}},
 	} {
 		options, enabled, err := cfg.ParseMediaServer()
 		assert.NoError(t, err)
@@ -30,8 +32,31 @@ func TestParseMediaServerDefaults(t *testing.T) {
 		Port:          7300,
 		Dir:           DefaultMediaServerDir,
 		MaxConcurrent: DefaultMediaServerMaxConcurrent,
+		MaxTCPConns:   DefaultMediaServerMaxTCPConns,
 		Retention:     DefaultMediaServerRetentionDays * 24 * time.Hour,
 	}, options)
+}
+
+func TestParseMediaServerTCPOnly(t *testing.T) {
+	options, enabled, err := (&Config{MediaServer: &mediaServerConf{TCPPort: "7301"}}).ParseMediaServer()
+	assert.NoError(t, err)
+	assert.True(t, enabled)
+	assert.Zero(t, options.Port)
+	assert.Equal(t, uint16(7301), options.TCPPort)
+	assert.Equal(t, DefaultMediaServerMaxTCPConns, options.MaxTCPConns)
+}
+
+func TestParseMediaServerBothTransports(t *testing.T) {
+	options, enabled, err := (&Config{MediaServer: &mediaServerConf{
+		Port:        "7300",
+		TCPPort:     "7300",
+		MaxTCPConns: 8,
+	}}).ParseMediaServer()
+	assert.NoError(t, err)
+	assert.True(t, enabled)
+	assert.Equal(t, uint16(7300), options.Port)
+	assert.Equal(t, uint16(7300), options.TCPPort)
+	assert.Equal(t, 8, options.MaxTCPConns)
 }
 
 func TestParseMediaServerRetentionDays(t *testing.T) {
@@ -61,6 +86,7 @@ func TestParseMediaServerExplicitValues(t *testing.T) {
 		Port:          7611,
 		Dir:           "/var/lib/jt808/media",
 		MaxConcurrent: 3,
+		MaxTCPConns:   DefaultMediaServerMaxTCPConns,
 		Retention:     DefaultMediaServerRetentionDays * 24 * time.Hour,
 	}, options)
 }
@@ -72,6 +98,10 @@ func TestParseMediaServerInvalidValues(t *testing.T) {
 		"zero port":            {Port: "0"},
 		"port too large":       {Port: "70000"},
 		"negative concurrency": {Port: "7300", MaxConcurrent: -1},
+		"negative tcp conns":   {Port: "7300", MaxTCPConns: -1},
+		"non numeric tcp port": {TCPPort: "tcp"},
+		"zero tcp port":        {TCPPort: "0"},
+		"tcp port too large":   {TCPPort: "70000"},
 		"negative retention":   {Port: "7300", RetentionDays: &negative},
 	}
 	for name, conf := range cases {
