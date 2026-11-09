@@ -247,7 +247,7 @@ make run
 
 迁移文件位于 `internal/repository/migration/`，按 `<日期>_<描述>.sql` 命名。主服务启动只校验 `schema_migrations` 版本：版本落后会提示先执行 `jt808-migrate`，版本超前会拒绝启动。MySQL 场景也可以由 DBA 按文件名顺序直接执行这些 SQL。
 
-**时区语义变更（`20261113_bcd_time_gmt8.sql`）**：旧版本把终端 BCD 时间当作 UTC 解析，属于“伪 UTC”。该迁移会把 `locations.report_time_ms`、`alarms.occurred_at_ms`、`media_files.location_time` 统一减去 8 小时，并清空 `media_resource_lists`（0x1205 整包覆盖快照，设备下次上报重建）。`received_at*` 等服务端时间不在迁移范围内。执行前必须备份数据库；回滚方式见迁移文件头部注释。
+**时区语义变更（`20261113_bcd_time_gmt8.sql`）**：旧版本把终端 BCD 时间当作 UTC 解析，属于“伪 UTC”。该迁移会把 `locations.report_time_ms`、`alarms.occurred_at_ms`、`media_files.location_time` 统一减去 8 小时；`media_resource_lists.items_json` 内嵌的 `startTime`/`endTime` 原地从 `Z` 标签改为显式 `+08:00`（墙钟不变、瞬时值同样减 8 小时），不清空数据。`received_at*` 等服务端时间不在迁移范围内。执行前必须备份数据库；回滚方式见迁移文件头部注释，且回滚必须在启动新版本前完成。
 
 ## 5. 配置说明
 

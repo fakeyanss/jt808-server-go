@@ -3,6 +3,7 @@ package migration
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -10,6 +11,7 @@ import (
 	_ "modernc.org/sqlite"
 
 	"github.com/fakeyanss/jt808-server-go/internal/codec/hex"
+	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
 )
 
 func newTestDB(t *testing.T) *sql.DB {
@@ -238,10 +240,12 @@ func TestApplyShiftsBCDTimesToGMT8(t *testing.T) {
 		mediaTime.UnixMilli(), mediaReceived.UnixMilli())
 	require.NoError(t, err)
 
-	// 1078 资源列表是整包覆盖快照，迁移时清空；平台下发的 0x9206 参数必须原样保留。
+	// 1078 资源列表的终端时间内嵌在 JSON 里：原地平移，不清空；
+	// 平台下发的 0x9206 参数不是终端 BCD 派生，必须原样保留。
+	const resourceItemsJSON = `[{"logicChannelId":1,"startTime":"2026-11-12T10:30:00Z","endTime":"2026-11-12T10:31:00Z","alarmSign":0,"alarmSignExt":0,"mediaType":2,"streamType":1,"storageType":1,"size":123456},{"logicChannelId":2,"startTime":null,"endTime":null,"alarmSign":0,"alarmSignExt":0,"mediaType":1,"streamType":0,"storageType":1,"size":789}]`
 	_, err = db.ExecContext(ctx,
 		`INSERT INTO media_resource_lists (phone, media_count, items_json, updated_at)
-		 VALUES ('188765000001', 1, '[{"startTime":"2026-11-12T10:30:00Z"}]', 1)`)
+		 VALUES ('188765000001', 2, ?, 1)`, resourceItemsJSON)
 	require.NoError(t, err)
 	const taskPayload = `{"startTime":"2026-11-12T10:30:00Z"}`
 	_, err = db.ExecContext(ctx,
@@ -285,10 +289,35 @@ func TestApplyShiftsBCDTimesToGMT8(t *testing.T) {
 	require.Equal(t, mediaTime.UnixMilli()-shiftMS, mediaLocation)
 	require.Equal(t, mediaReceived.UnixMilli(), mediaReceivedMS, "received time must not be shifted")
 
-	var resourceLists int
+	var (
+		resourceCount     int64
+		resourceItems     string
+		resourceUpdatedAt int64
+	)
 	require.NoError(t, db.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM media_resource_lists`).Scan(&resourceLists))
-	require.Zero(t, resourceLists, "0x1205 snapshot is cleared and rebuilt on next report")
+		`SELECT media_count, items_json, updated_at FROM media_resource_lists WHERE phone = '188765000001'`).
+		Scan(&resourceCount, &resourceItems, &resourceUpdatedAt))
+	require.Equal(t, int64(2), resourceCount, "media_count must not change")
+	require.Equal(t, int64(1), resourceUpdatedAt, "server-side updated_at must not be shifted")
+	require.NotContains(t, resourceItems, `Z"`, "UTC labels must be converted")
+	require.Contains(t, resourceItems, `"startTime":"2026-11-12T10:30:00+08:00"`)
+	require.Contains(t, resourceItems, `"endTime":"2026-11-12T10:31:00+08:00"`)
+
+	var items []model.DeviceMedia
+	require.NoError(t, json.Unmarshal([]byte(resourceItems), &items))
+	require.Len(t, items, 2)
+	require.NotNil(t, items[0].StartTime)
+	require.Equal(t, time.Date(2026, 11, 12, 10, 30, 0, 0, hex.ProtocolTimeZone).UnixMilli(),
+		items[0].StartTime.UnixMilli())
+	require.NotNil(t, items[0].EndTime)
+	require.Equal(t, time.Date(2026, 11, 12, 10, 31, 0, 0, hex.ProtocolTimeZone).UnixMilli(),
+		items[0].EndTime.UnixMilli())
+	require.Equal(t, uint8(1), items[0].LogicChannelID, "non-time fields must not change")
+	require.Equal(t, uint32(123456), items[0].Size, "non-time fields must not change")
+	require.Nil(t, items[1].StartTime, "null time must stay null")
+	require.Nil(t, items[1].EndTime, "null time must stay null")
+	require.Equal(t, uint8(2), items[1].LogicChannelID)
+	require.Equal(t, uint32(789), items[1].Size)
 
 	var storedPayload string
 	require.NoError(t, db.QueryRowContext(ctx,
