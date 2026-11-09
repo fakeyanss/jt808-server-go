@@ -66,6 +66,7 @@ func ExtractH264(payload []byte) ([]byte, error) {
 			idx = next
 			out = append(out, es...)
 		case code >= pesAudioStreamMin && code <= pesAudioStreamMax:
+			// 视频提取路径不需要音频 ES，按 PES_packet_length 整段跳过。
 			next, err := skipLengthPrefixedHeader(payload, idx)
 			if err != nil {
 				return nil, err
@@ -95,6 +96,87 @@ func ExtractH264(payload []byte) ([]byte, error) {
 			return nil, nil
 		}
 		return nil, fmt.Errorf("no video elementary stream found in PS payload: %w", ErrCorruptPayload)
+	}
+	return out, nil
+}
+
+// ExtractAudio 从一帧完整的 1078 音频载荷中提取音频 ES。
+//
+// 支持两种实际载荷形态：
+//  1. 标准 MPEG-PS 封装：取 0xC0~0xDF 音频 PES 的 ES；
+//  2. 终端直接发送裸音频载荷（G.711A/U 或带 ADTS 的 AAC）：原样返回。
+//
+// 本函数只负责解封装，不判断编码格式；编码格式由 1078 载荷类型决定。
+func ExtractAudio(payload []byte) ([]byte, error) {
+	if len(payload) == 0 {
+		return nil, nil
+	}
+	if findPSStart(payload, 0) != 0 {
+		// 裸音频载荷：G.711 是纯采样数据，不能靠“是否包含 pack 起始码”判断，
+		// 否则随机采样里恰好出现的 00 00 01 BA 会被误判成 PS 容器。
+		return payload, nil
+	}
+	return extractPSAudio(payload)
+}
+
+// extractPSAudio 遍历 PS 容器并拼接所有音频 PES 的 ES。
+func extractPSAudio(payload []byte) ([]byte, error) {
+	var out []byte
+	ended := false
+	idx := findPSStart(payload, 0)
+	for idx >= 0 && idx+4 <= len(payload) {
+		code := payload[idx+3]
+		switch {
+		case code == psPackStartCode:
+			next, err := skipPackHeader(payload, idx)
+			if err != nil {
+				return nil, err
+			}
+			idx = next
+		case code == psSystemHeaderCode || code == psProgramStreamMap || code == psPaddingCode:
+			next, err := skipLengthPrefixedHeader(payload, idx)
+			if err != nil {
+				return nil, err
+			}
+			idx = next
+		case code == psProgramEndCode:
+			ended = true
+		case code >= pesAudioStreamMin && code <= pesAudioStreamMax:
+			es, next, err := readPES(payload, idx, false)
+			if err != nil {
+				return nil, err
+			}
+			idx = next
+			out = append(out, es...)
+		case code >= pesVideoStreamMin && code <= pesVideoStreamMax:
+			// 音频提取路径跳过视频 PES，避免把视频数据混入音频文件。
+			_, next, err := readPES(payload, idx, false)
+			if err != nil {
+				return nil, err
+			}
+			idx = next
+		default:
+			next := findPSStart(payload, idx+1)
+			if next < 0 {
+				ended = true
+				break
+			}
+			idx = next
+		}
+		if ended || idx >= len(payload) {
+			break
+		}
+		next := findPSStart(payload, idx)
+		if next < 0 {
+			break
+		}
+		idx = next
+	}
+	if len(out) == 0 {
+		if ended {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("no audio elementary stream found in PS payload: %w", ErrCorruptPayload)
 	}
 	return out, nil
 }
@@ -154,19 +236,24 @@ func skipLengthPrefixedHeader(payload []byte, idx int) (int, error) {
 	return next, nil
 }
 
-// readVideoPES 读取视频 PES 的 ES 数据。
-// PES_packet_length 为 0 时表示包长不定，需向后寻找下一个容器起始码。
-// 头部截断、声明长度超出载荷或 ES 内无 Annex B 起始码时返回错误。
+// readVideoPES 读取视频 PES 的 ES 数据，并要求 ES 以 Annex B 起始码开头。
 func readVideoPES(payload []byte, idx int) ([]byte, int, error) {
+	return readPES(payload, idx, true)
+}
+
+// readPES 读取 PES 的 ES 数据。
+// PES_packet_length 为 0 时表示包长不定，需向后寻找下一个容器起始码。
+// requireAnnexB 为 true 时用于视频，会裁掉头部残留前缀并把无起始码视为损坏。
+func readPES(payload []byte, idx int, requireAnnexB bool) ([]byte, int, error) {
 	if idx+9 > len(payload) {
-		return nil, len(payload), fmt.Errorf("video PES at offset %d truncated: need 9 header bytes, got %d: %w",
+		return nil, len(payload), fmt.Errorf("PES at offset %d truncated: need 9 header bytes, got %d: %w",
 			idx, len(payload)-idx, ErrTruncatedPayload)
 	}
 	pesLength := int(binary.BigEndian.Uint16(payload[idx+4 : idx+6]))
 	headerLength := int(payload[idx+8])
 	dataStart := idx + 9 + headerLength
 	if dataStart > len(payload) {
-		return nil, len(payload), fmt.Errorf("video PES at offset %d header length %d exceeds remaining payload: %w",
+		return nil, len(payload), fmt.Errorf("PES at offset %d header length %d exceeds remaining payload: %w",
 			idx, headerLength, ErrTruncatedPayload)
 	}
 
@@ -174,18 +261,21 @@ func readVideoPES(payload []byte, idx int) ([]byte, int, error) {
 	if pesLength > 0 {
 		dataEnd = idx + 6 + pesLength
 		if dataEnd > len(payload) {
-			return nil, len(payload), fmt.Errorf("video PES at offset %d declares %d bytes but only %d remain: %w",
+			return nil, len(payload), fmt.Errorf("PES at offset %d declares %d bytes but only %d remain: %w",
 				idx, pesLength, len(payload)-idx-6, ErrTruncatedPayload)
 		}
 	} else if next := findPSStart(payload, dataStart); next >= 0 {
 		dataEnd = next
 	}
 	if dataEnd < dataStart {
-		return nil, dataStart, fmt.Errorf("video PES at offset %d declares %d bytes, shorter than its header: %w",
+		return nil, dataStart, fmt.Errorf("PES at offset %d declares %d bytes, shorter than its header: %w",
 			idx, pesLength, ErrCorruptPayload)
 	}
 
 	raw := payload[dataStart:dataEnd]
+	if !requireAnnexB {
+		return raw, dataEnd, nil
+	}
 	es := trimToAnnexB(raw)
 	if len(raw) > 0 && len(es) == 0 {
 		return nil, dataEnd, fmt.Errorf("video PES at offset %d carries no Annex B start code: %w",

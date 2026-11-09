@@ -102,6 +102,8 @@ type Server struct {
 	lastLimit  time.Time
 	conns      map[uint64]*tcpConn
 	nextConnID uint64
+
+	lastAACWarn atomic.Int64
 }
 
 // streamState 是一路“手机号 + 通道 + 来源”的音视频状态。
@@ -117,6 +119,8 @@ type streamState struct {
 
 	mu        sync.Mutex
 	videoSink *fileSink
+	audioSink *fileSink
+	audioExt  string
 
 	lastSeen atomic.Int64
 }
@@ -144,6 +148,30 @@ func (st *streamState) writeVideo(frame []byte) error {
 	return st.videoSink.Write(frame)
 }
 
+// writeAudio 按编码扩展名写入音频文件；编码变化时关闭旧文件并新建。
+func (st *streamState) writeAudio(ext string, data []byte) error {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+
+	if st.audioSink != nil && st.audioExt != ext {
+		if err := st.audioSink.Close(); err != nil {
+			log.Warn().Err(err).Str("path", st.audioSink.Path()).Msg("Fail to close media audio file")
+		}
+		st.audioSink = nil
+	}
+	if st.audioSink == nil {
+		sink, err := newSink(st.dir, st.phone, st.channel, st.stem, ext)
+		if err != nil {
+			return err
+		}
+		st.audioSink = sink
+		st.audioExt = ext
+		log.Info().Str("phone", st.phone).Uint8("channel", st.channel).Str("path", sink.Path()).
+			Msg("Media audio stream started")
+	}
+	return st.audioSink.Write(data)
+}
+
 func (st *streamState) close() error {
 	st.mu.Lock()
 	defer st.mu.Unlock()
@@ -153,6 +181,12 @@ func (st *streamState) close() error {
 			errs = append(errs, err)
 		}
 		st.videoSink = nil
+	}
+	if st.audioSink != nil {
+		if err := st.audioSink.Close(); err != nil {
+			errs = append(errs, err)
+		}
+		st.audioSink = nil
 	}
 	return errors.Join(errs...)
 }
@@ -313,13 +347,20 @@ func (s *Server) handlePacket(raw []byte, source packetSource) {
 		return
 	}
 
+	audioExt := ""
 	switch pkt.DataType {
 	case DataTypeIFrame, DataTypePFrame, DataTypeBFrame:
 		if pkt.PayloadType != PayloadTypeH264 {
 			return
 		}
+	case DataTypeAudio:
+		ext, ok := audioExtension(pkt.PayloadType)
+		if !ok {
+			return
+		}
+		audioExt = ext
 	default:
-		// 音频与透传数据不属于本次视频落盘链路。
+		// 透传数据不属于音视频流。
 		return
 	}
 
@@ -338,6 +379,26 @@ func (s *Server) handlePacket(raw []byte, source packetSource) {
 	}
 	if len(frame) == 0 {
 		return // 分片未收齐，正常中间状态
+	}
+
+	if pkt.DataType == DataTypeAudio {
+		audio, err := ExtractAudio(frame)
+		if err != nil {
+			log.Debug().Err(err).Str("phone", pkt.Phone).Uint8("channel", pkt.LogicChannel).
+				Msg("Drop unusable media audio frame")
+			return
+		}
+		if len(audio) == 0 {
+			return
+		}
+		if audioExt == ".aac" && !hasADTS(audio) {
+			s.warnAACWithoutADTS(pkt.Phone, pkt.LogicChannel)
+			return
+		}
+		if err := st.writeAudio(audioExt, audio); err != nil {
+			log.Warn().Err(err).Str("path", st.stem).Msg("Fail to write media audio frame")
+		}
+		return
 	}
 
 	h264, err := ExtractH264(frame)
@@ -415,7 +476,7 @@ func (s *Server) cleanupLoop() {
 // prunableMediaExt 判断扩展名是否属于实时流落盘文件。
 func prunableMediaExt(ext string) bool {
 	switch ext {
-	case ".h264":
+	case ".h264", ".g711a", ".g711u", ".aac":
 		return true
 	default:
 		return false
@@ -465,7 +526,7 @@ func (s *Server) pruneExpired(now time.Time) {
 	}
 }
 
-// activeSinkPaths 返回所有正在写入的视频文件路径。
+// activeSinkPaths 返回所有正在写入的视频与音频文件路径。
 func (s *Server) activeSinkPaths() map[string]struct{} {
 	s.mu.Lock()
 	states := make([]*streamState, 0, len(s.streams))
@@ -474,11 +535,14 @@ func (s *Server) activeSinkPaths() map[string]struct{} {
 	}
 	s.mu.Unlock()
 
-	active := make(map[string]struct{}, len(states))
+	active := make(map[string]struct{}, len(states)*2)
 	for _, st := range states {
 		st.mu.Lock()
 		if st.videoSink != nil {
 			active[st.videoSink.Path()] = struct{}{}
+		}
+		if st.audioSink != nil {
+			active[st.audioSink.Path()] = struct{}{}
 		}
 		st.mu.Unlock()
 	}
@@ -537,6 +601,37 @@ func (s *Server) closeAllStreams() {
 				Msg("Fail to close media file")
 		}
 	}
+}
+
+func (s *Server) warnAACWithoutADTS(phone string, channel uint8) {
+	now := time.Now().UnixNano()
+	last := s.lastAACWarn.Load()
+	if now-last < int64(30*time.Second) {
+		return
+	}
+	if s.lastAACWarn.CompareAndSwap(last, now) {
+		log.Warn().Str("phone", phone).Uint8("channel", channel).
+			Msg("Discard AAC frame without ADTS header")
+	}
+}
+
+// audioExtension 把 1078 音频载荷类型映射为落盘扩展名。
+func audioExtension(payloadType uint8) (string, bool) {
+	switch payloadType {
+	case PayloadTypeG711A:
+		return ".g711a", true
+	case PayloadTypeG711U:
+		return ".g711u", true
+	case PayloadTypeAAC:
+		return ".aac", true
+	default:
+		return "", false
+	}
+}
+
+// hasADTS 检查 AAC 载荷是否带 ADTS 同步字（12 位 0xFFF）。
+func hasADTS(data []byte) bool {
+	return len(data) >= 7 && data[0] == 0xFF && data[1]&0xF0 == 0xF0
 }
 
 func streamKeyBase(phone string, channel uint8) string {
