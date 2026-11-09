@@ -32,7 +32,7 @@ func (m *Msg0500) GenOutgoing(incoming JT808Msg) error {
 	if !ok {
 		return ErrGenOutgoingMsg
 	}
-	m.ControlFlags = in.ControlFlags
+	m.ControlFlags = in.EchoControlFlags()
 	m.Header = in.Header
 	m.Header.MsgID = 0x0500
 	return nil

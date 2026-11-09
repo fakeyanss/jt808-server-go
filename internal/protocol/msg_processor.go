@@ -1561,7 +1561,7 @@ func (mp *JT808MsgProcessor) processMsg8401(_ context.Context, data *model.Proce
 // them back to the platform.
 func (mp *JT808MsgProcessor) processMsg8500(_ context.Context, data *model.ProcessData) error {
 	in := data.Incoming.(*model.Msg8500)
-	mp.deps.Storage.Industry.SetVehicleControl(in.Header.PhoneNumber, in.ControlFlags)
+	mp.deps.Storage.Industry.SetVehicleControl(in.Header.PhoneNumber, in.EchoControlFlags())
 	return nil
 }
 
