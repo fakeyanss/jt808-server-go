@@ -20,15 +20,19 @@ func startTestServer(t *testing.T, dir string, maxConcurrent int) (*Server, stri
 	return server, server.Addr()
 }
 
-// 落盘文件按手机号/通道分目录，文件名为纳秒时间戳 + .h264。
+func testUDPSource(remote string) packetSource {
+	return packetSource{transport: transportUDP, remote: remote}
+}
+
+// 落盘文件按手机号/通道分目录，文件名主幹由流建立时刻决定。
 func TestFileSinkDirectoryAndFileName(t *testing.T) {
 	dir := t.TempDir()
-	sink, err := newFileSink(dir, "188765430101", 3)
+	sink, err := newSink(dir, "188765430101", 3, "1730000000000000000", ".h264")
 	require.NoError(t, err)
 
 	wantDir := filepath.Join(dir, "188765430101", "channel_3")
 	require.Equal(t, wantDir, filepath.Dir(sink.Path()))
-	require.Regexp(t, `^\d+\.h264$`, filepath.Base(sink.Path()))
+	require.Equal(t, "1730000000000000000.h264", filepath.Base(sink.Path()))
 
 	es := []byte{0x00, 0x00, 0x00, 0x01, 0x65, 0x88}
 	require.NoError(t, sink.Write(es))
@@ -41,7 +45,7 @@ func TestFileSinkDirectoryAndFileName(t *testing.T) {
 
 func TestNewFileSinkRejectsNonNumericPhone(t *testing.T) {
 	for _, phone := range []string{"", "18876543010a", "京A12345", "-188765430101"} {
-		_, err := newFileSink(t.TempDir(), phone, 1)
+		_, err := newSink(t.TempDir(), phone, 1, "1", ".h264")
 		require.Error(t, err, "phone %q must be rejected", phone)
 	}
 }
@@ -51,13 +55,14 @@ func TestServerStreamForEnforcesConcurrencyLimit(t *testing.T) {
 	server := NewServer(Config{Dir: t.TempDir(), MaxConcurrent: 1})
 	t.Cleanup(server.Stop)
 
+	source := testUDPSource("127.0.0.1:10000")
 	first := &Packet{Phone: "188765430111", LogicChannel: 1}
-	st := server.streamFor(first)
+	st := server.streamFor(first, source)
 	require.NotNil(t, st)
-	require.Same(t, st, server.streamFor(first), "existing stream must be reused")
+	require.Same(t, st, server.streamFor(first, source), "existing stream must be reused")
 
-	require.Nil(t, server.streamFor(&Packet{Phone: "188765430112", LogicChannel: 1}), "second phone must be rejected")
-	require.Nil(t, server.streamFor(&Packet{Phone: "188765430111", LogicChannel: 2}), "second channel of same phone must be rejected")
+	require.Nil(t, server.streamFor(&Packet{Phone: "188765430112", LogicChannel: 1}, source), "second phone must be rejected")
+	require.Nil(t, server.streamFor(&Packet{Phone: "188765430111", LogicChannel: 2}, source), "second channel of same phone must be rejected")
 
 	server.mu.Lock()
 	defer server.mu.Unlock()
@@ -71,20 +76,21 @@ func TestServerIdleEvictionClosesFileHandle(t *testing.T) {
 	t.Cleanup(server.Stop)
 
 	pkt := &Packet{Phone: "188765430121", LogicChannel: 1, DataType: DataTypeIFrame, SubpackageType: SubpackageAtomic}
-	st := server.streamFor(pkt)
+	st := server.streamFor(pkt, testUDPSource("127.0.0.1:10001"))
 	require.NotNil(t, st)
 
 	es := []byte{0x00, 0x00, 0x00, 0x01, 0x65, 0x01}
-	require.NoError(t, st.sink.Write(es))
-	path := st.sink.Path()
+	require.NoError(t, st.writeVideo(es))
+	st.mu.Lock()
+	sink := st.videoSink
+	path := sink.Path()
+	st.mu.Unlock()
 
-	server.mu.Lock()
-	st.lastSeen = time.Now().Add(-11 * time.Minute)
-	server.mu.Unlock()
+	st.lastSeen.Store(time.Now().Add(-11 * time.Minute).UnixNano())
 	server.evictIdle(time.Now())
 
 	require.Empty(t, server.streams)
-	require.Error(t, st.sink.Write([]byte{0xFF}), "evicted stream must release its file handle")
+	require.Error(t, sink.Write([]byte{0xFF}), "evicted stream must release its file handle")
 
 	content, err := os.ReadFile(path)
 	require.NoError(t, err)
@@ -97,7 +103,7 @@ func TestServerIdleEvictionKeepsActiveStream(t *testing.T) {
 	t.Cleanup(server.Stop)
 
 	pkt := &Packet{Phone: "188765430131", LogicChannel: 1, DataType: DataTypeIFrame}
-	require.NotNil(t, server.streamFor(pkt))
+	require.NotNil(t, server.streamFor(pkt, testUDPSource("127.0.0.1:10002")))
 	server.evictIdle(time.Now())
 	require.Len(t, server.streams, 1)
 }
@@ -235,8 +241,10 @@ func TestPruneExpiredMediaFiles(t *testing.T) {
 
 	server := NewServer(Config{Dir: dir, MaxConcurrent: 2, Retention: 7 * 24 * time.Hour})
 	defer server.Stop()
+	runningState := &streamState{videoSink: &fileSink{path: running}}
+	runningState.touch()
 	server.mu.Lock()
-	server.streams["running"] = &streamState{sink: &fileSink{path: running}, lastSeen: now}
+	server.streams["running"] = runningState
 	server.mu.Unlock()
 
 	server.pruneExpired(now)

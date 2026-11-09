@@ -16,8 +16,8 @@ func buildTestPacket(dataType, subpackage, payloadType uint8, seq uint16,
 	packet = append(packet, 0x41)                       // V/P/X/CC，实际抓包为 0x41
 	packet = append(packet, payloadType)                // M/PT
 	packet = binary.BigEndian.AppendUint16(packet, seq) // SN
-	// SIM BCD，12 位数字。
-	for i := 0; i < 12; i += 2 {
+	// SIM BCD，支持 12 位（6 字节）与 20 位（10 字节）。
+	for i := 0; i < len(phone); i += 2 {
 		hi := phone[i] - '0'
 		lo := phone[i+1] - '0'
 		packet = append(packet, hi<<4|lo)
