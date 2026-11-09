@@ -32,7 +32,8 @@ func (m *Msg8004) GetHeader() *MsgHeader {
 
 func (m *Msg8004) GenOutgoing(incoming JT808Msg) error {
 	in := incoming.(*Msg0004)
-	now := time.Now()
+	// 服务器时间以协议固定的 GMT+8 编码，避免 UTC 容器下发偏差 8 小时的墙钟。
+	now := time.Now().In(hex.ProtocolTimeZone)
 	m.ServerTime = &now
 
 	m.Header = in.Header

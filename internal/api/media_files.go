@@ -13,6 +13,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"github.com/fakeyanss/jt808-server-go/internal/codec/hex"
 	"github.com/fakeyanss/jt808-server-go/internal/mediaupload"
 	"github.com/fakeyanss/jt808-server-go/internal/repository"
 )
@@ -215,8 +216,8 @@ func parseMediaTime(name, raw string) (*time.Time, error) {
 	if raw == "" {
 		return nil, nil
 	}
-	// 与 0x0801 落盘元数据同口径：协议 BCD 时间固定为 GMT+8，不随服务器时区变化。
-	value, err := time.ParseInLocation(mediaTimeLayout, raw, mediaupload.MediaTimeZone)
+	// 与全项目统一口径：协议 BCD 时间固定为 GMT+8，不随服务器时区变化。
+	value, err := time.ParseInLocation(mediaTimeLayout, raw, hex.ProtocolTimeZone)
 	if err != nil {
 		return nil, fmt.Errorf("%s must use format %q, got %q", name, mediaTimeLayout, raw)
 	}

@@ -247,6 +247,8 @@ make run
 
 迁移文件位于 `internal/repository/migration/`，按 `<日期>_<描述>.sql` 命名。主服务启动只校验 `schema_migrations` 版本：版本落后会提示先执行 `jt808-migrate`，版本超前会拒绝启动。MySQL 场景也可以由 DBA 按文件名顺序直接执行这些 SQL。
 
+**时区语义变更（`20261113_bcd_time_gmt8.sql`）**：旧版本把终端 BCD 时间当作 UTC 解析，属于“伪 UTC”。该迁移会把 `locations.report_time_ms`、`alarms.occurred_at_ms`、`media_files.location_time` 统一减去 8 小时，并清空 `media_resource_lists`（0x1205 整包覆盖快照，设备下次上报重建）。`received_at*` 等服务端时间不在迁移范围内。执行前必须备份数据库；回滚方式见迁移文件头部注释。
+
 ## 5. 配置说明
 
 配置文件默认为 `configs/default.yaml`，完整注释见该文件。按用途分组如下。
@@ -411,7 +413,7 @@ commandOutbox:
 
 请求体字段直接复用协议模型，字段级定义见 `internal/protocol/model/`；路由与参数校验见 `internal/api/api.go`。
 
-媒体文件接口的时间参数统一使用 `YYYY-MM-DD HH:MM:SS`，固定按 GMT+8 解释（JT/T 808 的 BCD 时间口径，不随服务器时区变化）。**已知限制：`0x0801` 位置体只有报警标志位、没有报警流水号，返回的 `alarmSign` 只能表达报警类别，`alarmOnly=true` 也只能按类别筛选，不能与某一条具体报警精确关联。**
+**时间口径**：所有由终端上报 BCD 时间派生的时间（定位、报警、多媒体位置时间、1078 资源列表等）统一按固定 GMT+8 解析为真实瞬时值，不随服务器时区变化；存储为毫秒时间戳。业务 API 中不带时区的时间参数（`YYYY-MM-DD HH:MM:SS`，如 1078 资源查询的 `startTime`/`endTime`、媒体文件查询的 `start`/`end`）按同一口径解释，保证存储与查询一致。管理面 `/locations`、`/alarms` 的 `from`/`to` 使用带时区的 RFC3339，不受此规则影响。**已知限制：`0x0801` 位置体只有报警标志位、没有报警流水号，返回的 `alarmSign` 只能表达报警类别，`alarmOnly=true` 也只能按类别筛选，不能与某一条具体报警精确关联。**
 
 ### 6.3 调用示例
 

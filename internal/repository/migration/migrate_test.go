@@ -4,9 +4,12 @@ import (
 	"context"
 	"database/sql"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 	_ "modernc.org/sqlite"
+
+	"github.com/fakeyanss/jt808-server-go/internal/codec/hex"
 )
 
 func newTestDB(t *testing.T) *sql.DB {
@@ -21,7 +24,7 @@ func newTestDB(t *testing.T) *sql.DB {
 
 func TestExpectedVersionMatchesEmbeddedFiles(t *testing.T) {
 	// 开发阶段按批次追加版本；引导脚本不参与版本编号。
-	require.Len(t, migrations, 8)
+	require.Len(t, migrations, 9)
 	require.Equal(t, "20261101_init.sql", migrations[0].name)
 	require.Equal(t, "20261102_persistence_tables.sql", migrations[1].name)
 	require.Equal(t, "20261105_drop_device_runtime.sql", migrations[2].name)
@@ -30,7 +33,8 @@ func TestExpectedVersionMatchesEmbeddedFiles(t *testing.T) {
 	require.Equal(t, "20261110_command_outbox_replay.sql", migrations[5].name)
 	require.Equal(t, "20261111_upgrade_results.sql", migrations[6].name)
 	require.Equal(t, "20261112_media_files.sql", migrations[7].name)
-	require.Equal(t, 20261112, ExpectedVersion())
+	require.Equal(t, "20261113_bcd_time_gmt8.sql", migrations[8].name)
+	require.Equal(t, 20261113, ExpectedVersion())
 }
 
 // 同一库重复执行迁移只应用一次，版本记录不重复。
@@ -157,7 +161,7 @@ func TestApplyUpgradesLegacyDatabase(t *testing.T) {
 
 	applied, err := Apply(ctx, db)
 	require.NoError(t, err)
-	require.Equal(t, 6, applied)
+	require.Equal(t, 7, applied)
 	require.Equal(t, ExpectedVersion(), mustCurrentVersion(t, ctx, db))
 
 	var count int
@@ -176,4 +180,119 @@ func mustCurrentVersion(t *testing.T, ctx context.Context, db *sql.DB) int {
 	current, err := CurrentVersion(ctx, db)
 	require.NoError(t, err)
 	return current
+}
+
+// 迁移正确性：旧的“伪 UTC”终端时间统一减 8 小时，
+// 服务端接收时间与平台下发参数保持原值。
+func TestApplyShiftsBCDTimesToGMT8(t *testing.T) {
+	const shiftMS = int64(8 * 60 * 60 * 1000)
+	ctx := context.Background()
+	db := newTestDB(t)
+
+	// 只应用 20261113 之前的版本，模拟旧库。
+	for _, stmt := range bootstrapStatements {
+		_, err := db.ExecContext(ctx, stmt)
+		require.NoError(t, err)
+	}
+	for _, m := range migrations[:len(migrations)-1] {
+		for _, stmt := range m.stmts {
+			_, err := db.ExecContext(ctx, stmt)
+			require.NoError(t, err)
+		}
+		_, err := db.ExecContext(ctx,
+			`INSERT INTO schema_migrations (version, applied_at) VALUES (?, 0)`, m.version)
+		require.NoError(t, err)
+	}
+
+	locationTime := time.Date(2026, 10, 28, 20, 45, 0, 0, time.UTC)
+	locationReceived := locationTime.Add(3 * time.Second)
+	_, err := db.ExecContext(ctx,
+		`INSERT INTO locations (phone, record_id, msg_id, report_time_ms, received_at_ms,
+		 alarm_sign, status_sign, latitude, longitude, altitude, speed, direction, payload_json)
+		 VALUES ('188765000001', 1, 512, ?, ?, 0, 0, 0, 0, 0, 0, 0, '{"occurredAt":"261028204500"}')`,
+		locationTime.UnixMilli(), locationReceived.UnixMilli())
+	require.NoError(t, err)
+
+	alarmOccurred := time.Date(2026, 10, 28, 21, 0, 0, 0, time.UTC)
+	alarmReceived := alarmOccurred.Add(2 * time.Second)
+	for _, row := range []struct {
+		serial   int
+		occurred int64
+		received int64
+	}{
+		{1, alarmOccurred.UnixMilli(), alarmReceived.UnixMilli()},
+		{2, 0, alarmReceived.Add(time.Second).UnixMilli()},
+	} {
+		_, err := db.ExecContext(ctx,
+			`INSERT INTO alarms (phone, message_serial, received_at_ms, occurred_at_ms,
+			 alarm_sign, latitude, longitude, confirmed) VALUES ('188765000001', ?, ?, ?, 1, 0, 0, 0)`,
+			row.serial, row.received, row.occurred)
+		require.NoError(t, err)
+	}
+
+	mediaTime := time.Date(2026, 11, 12, 10, 30, 0, 0, time.UTC)
+	mediaReceived := mediaTime.Add(5 * time.Second)
+	_, err = db.ExecContext(ctx,
+		`INSERT INTO media_files (phone, media_id, location_time, relative_path, received_at)
+		 VALUES ('188765000001', 9001, ?, '188765000001/20261112/9001.jpg', ?)`,
+		mediaTime.UnixMilli(), mediaReceived.UnixMilli())
+	require.NoError(t, err)
+
+	// 1078 资源列表是整包覆盖快照，迁移时清空；平台下发的 0x9206 参数必须原样保留。
+	_, err = db.ExecContext(ctx,
+		`INSERT INTO media_resource_lists (phone, media_count, items_json, updated_at)
+		 VALUES ('188765000001', 1, '[{"startTime":"2026-11-12T10:30:00Z"}]', 1)`)
+	require.NoError(t, err)
+	const taskPayload = `{"startTime":"2026-11-12T10:30:00Z"}`
+	_, err = db.ExecContext(ctx,
+		`INSERT INTO media_upload_tasks (phone, serial, payload_json, updated_at)
+		 VALUES ('188765000001', 7, ?, 1)`, taskPayload)
+	require.NoError(t, err)
+
+	applied, err := Apply(ctx, db)
+	require.NoError(t, err)
+	require.Equal(t, 1, applied)
+	require.Equal(t, ExpectedVersion(), mustCurrentVersion(t, ctx, db))
+
+	var reportMS, receivedMS int64
+	var locationPayload string
+	require.NoError(t, db.QueryRowContext(ctx,
+		`SELECT report_time_ms, received_at_ms, payload_json FROM locations WHERE phone = '188765000001'`).
+		Scan(&reportMS, &receivedMS, &locationPayload))
+	require.Equal(t, locationTime.UnixMilli()-shiftMS, reportMS)
+	require.Equal(t, locationReceived.UnixMilli(), receivedMS, "received time must not be shifted")
+	require.Equal(t, `{"occurredAt":"261028204500"}`, locationPayload, "raw BCD payload must not be rewritten")
+	require.Equal(t, "261028204500",
+		time.UnixMilli(reportMS).In(hex.ProtocolTimeZone).Format("060102150405"),
+		"shifted instant must still render the original GMT+8 wall clock")
+
+	var occurredOne, receivedOne, occurredZero, receivedZero int64
+	require.NoError(t, db.QueryRowContext(ctx,
+		`SELECT occurred_at_ms, received_at_ms FROM alarms WHERE phone = '188765000001' AND message_serial = 1`).
+		Scan(&occurredOne, &receivedOne))
+	require.Equal(t, alarmOccurred.UnixMilli()-shiftMS, occurredOne)
+	require.Equal(t, alarmReceived.UnixMilli(), receivedOne, "received time must not be shifted")
+	require.NoError(t, db.QueryRowContext(ctx,
+		`SELECT occurred_at_ms, received_at_ms FROM alarms WHERE phone = '188765000001' AND message_serial = 2`).
+		Scan(&occurredZero, &receivedZero))
+	require.Zero(t, occurredZero, "unknown terminal time must stay zero")
+	require.Equal(t, alarmReceived.Add(time.Second).UnixMilli(), receivedZero)
+
+	var mediaLocation, mediaReceivedMS int64
+	require.NoError(t, db.QueryRowContext(ctx,
+		`SELECT location_time, received_at FROM media_files WHERE phone = '188765000001' AND media_id = 9001`).
+		Scan(&mediaLocation, &mediaReceivedMS))
+	require.Equal(t, mediaTime.UnixMilli()-shiftMS, mediaLocation)
+	require.Equal(t, mediaReceived.UnixMilli(), mediaReceivedMS, "received time must not be shifted")
+
+	var resourceLists int
+	require.NoError(t, db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM media_resource_lists`).Scan(&resourceLists))
+	require.Zero(t, resourceLists, "0x1205 snapshot is cleared and rebuilt on next report")
+
+	var storedPayload string
+	require.NoError(t, db.QueryRowContext(ctx,
+		`SELECT payload_json FROM media_upload_tasks WHERE phone = '188765000001' AND serial = 7`).
+		Scan(&storedPayload))
+	require.Equal(t, taskPayload, storedPayload, "platform-issued task must not be rewritten")
 }

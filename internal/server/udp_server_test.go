@@ -1829,11 +1829,8 @@ func TestTCPServerAnswersServerTimeQuery(t *testing.T) {
 	reply := &model.Msg8004{}
 	b.recvInto(t, 3*time.Second, 0x8004, reply)
 	require.NotNil(t, reply.ServerTime)
-	// BCD time carries local wall-clock fields but hex.ParseTime labels it
-	// UTC, so rebuild the wall clock in the local location before comparing.
-	srv := reply.ServerTime
-	srvWall := time.Date(srv.Year(), srv.Month(), srv.Day(), srv.Hour(), srv.Minute(), srv.Second(), 0, time.Local)
-	require.WithinDuration(t, time.Now(), srvWall, 2*time.Second)
+	// BCD 时间按协议固定 GMT+8 解析，解码结果已是真实瞬时值，可直接与当前时间比较。
+	require.WithinDuration(t, time.Now(), *reply.ServerTime, 2*time.Second)
 }
 
 func TestTCPServerAnswersTerminalUplink8204(t *testing.T) {

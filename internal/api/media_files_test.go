@@ -141,7 +141,7 @@ func TestParseMediaTimeUsesFixedGMT8(t *testing.T) {
 	original := time.Local
 	t.Cleanup(func() { time.Local = original })
 
-	expected := time.Date(2026, 11, 12, 10, 30, 0, 0, mediaupload.MediaTimeZone)
+	expected := time.Date(2026, 11, 12, 10, 30, 0, 0, hex.ProtocolTimeZone)
 	for _, location := range []*time.Location{
 		time.UTC,
 		time.FixedZone("UTC-5", -5*60*60),

@@ -116,7 +116,7 @@ func (r *alarmRepository) List(ctx context.Context, phone string) ([]repository.
 			AlarmSign:     uint32(alarmSign),
 			Latitude:      uint32(latitude),
 			Longitude:     uint32(longitude),
-			OccurredAt:    time.UnixMilli(occurredMS).UTC().Format("060102150405"),
+			OccurredAt:    time.UnixMilli(occurredMS).In(hex.ProtocolTimeZone).Format("060102150405"),
 			ReceivedAt:    time.UnixMilli(receivedMS),
 			Confirmed:     confirmed != 0,
 		})
@@ -175,7 +175,7 @@ func (r *alarmRepository) ListPage(ctx context.Context, query repository.History
 			AlarmSign:     uint32(alarmSign),
 			Latitude:      uint32(latitude),
 			Longitude:     uint32(longitude),
-			OccurredAt:    time.UnixMilli(occurredMS).UTC().Format("060102150405"),
+			OccurredAt:    time.UnixMilli(occurredMS).In(hex.ProtocolTimeZone).Format("060102150405"),
 			ReceivedAt:    time.UnixMilli(receivedMS),
 			Confirmed:     confirmed != 0,
 		})
