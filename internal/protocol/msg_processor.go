@@ -15,6 +15,7 @@ import (
 	actionpkg "github.com/fakeyanss/jt808-server-go/internal/action"
 	"github.com/fakeyanss/jt808-server-go/internal/codec/hash"
 	"github.com/fakeyanss/jt808-server-go/internal/codec/hex"
+	"github.com/fakeyanss/jt808-server-go/internal/contracts"
 	"github.com/fakeyanss/jt808-server-go/internal/mediaupload"
 	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
 	"github.com/fakeyanss/jt808-server-go/internal/repository"
@@ -49,6 +50,11 @@ type ProcessorDeps struct {
 	Runtime *runtime.Stores
 	// Uplink 为空表示上行可靠性未配置（全部 best_effort）。
 	Uplink *uplink.Policy
+	// UplinkSink 为空表示使用进程内直连处理（standalone 默认）；
+	// 非空时上行业务事件交给出口，协议内核仍在本进程完成解码与应答。
+	UplinkSink contracts.UplinkSink
+	// GatewayID 是事件信封里的网关标识，仅出口启用时需要。
+	GatewayID string
 	// MediaUpload 为空表示 0x0801 只保留行业内存快照，不落盘也不写媒体文件仓储。
 	MediaUpload *mediaupload.Store
 }
@@ -488,6 +494,12 @@ func NewJT808MsgProcessor(hooks actionpkg.Hooks, opts ...ProcessorOption) *JT808
 	if settings.deps.Uplink != nil {
 		deps.Uplink = settings.deps.Uplink
 	}
+	if settings.deps.UplinkSink != nil {
+		deps.UplinkSink = settings.deps.UplinkSink
+	}
+	if settings.deps.GatewayID != "" {
+		deps.GatewayID = settings.deps.GatewayID
+	}
 	if settings.deps.MediaUpload != nil {
 		deps.MediaUpload = settings.deps.MediaUpload
 	}
@@ -620,7 +632,18 @@ func (mp *JT808MsgProcessor) ApplyBusiness(ctx context.Context, msgID uint16, da
 		return nil
 	}
 	var businessErr error
-	if act, ok := mp.options[msgID]; ok && act.process != nil {
+	act, hasAction := mp.options[msgID]
+	if mp.deps.UplinkSink != nil && hasAction && act.process != nil {
+		reliability := uplinkReliability(mp.deps.Uplink, msgID, data.Incoming)
+		event := buildUplinkEvent(ctx, msgID, data, reliability, mp.deps.GatewayID)
+		result, err := mp.deps.UplinkSink.Deliver(ctx, event)
+		switch {
+		case err != nil:
+			businessErr = err
+		case !result.Accepted:
+			businessErr = fmt.Errorf("uplink sink rejected event %s: %s", event.EventID, result.Reason)
+		}
+	} else if hasAction && act.process != nil {
 		businessErr = act.process(ctx, data)
 	}
 	mp.dispatchHooks(ctx, data)
