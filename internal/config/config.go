@@ -665,13 +665,24 @@ const (
 	DefaultAlarmDedupWindowMS    = 30 * 60 * 1000
 	DefaultAlarmConfirmExpireMS  = 10 * 60 * 1000
 	DefaultAlarmMaxPerDevice     = 1000
+
+	// 历史数据定期清理的工程默认值。默认关闭，未显式开启时不改变现有部署的保留情况。
+	DefaultRetentionCleanupInterval  = time.Hour
+	DefaultRetentionCleanupBatchSize = 1000
+	// MaxRetentionDays 限制保留天数上限（100 年），避免换算 time.Duration 时溢出。
+	MaxRetentionDays = 36500
+	// MaxRetentionCleanupBatchSize 限制单批删除量，避免单条 SQL 参数过多。
+	MaxRetentionCleanupBatchSize = 5000
 )
 
 // retentionConf 配置持久化数据的保留策略。
 // 字段使用指针以区分“未配置”（取默认值）与“显式 0”（关闭该策略）。
 type retentionConf struct {
-	Locations *locationRetentionConf `yaml:"locations"`
-	Alarms    *alarmRetentionConf    `yaml:"alarms"`
+	Locations     *locationRetentionConf `yaml:"locations"`
+	Alarms        *alarmRetentionConf    `yaml:"alarms"`
+	MediaFiles    *timeRetentionConf     `yaml:"mediaFiles"`
+	MediaCaptures *timeRetentionConf     `yaml:"mediaCaptures"`
+	Cleanup       *cleanupConf           `yaml:"cleanup"`
 }
 
 type locationRetentionConf struct {
@@ -683,6 +694,21 @@ type alarmRetentionConf struct {
 	DedupWindowMS   *int `yaml:"dedupWindowMs"`
 	ConfirmExpireMS *int `yaml:"confirmExpireMs"`
 	MaxPerDevice    *int `yaml:"maxPerDevice"`
+	// RetentionDays 是按接收时间的定期清理保留天数；未配置或 0 表示不按时间清理。
+	RetentionDays *int `yaml:"retentionDays"`
+}
+
+// timeRetentionConf 是按时间保留的单表配置。
+type timeRetentionConf struct {
+	RetentionDays *int `yaml:"retentionDays"`
+}
+
+// cleanupConf 配置历史数据定期清理任务。
+// enabled 缺省为 false；interval / batchSize 仅在开启后生效。
+type cleanupConf struct {
+	Enabled   *bool  `yaml:"enabled"`
+	Interval  string `yaml:"interval"`
+	BatchSize *int   `yaml:"batchSize"`
 }
 
 // LocationRetention 是定位历史保留策略的归一化结果。
@@ -694,17 +720,33 @@ type LocationRetention struct {
 
 // AlarmRetention 是报警保留策略的归一化结果。
 // DedupWindow 为 0 表示不去重；ConfirmExpire 为 0 表示确认关联立即失效；
-// MaxPerDevice 为 0 表示不限制条数。
+// MaxPerDevice 为 0 表示不限制条数；MaxAge 为 0 表示不做时间清理。
 type AlarmRetention struct {
 	DedupWindow   time.Duration
 	ConfirmExpire time.Duration
 	MaxPerDevice  int
+	MaxAge        time.Duration
+}
+
+// TimeRetention 是按时间保留策略的归一化结果；MaxAge 为 0 表示不清理。
+type TimeRetention struct {
+	MaxAge time.Duration
+}
+
+// RetentionCleanupPolicy 是定期清理任务的归一化配置。
+type RetentionCleanupPolicy struct {
+	Enabled   bool
+	Interval  time.Duration
+	BatchSize int
 }
 
 // RetentionPolicy 汇总各仓储的保留策略。
 type RetentionPolicy struct {
-	Locations LocationRetention
-	Alarms    AlarmRetention
+	Locations     LocationRetention
+	Alarms        AlarmRetention
+	MediaFiles    TimeRetention
+	MediaCaptures TimeRetention
+	Cleanup       RetentionCleanupPolicy
 }
 
 // RetentionPolicy 返回应用默认值后的保留策略。
@@ -718,6 +760,10 @@ func (c *Config) RetentionPolicy() RetentionPolicy {
 			DedupWindow:   time.Duration(DefaultAlarmDedupWindowMS) * time.Millisecond,
 			ConfirmExpire: time.Duration(DefaultAlarmConfirmExpireMS) * time.Millisecond,
 			MaxPerDevice:  DefaultAlarmMaxPerDevice,
+		},
+		Cleanup: RetentionCleanupPolicy{
+			Interval:  DefaultRetentionCleanupInterval,
+			BatchSize: DefaultRetentionCleanupBatchSize,
 		},
 	}
 	if c == nil || c.Retention == nil {
@@ -741,19 +787,42 @@ func (c *Config) RetentionPolicy() RetentionPolicy {
 		if alarm.MaxPerDevice != nil {
 			policy.Alarms.MaxPerDevice = *alarm.MaxPerDevice
 		}
+		if alarm.RetentionDays != nil {
+			policy.Alarms.MaxAge = time.Duration(*alarm.RetentionDays) * 24 * time.Hour
+		}
+	}
+	if media := c.Retention.MediaFiles; media != nil && media.RetentionDays != nil {
+		policy.MediaFiles.MaxAge = time.Duration(*media.RetentionDays) * 24 * time.Hour
+	}
+	if capture := c.Retention.MediaCaptures; capture != nil && capture.RetentionDays != nil {
+		policy.MediaCaptures.MaxAge = time.Duration(*capture.RetentionDays) * 24 * time.Hour
+	}
+	if cleanup := c.Retention.Cleanup; cleanup != nil {
+		if cleanup.Enabled != nil {
+			policy.Cleanup.Enabled = *cleanup.Enabled
+		}
+		if raw := strings.TrimSpace(cleanup.Interval); raw != "" {
+			if interval, err := time.ParseDuration(raw); err == nil {
+				policy.Cleanup.Interval = interval
+			}
+		}
+		if cleanup.BatchSize != nil && *cleanup.BatchSize > 0 {
+			policy.Cleanup.BatchSize = *cleanup.BatchSize
+		}
 	}
 	return policy
 }
 
 // ValidateRetention 校验保留策略配置，负数视为非法配置。
-// 显式 0 合法，表示关闭对应的清理/去重/上限。
+// 显式 0 合法，表示关闭对应的清理/去重/上限；保留天数上限为 100 年，
+// 避免换算 time.Duration 时溢出。
 func (c *Config) ValidateRetention() error {
 	if c == nil || c.Retention == nil {
 		return nil
 	}
 	if loc := c.Retention.Locations; loc != nil {
-		if loc.RetentionDays != nil && *loc.RetentionDays < 0 {
-			return fmt.Errorf("retention.locations.retentionDays must be >= 0, got %d", *loc.RetentionDays)
+		if err := validateRetentionDays("retention.locations.retentionDays", loc.RetentionDays); err != nil {
+			return err
 		}
 		if loc.MaxPerDevice != nil && *loc.MaxPerDevice < 0 {
 			return fmt.Errorf("retention.locations.maxPerDevice must be >= 0, got %d", *loc.MaxPerDevice)
@@ -769,6 +838,45 @@ func (c *Config) ValidateRetention() error {
 		if alarm.MaxPerDevice != nil && *alarm.MaxPerDevice < 0 {
 			return fmt.Errorf("retention.alarms.maxPerDevice must be >= 0, got %d", *alarm.MaxPerDevice)
 		}
+		if err := validateRetentionDays("retention.alarms.retentionDays", alarm.RetentionDays); err != nil {
+			return err
+		}
+	}
+	if media := c.Retention.MediaFiles; media != nil {
+		if err := validateRetentionDays("retention.mediaFiles.retentionDays", media.RetentionDays); err != nil {
+			return err
+		}
+	}
+	if capture := c.Retention.MediaCaptures; capture != nil {
+		if err := validateRetentionDays("retention.mediaCaptures.retentionDays", capture.RetentionDays); err != nil {
+			return err
+		}
+	}
+	if cleanup := c.Retention.Cleanup; cleanup != nil {
+		if raw := strings.TrimSpace(cleanup.Interval); raw != "" {
+			interval, err := time.ParseDuration(raw)
+			if err != nil || interval <= 0 {
+				return fmt.Errorf("retention.cleanup.interval must be a positive duration (e.g. 1h), got %q", raw)
+			}
+		}
+		if cleanup.BatchSize != nil && (*cleanup.BatchSize < 0 || *cleanup.BatchSize > MaxRetentionCleanupBatchSize) {
+			return fmt.Errorf("retention.cleanup.batchSize must be between 0 and %d, got %d",
+				MaxRetentionCleanupBatchSize, *cleanup.BatchSize)
+		}
+	}
+	return nil
+}
+
+// validateRetentionDays 校验保留天数：未配置合法，0 表示关闭，上限 100 年。
+func validateRetentionDays(name string, days *int) error {
+	if days == nil {
+		return nil
+	}
+	if *days < 0 {
+		return fmt.Errorf("%s must be >= 0, got %d", name, *days)
+	}
+	if *days > MaxRetentionDays {
+		return fmt.Errorf("%s must be <= %d, got %d", name, MaxRetentionDays, *days)
 	}
 	return nil
 }

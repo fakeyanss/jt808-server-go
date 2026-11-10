@@ -26,7 +26,7 @@ func newTestDB(t *testing.T) *sql.DB {
 
 func TestExpectedVersionMatchesEmbeddedFiles(t *testing.T) {
 	// 开发阶段按批次追加版本；引导脚本不参与版本编号。
-	require.Len(t, migrations, 9)
+	require.Len(t, migrations, 10)
 	require.Equal(t, "20261101_init.sql", migrations[0].name)
 	require.Equal(t, "20261102_persistence_tables.sql", migrations[1].name)
 	require.Equal(t, "20261105_drop_device_runtime.sql", migrations[2].name)
@@ -36,7 +36,8 @@ func TestExpectedVersionMatchesEmbeddedFiles(t *testing.T) {
 	require.Equal(t, "20261111_upgrade_results.sql", migrations[6].name)
 	require.Equal(t, "20261112_media_files.sql", migrations[7].name)
 	require.Equal(t, "20261113_bcd_time_gmt8.sql", migrations[8].name)
-	require.Equal(t, 20261113, ExpectedVersion())
+	require.Equal(t, "20261115_retention_indexes.sql", migrations[9].name)
+	require.Equal(t, 20261115, ExpectedVersion())
 }
 
 // 同一库重复执行迁移只应用一次，版本记录不重复。
@@ -163,7 +164,7 @@ func TestApplyUpgradesLegacyDatabase(t *testing.T) {
 
 	applied, err := Apply(ctx, db)
 	require.NoError(t, err)
-	require.Equal(t, 7, applied)
+	require.Equal(t, 8, applied)
 	require.Equal(t, ExpectedVersion(), mustCurrentVersion(t, ctx, db))
 
 	var count int
@@ -196,7 +197,7 @@ func TestApplyShiftsBCDTimesToGMT8(t *testing.T) {
 		_, err := db.ExecContext(ctx, stmt)
 		require.NoError(t, err)
 	}
-	for _, m := range migrations[:len(migrations)-1] {
+	for _, m := range migrations[:len(migrations)-2] {
 		for _, stmt := range m.stmts {
 			_, err := db.ExecContext(ctx, stmt)
 			require.NoError(t, err)
@@ -255,7 +256,7 @@ func TestApplyShiftsBCDTimesToGMT8(t *testing.T) {
 
 	applied, err := Apply(ctx, db)
 	require.NoError(t, err)
-	require.Equal(t, 1, applied)
+	require.Equal(t, 2, applied)
 	require.Equal(t, ExpectedVersion(), mustCurrentVersion(t, ctx, db))
 
 	var reportMS, receivedMS int64

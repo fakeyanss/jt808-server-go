@@ -50,6 +50,35 @@ func TestWritePrometheusExposesRequiredMetrics(t *testing.T) {
 	require.Contains(t, output, "# TYPE jt808_sessions_connected gauge")
 }
 
+func TestRetentionMetricsExposed(t *testing.T) {
+	metrics := NewMetrics()
+	metrics.AddRetentionDeleted(RetentionCategoryLocations, 3)
+	metrics.AddRetentionDeleted(RetentionCategoryMediaFiles, 2)
+	metrics.IncRetentionFailure(RetentionCategoryAlarms)
+	metrics.RecordRetentionRun(time.UnixMilli(1_700_000_000_000), 1500*time.Millisecond)
+
+	snapshot := metrics.RetentionSnapshot()
+	require.EqualValues(t, 3, snapshot.Deleted[RetentionCategoryLocations])
+	require.EqualValues(t, 2, snapshot.Deleted[RetentionCategoryMediaFiles])
+	require.EqualValues(t, 1, snapshot.Failures[RetentionCategoryAlarms])
+	require.Equal(t, int64(1_700_000_000_000), snapshot.LastRunUnixMilli)
+	require.Equal(t, 1500*time.Millisecond, snapshot.LastRunDuration)
+
+	var buf bytes.Buffer
+	require.NoError(t, WritePrometheus(&buf, Snapshot{Retention: snapshot}))
+	output := buf.String()
+	for _, want := range []string{
+		`jt808_retention_deleted_total{category="locations"} 3`,
+		`jt808_retention_deleted_total{category="mediaFiles"} 2`,
+		`jt808_retention_deleted_total{category="alarms"} 0`,
+		`jt808_retention_failures_total{category="alarms"} 1`,
+		"jt808_retention_last_run_timestamp_seconds 1700000000",
+		"jt808_retention_last_run_duration_seconds 1.5",
+	} {
+		require.Contains(t, output, want)
+	}
+}
+
 func TestProviderReadyReportsEachCheck(t *testing.T) {
 	failing := errors.New("storage unavailable")
 	provider := &Provider{Checks: []Check{

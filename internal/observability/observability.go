@@ -12,6 +12,8 @@ import (
 	"io"
 	"os"
 	"sort"
+	"strconv"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -22,14 +24,33 @@ import (
 // 超过该值说明重投调度没有正常工作，继续接收新命令只会扩大堆积。
 const DefaultExpiredOutboxThreshold = 100
 
+// 保留期清理的指标类别，与清理任务的分表策略一一对应。
+const (
+	RetentionCategoryLocations     = "locations"
+	RetentionCategoryAlarms        = "alarms"
+	RetentionCategoryMediaFiles    = "mediaFiles"
+	RetentionCategoryMediaCaptures = "mediaCaptures"
+)
+
 // outboxScanLimit 是就绪检查与指标采集时单次扫描的 pending 命令上限。
 // 只用于判断趋势，不需要全量统计。
 const outboxScanLimit = 1000
+
+// retentionCounter 是单个类别的累计删除与失败计数。
+type retentionCounter struct {
+	deleted  atomic.Int64
+	failures atomic.Int64
+}
 
 // Metrics 持有进程内累计计数器。
 // 只在明确的终态事件上自增，避免把中间重试也计入。
 type Metrics struct {
 	ackTimeouts atomic.Int64
+	retentionMu sync.Mutex
+	retention   map[string]*retentionCounter
+	// retentionLastRun 与 retentionLastDuration 记录最近一次清理任务的时间与耗时。
+	retentionLastRun      atomic.Int64
+	retentionLastDuration atomic.Int64
 }
 
 // NewMetrics 创建进程级计数器。
@@ -51,6 +72,79 @@ func (m *Metrics) AckTimeouts() int64 {
 	return m.ackTimeouts.Load()
 }
 
+// retentionCounterFor 返回类别对应的计数器，调用方需持有 retentionMu。
+func (m *Metrics) retentionCounterFor(category string) *retentionCounter {
+	if m.retention == nil {
+		m.retention = make(map[string]*retentionCounter)
+	}
+	counter := m.retention[category]
+	if counter == nil {
+		counter = &retentionCounter{}
+		m.retention[category] = counter
+	}
+	return counter
+}
+
+// AddRetentionDeleted 累加某类别本次清理删除的行数。
+func (m *Metrics) AddRetentionDeleted(category string, rows int64) {
+	if m == nil || rows <= 0 {
+		return
+	}
+	m.retentionMu.Lock()
+	counter := m.retentionCounterFor(category)
+	m.retentionMu.Unlock()
+	counter.deleted.Add(rows)
+}
+
+// IncRetentionFailure 累加某类别本次清理的失败次数。
+func (m *Metrics) IncRetentionFailure(category string) {
+	if m == nil {
+		return
+	}
+	m.retentionMu.Lock()
+	counter := m.retentionCounterFor(category)
+	m.retentionMu.Unlock()
+	counter.failures.Add(1)
+}
+
+// RecordRetentionRun 记录一次清理任务的完成时间与总耗时。
+func (m *Metrics) RecordRetentionRun(at time.Time, duration time.Duration) {
+	if m == nil {
+		return
+	}
+	m.retentionLastRun.Store(at.UnixMilli())
+	m.retentionLastDuration.Store(duration.Milliseconds())
+}
+
+// RetentionSnapshot 是清理任务累计指标的副本。
+type RetentionSnapshot struct {
+	Deleted  map[string]int64
+	Failures map[string]int64
+	// LastRunUnixMilli 为 0 表示尚未执行过清理。
+	LastRunUnixMilli int64
+	LastRunDuration  time.Duration
+}
+
+// RetentionSnapshot 返回清理任务指标的副本；未执行过时各计数为 0。
+func (m *Metrics) RetentionSnapshot() RetentionSnapshot {
+	snapshot := RetentionSnapshot{
+		Deleted:  make(map[string]int64),
+		Failures: make(map[string]int64),
+	}
+	if m == nil {
+		return snapshot
+	}
+	m.retentionMu.Lock()
+	for category, counter := range m.retention {
+		snapshot.Deleted[category] = counter.deleted.Load()
+		snapshot.Failures[category] = counter.failures.Load()
+	}
+	m.retentionMu.Unlock()
+	snapshot.LastRunUnixMilli = m.retentionLastRun.Load()
+	snapshot.LastRunDuration = time.Duration(m.retentionLastDuration.Load()) * time.Millisecond
+	return snapshot
+}
+
 // Snapshot 是一次指标采集的结果。
 type Snapshot struct {
 	ConnectedSessions    int
@@ -65,6 +159,8 @@ type Snapshot struct {
 	MediaFiles     int64
 	MediaFileBytes int64
 	AckTimeouts    int64
+	// Retention 是历史数据清理任务的累计指标。
+	Retention RetentionSnapshot
 }
 
 // Check 是一条带名称的就绪检查。
@@ -116,6 +212,7 @@ func (p *Provider) Snapshot(ctx context.Context) Snapshot {
 		snapshot = p.Collect(ctx)
 	}
 	snapshot.AckTimeouts = p.Metrics.AckTimeouts()
+	snapshot.Retention = p.Metrics.RetentionSnapshot()
 	return snapshot
 }
 
@@ -143,6 +240,55 @@ func WritePrometheus(w io.Writer, snapshot Snapshot) error {
 			line.name, line.help, line.name, line.kind, line.name, line.value); err != nil {
 			return err
 		}
+	}
+	return writeRetentionPrometheus(w, snapshot.Retention)
+}
+
+// retentionMetricCategories 是清理指标的固定输出顺序，保证 exposition 稳定。
+var retentionMetricCategories = []string{
+	RetentionCategoryLocations,
+	RetentionCategoryAlarms,
+	RetentionCategoryMediaFiles,
+	RetentionCategoryMediaCaptures,
+}
+
+// writeRetentionPrometheus 输出历史数据清理任务的累计指标。
+func writeRetentionPrometheus(w io.Writer, snapshot RetentionSnapshot) error {
+	if _, err := fmt.Fprintf(w,
+		"# HELP jt808_retention_deleted_total Rows deleted by the historical retention cleanup.\n"+
+			"# TYPE jt808_retention_deleted_total counter\n"); err != nil {
+		return err
+	}
+	for _, category := range retentionMetricCategories {
+		if _, err := fmt.Fprintf(w, "jt808_retention_deleted_total{category=%q} %d\n",
+			category, snapshot.Deleted[category]); err != nil {
+			return err
+		}
+	}
+	if _, err := fmt.Fprintf(w,
+		"# HELP jt808_retention_failures_total Failed batches by the historical retention cleanup.\n"+
+			"# TYPE jt808_retention_failures_total counter\n"); err != nil {
+		return err
+	}
+	for _, category := range retentionMetricCategories {
+		if _, err := fmt.Fprintf(w, "jt808_retention_failures_total{category=%q} %d\n",
+			category, snapshot.Failures[category]); err != nil {
+			return err
+		}
+	}
+	if _, err := fmt.Fprintf(w,
+		"# HELP jt808_retention_last_run_timestamp_seconds Unix timestamp of the last retention cleanup run.\n"+
+			"# TYPE jt808_retention_last_run_timestamp_seconds gauge\n"+
+			"jt808_retention_last_run_timestamp_seconds %s\n",
+		strconv.FormatFloat(float64(snapshot.LastRunUnixMilli)/1000, 'f', -1, 64)); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintf(w,
+		"# HELP jt808_retention_last_run_duration_seconds Duration of the last retention cleanup run.\n"+
+			"# TYPE jt808_retention_last_run_duration_seconds gauge\n"+
+			"jt808_retention_last_run_duration_seconds %s\n",
+		strconv.FormatFloat(snapshot.LastRunDuration.Seconds(), 'f', -1, 64)); err != nil {
+		return err
 	}
 	return nil
 }

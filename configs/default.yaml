@@ -105,6 +105,8 @@ api:
 # JT/T 808 未规定平台侧保存期限，定位 7 天 / 10000 条为自行设定的工程默认值；
 # 报警 30 分钟去重 / 10 分钟确认关联 / 1000 条沿用既有内存实现。
 retention:
+  # 定位历史：retentionDays 同时用于写入时的按设备裁剪和定期全局清理。
+  # 0 表示不按时间清理；未配置时默认 7 天（保持既有行为）。
   locations:
     retentionDays: 7
     maxPerDevice: 10000
@@ -112,6 +114,24 @@ retention:
     dedupWindowMs: 1800000
     confirmExpireMs: 600000
     maxPerDevice: 1000
+    # 按接收时间的定期清理；未配置或 0 表示不按时间清理。
+    retentionDays: 0
+  # 0x0801 媒体文件：按服务端接收时间清理元数据，并删除对应落盘文件。
+  # 未配置或 0 表示关闭。清理顺序为先删文件、再删元数据，失败保留元数据待下次重试。
+  mediaFiles:
+    retentionDays: 0
+  # 0x0805 拍摄应答（media_captures 及明细）：按服务端接收时间清理。
+  # 未配置或 0 表示关闭。
+  mediaCaptures:
+    retentionDays: 0
+  # 历史数据定期清理任务。默认关闭，未显式开启时不改变现有部署的数据保留情况。
+  # 仅 SQL 后端（sqlite/mysql）生效；memory 后端数据随进程结束释放，跳过并告警。
+  cleanup:
+    enabled: false
+    # 清理周期，必须为正的 Go duration（如 1h、30m）。
+    interval: "1h"
+    # 单批删除行数，0 取默认 1000，上限 5000；批间会短暂让出，避免长时间锁表。
+    batchSize: 1000
 
 # 下行命令 outbox 重投（memory / durable 模式）。
 # durable 下进程重启后 pending 命令按下面的节奏重新投给在线会话；memory 重启即丢。

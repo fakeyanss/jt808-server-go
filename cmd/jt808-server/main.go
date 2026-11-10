@@ -23,6 +23,7 @@ import (
 	"github.com/fakeyanss/jt808-server-go/internal/protocol"
 	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
 	"github.com/fakeyanss/jt808-server-go/internal/repository"
+	"github.com/fakeyanss/jt808-server-go/internal/retention"
 	"github.com/fakeyanss/jt808-server-go/internal/runtime"
 	"github.com/fakeyanss/jt808-server-go/internal/server"
 	"github.com/fakeyanss/jt808-server-go/internal/storage"
@@ -151,6 +152,39 @@ func main() {
 	serv.SetReliability(time.Duration(cfg.Server.AckTimeoutMS)*time.Millisecond, cfg.Server.MaxRetransmissions)
 	metrics := observability.NewMetrics()
 	serv.SetMetrics(metrics)
+
+	// 历史数据定期清理：默认关闭，只有显式开启且后端支持时才启动。
+	// memory 后端的数据随进程结束释放，不重复实现裁剪。
+	retentionPolicy := cfg.RetentionPolicy()
+	cancelRetention := func() {}
+	var retentionDone <-chan struct{}
+	if retentionPolicy.Cleanup.Enabled {
+		if stores.Retention == nil {
+			log.Warn().Str("backend", stores.Backend).
+				Msg("Retention cleanup is enabled but the storage backend does not support it; skipped")
+		} else {
+			cleaner := retention.NewCleaner(stores.Retention, mediaUploadStore, retention.Config{
+				Interval:      retentionPolicy.Cleanup.Interval,
+				BatchSize:     retentionPolicy.Cleanup.BatchSize,
+				Locations:     retentionPolicy.Locations.MaxAge,
+				Alarms:        retentionPolicy.Alarms.MaxAge,
+				MediaFiles:    retentionPolicy.MediaFiles.MaxAge,
+				MediaCaptures: retentionPolicy.MediaCaptures.MaxAge,
+			}, metrics)
+			retentionCtx, cancel := context.WithCancel(context.Background())
+			cancelRetention = cancel
+			retentionDone = cleaner.Done()
+			routines.GoSafe(func() { cleaner.Run(retentionCtx) })
+			log.Info().
+				Dur("interval", retentionPolicy.Cleanup.Interval).
+				Int("batch_size", retentionPolicy.Cleanup.BatchSize).
+				Dur("locations", retentionPolicy.Locations.MaxAge).
+				Dur("alarms", retentionPolicy.Alarms.MaxAge).
+				Dur("media_files", retentionPolicy.MediaFiles.MaxAge).
+				Dur("media_captures", retentionPolicy.MediaCaptures.MaxAge).
+				Msg("Retention cleanup enabled")
+		}
+	}
 
 	// memory/durable 模式启动重投调度：进程重启后把 pending 命令重新投给已上线会话。
 	// off 模式不写 outbox，也不启动重投。
@@ -409,7 +443,17 @@ func main() {
 		}
 	}
 
-	// 4. 关闭媒体与附件写入，确保文件句柄与已收数据落盘。
+	// 4. 停止清理任务，等待当前批次收尾，避免与存储关闭竞争。
+	cancelRetention()
+	if retentionDone != nil {
+		select {
+		case <-retentionDone:
+		case <-time.After(5 * time.Second):
+			log.Warn().Msg("Timed out waiting for retention cleanup to stop")
+		}
+	}
+
+	// 5. 关闭媒体与附件写入，确保文件句柄与已收数据落盘。
 	if alarmServ != nil {
 		alarmServ.Stop()
 	}
@@ -417,7 +461,7 @@ func main() {
 		mediaServ.Stop()
 	}
 
-	// 5. 管理面最后停止，尽量延长探针与指标的可用窗口。
+	// 6. 管理面最后停止，尽量延长探针与指标的可用窗口。
 	if adminServ != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		if err := adminServ.Stop(ctx); err != nil {
