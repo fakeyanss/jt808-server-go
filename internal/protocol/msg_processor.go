@@ -257,7 +257,7 @@ func (mp *JT808MsgProcessor) registerIndustryReports(options processOptions) {
 	}, process: mp.processMsg0801}
 	options[0x0802] = &action{genData: func() *model.ProcessData {
 		return &model.ProcessData{Incoming: &model.Msg0802{}, Outgoing: &model.Msg8001{}}
-	}, process: mp.processIndustryReport}
+	}, process: mp.processMsg0802}
 	options[0x0805] = &action{genData: func() *model.ProcessData {
 		return &model.ProcessData{Incoming: &model.Msg0805{}, Outgoing: &model.Msg8001{}}
 	}, process: mp.processMsg0805}
@@ -1455,6 +1455,50 @@ func (mp *JT808MsgProcessor) processMsg0801(ctx context.Context, data *model.Pro
 		return err
 	}
 	return mp.deps.Storage.MediaFiles.Save(ctx, file)
+}
+
+// processMsg0802 把 0x8802 检索命令的应答（0x0802）写入检索结果仓储。
+// 行业内存快照保留原有行为；落库以 (phone, answerSerial) 为单位整体覆盖，
+// 便于查询“终端最近一次返回了哪些本地媒体”。
+func (mp *JT808MsgProcessor) processMsg0802(ctx context.Context, data *model.ProcessData) error {
+	mp.deps.Storage.Industry.Record(data.Incoming)
+	result, ok := data.Incoming.(*model.Msg0802)
+	if !ok || result.Header == nil {
+		return nil
+	}
+	receivedAt := time.Now()
+	records := make([]repository.MediaSearchRecord, 0, len(result.Items))
+	for _, item := range result.Items {
+		records = append(records, repository.MediaSearchRecord{
+			MediaID:      item.MediaID,
+			MediaType:    item.MediaType,
+			ChannelID:    item.ChannelID,
+			EventID:      item.EventID,
+			AlarmSign:    item.Location.AlarmSign,
+			StatusSign:   item.Location.StatusSign,
+			Latitude:     item.Location.Latitude,
+			Longitude:    item.Location.Longitude,
+			Altitude:     item.Location.Altitude,
+			Speed:        item.Location.Speed,
+			Direction:    item.Location.Direction,
+			LocationTime: parseMediaSearchLocationTime(item.Location.Time),
+			ReceivedAt:   receivedAt,
+		})
+	}
+	return mp.deps.Storage.MediaSearches.Replace(ctx, result.Header.PhoneNumber, result.AnswerSerial, records)
+}
+
+// parseMediaSearchLocationTime 按固定 GMT+8 解析内嵌位置体的 BCD 时间；
+// 缺失或非法时返回零值，避免把平台接收时间误当成终端时间。
+func parseMediaSearchLocationTime(value string) time.Time {
+	if len(value) != 12 {
+		return time.Time{}
+	}
+	parsed, err := time.ParseInLocation("060102150405", value, hex.ProtocolTimeZone)
+	if err != nil {
+		return time.Time{}
+	}
+	return parsed
 }
 
 // processMsg0805 把摄像头立即拍摄命令应答写入拍摄记录，

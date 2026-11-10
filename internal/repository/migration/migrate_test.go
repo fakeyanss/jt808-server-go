@@ -26,7 +26,7 @@ func newTestDB(t *testing.T) *sql.DB {
 
 func TestExpectedVersionMatchesEmbeddedFiles(t *testing.T) {
 	// 开发阶段按批次追加版本；引导脚本不参与版本编号。
-	require.Len(t, migrations, 9)
+	require.Len(t, migrations, 10)
 	require.Equal(t, "20261101_init.sql", migrations[0].name)
 	require.Equal(t, "20261102_persistence_tables.sql", migrations[1].name)
 	require.Equal(t, "20261105_drop_device_runtime.sql", migrations[2].name)
@@ -36,7 +36,8 @@ func TestExpectedVersionMatchesEmbeddedFiles(t *testing.T) {
 	require.Equal(t, "20261111_upgrade_results.sql", migrations[6].name)
 	require.Equal(t, "20261112_media_files.sql", migrations[7].name)
 	require.Equal(t, "20261113_bcd_time_gmt8.sql", migrations[8].name)
-	require.Equal(t, 20261113, ExpectedVersion())
+	require.Equal(t, "20261114_media_search_results.sql", migrations[9].name)
+	require.Equal(t, 20261114, ExpectedVersion())
 }
 
 // 同一库重复执行迁移只应用一次，版本记录不重复。
@@ -61,7 +62,7 @@ func TestApplyIsIdempotent(t *testing.T) {
 		"devices", "device_params", "terminal_properties",
 		"terminal_catalogs", "region_items", "locations", "alarms",
 		"media_resource_lists", "media_upload_tasks", "media_upload_notices",
-		"media_files", "media_captures", "media_capture_items",
+		"media_files", "media_captures", "media_capture_items", "media_search_results",
 		"upgrade_results",
 	} {
 		var name string
@@ -163,7 +164,7 @@ func TestApplyUpgradesLegacyDatabase(t *testing.T) {
 
 	applied, err := Apply(ctx, db)
 	require.NoError(t, err)
-	require.Equal(t, 7, applied)
+	require.Equal(t, 8, applied)
 	require.Equal(t, ExpectedVersion(), mustCurrentVersion(t, ctx, db))
 
 	var count int
@@ -191,12 +192,20 @@ func TestApplyShiftsBCDTimesToGMT8(t *testing.T) {
 	ctx := context.Background()
 	db := newTestDB(t)
 
-	// 只应用 20261113 之前的版本，模拟旧库。
+	// 只应用到 20261113 之前，模拟尚未执行时区修正的旧库。
+	bcdIndex := -1
+	for index, m := range migrations {
+		if m.name == "20261113_bcd_time_gmt8.sql" {
+			bcdIndex = index
+			break
+		}
+	}
+	require.GreaterOrEqual(t, bcdIndex, 0)
 	for _, stmt := range bootstrapStatements {
 		_, err := db.ExecContext(ctx, stmt)
 		require.NoError(t, err)
 	}
-	for _, m := range migrations[:len(migrations)-1] {
+	for _, m := range migrations[:bcdIndex] {
 		for _, stmt := range m.stmts {
 			_, err := db.ExecContext(ctx, stmt)
 			require.NoError(t, err)
@@ -255,7 +264,7 @@ func TestApplyShiftsBCDTimesToGMT8(t *testing.T) {
 
 	applied, err := Apply(ctx, db)
 	require.NoError(t, err)
-	require.Equal(t, 1, applied)
+	require.Equal(t, len(migrations)-bcdIndex, applied)
 	require.Equal(t, ExpectedVersion(), mustCurrentVersion(t, ctx, db))
 
 	var reportMS, receivedMS int64

@@ -53,6 +53,7 @@ type Stores struct {
 	Media          repository.MediaMetadataRepository
 	MediaFiles     repository.MediaFileRepository
 	MediaCaptures  repository.MediaCaptureRepository
+	MediaSearches  repository.MediaSearchRepository
 	UpgradeResults repository.UpgradeResultRepository
 	Commands       repository.CommandRepository
 	// Locations 为定位历史仓储；memory 后端保持既有热读环形缓冲，本字段为 nil。
@@ -84,6 +85,7 @@ func newStores(backend string) *Stores {
 		Media:          repository.NewMediaMetadataRepository(),
 		MediaFiles:     mediaFiles,
 		MediaCaptures:  mediaFiles,
+		MediaSearches:  repository.NewMediaSearchRepository(),
 		UpgradeResults: repository.NewUpgradeResultRepository(),
 		Commands:       repository.NewCommandRepository(),
 		Backend:        backend,
@@ -121,6 +123,7 @@ func Open(cfg Config) (*Stores, error) {
 		stores.Media = sqlStore.MediaMetadataRepository()
 		stores.MediaFiles = sqlStore.MediaFileRepository()
 		stores.MediaCaptures = sqlStore.MediaCaptureRepository()
+		stores.MediaSearches = sqlStore.MediaSearchRepository()
 		stores.UpgradeResults = sqlStore.UpgradeResultRepository()
 		stores.Commands = sqlStore.CommandRepository()
 		stores.Regions = regions
