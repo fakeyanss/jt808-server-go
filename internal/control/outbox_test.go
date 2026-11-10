@@ -1,4 +1,4 @@
-package command
+package control
 
 import (
 	"context"
@@ -42,7 +42,7 @@ type fakeSender struct {
 	sendErr error
 }
 
-func (f *fakeSender) send(_ context.Context, sessionID string, msg model.JT808Msg, serial uint16) error {
+func (f *fakeSender) send(sessionID string, msg model.JT808Msg, serial uint16) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.sendErr != nil {
@@ -69,16 +69,16 @@ func (f *fakeSender) count() int {
 }
 
 type harness struct {
-	service *Service
+	service *Outbox
 	repo    repository.CommandRepository
 	devices repository.DeviceRepository
 	conn    runtime.ConnectionRegistry
 	sender  *fakeSender
 	clock   *fakeClock
-	options Options
+	options OutboxOptions
 }
 
-func newHarness(t *testing.T, options Options) *harness {
+func newHarness(t *testing.T, options OutboxOptions) *harness {
 	t.Helper()
 	ctx := context.Background()
 	repo := repository.NewCommandRepository()
@@ -92,12 +92,12 @@ func newHarness(t *testing.T, options Options) *harness {
 		VersionDesc:     model.Version2013,
 		ProtocolVersion: 0,
 	}))
-	service, err := NewService(Dependencies{
+	service, err := NewOutbox(OutboxDependencies{
 		Commands: repo,
 		Devices:  devices,
 		Conn:     conn,
 		Send: func(sessionID string, msg model.JT808Msg, serial uint16) error {
-			return sender.send(ctx, sessionID, msg, serial)
+			return sender.send(sessionID, msg, serial)
 		},
 		Owner: "test-node",
 		Clock: clock.Now,
@@ -140,8 +140,9 @@ func (h *harness) enqueue(t *testing.T, commandID string, attempts int, next, ex
 	return command
 }
 
-func defaultTestOptions() Options {
-	return Options{
+func defaultTestOptions() OutboxOptions {
+	return OutboxOptions{
+		Enabled:       true,
 		PollInterval:  time.Second,
 		BatchSize:     10,
 		MaxAttempts:   5,
@@ -254,12 +255,12 @@ func TestReplayIsIdempotentAcrossInstances(t *testing.T) {
 	h.bindOnline(t)
 	h.enqueue(t, "cmd-idempotent", 1, h.clock.now.Add(-time.Minute), h.clock.now.Add(time.Hour))
 
-	second, err := NewService(Dependencies{
+	second, err := NewOutbox(OutboxDependencies{
 		Commands: h.repo,
 		Devices:  h.devices,
 		Conn:     h.conn,
 		Send: func(sessionID string, msg model.JT808Msg, serial uint16) error {
-			return h.sender.send(ctx, sessionID, msg, serial)
+			return h.sender.send(sessionID, msg, serial)
 		},
 		Owner: "other-node",
 		Clock: h.clock.Now,
