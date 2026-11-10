@@ -124,6 +124,23 @@ retention:
   # 未配置或 0 表示关闭。
   mediaCaptures:
     retentionDays: 0
+  # 0x0802 存储多媒体检索应答（media_search_results）：按自身接收时间清理。
+  # 未配置或 0 表示关闭，与 alarms / mediaFiles 保持一致。
+  mediaSearchResults:
+    retentionDays: 0
+  # 媒体目录孤儿文件扫描：只删除“库中无 media_files 记录且文件 mtime 超过宽限期”的文件。
+  # 判定依据是文件自身 mtime，不是 <手机号>/<YYYYMMDD> 目录名，
+  # 因此补传到旧目录的新文件不会被误删。默认关闭，仅 SQL 后端启用。
+  orphanFiles:
+    enabled: false
+    # 文件 mtime 的最小年龄；必须 >= 1 天，默认 7 天，远大于正常补传/重传窗口。
+    graceDays: 7
+    # 扫描周期，必须为正的 Go duration；默认 24h（磁盘扫描比数据库清理更重）。
+    interval: "24h"
+    # 单次扫描的文件上限，达到后提前结束并在下次运行继续；范围 1~1000000。
+    maxFilesPerRun: 10000
+    # 每批比对数据库的文件数，0 取默认 500，上限 5000；批间会短暂让出。
+    batchSize: 500
   # 历史数据定期清理任务。默认关闭，未显式开启时不改变现有部署的数据保留情况。
   # 仅 SQL 后端（sqlite/mysql）生效；memory 后端数据随进程结束释放，跳过并告警。
   cleanup:

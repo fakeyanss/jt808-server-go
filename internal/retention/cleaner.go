@@ -30,18 +30,21 @@ const (
 
 // MediaStore 是清理媒体文件所需的最小接口，由 mediaupload.Store 实现。
 type MediaStore interface {
+	// Root 返回媒体根目录的绝对路径。
+	Root() string
 	// Resolve 返回相对路径对应的绝对路径，并保证路径位于媒体根目录内。
 	Resolve(relativePath string) (string, error)
 }
 
 // Config 是清理任务的归一化配置；MaxAge <= 0 表示该类别不清理。
 type Config struct {
-	Interval      time.Duration
-	BatchSize     int
-	Locations     time.Duration
-	Alarms        time.Duration
-	MediaFiles    time.Duration
-	MediaCaptures time.Duration
+	Interval           time.Duration
+	BatchSize          int
+	Locations          time.Duration
+	Alarms             time.Duration
+	MediaFiles         time.Duration
+	MediaCaptures      time.Duration
+	MediaSearchResults time.Duration
 }
 
 // normalized 填充零值，保证直接构造 Config 也可用。
@@ -57,16 +60,17 @@ func (c Config) normalized() Config {
 
 // Summary 是一次清理任务的结果，Failures 为发生错误的类别数。
 type Summary struct {
-	Locations     int64
-	Alarms        int64
-	MediaFiles    int64
-	MediaCaptures int64
-	Failures      int
+	Locations          int64
+	Alarms             int64
+	MediaFiles         int64
+	MediaCaptures      int64
+	MediaSearchResults int64
+	Failures           int
 }
 
 // Deleted 返回本次清理删除的总行数。
 func (s Summary) Deleted() int64 {
-	return s.Locations + s.Alarms + s.MediaFiles + s.MediaCaptures
+	return s.Locations + s.Alarms + s.MediaFiles + s.MediaCaptures + s.MediaSearchResults
 }
 
 // Cleaner 执行历史数据清理。并发调用 CleanOnce 不安全，Run 内部串行执行。
@@ -123,6 +127,7 @@ func (c *Cleaner) Run(ctx context.Context) {
 				Int64("alarms", summary.Alarms).
 				Int64("media_files", summary.MediaFiles).
 				Int64("media_captures", summary.MediaCaptures).
+				Int64("media_search_results", summary.MediaSearchResults).
 				Int("failures", summary.Failures).
 				Dur("duration", c.now().Sub(started)).
 				Msg("Retention cleanup finished")
@@ -154,6 +159,10 @@ func (c *Cleaner) CleanOnce(ctx context.Context) Summary {
 	if c.cfg.MediaCaptures > 0 {
 		summary.MediaCaptures, summary.Failures = c.purgeCategory(ctx, observability.RetentionCategoryMediaCaptures,
 			c.cfg.MediaCaptures, now, summary.Failures, c.store.PurgeMediaCaptures)
+	}
+	if c.cfg.MediaSearchResults > 0 {
+		summary.MediaSearchResults, summary.Failures = c.purgeCategory(ctx, observability.RetentionCategoryMediaSearchResults,
+			c.cfg.MediaSearchResults, now, summary.Failures, c.store.PurgeMediaSearchResults)
 	}
 	c.metrics.RecordRetentionRun(c.now(), c.now().Sub(now))
 	return summary

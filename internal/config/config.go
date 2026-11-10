@@ -673,16 +673,27 @@ const (
 	MaxRetentionDays = 36500
 	// MaxRetentionCleanupBatchSize 限制单批删除量，避免单条 SQL 参数过多。
 	MaxRetentionCleanupBatchSize = 5000
+
+	// 孤儿文件扫描的工程默认值。显式开启后才执行，默认关闭。
+	// 宽限期 7 天远大于正常补传/重传窗口，避免把正在补传的旧目录误判为孤儿。
+	DefaultOrphanGraceDays      = 7
+	DefaultOrphanScanInterval   = 24 * time.Hour
+	DefaultOrphanMaxFilesPerRun = 10000
+	DefaultOrphanBatchSize      = 500
+	// MaxOrphanFilesPerRun 限制单次扫描的文件数上限，避免一次遍历打满 IO。
+	MaxOrphanFilesPerRun = 1000000
 )
 
 // retentionConf 配置持久化数据的保留策略。
 // 字段使用指针以区分“未配置”（取默认值）与“显式 0”（关闭该策略）。
 type retentionConf struct {
-	Locations     *locationRetentionConf `yaml:"locations"`
-	Alarms        *alarmRetentionConf    `yaml:"alarms"`
-	MediaFiles    *timeRetentionConf     `yaml:"mediaFiles"`
-	MediaCaptures *timeRetentionConf     `yaml:"mediaCaptures"`
-	Cleanup       *cleanupConf           `yaml:"cleanup"`
+	Locations          *locationRetentionConf `yaml:"locations"`
+	Alarms             *alarmRetentionConf    `yaml:"alarms"`
+	MediaFiles         *timeRetentionConf     `yaml:"mediaFiles"`
+	MediaCaptures      *timeRetentionConf     `yaml:"mediaCaptures"`
+	MediaSearchResults *timeRetentionConf     `yaml:"mediaSearchResults"`
+	OrphanFiles        *orphanFilesConf       `yaml:"orphanFiles"`
+	Cleanup            *cleanupConf           `yaml:"cleanup"`
 }
 
 type locationRetentionConf struct {
@@ -701,6 +712,17 @@ type alarmRetentionConf struct {
 // timeRetentionConf 是按时间保留的单表配置。
 type timeRetentionConf struct {
 	RetentionDays *int `yaml:"retentionDays"`
+}
+
+// orphanFilesConf 配置媒体目录孤儿文件扫描。
+// 默认关闭；只有 enabled 显式为 true 才启动。判定依据是文件自身 mtime，
+// 不使用 <YYYYMMDD> 目录名，避免把补传到旧目录的新文件误删。
+type orphanFilesConf struct {
+	Enabled        *bool  `yaml:"enabled"`
+	GraceDays      *int   `yaml:"graceDays"`
+	Interval       string `yaml:"interval"`
+	MaxFilesPerRun *int   `yaml:"maxFilesPerRun"`
+	BatchSize      *int   `yaml:"batchSize"`
 }
 
 // cleanupConf 配置历史数据定期清理任务。
@@ -742,11 +764,23 @@ type RetentionCleanupPolicy struct {
 
 // RetentionPolicy 汇总各仓储的保留策略。
 type RetentionPolicy struct {
-	Locations     LocationRetention
-	Alarms        AlarmRetention
-	MediaFiles    TimeRetention
-	MediaCaptures TimeRetention
-	Cleanup       RetentionCleanupPolicy
+	Locations          LocationRetention
+	Alarms             AlarmRetention
+	MediaFiles         TimeRetention
+	MediaCaptures      TimeRetention
+	MediaSearchResults TimeRetention
+	OrphanFiles        OrphanFilesPolicy
+	Cleanup            RetentionCleanupPolicy
+}
+
+// OrphanFilesPolicy 是孤儿文件扫描的归一化配置。
+// Grace 是文件 mtime 的最小年龄，只有早于 now-Grace 的文件才可能被删除。
+type OrphanFilesPolicy struct {
+	Enabled        bool
+	Grace          time.Duration
+	Interval       time.Duration
+	MaxFilesPerRun int
+	BatchSize      int
 }
 
 // RetentionPolicy 返回应用默认值后的保留策略。
@@ -764,6 +798,12 @@ func (c *Config) RetentionPolicy() RetentionPolicy {
 		Cleanup: RetentionCleanupPolicy{
 			Interval:  DefaultRetentionCleanupInterval,
 			BatchSize: DefaultRetentionCleanupBatchSize,
+		},
+		OrphanFiles: OrphanFilesPolicy{
+			Grace:          time.Duration(DefaultOrphanGraceDays) * 24 * time.Hour,
+			Interval:       DefaultOrphanScanInterval,
+			MaxFilesPerRun: DefaultOrphanMaxFilesPerRun,
+			BatchSize:      DefaultOrphanBatchSize,
 		},
 	}
 	if c == nil || c.Retention == nil {
@@ -796,6 +836,28 @@ func (c *Config) RetentionPolicy() RetentionPolicy {
 	}
 	if capture := c.Retention.MediaCaptures; capture != nil && capture.RetentionDays != nil {
 		policy.MediaCaptures.MaxAge = time.Duration(*capture.RetentionDays) * 24 * time.Hour
+	}
+	if search := c.Retention.MediaSearchResults; search != nil && search.RetentionDays != nil {
+		policy.MediaSearchResults.MaxAge = time.Duration(*search.RetentionDays) * 24 * time.Hour
+	}
+	if orphan := c.Retention.OrphanFiles; orphan != nil {
+		if orphan.Enabled != nil {
+			policy.OrphanFiles.Enabled = *orphan.Enabled
+		}
+		if orphan.GraceDays != nil {
+			policy.OrphanFiles.Grace = time.Duration(*orphan.GraceDays) * 24 * time.Hour
+		}
+		if raw := strings.TrimSpace(orphan.Interval); raw != "" {
+			if interval, err := time.ParseDuration(raw); err == nil {
+				policy.OrphanFiles.Interval = interval
+			}
+		}
+		if orphan.MaxFilesPerRun != nil && *orphan.MaxFilesPerRun > 0 {
+			policy.OrphanFiles.MaxFilesPerRun = *orphan.MaxFilesPerRun
+		}
+		if orphan.BatchSize != nil && *orphan.BatchSize > 0 {
+			policy.OrphanFiles.BatchSize = *orphan.BatchSize
+		}
 	}
 	if cleanup := c.Retention.Cleanup; cleanup != nil {
 		if cleanup.Enabled != nil {
@@ -850,6 +912,37 @@ func (c *Config) ValidateRetention() error {
 	if capture := c.Retention.MediaCaptures; capture != nil {
 		if err := validateRetentionDays("retention.mediaCaptures.retentionDays", capture.RetentionDays); err != nil {
 			return err
+		}
+	}
+	if search := c.Retention.MediaSearchResults; search != nil {
+		if err := validateRetentionDays("retention.mediaSearchResults.retentionDays", search.RetentionDays); err != nil {
+			return err
+		}
+	}
+	if orphan := c.Retention.OrphanFiles; orphan != nil {
+		if orphan.GraceDays != nil {
+			if *orphan.GraceDays < 1 {
+				return fmt.Errorf("retention.orphanFiles.graceDays must be >= 1, got %d", *orphan.GraceDays)
+			}
+			if *orphan.GraceDays > MaxRetentionDays {
+				return fmt.Errorf("retention.orphanFiles.graceDays must be <= %d, got %d",
+					MaxRetentionDays, *orphan.GraceDays)
+			}
+		}
+		if raw := strings.TrimSpace(orphan.Interval); raw != "" {
+			interval, err := time.ParseDuration(raw)
+			if err != nil || interval <= 0 {
+				return fmt.Errorf("retention.orphanFiles.interval must be a positive duration (e.g. 24h), got %q", raw)
+			}
+		}
+		if orphan.MaxFilesPerRun != nil &&
+			(*orphan.MaxFilesPerRun < 1 || *orphan.MaxFilesPerRun > MaxOrphanFilesPerRun) {
+			return fmt.Errorf("retention.orphanFiles.maxFilesPerRun must be between 1 and %d, got %d",
+				MaxOrphanFilesPerRun, *orphan.MaxFilesPerRun)
+		}
+		if orphan.BatchSize != nil && (*orphan.BatchSize < 0 || *orphan.BatchSize > MaxRetentionCleanupBatchSize) {
+			return fmt.Errorf("retention.orphanFiles.batchSize must be between 0 and %d, got %d",
+				MaxRetentionCleanupBatchSize, *orphan.BatchSize)
 		}
 	}
 	if cleanup := c.Retention.Cleanup; cleanup != nil {

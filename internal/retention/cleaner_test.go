@@ -20,10 +20,13 @@ import (
 
 // fakeRetentionStore 用切片模拟按时间分批删除的 SQL 实现。
 type fakeRetentionStore struct {
-	locations []int64
-	alarms    []int64
-	files     []repository.MediaFile
-	captures  []int64
+	locations     []int64
+	alarms        []int64
+	files         []repository.MediaFile
+	captures      []int64
+	searchResults []int64
+	// existing 模拟 media_files 中仍被引用的相对路径。
+	existing map[string]struct{}
 
 	purgeErr  map[string]error
 	listErr   error
@@ -106,6 +109,28 @@ func (f *fakeRetentionStore) PurgeMediaCaptures(_ context.Context, cutoff time.T
 	return removed, nil
 }
 
+func (f *fakeRetentionStore) PurgeMediaSearchResults(_ context.Context, cutoff time.Time, limit int) (int64, error) {
+	if err := f.purgeErr["mediaSearchResults"]; err != nil {
+		return 0, err
+	}
+	var removed int64
+	for removed < int64(limit) && len(f.searchResults) > 0 && f.searchResults[0] < cutoff.UnixMilli() {
+		f.searchResults = f.searchResults[1:]
+		removed++
+	}
+	return removed, nil
+}
+
+func (f *fakeRetentionStore) ExistingMediaPaths(_ context.Context, relativePaths []string) (map[string]struct{}, error) {
+	existing := make(map[string]struct{}, len(relativePaths))
+	for _, path := range relativePaths {
+		if _, ok := f.existing[path]; ok {
+			existing[path] = struct{}{}
+		}
+	}
+	return existing, nil
+}
+
 func mediaKey(phone string, mediaID uint32) string {
 	return phone + "/" + strconv.FormatUint(uint64(mediaID), 10)
 }
@@ -131,6 +156,33 @@ func TestCleanerDisabledCategoriesKeepData(t *testing.T) {
 	// 即使没有可清理的数据也记录本次运行时间，便于确认调度在跑。
 	assert.NotZero(t, metrics.RetentionSnapshot().LastRunUnixMilli)
 	assert.Zero(t, metrics.RetentionSnapshot().Deleted[observability.RetentionCategoryLocations])
+}
+
+// 检索应答按自身接收时间清理：早于 cutoff 删除，等于 cutoff 保留；
+// 未配置保留天数时一条都不删。
+func TestCleanerMediaSearchResultsBoundaryAndDisabled(t *testing.T) {
+	now := testNow()
+	store := &fakeRetentionStore{searchResults: []int64{
+		now.Add(-49 * time.Hour).UnixMilli(),
+		now.Add(-48 * time.Hour).UnixMilli(), // 等于 cutoff，保留
+		now.UnixMilli(),
+	}}
+	metrics := observability.NewMetrics()
+	cleaner := NewCleaner(store, nil, Config{MediaSearchResults: 48 * time.Hour}, metrics)
+	cleaner.now = testNow
+
+	summary := cleaner.CleanOnce(context.Background())
+	assert.EqualValues(t, 1, summary.MediaSearchResults)
+	assert.Zero(t, summary.Failures)
+	assert.Len(t, store.searchResults, 2)
+	assert.EqualValues(t, 1, metrics.RetentionSnapshot().Deleted[observability.RetentionCategoryMediaSearchResults])
+
+	// 关闭状态：MaxAge 为 0 时不再删除。
+	disabled := NewCleaner(store, nil, Config{}, observability.NewMetrics())
+	disabled.now = testNow
+	summary = disabled.CleanOnce(context.Background())
+	assert.Zero(t, summary.MediaSearchResults)
+	assert.Len(t, store.searchResults, 2)
 }
 
 // 按时间边界删除：早于 cutoff 删除，等于 cutoff 保留。
@@ -342,7 +394,7 @@ func TestCleanerStopsWhenContextCancelled(t *testing.T) {
 }
 
 func TestSummaryDeleted(t *testing.T) {
-	assert.EqualValues(t, 10, (Summary{Locations: 1, Alarms: 2, MediaFiles: 3, MediaCaptures: 4}).Deleted())
+	assert.EqualValues(t, 14, (Summary{Locations: 1, Alarms: 2, MediaFiles: 3, MediaCaptures: 4, MediaSearchResults: 4}).Deleted())
 	assert.Zero(t, (Summary{}).Deleted())
 }
 

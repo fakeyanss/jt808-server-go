@@ -23,6 +23,12 @@ func TestRetentionPolicyDefaults(t *testing.T) {
 	assert.Zero(t, policy.Alarms.MaxAge)
 	assert.Zero(t, policy.MediaFiles.MaxAge)
 	assert.Zero(t, policy.MediaCaptures.MaxAge)
+	assert.Zero(t, policy.MediaSearchResults.MaxAge)
+	assert.False(t, policy.OrphanFiles.Enabled)
+	assert.Equal(t, time.Duration(DefaultOrphanGraceDays)*24*time.Hour, policy.OrphanFiles.Grace)
+	assert.Equal(t, DefaultOrphanScanInterval, policy.OrphanFiles.Interval)
+	assert.Equal(t, DefaultOrphanMaxFilesPerRun, policy.OrphanFiles.MaxFilesPerRun)
+	assert.Equal(t, DefaultOrphanBatchSize, policy.OrphanFiles.BatchSize)
 	assert.False(t, policy.Cleanup.Enabled)
 	assert.Equal(t, DefaultRetentionCleanupInterval, policy.Cleanup.Interval)
 	assert.Equal(t, DefaultRetentionCleanupBatchSize, policy.Cleanup.BatchSize)
@@ -193,6 +199,95 @@ func TestValidateRetentionCleanup(t *testing.T) {
 				assert.NoError(t, err)
 				return
 			}
+			require.Error(t, err)
+			assert.Equal(t, tt.wantErr, err.Error())
+		})
+	}
+}
+
+// TestRetentionNewOptionsFromYAML 验证检索应答清理与孤儿文件扫描的配置映射。
+func TestRetentionNewOptionsFromYAML(t *testing.T) {
+	raw := []byte(`
+retention:
+  mediaSearchResults:
+    retentionDays: 10
+  orphanFiles:
+    enabled: true
+    graceDays: 14
+    interval: "12h"
+    maxFilesPerRun: 500
+    batchSize: 100
+`)
+
+	v := viper.New()
+	v.SetConfigType("yaml")
+	require.NoError(t, v.ReadConfig(bytes.NewBuffer(raw)))
+
+	var cfg Config
+	require.NoError(t, v.Unmarshal(&cfg))
+	require.NoError(t, cfg.ValidateRetention())
+
+	policy := cfg.RetentionPolicy()
+	assert.Equal(t, 10*24*time.Hour, policy.MediaSearchResults.MaxAge)
+	assert.True(t, policy.OrphanFiles.Enabled)
+	assert.Equal(t, 14*24*time.Hour, policy.OrphanFiles.Grace)
+	assert.Equal(t, 12*time.Hour, policy.OrphanFiles.Interval)
+	assert.Equal(t, 500, policy.OrphanFiles.MaxFilesPerRun)
+	assert.Equal(t, 100, policy.OrphanFiles.BatchSize)
+}
+
+// TestValidateRetentionNewOptions 验证新增配置的非法值。
+func TestValidateRetentionNewOptions(t *testing.T) {
+	neg := -1
+	zero := 0
+	tooManyDays := MaxRetentionDays + 1
+	tooManyFiles := MaxOrphanFilesPerRun + 1
+
+	tests := []struct {
+		name    string
+		cfg     *Config
+		wantErr string
+	}{
+		{
+			name:    "negative mediaSearchResults retentionDays",
+			cfg:     &Config{Retention: &retentionConf{MediaSearchResults: &timeRetentionConf{RetentionDays: &neg}}},
+			wantErr: "retention.mediaSearchResults.retentionDays must be >= 0, got -1",
+		},
+		{
+			name:    "zero orphan graceDays",
+			cfg:     &Config{Retention: &retentionConf{OrphanFiles: &orphanFilesConf{GraceDays: &zero}}},
+			wantErr: "retention.orphanFiles.graceDays must be >= 1, got 0",
+		},
+		{
+			name:    "oversized orphan graceDays",
+			cfg:     &Config{Retention: &retentionConf{OrphanFiles: &orphanFilesConf{GraceDays: &tooManyDays}}},
+			wantErr: "retention.orphanFiles.graceDays must be <= 36500, got 36501",
+		},
+		{
+			name:    "invalid orphan interval",
+			cfg:     &Config{Retention: &retentionConf{OrphanFiles: &orphanFilesConf{Interval: "soon"}}},
+			wantErr: `retention.orphanFiles.interval must be a positive duration (e.g. 24h), got "soon"`,
+		},
+		{
+			name:    "zero orphan maxFilesPerRun",
+			cfg:     &Config{Retention: &retentionConf{OrphanFiles: &orphanFilesConf{MaxFilesPerRun: &zero}}},
+			wantErr: "retention.orphanFiles.maxFilesPerRun must be between 1 and 1000000, got 0",
+		},
+		{
+			name:    "oversized orphan maxFilesPerRun",
+			cfg:     &Config{Retention: &retentionConf{OrphanFiles: &orphanFilesConf{MaxFilesPerRun: &tooManyFiles}}},
+			wantErr: "retention.orphanFiles.maxFilesPerRun must be between 1 and 1000000, got 1000001",
+		},
+		{
+			name:    "negative orphan batchSize",
+			cfg:     &Config{Retention: &retentionConf{OrphanFiles: &orphanFilesConf{BatchSize: &neg}}},
+			wantErr: "retention.orphanFiles.batchSize must be between 0 and 5000, got -1",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.cfg.ValidateRetention()
 			require.Error(t, err)
 			assert.Equal(t, tt.wantErr, err.Error())
 		})

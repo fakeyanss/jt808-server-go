@@ -30,10 +30,15 @@ type AlarmRetention struct {
 //
 // media_files 需要先删文件再删元数据，因此拆成查询与删除两个步骤：
 // ListExpiredMediaFiles 只读，DeleteMediaFiles 只删除调用方确认已删除文件的行。
+//
+// ExistingMediaPaths 供孤儿文件扫描使用：返回入参相对路径中仍然存在于
+// media_files 的子集，调用方据此只删除“库中无记录”的文件。
 type RetentionStore interface {
 	PurgeLocations(ctx context.Context, cutoff time.Time, limit int) (int64, error)
 	PurgeAlarms(ctx context.Context, cutoff time.Time, limit int) (int64, error)
 	ListExpiredMediaFiles(ctx context.Context, cutoff time.Time, limit int) ([]MediaFile, error)
 	DeleteMediaFiles(ctx context.Context, files []MediaFile) (int64, error)
 	PurgeMediaCaptures(ctx context.Context, cutoff time.Time, limit int) (int64, error)
+	PurgeMediaSearchResults(ctx context.Context, cutoff time.Time, limit int) (int64, error)
+	ExistingMediaPaths(ctx context.Context, relativePaths []string) (map[string]struct{}, error)
 }

@@ -36,6 +36,12 @@ type captureKey struct {
 	recordID string
 }
 
+type mediaSearchKey struct {
+	phone        string
+	answerSerial int64
+	itemIndex    int64
+}
+
 // PurgeLocations 删除至多 limit 条接收时间早于 cutoff 的定位记录。
 func (r *retentionStore) PurgeLocations(ctx context.Context, cutoff time.Time, limit int) (int64, error) {
 	if limit <= 0 {
@@ -256,3 +262,101 @@ func (r *retentionStore) PurgeMediaCaptures(ctx context.Context, cutoff time.Tim
 }
 
 var _ repository.RetentionStore = (*retentionStore)(nil)
+
+// PurgeMediaSearchResults 删除至多 limit 条接收时间早于 cutoff 的检索应答记录。
+// 主键为 (phone, answer_serial, item_index)，按主键定位删除。
+func (r *retentionStore) PurgeMediaSearchResults(ctx context.Context, cutoff time.Time, limit int) (int64, error) {
+	if limit <= 0 {
+		return 0, fmt.Errorf("purge media search results: limit must be positive, got %d", limit)
+	}
+	rows, err := r.store.db.QueryContext(ctx,
+		`SELECT phone, answer_serial, item_index FROM media_search_results
+		 WHERE received_at < ? ORDER BY received_at ASC LIMIT ?`,
+		cutoff.UnixMilli(), limit)
+	if err != nil {
+		return 0, fmt.Errorf("select expired media search results: %w", err)
+	}
+	defer rows.Close()
+
+	keys := make([]mediaSearchKey, 0, limit)
+	for rows.Next() {
+		var key mediaSearchKey
+		if err := rows.Scan(&key.phone, &key.answerSerial, &key.itemIndex); err != nil {
+			return 0, fmt.Errorf("scan expired media search result key: %w", err)
+		}
+		keys = append(keys, key)
+	}
+	if err := rows.Err(); err != nil {
+		return 0, fmt.Errorf("iterate expired media search results: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return 0, fmt.Errorf("close expired media search results cursor: %w", err)
+	}
+	if len(keys) == 0 {
+		return 0, nil
+	}
+
+	conds := make([]string, 0, len(keys))
+	args := make([]any, 0, len(keys)*3)
+	for _, key := range keys {
+		conds = append(conds, "(phone = ? AND answer_serial = ? AND item_index = ?)")
+		args = append(args, key.phone, key.answerSerial, key.itemIndex)
+	}
+	result, err := r.store.db.ExecContext(ctx,
+		`DELETE FROM media_search_results WHERE `+strings.Join(conds, " OR "), args...)
+	if err != nil {
+		return 0, fmt.Errorf("delete expired media search results: %w", err)
+	}
+	deleted, err := result.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("count deleted media search results: %w", err)
+	}
+	return deleted, nil
+}
+
+// existingMediaPathChunk 是单条 IN 查询的路径数上限，避免超过 SQLite 的参数上限。
+const existingMediaPathChunk = 400
+
+// ExistingMediaPaths 返回入参中仍存在于 media_files 的相对路径。
+// 逐个前缀拼接会超过数据库参数上限，因此按固定分片查询。
+func (r *retentionStore) ExistingMediaPaths(ctx context.Context, relativePaths []string) (map[string]struct{}, error) {
+	existing := make(map[string]struct{}, len(relativePaths))
+	if len(relativePaths) == 0 {
+		return existing, nil
+	}
+	for start := 0; start < len(relativePaths); start += existingMediaPathChunk {
+		end := start + existingMediaPathChunk
+		if end > len(relativePaths) {
+			end = len(relativePaths)
+		}
+		chunk := relativePaths[start:end]
+		placeholders := make([]string, 0, len(chunk))
+		args := make([]any, 0, len(chunk))
+		for _, path := range chunk {
+			placeholders = append(placeholders, "?")
+			args = append(args, path)
+		}
+		rows, err := r.store.db.QueryContext(ctx,
+			`SELECT relative_path FROM media_files WHERE relative_path IN (`+strings.Join(placeholders, ", ")+`)`,
+			args...)
+		if err != nil {
+			return nil, fmt.Errorf("select existing media paths: %w", err)
+		}
+		for rows.Next() {
+			var path string
+			if err := rows.Scan(&path); err != nil {
+				_ = rows.Close()
+				return nil, fmt.Errorf("scan existing media path: %w", err)
+			}
+			existing[path] = struct{}{}
+		}
+		if err := rows.Err(); err != nil {
+			_ = rows.Close()
+			return nil, fmt.Errorf("iterate existing media paths: %w", err)
+		}
+		if err := rows.Close(); err != nil {
+			return nil, fmt.Errorf("close existing media paths cursor: %w", err)
+		}
+	}
+	return existing, nil
+}

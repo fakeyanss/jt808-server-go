@@ -184,6 +184,70 @@ func TestSQLiteRetentionRejectsNonPositiveLimit(t *testing.T) {
 	require.Error(t, err)
 	_, err = retention.PurgeMediaCaptures(ctx, cutoff, 0)
 	require.Error(t, err)
+	_, err = retention.PurgeMediaSearchResults(ctx, cutoff, 0)
+	require.Error(t, err)
+}
+
+func insertMediaSearchResult(t *testing.T, store *Store, phone string, answerSerial, index, receivedAt int64) {
+	t.Helper()
+	_, err := store.db.ExecContext(context.Background(),
+		`INSERT INTO media_search_results (phone, answer_serial, item_index, media_id, received_at)
+		 VALUES (?, ?, ?, ?, ?)`,
+		phone, answerSerial, index, answerSerial*100+index, receivedAt)
+	require.NoError(t, err)
+}
+
+// 检索应答按自身 received_at 清理，边界保留，且分批执行。
+func TestSQLitePurgeMediaSearchResultsByTimeAndBatch(t *testing.T) {
+	ctx := context.Background()
+	store := openTestSQLite(t)
+	retention := store.RetentionStore()
+	cutoff := time.UnixMilli(1_700_000_000_000)
+	phone := "188765430005"
+
+	insertMediaSearchResult(t, store, phone, 1, 0, cutoff.UnixMilli()-2000)
+	insertMediaSearchResult(t, store, phone, 1, 1, cutoff.UnixMilli()-1000)
+	insertMediaSearchResult(t, store, phone, 2, 0, cutoff.UnixMilli()) // 等于 cutoff，保留
+	insertMediaSearchResult(t, store, phone, 3, 0, cutoff.UnixMilli()+1000)
+
+	deleted, err := retention.PurgeMediaSearchResults(ctx, cutoff, 1)
+	require.NoError(t, err)
+	assert.EqualValues(t, 1, deleted)
+	assert.Equal(t, 3, countRows(t, store, `SELECT COUNT(*) FROM media_search_results`))
+
+	deleted, err = retention.PurgeMediaSearchResults(ctx, cutoff, 10)
+	require.NoError(t, err)
+	assert.EqualValues(t, 1, deleted)
+	assert.Equal(t, 2, countRows(t, store, `SELECT COUNT(*) FROM media_search_results`))
+	assert.Equal(t, 0, countRows(t, store,
+		`SELECT COUNT(*) FROM media_search_results WHERE received_at < ?`, cutoff.UnixMilli()))
+
+	deleted, err = retention.PurgeMediaSearchResults(ctx, cutoff, 10)
+	require.NoError(t, err)
+	assert.Zero(t, deleted)
+}
+
+// 孤儿扫描按相对路径精确比对，只有库中存在的路径被返回。
+func TestSQLiteExistingMediaPaths(t *testing.T) {
+	ctx := context.Background()
+	store := openTestSQLite(t)
+	retention := store.RetentionStore()
+	phone := "188765430006"
+
+	insertMediaFile(t, store, phone, 200, "188765430006/20231001/200.jpg", 1)
+	insertMediaFile(t, store, phone, 201, "188765430006/20231001/201.jpg", 1)
+
+	existing, err := retention.ExistingMediaPaths(ctx, []string{
+		"188765430006/20231001/200.jpg",
+		"188765430006/20231001/999.jpg",
+	})
+	require.NoError(t, err)
+	assert.Contains(t, existing, "188765430006/20231001/200.jpg")
+	assert.NotContains(t, existing, "188765430006/20231001/999.jpg")
+
+	existing, err = retention.ExistingMediaPaths(ctx, nil)
+	require.NoError(t, err)
+	assert.Empty(t, existing)
 }
 
 // 确认 SQL 实现满足 repository.RetentionStore 契约。

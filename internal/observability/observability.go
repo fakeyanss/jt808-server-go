@@ -26,10 +26,11 @@ const DefaultExpiredOutboxThreshold = 100
 
 // 保留期清理的指标类别，与清理任务的分表策略一一对应。
 const (
-	RetentionCategoryLocations     = "locations"
-	RetentionCategoryAlarms        = "alarms"
-	RetentionCategoryMediaFiles    = "mediaFiles"
-	RetentionCategoryMediaCaptures = "mediaCaptures"
+	RetentionCategoryLocations          = "locations"
+	RetentionCategoryAlarms             = "alarms"
+	RetentionCategoryMediaFiles         = "mediaFiles"
+	RetentionCategoryMediaCaptures      = "mediaCaptures"
+	RetentionCategoryMediaSearchResults = "mediaSearchResults"
 )
 
 // outboxScanLimit 是就绪检查与指标采集时单次扫描的 pending 命令上限。
@@ -51,6 +52,13 @@ type Metrics struct {
 	// retentionLastRun 与 retentionLastDuration 记录最近一次清理任务的时间与耗时。
 	retentionLastRun      atomic.Int64
 	retentionLastDuration atomic.Int64
+	// 孤儿文件扫描的累计计数与最近一次运行信息。
+	orphanScanned      atomic.Int64
+	orphanDeleted      atomic.Int64
+	orphanSkipped      atomic.Int64
+	orphanFailures     atomic.Int64
+	orphanLastRun      atomic.Int64
+	orphanLastDuration atomic.Int64
 }
 
 // NewMetrics 创建进程级计数器。
@@ -116,6 +124,51 @@ func (m *Metrics) RecordRetentionRun(at time.Time, duration time.Duration) {
 	m.retentionLastDuration.Store(duration.Milliseconds())
 }
 
+// AddOrphanScan 累加一次孤儿文件扫描的统计量。
+func (m *Metrics) AddOrphanScan(scanned, deleted, skipped, failures int64) {
+	if m == nil {
+		return
+	}
+	m.orphanScanned.Add(scanned)
+	m.orphanDeleted.Add(deleted)
+	m.orphanSkipped.Add(skipped)
+	m.orphanFailures.Add(failures)
+}
+
+// RecordOrphanScan 记录一次孤儿文件扫描的完成时间与总耗时。
+func (m *Metrics) RecordOrphanScan(at time.Time, duration time.Duration) {
+	if m == nil {
+		return
+	}
+	m.orphanLastRun.Store(at.UnixMilli())
+	m.orphanLastDuration.Store(duration.Milliseconds())
+}
+
+// OrphanSnapshot 是孤儿文件扫描的累计指标副本。
+type OrphanSnapshot struct {
+	Scanned          int64
+	Deleted          int64
+	Skipped          int64
+	Failures         int64
+	LastRunUnixMilli int64
+	LastRunDuration  time.Duration
+}
+
+// OrphanSnapshot 返回孤儿文件扫描指标的副本；未执行过时各计数为 0。
+func (m *Metrics) OrphanSnapshot() OrphanSnapshot {
+	if m == nil {
+		return OrphanSnapshot{}
+	}
+	return OrphanSnapshot{
+		Scanned:          m.orphanScanned.Load(),
+		Deleted:          m.orphanDeleted.Load(),
+		Skipped:          m.orphanSkipped.Load(),
+		Failures:         m.orphanFailures.Load(),
+		LastRunUnixMilli: m.orphanLastRun.Load(),
+		LastRunDuration:  time.Duration(m.orphanLastDuration.Load()) * time.Millisecond,
+	}
+}
+
 // RetentionSnapshot 是清理任务累计指标的副本。
 type RetentionSnapshot struct {
 	Deleted  map[string]int64
@@ -161,6 +214,8 @@ type Snapshot struct {
 	AckTimeouts    int64
 	// Retention 是历史数据清理任务的累计指标。
 	Retention RetentionSnapshot
+	// Orphan 是媒体目录孤儿文件扫描的累计指标。
+	Orphan OrphanSnapshot
 }
 
 // Check 是一条带名称的就绪检查。
@@ -213,6 +268,7 @@ func (p *Provider) Snapshot(ctx context.Context) Snapshot {
 	}
 	snapshot.AckTimeouts = p.Metrics.AckTimeouts()
 	snapshot.Retention = p.Metrics.RetentionSnapshot()
+	snapshot.Orphan = p.Metrics.OrphanSnapshot()
 	return snapshot
 }
 
@@ -241,7 +297,44 @@ func WritePrometheus(w io.Writer, snapshot Snapshot) error {
 			return err
 		}
 	}
-	return writeRetentionPrometheus(w, snapshot.Retention)
+	if err := writeRetentionPrometheus(w, snapshot.Retention); err != nil {
+		return err
+	}
+	return writeOrphanPrometheus(w, snapshot.Orphan)
+}
+
+// writeOrphanPrometheus 输出孤儿文件扫描的累计指标与最近一次运行信息。
+func writeOrphanPrometheus(w io.Writer, snapshot OrphanSnapshot) error {
+	for _, line := range []struct {
+		name  string
+		help  string
+		value int64
+	}{
+		{"jt808_orphan_files_scanned_total", "Files examined by the orphan media scan.", snapshot.Scanned},
+		{"jt808_orphan_files_deleted_total", "Orphan media files deleted by the scan.", snapshot.Deleted},
+		{"jt808_orphan_files_skipped_total", "Files skipped by the orphan scan (recent, temporary or still referenced).", snapshot.Skipped},
+		{"jt808_orphan_scan_failures_total", "Errors encountered by the orphan media scan.", snapshot.Failures},
+	} {
+		if _, err := fmt.Fprintf(w, "# HELP %s %s\n# TYPE %s counter\n%s %d\n",
+			line.name, line.help, line.name, line.name, line.value); err != nil {
+			return err
+		}
+	}
+	if _, err := fmt.Fprintf(w,
+		"# HELP jt808_orphan_scan_last_run_timestamp_seconds Unix timestamp of the last orphan media scan.\n"+
+			"# TYPE jt808_orphan_scan_last_run_timestamp_seconds gauge\n"+
+			"jt808_orphan_scan_last_run_timestamp_seconds %s\n",
+		strconv.FormatFloat(float64(snapshot.LastRunUnixMilli)/1000, 'f', -1, 64)); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintf(w,
+		"# HELP jt808_orphan_scan_last_run_duration_seconds Duration of the last orphan media scan.\n"+
+			"# TYPE jt808_orphan_scan_last_run_duration_seconds gauge\n"+
+			"jt808_orphan_scan_last_run_duration_seconds %s\n",
+		strconv.FormatFloat(snapshot.LastRunDuration.Seconds(), 'f', -1, 64)); err != nil {
+		return err
+	}
+	return nil
 }
 
 // retentionMetricCategories 是清理指标的固定输出顺序，保证 exposition 稳定。
@@ -250,6 +343,7 @@ var retentionMetricCategories = []string{
 	RetentionCategoryAlarms,
 	RetentionCategoryMediaFiles,
 	RetentionCategoryMediaCaptures,
+	RetentionCategoryMediaSearchResults,
 }
 
 // writeRetentionPrometheus 输出历史数据清理任务的累计指标。

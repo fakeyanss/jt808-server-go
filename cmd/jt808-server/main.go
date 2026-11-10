@@ -153,27 +153,32 @@ func main() {
 	metrics := observability.NewMetrics()
 	serv.SetMetrics(metrics)
 
-	// 历史数据定期清理：默认关闭，只有显式开启且后端支持时才启动。
-	// memory 后端的数据随进程结束释放，不重复实现裁剪。
+	// 历史数据定期清理与孤儿文件扫描：默认关闭，只有显式开启且后端支持时才启动。
+	// memory 后端的数据随进程结束释放，也没有共享库作为孤儿比对依据，两者都跳过。
 	retentionPolicy := cfg.RetentionPolicy()
 	cancelRetention := func() {}
-	var retentionDone <-chan struct{}
+	var retentionDones []<-chan struct{}
+	var retentionCtx context.Context
+	if retentionPolicy.Cleanup.Enabled || retentionPolicy.OrphanFiles.Enabled {
+		ctx, cancel := context.WithCancel(context.Background())
+		retentionCtx = ctx
+		cancelRetention = cancel
+	}
 	if retentionPolicy.Cleanup.Enabled {
 		if stores.Retention == nil {
 			log.Warn().Str("backend", stores.Backend).
 				Msg("Retention cleanup is enabled but the storage backend does not support it; skipped")
 		} else {
 			cleaner := retention.NewCleaner(stores.Retention, mediaUploadStore, retention.Config{
-				Interval:      retentionPolicy.Cleanup.Interval,
-				BatchSize:     retentionPolicy.Cleanup.BatchSize,
-				Locations:     retentionPolicy.Locations.MaxAge,
-				Alarms:        retentionPolicy.Alarms.MaxAge,
-				MediaFiles:    retentionPolicy.MediaFiles.MaxAge,
-				MediaCaptures: retentionPolicy.MediaCaptures.MaxAge,
+				Interval:           retentionPolicy.Cleanup.Interval,
+				BatchSize:          retentionPolicy.Cleanup.BatchSize,
+				Locations:          retentionPolicy.Locations.MaxAge,
+				Alarms:             retentionPolicy.Alarms.MaxAge,
+				MediaFiles:         retentionPolicy.MediaFiles.MaxAge,
+				MediaCaptures:      retentionPolicy.MediaCaptures.MaxAge,
+				MediaSearchResults: retentionPolicy.MediaSearchResults.MaxAge,
 			}, metrics)
-			retentionCtx, cancel := context.WithCancel(context.Background())
-			cancelRetention = cancel
-			retentionDone = cleaner.Done()
+			retentionDones = append(retentionDones, cleaner.Done())
 			routines.GoSafe(func() { cleaner.Run(retentionCtx) })
 			log.Info().
 				Dur("interval", retentionPolicy.Cleanup.Interval).
@@ -182,7 +187,30 @@ func main() {
 				Dur("alarms", retentionPolicy.Alarms.MaxAge).
 				Dur("media_files", retentionPolicy.MediaFiles.MaxAge).
 				Dur("media_captures", retentionPolicy.MediaCaptures.MaxAge).
+				Dur("media_search_results", retentionPolicy.MediaSearchResults.MaxAge).
 				Msg("Retention cleanup enabled")
+		}
+	}
+	if retentionPolicy.OrphanFiles.Enabled {
+		if stores.Retention == nil || mediaUploadStore == nil {
+			log.Warn().Str("backend", stores.Backend).
+				Msg("Orphan media scan is enabled but the storage backend does not support it; skipped")
+		} else {
+			scanner := retention.NewOrphanScanner(stores.Retention, mediaUploadStore, retention.OrphanConfig{
+				Enabled:        true,
+				Grace:          retentionPolicy.OrphanFiles.Grace,
+				Interval:       retentionPolicy.OrphanFiles.Interval,
+				MaxFilesPerRun: retentionPolicy.OrphanFiles.MaxFilesPerRun,
+				BatchSize:      retentionPolicy.OrphanFiles.BatchSize,
+			}, metrics)
+			retentionDones = append(retentionDones, scanner.Done())
+			routines.GoSafe(func() { scanner.Run(retentionCtx) })
+			log.Info().
+				Dur("interval", retentionPolicy.OrphanFiles.Interval).
+				Dur("grace", retentionPolicy.OrphanFiles.Grace).
+				Int("max_files_per_run", retentionPolicy.OrphanFiles.MaxFilesPerRun).
+				Int("batch_size", retentionPolicy.OrphanFiles.BatchSize).
+				Msg("Orphan media scan enabled")
 		}
 	}
 
@@ -443,14 +471,20 @@ func main() {
 		}
 	}
 
-	// 4. 停止清理任务，等待当前批次收尾，避免与存储关闭竞争。
+	// 4. 停止清理与扫描任务，等待当前批次收尾，避免与存储关闭竞争。
 	cancelRetention()
-	if retentionDone != nil {
-		select {
-		case <-retentionDone:
-		case <-time.After(5 * time.Second):
-			log.Warn().Msg("Timed out waiting for retention cleanup to stop")
+	if len(retentionDones) > 0 {
+		timer := time.NewTimer(5 * time.Second)
+	waitRetention:
+		for _, done := range retentionDones {
+			select {
+			case <-done:
+			case <-timer.C:
+				log.Warn().Msg("Timed out waiting for retention cleanup to stop")
+				break waitRetention
+			}
 		}
+		timer.Stop()
 	}
 
 	// 5. 关闭媒体与附件写入，确保文件句柄与已收数据落盘。
