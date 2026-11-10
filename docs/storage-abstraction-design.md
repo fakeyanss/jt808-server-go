@@ -333,7 +333,7 @@ type Coordinator interface {
 
 大 payload（0x0801 媒体、0x8900/0901 透传压缩字节）**不入关系库**，落文件/对象存储，库里存 URI 与元数据。
 
-历史数据清理由进程内 `retention.Cleaner` 执行，仅 SQL 后端启用，默认关闭。各表按服务端接收时间（`received_at_ms` / `received_at`）取过期主键并分批删除；`media_files` 先删文件再删元数据，文件删除失败时保留记录重试。`memory` 后端数据随进程结束释放，不参与清理。
+历史数据清理由进程内 `retention.Cleaner` 执行，仅 SQL 后端启用，默认关闭。各表按服务端接收时间（`received_at_ms` / `received_at`）取过期主键并分批删除，`media_search_results` 按自身 `received_at` 清理；`media_files` 先删文件再删元数据，文件删除失败时保留记录重试。另有独立的 `retention.OrphanScanner`（默认关闭），按文件 mtime 与 `media_files.relative_path` 比对，删除崩溃残留的未入库文件，跳过 `.part` 临时文件。`memory` 后端数据随进程结束释放，也不存在共享库比对依据，两者都不参与。
 
 ### 7.2 迁移
 

@@ -161,6 +161,8 @@ tar -czf /backup/jt808-files-$(date +%Y%m%d-%H%M).tgz ./data ./logs
 | 报警历史 `alarms` | `retention.alarms.retentionDays` | 0（关闭） | 定期清理按接收时间删除 |
 | `0x0801` 媒体元数据与文件 | `retention.mediaFiles.retentionDays` | 0（关闭） | 定期清理：先删文件，再删 `media_files` 记录 |
 | `0x0805` 拍摄应答 | `retention.mediaCaptures.retentionDays` | 0（关闭） | 定期清理 `media_captures` 与同事务删除 `media_capture_items` |
+| `0x0802` 检索应答 | `retention.mediaSearchResults.retentionDays` | 0（关闭） | 定期清理 `media_search_results`，按自身接收时间分批删除 |
+| 媒体目录孤儿文件 | `retention.orphanFiles.*` | 关闭（宽限 7 天） | 按文件 mtime 判断年龄，删除库中无对应记录的文件；跳过 `.part` 临时文件 |
 | 媒体 `.h264` | `mediaServer.retentionDays` | 7 天 | 每小时扫描目录，跳过正在写入的流 |
 | 苏标附件 | `alarmServer.retentionDays` | 7 天 | 每小时扫描目录，跳过未完成组装的临时文件 |
 
@@ -168,6 +170,7 @@ tar -czf /backup/jt808-files-$(date +%Y%m%d-%H%M).tgz ./data ./logs
 - 历史表定期清理由 `retention.cleanup.enabled` 控制，默认关闭；开启后按 `interval` 执行，按主键分批删除（默认每批 1000 行，上限 5000），批间让出。
 - 历史表清理仅依赖 SQL 后端；`memory` 后端数据随进程结束释放，开启时只记录告警并跳过。
 - 媒体文件清理顺序为先删文件、再删元数据；文件删除失败时保留记录并在下次运行重试，文件已不存在则视为删除成功。
+- 孤儿文件扫描由 `retention.orphanFiles.enabled` 显式开启，默认关闭。判定依据是文件自身 mtime，而不是 `<手机号>/<YYYYMMDD>` 目录名，避免把补传到旧目录的新文件误删；只有 mtime 早于 `now - graceDays` 且 `media_files` 中无对应相对路径的文件才会删除。`.part` 临时文件与隐藏文件一律跳过；单次最多处理 `maxFilesPerRun` 个文件，按批比对数据库并在批间让出，随停机信号取消。`memory` 后端没有比对依据，不启用。
 - 媒体 `.h264` 目录清理与数据库保留期清理相互独立。
 
 ---
@@ -203,10 +206,13 @@ tar -czf /backup/jt808-files-$(date +%Y%m%d-%H%M).tgz ./data ./logs
 | `jt808_media_streams` | 进行中的 1078 媒体会话数 |
 | `jt808_attachments_active` | 进行中的苏标附件组装数 |
 | `jt808_attachments_completed_total` | 已完成附件累计数 |
-| `jt808_retention_deleted_total{category}` | 定期清理累计删除行数，`category` 为 `locations` / `alarms` / `mediaFiles` / `mediaCaptures` |
+| `jt808_retention_deleted_total{category}` | 定期清理累计删除行数，`category` 为 `locations` / `alarms` / `mediaFiles` / `mediaCaptures` / `mediaSearchResults` |
 | `jt808_retention_failures_total{category}` | 定期清理累计失败批次数 |
 | `jt808_retention_last_run_timestamp_seconds` | 最近一次清理运行时间；为 0 表示尚未运行 |
 | `jt808_retention_last_run_duration_seconds` | 最近一次清理总耗时 |
+| `jt808_orphan_files_scanned_total` / `deleted_total` / `skipped_total` | 孤儿文件扫描累计遍历、删除与跳过文件数 |
+| `jt808_orphan_scan_failures_total` | 孤儿文件扫描累计失败次数 |
+| `jt808_orphan_scan_last_run_timestamp_seconds` / `last_run_duration_seconds` | 最近一次孤儿扫描的运行时间与耗时 |
 
 采集示例：
 
