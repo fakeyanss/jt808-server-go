@@ -371,3 +371,236 @@ func TestAlarmIDNumberBytesReturnsCopy(t *testing.T) {
 	got[0] ^= 0xFF
 	require.NotEqual(t, got, msg.AlarmIDNumberBytes())
 }
+
+func buildBaseExtItem(id uint8, data []byte) LocationExtItem {
+	return LocationExtItem{ID: id, Length: uint8(len(data)), Data: data}
+}
+
+func buildTirePressureData() []byte {
+	data := hex.WriteWord(nil, 230)
+	data = hex.WriteWord(data, 231)
+	data = hex.WriteWord(data, 232)
+	for i := 3; i < 15; i++ {
+		data = hex.WriteWord(data, 0xFFFF)
+	}
+	return data
+}
+
+func buildBaseExtItems(domain ExtDomain) []LocationExtItem {
+	items := []LocationExtItem{
+		buildBaseExtItem(0x01, hex.WriteDoubleWord(nil, 12345)),
+		buildBaseExtItem(0x02, hex.WriteWord(nil, 678)),
+		buildBaseExtItem(0x03, hex.WriteWord(nil, 789)),
+		buildBaseExtItem(0x04, hex.WriteWord(nil, 5)),
+	}
+	if domain == ExtDomainBase2019 {
+		items = append(items,
+			buildBaseExtItem(0x05, buildTirePressureData()),
+			buildBaseExtItem(0x06, hex.WriteWord(nil, uint16(0xFF9C))),
+		)
+	}
+	return append(items,
+		buildBaseExtItem(0x11, hex.WriteDoubleWord(hex.WriteByte(nil, 2), 0x01020304)),
+		buildBaseExtItem(0x11, hex.WriteByte(nil, 0)),
+		buildBaseExtItem(0x12, hex.WriteByte(hex.WriteDoubleWord(hex.WriteByte(nil, 3), 0x05060708), 1)),
+		buildBaseExtItem(0x13, hex.WriteByte(hex.WriteWord(hex.WriteDoubleWord(nil, 0x0A0B0C0D), 600), 1)),
+		buildBaseExtItem(0x25, hex.WriteDoubleWord(nil, 0x00007FFF)),
+		buildBaseExtItem(0x2A, hex.WriteWord(nil, 0x0003)),
+		buildBaseExtItem(0x2B, hex.WriteDoubleWord(nil, 0x00050006)),
+		buildBaseExtItem(0x30, []byte{23}),
+		buildBaseExtItem(0x31, []byte{12}),
+	)
+}
+
+func TestParseExtItemsBaseFields2019(t *testing.T) {
+	parsed := msg0200WithDomain(ExtDomainBase2019, buildBaseExtItems(ExtDomainBase2019)).ParseExtItems()
+	require.Len(t, parsed, 15)
+
+	mileage, ok := parsed[0].(ExtMileage)
+	require.True(t, ok)
+	require.Equal(t, ExtTypeMileage, mileage.ExtType)
+	require.Equal(t, ExtDomainBase2019, mileage.ExtDomain)
+	require.Equal(t, uint32(12345), mileage.Mileage)
+
+	oil, ok := parsed[1].(ExtOil)
+	require.True(t, ok)
+	require.Equal(t, uint16(678), oil.Oil)
+
+	recordedSpeed, ok := parsed[2].(ExtRecordedSpeed)
+	require.True(t, ok)
+	require.Equal(t, uint16(789), recordedSpeed.Speed)
+
+	manualAlarm, ok := parsed[3].(ExtManualAlarmID)
+	require.True(t, ok)
+	require.Equal(t, uint16(5), manualAlarm.AlarmID)
+
+	tirePressure, ok := parsed[4].(ExtTirePressure)
+	require.True(t, ok)
+	require.Equal(t, ExtTypeTirePressure, tirePressure.ExtType)
+	require.Len(t, tirePressure.Pressures, 15)
+	require.Equal(t, []uint16{230, 231, 232}, tirePressure.Pressures[:3])
+	require.Equal(t, uint16(0xFFFF), tirePressure.Pressures[14])
+
+	carTemperature, ok := parsed[5].(ExtCarTemperature)
+	require.True(t, ok)
+	require.Equal(t, int16(-100), carTemperature.Temperature)
+
+	overSpeed, ok := parsed[6].(ExtOverSpeedAlarm)
+	require.True(t, ok)
+	require.Equal(t, uint8(2), overSpeed.LocationType)
+	require.Equal(t, uint32(0x01020304), overSpeed.AreaID)
+	require.True(t, overSpeed.HasAreaID)
+
+	overSpeedNoArea, ok := parsed[7].(ExtOverSpeedAlarm)
+	require.True(t, ok)
+	require.Equal(t, uint8(0), overSpeedNoArea.LocationType)
+	require.False(t, overSpeedNoArea.HasAreaID)
+	require.Zero(t, overSpeedNoArea.AreaID)
+
+	areaAlarm, ok := parsed[8].(ExtAreaAlarm)
+	require.True(t, ok)
+	require.Equal(t, uint8(3), areaAlarm.LocationType)
+	require.Equal(t, uint32(0x05060708), areaAlarm.AreaID)
+	require.Equal(t, uint8(1), areaAlarm.Direction)
+
+	routeTime, ok := parsed[9].(ExtRouteTimeAlarm)
+	require.True(t, ok)
+	require.Equal(t, uint32(0x0A0B0C0D), routeTime.RouteID)
+	require.Equal(t, uint16(600), routeTime.DrivingTime)
+	require.Equal(t, uint8(1), routeTime.Result)
+
+	vehicleSignal, ok := parsed[10].(ExtVehicleSignal)
+	require.True(t, ok)
+	require.Equal(t, uint32(0x00007FFF), vehicleSignal.Value)
+	require.True(t, vehicleSignal.LowBeam)
+	require.True(t, vehicleSignal.Clutch)
+	require.False(t, vehicleSignal.Value&(1<<15) != 0)
+
+	ioStatus, ok := parsed[11].(ExtIOStatus)
+	require.True(t, ok)
+	require.Equal(t, uint16(3), ioStatus.Value)
+	require.True(t, ioStatus.DeepSleep)
+	require.True(t, ioStatus.Sleep)
+
+	analog, ok := parsed[12].(ExtAnalog)
+	require.True(t, ok)
+	require.Equal(t, uint16(0x0006), analog.AD0)
+	require.Equal(t, uint16(0x0005), analog.AD1)
+
+	wifi, ok := parsed[13].(ExtWIFISignal)
+	require.True(t, ok)
+	require.Equal(t, uint8(23), wifi.Strength)
+
+	gnss, ok := parsed[14].(ExtGNSSSatellites)
+	require.True(t, ok)
+	require.Equal(t, uint8(12), gnss.Count)
+}
+
+// 0x05/0x06 仅 2019 定义，旧版本域收到同 ID 必须保留原始字节而不是猜测解析。
+func TestParseExtItemsLegacyDomainKeeps2019OnlyItemsRaw(t *testing.T) {
+	items := []LocationExtItem{
+		buildBaseExtItem(0x01, hex.WriteDoubleWord(nil, 1)),
+		buildBaseExtItem(0x05, buildTirePressureData()),
+		buildBaseExtItem(0x06, hex.WriteWord(nil, 25)),
+	}
+	parsed := msg0200WithDomain(ExtDomainSubiao, items).ParseExtItems()
+	require.Len(t, parsed, 3)
+	require.IsType(t, ExtMileage{}, parsed[0])
+
+	tireRaw, ok := parsed[1].(ExtRawItem)
+	require.True(t, ok)
+	require.Equal(t, uint8(0x05), tireRaw.ExtID)
+	require.Equal(t, ExtDomainSubiao, tireRaw.ExtDomain)
+	require.Equal(t, items[1].Data, tireRaw.Raw)
+
+	tempRaw, ok := parsed[2].(ExtRawItem)
+	require.True(t, ok)
+	require.Equal(t, uint8(0x06), tempRaw.ExtID)
+	require.Equal(t, items[2].Data, tempRaw.Raw)
+
+	// 2019 域下相同字节必须解析为结构化项。
+	baseParsed := msg0200WithDomain(ExtDomainBase2019, items).ParseExtItems()
+	require.IsType(t, ExtTirePressure{}, baseParsed[1])
+	require.IsType(t, ExtCarTemperature{}, baseParsed[2])
+}
+
+func TestParseExtItemsBaseLengthMismatchFallsBackToRaw(t *testing.T) {
+	cases := []struct {
+		id     uint8
+		domain ExtDomain
+		data   []byte
+	}{
+		{id: 0x01, domain: ExtDomainSubiao, data: []byte{0x01, 0x02, 0x03}},
+		{id: 0x02, domain: ExtDomainSubiao, data: []byte{0x01}},
+		{id: 0x03, domain: ExtDomainSubiao, data: []byte{0x01}},
+		{id: 0x04, domain: ExtDomainSubiao, data: []byte{0x01}},
+		{id: 0x05, domain: ExtDomainBase2019, data: buildTirePressureData()[:29]},
+		{id: 0x06, domain: ExtDomainBase2019, data: []byte{0x01, 0x02, 0x03}},
+		{id: 0x11, domain: ExtDomainSubiao, data: []byte{0x01, 0x02}},
+		{id: 0x12, domain: ExtDomainSubiao, data: []byte{0x01, 0x02, 0x03, 0x04, 0x05}},
+		{id: 0x13, domain: ExtDomainSubiao, data: []byte{0x01, 0x02, 0x03, 0x04, 0x05, 0x06}},
+		{id: 0x25, domain: ExtDomainSubiao, data: []byte{0x01, 0x02, 0x03}},
+		{id: 0x2A, domain: ExtDomainSubiao, data: []byte{0x01}},
+		{id: 0x2B, domain: ExtDomainSubiao, data: []byte{0x01, 0x02, 0x03}},
+		{id: 0x30, domain: ExtDomainSubiao, data: []byte{0x01, 0x02}},
+		{id: 0x31, domain: ExtDomainSubiao, data: nil},
+	}
+	for _, tc := range cases {
+		item := buildBaseExtItem(tc.id, tc.data)
+		parsed := ParseExtItems([]LocationExtItem{item}, tc.domain)
+		require.Len(t, parsed, 1, "ext id 0x%02X", tc.id)
+		raw, ok := parsed[0].(ExtRawItem)
+		require.True(t, ok, "ext id 0x%02X should fall back to raw", tc.id)
+		require.Equal(t, tc.id, raw.ExtID)
+		require.Equal(t, tc.domain, raw.ExtDomain)
+		require.Equal(t, tc.data, raw.Raw)
+	}
+}
+
+func TestParseExtItemsDuplicateIDsPreserved(t *testing.T) {
+	items := []LocationExtItem{
+		buildBaseExtItem(0x01, hex.WriteDoubleWord(nil, 100)),
+		buildBaseExtItem(0x01, hex.WriteDoubleWord(nil, 200)),
+		buildBaseExtItem(0x31, []byte{8}),
+		buildBaseExtItem(0x31, []byte{9}),
+	}
+	parsed := ParseExtItems(items, ExtDomainSubiao)
+	require.Len(t, parsed, 4)
+	require.Equal(t, uint32(100), parsed[0].(ExtMileage).Mileage)
+	require.Equal(t, uint32(200), parsed[1].(ExtMileage).Mileage)
+	require.Equal(t, uint8(8), parsed[2].(ExtGNSSSatellites).Count)
+	require.Equal(t, uint8(9), parsed[3].(ExtGNSSSatellites).Count)
+}
+
+// 结构化解析必须是无损派生视图：Decode 后再 Encode 与原报文逐字节一致，
+// 且 ParseExtItems 不得改写原始 TLV 列表。
+func TestMsg0200ExtRoundTripLossless(t *testing.T) {
+	items := buildBaseExtItems(ExtDomainBase2019)
+	items = append(items,
+		buildBaseExtItem(0x31, []byte{6}),          // 重复 ID
+		buildBaseExtItem(0x07, []byte{0, 0, 0, 0}), // 本轮不做结构化，必须保留
+		buildBaseExtItem(0xE0, []byte{0xDE, 0xAD, 0xBE}),
+	)
+	body := buildRealistic0200Body(0, items)
+	header := &MsgHeader{
+		MsgID:        MsgID0200,
+		PhoneNumber:  "188765432120",
+		SerialNumber: 8,
+		Attr:         &MsgBodyAttr{VersionSign: 0, VersionDesc: Version2019},
+	}
+
+	msg := &Msg0200{}
+	require.NoError(t, msg.Decode(&PacketData{Header: header, Body: body}))
+	before := append([]LocationExtItem(nil), msg.ExtItems...)
+	parsed := msg.ParseExtItems()
+	require.Len(t, parsed, len(items))
+	require.Equal(t, before, msg.ExtItems)
+
+	encoded, err := msg.Encode()
+	require.NoError(t, err)
+	encodedBody := encoded[len(encoded)-int(msg.Header.Attr.BodyLength):]
+	require.Equal(t, body, encodedBody)
+
+	require.IsType(t, ExtRawItem{}, parsed[len(items)-2])
+	require.IsType(t, ExtRawItem{}, parsed[len(items)-1])
+}
