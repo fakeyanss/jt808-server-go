@@ -1143,6 +1143,7 @@ const (
 	DefaultCommandOutboxLeaseDuration = time.Minute
 	DefaultCommandOutboxRetryBase     = 5 * time.Second
 	DefaultCommandOutboxRetryMax      = 5 * time.Minute
+	DefaultCommandOutboxOfflineRetry  = 15 * time.Second
 	DefaultCommandOutboxExpireAfter   = 24 * time.Hour
 	DefaultCommandOutboxInitialWait   = time.Minute
 )
@@ -1168,8 +1169,10 @@ type commandOutboxConf struct {
 	LeaseDuration string `yaml:"leaseDuration"`
 	RetryBase     string `yaml:"retryBase"`
 	RetryMax      string `yaml:"retryMax"`
-	ExpireAfter   string `yaml:"expireAfter"`
-	InitialWait   string `yaml:"initialWait"`
+	// OfflineRetry 是设备离线时的短退避，避免每个 poll tick 空转。
+	OfflineRetry string `yaml:"offlineRetry"`
+	ExpireAfter  string `yaml:"expireAfter"`
+	InitialWait  string `yaml:"initialWait"`
 	// RetryOnTerminalFailure 决定终端明确执行失败（Result=1）后是否重投。
 	// 默认 false：终端已执行过，重投可能重复副作用；Result=2/3 始终不重投。
 	RetryOnTerminalFailure bool `yaml:"retryOnTerminalFailure"`
@@ -1184,6 +1187,7 @@ type CommandOutboxOptions struct {
 	LeaseDuration          time.Duration
 	RetryBase              time.Duration
 	RetryMax               time.Duration
+	OfflineRetry           time.Duration
 	ExpireAfter            time.Duration
 	InitialWait            time.Duration
 	RetryOnTerminalFailure bool
@@ -1211,6 +1215,7 @@ func DefaultCommandOutboxOptions() CommandOutboxOptions {
 		LeaseDuration: DefaultCommandOutboxLeaseDuration,
 		RetryBase:     DefaultCommandOutboxRetryBase,
 		RetryMax:      DefaultCommandOutboxRetryMax,
+		OfflineRetry:  DefaultCommandOutboxOfflineRetry,
 		ExpireAfter:   DefaultCommandOutboxExpireAfter,
 		InitialWait:   DefaultCommandOutboxInitialWait,
 	}
@@ -1252,6 +1257,9 @@ func (c *Config) ParseCommandOutbox() (CommandOutboxOptions, error) {
 		return CommandOutboxOptions{}, err
 	}
 	if options.RetryMax, err = parseDuration("retryMax", conf.RetryMax, options.RetryMax); err != nil {
+		return CommandOutboxOptions{}, err
+	}
+	if options.OfflineRetry, err = parseDuration("offlineRetry", conf.OfflineRetry, options.OfflineRetry); err != nil {
 		return CommandOutboxOptions{}, err
 	}
 	if options.ExpireAfter, err = parseDuration("expireAfter", conf.ExpireAfter, options.ExpireAfter); err != nil {

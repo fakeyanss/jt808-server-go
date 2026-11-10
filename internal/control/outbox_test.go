@@ -40,6 +40,7 @@ type sentMessage struct {
 type fakeSender struct {
 	mu       sync.Mutex
 	sent     []sentMessage
+	calls    int
 	sendErr  error
 	offline  bool
 	rejected bool
@@ -48,6 +49,7 @@ type fakeSender struct {
 func (f *fakeSender) Send(_ context.Context, request contracts.DownlinkRequest) (contracts.DownlinkReceipt, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.calls++
 	if f.sendErr != nil {
 		return contracts.DownlinkReceipt{}, f.sendErr
 	}
@@ -75,6 +77,12 @@ func (f *fakeSender) count() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return len(f.sent)
+}
+
+func (f *fakeSender) callCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.calls
 }
 
 type harness struct {
@@ -148,6 +156,7 @@ func defaultTestOptions() OutboxOptions {
 		LeaseDuration: time.Minute,
 		RetryBase:     5 * time.Second,
 		RetryMax:      time.Minute,
+		OfflineRetry:  15 * time.Second,
 	}
 }
 
@@ -190,7 +199,7 @@ func TestReplayAfterRestart(t *testing.T) {
 }
 
 // TestReplayKeepsWaitingWhileDeviceOffline 覆盖设备离线：命令保持 pending 等待上线，
-// 不消耗重投次数，设备上线后补发。
+// 不消耗重投次数，并按 OfflineRetry 退避，设备上线后补发。
 func TestReplayKeepsWaitingWhileDeviceOffline(t *testing.T) {
 	ctx := context.Background()
 	h := newHarness(t, defaultTestOptions())
@@ -206,9 +215,15 @@ func TestReplayKeepsWaitingWhileDeviceOffline(t *testing.T) {
 	require.Equal(t, 1, stored.Attempts)
 	require.Equal(t, "device offline", stored.LastError)
 	require.Empty(t, stored.LeaseOwner)
+	require.True(t, stored.NextAttemptAt.Equal(h.clock.now.Add(h.options.OfflineRetry)))
 
-	// 设备上线后同一轮即可补发。
+	// 离线期间的短退避未到期，下一轮不会重新 claim。
+	require.NoError(t, h.service.Tick(ctx))
+	require.Equal(t, 1, h.sender.callCount())
+
+	// 设备上线且退避到期后补发。
 	h.sender.offline = false
+	h.clock.advance(h.options.OfflineRetry)
 	require.NoError(t, h.service.Tick(ctx))
 	require.Equal(t, 1, h.sender.count())
 	stored, err = h.repo.Get(ctx, command.CommandID)
@@ -217,7 +232,7 @@ func TestReplayKeepsWaitingWhileDeviceOffline(t *testing.T) {
 }
 
 // TestReplayOfflineDoesNotConsumeAttempts 覆盖长期离线：反复释放租约不得递增
-// 或清零 attempts，否则 MaxAttempts 这道闸会在设备恢复前失效。
+// 或清零 attempts，且每次离线都推一个短退避，不能每个 poll tick 空转。
 func TestReplayOfflineDoesNotConsumeAttempts(t *testing.T) {
 	ctx := context.Background()
 	options := defaultTestOptions()
@@ -225,6 +240,7 @@ func TestReplayOfflineDoesNotConsumeAttempts(t *testing.T) {
 	h := newHarness(t, options)
 	h.sender.offline = true
 	command := h.enqueue(t, "cmd-offline-long", 1, h.clock.now.Add(-time.Minute), h.clock.now.Add(time.Hour))
+	releasedAt := h.clock.now
 
 	for i := 0; i < options.MaxAttempts+5; i++ {
 		require.NoError(t, h.service.Tick(ctx))
@@ -235,9 +251,13 @@ func TestReplayOfflineDoesNotConsumeAttempts(t *testing.T) {
 	require.Equal(t, repository.CommandStatusPending, stored.Status)
 	require.Equal(t, 1, stored.Attempts)
 	require.Empty(t, stored.LeaseOwner)
+	// 只发生一次实际下发，其余轮次被短退避挡住。
+	require.Equal(t, 1, h.sender.callCount())
+	require.True(t, stored.NextAttemptAt.Equal(releasedAt.Add(options.OfflineRetry)))
 
-	// 恢复在线后仍能正常发出，且只把 attempts 推进到 2。
+	// 恢复在线并等退避到期后仍能正常发出，且只把 attempts 推进到 2。
 	h.sender.offline = false
+	h.clock.advance(options.OfflineRetry)
 	require.NoError(t, h.service.Tick(ctx))
 	require.Equal(t, 1, h.sender.count())
 	stored, err = h.repo.Get(ctx, command.CommandID)

@@ -170,6 +170,8 @@ commandOutbox:
   leaseDuration: "1m"
   retryBase: "5s"
   retryMax: "5m"
+  # 设备离线时的短退避：租约释放、attempts 不递增，但下一次尝试至少推迟这么久。
+  offlineRetry: "15s"
   # 设备长期不在线时的兜底：超过该时长仍未投递成功转 failed。
   expireAfter: "24h"
   # 首次下发后等待应答/会话重传的窗口，到期前不重投。

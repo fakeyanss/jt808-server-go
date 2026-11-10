@@ -31,6 +31,9 @@ const (
 	DefaultLeaseDuration = time.Minute
 	DefaultRetryBase     = 5 * time.Second
 	DefaultRetryMax      = 5 * time.Minute
+	// DefaultOfflineRetry 是设备离线时的短退避，避免每个 poll tick 都
+	// 重复 claim → offline → release 形成空转；不消耗尝试次数。
+	DefaultOfflineRetry = 15 * time.Second
 )
 
 // OutboxOptions 是 outbox 的运行时参数。
@@ -45,6 +48,9 @@ type OutboxOptions struct {
 	LeaseDuration time.Duration
 	RetryBase     time.Duration
 	RetryMax      time.Duration
+	// OfflineRetry 是设备离线时的重投间隔：租约释放、attempts 不变，
+	// 但下一次尝试至少推迟这么久，避免每个 poll tick 空转。
+	OfflineRetry time.Duration
 	// RetryOnTerminalFailure 决定终端明确执行失败（Result=1）后是否重投。
 	// 默认 false；Result=2/3 始终终结，不受该开关影响。
 	RetryOnTerminalFailure bool
@@ -71,6 +77,9 @@ func (o OutboxOptions) withDefaults() OutboxOptions {
 	}
 	if o.RetryMax < o.RetryBase {
 		o.RetryMax = o.RetryBase
+	}
+	if o.OfflineRetry <= 0 {
+		o.OfflineRetry = DefaultOfflineRetry
 	}
 	return o
 }
@@ -725,13 +734,15 @@ func (o *Outbox) handleFailure(ctx context.Context, phone string, msgID, serial 
 // 与 ReleaseAttempt 的区别：ReleaseAttempt 用于真实下发失败后的退避，会写入
 // 下一次可投时刻且 attempts 已由 BeginAttempt 递增；ReleaseOffline 则把
 // attempts/last_attempt_at 回退到占用前快照，避免设备长期离线期间把
-// MaxAttempts 这道闸反复刷掉。
+// MaxAttempts 这道闸反复刷掉。两者都会写入下一次可投时刻：离线用较短的
+// OfflineRetry，避免每个 poll tick 都重复占用租约空转。
 func (o *Outbox) releaseOffline(ctx context.Context, command *repository.DownlinkCommand, reason string) {
 	o.releaseOfflineWithSnapshot(ctx, command, command.Attempts, command.LastAttemptAt, reason)
 }
 
 func (o *Outbox) releaseOfflineWithSnapshot(ctx context.Context, command *repository.DownlinkCommand, attempts int, lastAttemptAt time.Time, reason string) {
-	updated, err := o.commands.ReleaseOffline(ctx, command.CommandID, o.owner, attempts, lastAttemptAt, reason)
+	next := o.clock().Add(o.opts.OfflineRetry)
+	updated, err := o.commands.ReleaseOffline(ctx, command.CommandID, o.owner, attempts, lastAttemptAt, next, reason)
 	if err != nil {
 		log.Error().Err(err).Str("command_id", command.CommandID).Msg("Failed to release command lease while offline")
 		return

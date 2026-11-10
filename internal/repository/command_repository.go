@@ -96,9 +96,9 @@ type CommandRepository interface {
 	// 后的退避。attempts 已由 BeginAttempt 递增，这里只写退避时刻与 last_error。
 	ReleaseAttempt(ctx context.Context, commandID, owner string, next time.Time, reason string) (bool, error)
 	// ReleaseOffline 释放租约但保持 pending，用于设备离线或档案未就绪等“未真正下发”的场景：
-	// attempts 与 last_attempt_at 回退到调用前的快照，不消耗也不清零重投次数，
-	// 并保留原 NextAttemptAt，使设备上线后下一轮即可重投。
-	ReleaseOffline(ctx context.Context, commandID, owner string, attempts int, lastAttemptAt time.Time, reason string) (bool, error)
+	// attempts 与 last_attempt_at 回退到调用前的快照，不消耗也不清零重投次数；
+	// next 写为短退避后的下一次可投时刻，避免设备离线期间每个 poll tick 空转。
+	ReleaseOffline(ctx context.Context, commandID, owner string, attempts int, lastAttemptAt time.Time, next time.Time, reason string) (bool, error)
 	// ScheduleRetry 按路由键安排重投，不要求租约归属；用于异步失败事件回填。
 	ScheduleRetry(ctx context.Context, phone string, msgID, serial uint16, next time.Time, reason string) (bool, error)
 	// ExpirePending 把已过期且仍为 pending 的命令转 failed，返回处理条数。
@@ -284,7 +284,7 @@ func (r *memoryCommandRepository) ReleaseAttempt(_ context.Context, commandID, o
 	return true, nil
 }
 
-func (r *memoryCommandRepository) ReleaseOffline(_ context.Context, commandID, owner string, attempts int, lastAttemptAt time.Time, reason string) (bool, error) {
+func (r *memoryCommandRepository) ReleaseOffline(_ context.Context, commandID, owner string, attempts int, lastAttemptAt time.Time, next time.Time, reason string) (bool, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	stored := r.byID[commandID]
@@ -294,9 +294,10 @@ func (r *memoryCommandRepository) ReleaseOffline(_ context.Context, commandID, o
 	stored.LeaseOwner = ""
 	stored.LeaseExpiresAt = time.Time{}
 	// 离线不是一次真实下发：恢复占用前的尝试次数与时间，避免反复离线把
-	// MaxAttempts 这道闸刷掉；NextAttemptAt 保持原值，设备上线后即可重投。
+	// MaxAttempts 这道闸刷掉；同时写入短退避，避免每个 poll tick 都重新占用。
 	stored.Attempts = attempts
 	stored.LastAttemptAt = lastAttemptAt
+	stored.NextAttemptAt = next
 	stored.LastError = reason
 	stored.UpdatedAt = time.Now()
 	return true, nil
