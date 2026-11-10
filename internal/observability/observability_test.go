@@ -50,6 +50,63 @@ func TestWritePrometheusExposesRequiredMetrics(t *testing.T) {
 	require.Contains(t, output, "# TYPE jt808_sessions_connected gauge")
 }
 
+func TestRetentionMetricsExposed(t *testing.T) {
+	metrics := NewMetrics()
+	metrics.AddRetentionDeleted(RetentionCategoryLocations, 3)
+	metrics.AddRetentionDeleted(RetentionCategoryMediaFiles, 2)
+	metrics.IncRetentionFailure(RetentionCategoryAlarms)
+	metrics.RecordRetentionRun(time.UnixMilli(1_700_000_000_000), 1500*time.Millisecond)
+
+	snapshot := metrics.RetentionSnapshot()
+	require.EqualValues(t, 3, snapshot.Deleted[RetentionCategoryLocations])
+	require.EqualValues(t, 2, snapshot.Deleted[RetentionCategoryMediaFiles])
+	require.EqualValues(t, 1, snapshot.Failures[RetentionCategoryAlarms])
+	require.Equal(t, int64(1_700_000_000_000), snapshot.LastRunUnixMilli)
+	require.Equal(t, 1500*time.Millisecond, snapshot.LastRunDuration)
+
+	var buf bytes.Buffer
+	require.NoError(t, WritePrometheus(&buf, Snapshot{Retention: snapshot}))
+	output := buf.String()
+	for _, want := range []string{
+		`jt808_retention_deleted_total{category="locations"} 3`,
+		`jt808_retention_deleted_total{category="mediaFiles"} 2`,
+		`jt808_retention_deleted_total{category="alarms"} 0`,
+		`jt808_retention_failures_total{category="alarms"} 1`,
+		"jt808_retention_last_run_timestamp_seconds 1700000000",
+		"jt808_retention_last_run_duration_seconds 1.5",
+	} {
+		require.Contains(t, output, want)
+	}
+}
+
+func TestOrphanMetricsExposed(t *testing.T) {
+	metrics := NewMetrics()
+	metrics.AddOrphanScan(10, 3, 7, 1)
+	metrics.RecordOrphanScan(time.UnixMilli(1_700_000_000_000), 250*time.Millisecond)
+
+	snapshot := metrics.OrphanSnapshot()
+	require.EqualValues(t, 10, snapshot.Scanned)
+	require.EqualValues(t, 3, snapshot.Deleted)
+	require.EqualValues(t, 7, snapshot.Skipped)
+	require.EqualValues(t, 1, snapshot.Failures)
+	require.Equal(t, int64(1_700_000_000_000), snapshot.LastRunUnixMilli)
+	require.Equal(t, 250*time.Millisecond, snapshot.LastRunDuration)
+
+	var buf bytes.Buffer
+	require.NoError(t, WritePrometheus(&buf, Snapshot{Orphan: snapshot}))
+	output := buf.String()
+	for _, want := range []string{
+		"jt808_orphan_files_scanned_total 10",
+		"jt808_orphan_files_deleted_total 3",
+		"jt808_orphan_files_skipped_total 7",
+		"jt808_orphan_scan_failures_total 1",
+		"jt808_orphan_scan_last_run_timestamp_seconds 1700000000",
+		"jt808_orphan_scan_last_run_duration_seconds 0.25",
+	} {
+		require.Contains(t, output, want)
+	}
+}
+
 func TestProviderReadyReportsEachCheck(t *testing.T) {
 	failing := errors.New("storage unavailable")
 	provider := &Provider{Checks: []Check{

@@ -20,6 +20,18 @@ func TestRetentionPolicyDefaults(t *testing.T) {
 	assert.Equal(t, time.Duration(DefaultAlarmDedupWindowMS)*time.Millisecond, policy.Alarms.DedupWindow)
 	assert.Equal(t, time.Duration(DefaultAlarmConfirmExpireMS)*time.Millisecond, policy.Alarms.ConfirmExpire)
 	assert.Equal(t, DefaultAlarmMaxPerDevice, policy.Alarms.MaxPerDevice)
+	assert.Zero(t, policy.Alarms.MaxAge)
+	assert.Zero(t, policy.MediaFiles.MaxAge)
+	assert.Zero(t, policy.MediaCaptures.MaxAge)
+	assert.Zero(t, policy.MediaSearchResults.MaxAge)
+	assert.False(t, policy.OrphanFiles.Enabled)
+	assert.Equal(t, time.Duration(DefaultOrphanGraceDays)*24*time.Hour, policy.OrphanFiles.Grace)
+	assert.Equal(t, DefaultOrphanScanInterval, policy.OrphanFiles.Interval)
+	assert.Equal(t, DefaultOrphanMaxFilesPerRun, policy.OrphanFiles.MaxFilesPerRun)
+	assert.Equal(t, DefaultOrphanBatchSize, policy.OrphanFiles.BatchSize)
+	assert.False(t, policy.Cleanup.Enabled)
+	assert.Equal(t, DefaultRetentionCleanupInterval, policy.Cleanup.Interval)
+	assert.Equal(t, DefaultRetentionCleanupBatchSize, policy.Cleanup.BatchSize)
 }
 
 // TestRetentionPolicyFromYAML 验证 YAML 键名映射与“显式 0 关闭策略”的语义。
@@ -63,6 +75,223 @@ func TestRetentionPolicyPartial(t *testing.T) {
 	assert.Equal(t, time.Duration(DefaultAlarmDedupWindowMS)*time.Millisecond, policy.Alarms.DedupWindow)
 	assert.Equal(t, time.Duration(DefaultAlarmConfirmExpireMS)*time.Millisecond, policy.Alarms.ConfirmExpire)
 	assert.Equal(t, DefaultAlarmMaxPerDevice, policy.Alarms.MaxPerDevice)
+}
+
+// TestRetentionCleanupFromYAML 验证新增的定期清理配置映射与归一化。
+func TestRetentionCleanupFromYAML(t *testing.T) {
+	raw := []byte(`
+retention:
+  alarms:
+    retentionDays: 30
+  mediaFiles:
+    retentionDays: 14
+  mediaCaptures:
+    retentionDays: 7
+  cleanup:
+    enabled: true
+    interval: "30m"
+    batchSize: 250
+`)
+
+	v := viper.New()
+	v.SetConfigType("yaml")
+	require.NoError(t, v.ReadConfig(bytes.NewBuffer(raw)))
+
+	var cfg Config
+	require.NoError(t, v.Unmarshal(&cfg))
+	require.NoError(t, cfg.ValidateRetention())
+
+	policy := cfg.RetentionPolicy()
+	assert.Equal(t, 30*24*time.Hour, policy.Alarms.MaxAge)
+	assert.Equal(t, 14*24*time.Hour, policy.MediaFiles.MaxAge)
+	assert.Equal(t, 7*24*time.Hour, policy.MediaCaptures.MaxAge)
+	assert.True(t, policy.Cleanup.Enabled)
+	assert.Equal(t, 30*time.Minute, policy.Cleanup.Interval)
+	assert.Equal(t, 250, policy.Cleanup.BatchSize)
+}
+
+// TestRetentionCleanupZeroBatchSize 验证 batchSize 显式为 0 时回落到默认值。
+func TestRetentionCleanupZeroBatchSize(t *testing.T) {
+	zero := 0
+	enabled := true
+	cfg := &Config{Retention: &retentionConf{Cleanup: &cleanupConf{
+		Enabled:   &enabled,
+		BatchSize: &zero,
+	}}}
+	require.NoError(t, cfg.ValidateRetention())
+
+	policy := cfg.RetentionPolicy()
+	assert.True(t, policy.Cleanup.Enabled)
+	assert.Equal(t, DefaultRetentionCleanupBatchSize, policy.Cleanup.BatchSize)
+}
+
+// TestValidateRetentionCleanup 验证定期清理配置的非法值不会静默按 0 处理。
+func TestValidateRetentionCleanup(t *testing.T) {
+	neg := -1
+	tooManyDays := MaxRetentionDays + 1
+	tooManyRows := MaxRetentionCleanupBatchSize + 1
+
+	tests := []struct {
+		name    string
+		cfg     *Config
+		wantErr string
+	}{
+		{
+			name:    "negative alarm retentionDays",
+			cfg:     &Config{Retention: &retentionConf{Alarms: &alarmRetentionConf{RetentionDays: &neg}}},
+			wantErr: "retention.alarms.retentionDays must be >= 0, got -1",
+		},
+		{
+			name:    "negative mediaFiles retentionDays",
+			cfg:     &Config{Retention: &retentionConf{MediaFiles: &timeRetentionConf{RetentionDays: &neg}}},
+			wantErr: "retention.mediaFiles.retentionDays must be >= 0, got -1",
+		},
+		{
+			name:    "negative mediaCaptures retentionDays",
+			cfg:     &Config{Retention: &retentionConf{MediaCaptures: &timeRetentionConf{RetentionDays: &neg}}},
+			wantErr: "retention.mediaCaptures.retentionDays must be >= 0, got -1",
+		},
+		{
+			name:    "oversized location retentionDays",
+			cfg:     &Config{Retention: &retentionConf{Locations: &locationRetentionConf{RetentionDays: &tooManyDays}}},
+			wantErr: "retention.locations.retentionDays must be <= 36500, got 36501",
+		},
+		{
+			name:    "oversized mediaFiles retentionDays",
+			cfg:     &Config{Retention: &retentionConf{MediaFiles: &timeRetentionConf{RetentionDays: &tooManyDays}}},
+			wantErr: "retention.mediaFiles.retentionDays must be <= 36500, got 36501",
+		},
+		{
+			name:    "invalid cleanup interval",
+			cfg:     &Config{Retention: &retentionConf{Cleanup: &cleanupConf{Interval: "soon"}}},
+			wantErr: `retention.cleanup.interval must be a positive duration (e.g. 1h), got "soon"`,
+		},
+		{
+			name:    "zero cleanup interval",
+			cfg:     &Config{Retention: &retentionConf{Cleanup: &cleanupConf{Interval: "0s"}}},
+			wantErr: `retention.cleanup.interval must be a positive duration (e.g. 1h), got "0s"`,
+		},
+		{
+			name:    "negative cleanup batchSize",
+			cfg:     &Config{Retention: &retentionConf{Cleanup: &cleanupConf{BatchSize: &neg}}},
+			wantErr: "retention.cleanup.batchSize must be between 0 and 5000, got -1",
+		},
+		{
+			name:    "oversized cleanup batchSize",
+			cfg:     &Config{Retention: &retentionConf{Cleanup: &cleanupConf{BatchSize: &tooManyRows}}},
+			wantErr: "retention.cleanup.batchSize must be between 0 and 5000, got 5001",
+		},
+		{
+			name: "explicit zero disables everything",
+			cfg: &Config{Retention: &retentionConf{
+				Alarms:        &alarmRetentionConf{RetentionDays: new(int)},
+				MediaFiles:    &timeRetentionConf{RetentionDays: new(int)},
+				MediaCaptures: &timeRetentionConf{RetentionDays: new(int)},
+				Cleanup:       &cleanupConf{},
+			}},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.cfg.ValidateRetention()
+			if tt.wantErr == "" {
+				assert.NoError(t, err)
+				return
+			}
+			require.Error(t, err)
+			assert.Equal(t, tt.wantErr, err.Error())
+		})
+	}
+}
+
+// TestRetentionNewOptionsFromYAML 验证检索应答清理与孤儿文件扫描的配置映射。
+func TestRetentionNewOptionsFromYAML(t *testing.T) {
+	raw := []byte(`
+retention:
+  mediaSearchResults:
+    retentionDays: 10
+  orphanFiles:
+    enabled: true
+    graceDays: 14
+    interval: "12h"
+    maxFilesPerRun: 500
+    batchSize: 100
+`)
+
+	v := viper.New()
+	v.SetConfigType("yaml")
+	require.NoError(t, v.ReadConfig(bytes.NewBuffer(raw)))
+
+	var cfg Config
+	require.NoError(t, v.Unmarshal(&cfg))
+	require.NoError(t, cfg.ValidateRetention())
+
+	policy := cfg.RetentionPolicy()
+	assert.Equal(t, 10*24*time.Hour, policy.MediaSearchResults.MaxAge)
+	assert.True(t, policy.OrphanFiles.Enabled)
+	assert.Equal(t, 14*24*time.Hour, policy.OrphanFiles.Grace)
+	assert.Equal(t, 12*time.Hour, policy.OrphanFiles.Interval)
+	assert.Equal(t, 500, policy.OrphanFiles.MaxFilesPerRun)
+	assert.Equal(t, 100, policy.OrphanFiles.BatchSize)
+}
+
+// TestValidateRetentionNewOptions 验证新增配置的非法值。
+func TestValidateRetentionNewOptions(t *testing.T) {
+	neg := -1
+	zero := 0
+	tooManyDays := MaxRetentionDays + 1
+	tooManyFiles := MaxOrphanFilesPerRun + 1
+
+	tests := []struct {
+		name    string
+		cfg     *Config
+		wantErr string
+	}{
+		{
+			name:    "negative mediaSearchResults retentionDays",
+			cfg:     &Config{Retention: &retentionConf{MediaSearchResults: &timeRetentionConf{RetentionDays: &neg}}},
+			wantErr: "retention.mediaSearchResults.retentionDays must be >= 0, got -1",
+		},
+		{
+			name:    "zero orphan graceDays",
+			cfg:     &Config{Retention: &retentionConf{OrphanFiles: &orphanFilesConf{GraceDays: &zero}}},
+			wantErr: "retention.orphanFiles.graceDays must be >= 1, got 0",
+		},
+		{
+			name:    "oversized orphan graceDays",
+			cfg:     &Config{Retention: &retentionConf{OrphanFiles: &orphanFilesConf{GraceDays: &tooManyDays}}},
+			wantErr: "retention.orphanFiles.graceDays must be <= 36500, got 36501",
+		},
+		{
+			name:    "invalid orphan interval",
+			cfg:     &Config{Retention: &retentionConf{OrphanFiles: &orphanFilesConf{Interval: "soon"}}},
+			wantErr: `retention.orphanFiles.interval must be a positive duration (e.g. 24h), got "soon"`,
+		},
+		{
+			name:    "zero orphan maxFilesPerRun",
+			cfg:     &Config{Retention: &retentionConf{OrphanFiles: &orphanFilesConf{MaxFilesPerRun: &zero}}},
+			wantErr: "retention.orphanFiles.maxFilesPerRun must be between 1 and 1000000, got 0",
+		},
+		{
+			name:    "oversized orphan maxFilesPerRun",
+			cfg:     &Config{Retention: &retentionConf{OrphanFiles: &orphanFilesConf{MaxFilesPerRun: &tooManyFiles}}},
+			wantErr: "retention.orphanFiles.maxFilesPerRun must be between 1 and 1000000, got 1000001",
+		},
+		{
+			name:    "negative orphan batchSize",
+			cfg:     &Config{Retention: &retentionConf{OrphanFiles: &orphanFilesConf{BatchSize: &neg}}},
+			wantErr: "retention.orphanFiles.batchSize must be between 0 and 5000, got -1",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.cfg.ValidateRetention()
+			require.Error(t, err)
+			assert.Equal(t, tt.wantErr, err.Error())
+		})
+	}
 }
 
 // TestValidateRetention 验证负数非法、显式 0 合法、缺省合法。

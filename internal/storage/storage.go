@@ -58,6 +58,8 @@ type Stores struct {
 	Commands       repository.CommandRepository
 	// Locations 为定位历史仓储；memory 后端保持既有热读环形缓冲，本字段为 nil。
 	Locations repository.LocationRepository
+	// Retention 为历史数据分批清理能力，仅 SQL 后端提供；memory 后端为 nil。
+	Retention repository.RetentionStore
 
 	// Backend 记录实际启用的后端，供启动日志与运维排查使用。
 	Backend string
@@ -129,6 +131,7 @@ func Open(cfg Config) (*Stores, error) {
 		stores.Regions = regions
 		stores.Alarms = sqlStore.AlarmRepository(cfg.AlarmRetention)
 		stores.Locations = sqlStore.LocationRepository(cfg.LocationRetention)
+		stores.Retention = sqlStore.RetentionStore()
 		stores.close = sqlStore.Close
 		stores.check = sqlStore.Ping
 		return stores, nil

@@ -50,7 +50,7 @@ jt808-server-go 是一个用 Go 编写的 JT/T 808 终端接入服务。它把�
 | `memory` 后端 | 重启丢失全部业务数据；不保存定位历史（管理面 `/locations` 返回 503）；outbox 默认 `memory`，重启丢失 pending 命令；`retention` 配置不生效 |
 | 定位投影 | 最新定位 `Geo` 始终在进程内，SQL 后端重启后需等下一次上报才恢复；SQL 只持久化定位历史 |
 | 行业媒体快照 | `0x0801` 已落盘并落库，分包与非分包都覆盖；`0x0805` 拍摄记录落库，按 mediaId 关联文件是否到达；`0x0800/0x0802` 等其余快照仍只在内存 |
-| 媒体取证关联 | `0x0801` 位置体只有报警标志位、没有报警流水号，`alarmSign` 只表达报警类别，无法与某一条具体报警精确关联；本批不做保留期清理，磁盘占用需通过 `jt808_media_files` / `jt808_media_file_bytes` 指标监控 |
+| 媒体取证关联 | `0x0801` 位置体只有报警标志位、没有报警流水号，`alarmSign` 只表达报警类别，无法与某一条具体报警精确关联；媒体保留期清理默认关闭，需显式开启 `retention.cleanup.enabled` 并配置 `retention.mediaFiles.retentionDays`，未开启时通过 `jt808_media_files` / `jt808_media_file_bytes` 指标监控磁盘占用 |
 | 集群与分布式 | 会话、心跳、分包缓存与查询应答协调均为节点本地状态；媒体文件按本地目录落盘，Cluster 形态要求 `mediaUpload.dir` 位于所有节点可见的共享卷；未实现共享会话路由、跨节点下行投递、节点路由、对象存储、MQ Sink、Redis/Kafka 等分布式能力 |
 | 升级工作流 | 只有 `0x8108` 下发与 `0x0108` 结果记录；没有升级包托管/下载 URL、版本与车型管理、灰度发布、失败重试与回滚 |
 | 投递保证 | 下行 outbox 为 at-least-once，可能重复执行；上行 `best_effort` 可能丢一条，`at_least_once` 依赖终端重传，不是 exactly-once |
@@ -262,8 +262,18 @@ make run
 | `storage.mysql.dsn` | 空 | `mysql` 后端 DSN，如 `user:pass@tcp(host:port)/db` |
 | `retention.locations.retentionDays` / `maxPerDevice` | `7` / `10000` | 定位历史保留；仅 SQL 后端生效 |
 | `retention.alarms.dedupWindowMs` / `confirmExpireMs` / `maxPerDevice` | `1800000` / `600000` / `1000` | 报警去重、确认关联与上限 |
+| `retention.alarms.retentionDays` | `0` | 报警按接收时间的定期清理；`0` 表示关闭 |
+| `retention.mediaFiles.retentionDays` | `0` | `0x0801` 媒体元数据与落盘文件按接收时间清理；`0` 表示关闭 |
+| `retention.mediaCaptures.retentionDays` | `0` | `0x0805` 拍摄应答及明细按接收时间清理；`0` 表示关闭 |
+| `retention.mediaSearchResults.retentionDays` | `0` | `0x0802` 存储多媒体检索应答按自身接收时间清理；`0` 表示关闭 |
+| `retention.cleanup.enabled` / `interval` / `batchSize` | `false` / `1h` / `1000` | 定期清理任务开关、周期与单批删除行数（上限 5000） |
+| `retention.orphanFiles.enabled` / `graceDays` / `interval` / `maxFilesPerRun` / `batchSize` | `false` / `7` / `24h` / `10000` / `500` | 媒体目录孤儿文件扫描：按文件 mtime 与库记录比对，默认关闭；仅 SQL 后端生效 |
 
 定位 7 天/10000 条为工程默认值（JT/T 808 未规定平台侧保存期限）；报警 30 分钟去重、10 分钟确认关联、1000 条上限沿用既有内存实现。显式写 `0` 表示关闭对应策略。`memory` 后端下 `retention` 不生效。
+
+定期清理默认关闭，只有 `retention.cleanup.enabled: true` 且对应 `retentionDays > 0` 的类别才会删除；负数、超过 36500 天、非法 `interval` 或越界 `batchSize` 会在启动时报错。清理仅支持 SQL 后端，按主键分批删除并在批间让出；`media_files` 先删文件再删元数据，文件删除失败时保留记录等待下次重试。
+
+孤儿文件扫描默认关闭，需显式开启 `retention.orphanFiles.enabled`。判定依据是**文件自身的 mtime**，不使用 `<手机号>/<YYYYMMDD>` 目录名：补传/重传会把旧时段数据写入旧目录，按目录日期判断会误删。只删除“`media_files` 中无对应相对路径 **且** 文件年龄超过 `graceDays`”的文件；`.part` 临时文件与隐藏文件一律跳过，避免误删进行中的上传。扫描单次最多处理 `maxFilesPerRun` 个文件，按批比对数据库并在批间让出，可随停机信号取消；`memory` 后端没有共享库作为比对依据，不启用。
 
 ### 5.2 接入与协议
 
@@ -492,7 +502,7 @@ curl -s http://localhost:8008/api/commands/0f8c2f6d9a1e4b7c8d3e5f60718293a4
 
 **1078 媒体服务**在配置 `mediaServer.port` 后启用独立 UDP 端口接收 RTP 码流：仅支持 UDP 与 H.264，把 PS/ES 还原为 Annex B 裸流并落成 `.h264` 文件，路径为 `<mediaServer.dir>/<手机号>/channel_<通道号>/<时间戳>.h264`。不做转码、分发、播放器索引或回放。已实现的 1078 信令为 `0x9101`、`0x9102`、`0x9105`、`0x9201`、`0x9202`、`0x9205`、`0x9206`、`0x1205`、`0x1206`；`0x1205` 资源列表与 `0x1206/0x9206` 媒体元数据支持持久化。
 
-**0x0801 多媒体落盘**始终启用：完整消息（分包由运行时重组，非分包单包）写入 `<mediaUpload.dir>/<手机号>/<YYYYMMDD>/<媒体ID>.<扩展名>`，日期取位置体 BCD 时间，缺失时用接收日期；扩展名按格式映射为 `jpg/tif/mp3/wav/wmv`，未知格式回退 `bin`。写文件采用临时文件 + 原子 rename，同一 mediaId 重复上报幂等覆盖。元数据（含 MD5、字节数、位置与报警标志位）写入 `media_files` 表；`0x0805` 的 mediaId 列表写入 `media_captures` 与 `media_capture_items`，查询时关联 `media_files` 判断文件是否已到达。`0x0802` 检索应答按 `(phone, answerSerial)` 整体覆盖写入 `media_search_results`，记录终端本地仍保留的媒体清单及拍摄起始位置，可通过 `GET /api/device/:phone/media/search-results` 查询。文件内容通过 `GET /api/device/:phone/media/files/:mediaId/content` 下载，支持 Range。本批不做保留期清理，请用 `jt808_media_files` 与 `jt808_media_file_bytes` 监控磁盘占用。
+**0x0801 多媒体落盘**始终启用：完整消息（分包由运行时重组，非分包单包）写入 `<mediaUpload.dir>/<手机号>/<YYYYMMDD>/<媒体ID>.<扩展名>`，日期取位置体 BCD 时间，缺失时用接收日期；扩展名按格式映射为 `jpg/tif/mp3/wav/wmv`，未知格式回退 `bin`。写文件采用临时文件 + 原子 rename，同一 mediaId 重复上报幂等覆盖。元数据（含 MD5、字节数、位置与报警标志位）写入 `media_files` 表；`0x0805` 的 mediaId 列表写入 `media_captures` 与 `media_capture_items`，查询时关联 `media_files` 判断文件是否已到达。`0x0802` 检索应答按 `(phone, answerSerial)` 整体覆盖写入 `media_search_results`，记录终端本地仍保留的媒体清单及拍摄起始位置，可通过 `GET /api/device/:phone/media/search-results` 查询。文件内容通过 `GET /api/device/:phone/media/files/:mediaId/content` 下载，支持 Range。保留期清理默认关闭，可按 `retention.mediaFiles` / `retention.mediaSearchResults` 配置；崩溃残留的未入库文件由 `retention.orphanFiles` 按文件 mtime 与库记录比对后清理。
 
 ### 6.6 Action Hook
 
