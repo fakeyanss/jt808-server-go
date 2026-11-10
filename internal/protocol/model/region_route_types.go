@@ -86,19 +86,7 @@ type PolygonArea struct {
 	Name       string          `json:"name"`
 }
 
-// RouteSegment 是 2019 版本路线报文中“路段 + 顶点列表”的容器。
-// 非 2019 版本不使用该结构，改用 RouteInflection。
-type RouteSegment struct {
-	ID         uint32          `json:"id"`
-	Attr       uint16          `json:"attr"`
-	Length     uint16          `json:"length"`
-	MaxSpeed   uint16          `json:"maxSpeed,omitempty"`
-	Duration   uint8           `json:"duration,omitempty"`
-	NightSpeed uint16          `json:"nightSpeed,omitempty"`
-	Vertices   []PolygonVertex `json:"vertices"`
-}
-
-// RouteInflectionAttr 是 2011/2013 路线拐点项的路段属性字节。
+// RouteInflectionAttr 是路线拐点项的路段属性字节。
 // bit0=行驶时间（超长/不足阈值），bit1=限速。
 type RouteInflectionAttr uint8
 
@@ -107,7 +95,8 @@ const (
 	RouteInflectionSpeed RouteInflectionAttr = 1 << 1
 )
 
-// RouteInflection 是 2011/2013 路线报文中的拐点项（JT/T 808-2013 表 68）。
+// RouteInflection 是路线报文中的拐点项（JT/T 808-2013 表 68 / 2019 对应表）。
+// 2019 版本在路段限速块内额外携带夜间最高速度。
 type RouteInflection struct {
 	ID                uint32              `json:"id"`
 	SectionID         uint32              `json:"sectionId"`
@@ -119,16 +108,16 @@ type RouteInflection struct {
 	UnderThreshold    uint16              `json:"underThreshold,omitempty"`
 	MaxSpeed          uint16              `json:"maxSpeed,omitempty"`
 	Duration          uint8               `json:"duration,omitempty"`
+	NightSpeed        uint16              `json:"nightSpeed,omitempty"`
 }
 
 // Route is one item of a 0x8606 set route message.
-// 2019 版本使用 Segments；2011/2013 版本使用标准定义的拐点项 Inflections。
+// 2011/2013 与 2019 版本均使用标准拐点项；2019 额外携带拐点夜间速度与路线名称。
 type Route struct {
 	ID          uint32            `json:"id"`
 	Attr        AreaAttr          `json:"attr"`
 	StartTime   string            `json:"startTime,omitempty"`
 	EndTime     string            `json:"endTime,omitempty"`
-	Segments    []RouteSegment    `json:"segments,omitempty"`
 	Inflections []RouteInflection `json:"inflections,omitempty"`
 	Name        string            `json:"name"`
 }
@@ -367,18 +356,21 @@ func decodeRectangle(pkt []byte, idx *int, is2019 bool) (*RectangleArea, error) 
 // ---- Polygon ----
 
 // encode 按版本写入多边形区域项：
-//   - 2019：ID、属性、顶点项、时间/速度/夜间速度、名称；
+//   - 2019：ID、属性、时间/速度、顶点项、夜间速度、名称；
 //   - 2011/2013：ID、属性、时间/速度、顶点项（JT/T 808-2013 表 63）。
 func (p *PolygonArea) encode(is2019 bool) []byte {
 	pkt := hex.WriteDoubleWord(nil, p.ID)
 	pkt = hex.WriteWord(pkt, uint16(p.Attr))
-	if is2019 {
-		pkt = encodeVertices(pkt, p.Vertices)
-		pkt = encodeAreaAttrFields(pkt, p.Attr, p.StartTime, p.EndTime, p.MaxSpeed, p.Duration, p.NightSpeed, true)
-		return encodeName(pkt, p.Name)
-	}
+	// 时间与限速字段在顶点项之前，夜间速度在顶点项之后。
 	pkt = encodeAreaAttrFields(pkt, p.Attr, p.StartTime, p.EndTime, p.MaxSpeed, p.Duration, p.NightSpeed, false)
-	return encodeVertices(pkt, p.Vertices)
+	pkt = encodeVertices(pkt, p.Vertices)
+	if !is2019 {
+		return pkt
+	}
+	if p.Attr.HasSpeed() {
+		pkt = hex.WriteWord(pkt, p.NightSpeed)
+	}
+	return encodeName(pkt, p.Name)
 }
 
 func decodePolygon(pkt []byte, idx *int, is2019 bool) (*PolygonArea, error) {
@@ -388,23 +380,6 @@ func decodePolygon(pkt []byte, idx *int, is2019 bool) (*PolygonArea, error) {
 	p := &PolygonArea{}
 	p.ID = hex.ReadDoubleWord(pkt, idx)
 	p.Attr = AreaAttr(hex.ReadWord(pkt, idx))
-	if is2019 {
-		verts, err := decodeVertices(pkt, idx)
-		if err != nil {
-			return nil, err
-		}
-		p.Vertices = verts
-		if len(pkt)-*idx < areaAttrFieldsLength(p.Attr, true) {
-			return nil, errors.New("polygon area attr fields exceed payload")
-		}
-		p.StartTime, p.EndTime, p.MaxSpeed, p.Duration, p.NightSpeed = decodeAreaAttrFields(pkt, idx, p.Attr, true)
-		name, err := decodeName(pkt, idx)
-		if err != nil {
-			return nil, err
-		}
-		p.Name = name
-		return p, nil
-	}
 	if len(pkt)-*idx < areaAttrFieldsLength(p.Attr, false) {
 		return nil, errors.New("polygon area attr fields exceed payload")
 	}
@@ -414,6 +389,20 @@ func decodePolygon(pkt []byte, idx *int, is2019 bool) (*PolygonArea, error) {
 		return nil, err
 	}
 	p.Vertices = verts
+	if !is2019 {
+		return p, nil
+	}
+	if p.Attr.HasSpeed() {
+		if len(pkt)-*idx < 2 {
+			return nil, errors.New("polygon night speed exceed payload")
+		}
+		p.NightSpeed = hex.ReadWord(pkt, idx)
+	}
+	name, err := decodeName(pkt, idx)
+	if err != nil {
+		return nil, err
+	}
+	p.Name = name
 	return p, nil
 }
 
@@ -426,33 +415,15 @@ func (r *Route) encode(is2019 bool) []byte {
 		pkt = hex.WriteBCD(pkt, r.StartTime)
 		pkt = hex.WriteBCD(pkt, r.EndTime)
 	}
+	pkt = r.encodeInflections(pkt, is2019)
 	if is2019 {
-		pkt = r.encodeSegments2019(pkt)
 		return encodeName(pkt, r.Name)
-	}
-	return r.encodeInflections(pkt)
-}
-
-// encodeSegments2019 保持 2019 路径的既有“路段 + 顶点列表”布局不变。
-func (r *Route) encodeSegments2019(pkt []byte) []byte {
-	pkt = hex.WriteWord(pkt, uint16(len(r.Segments)))
-	for _, s := range r.Segments {
-		pkt = hex.WriteDoubleWord(pkt, s.ID)
-		pkt = hex.WriteWord(pkt, s.Attr)
-		pkt = hex.WriteWord(pkt, s.Length)
-		segAttr := AreaAttr(s.Attr)
-		if segAttr.HasSpeed() {
-			pkt = hex.WriteWord(pkt, s.MaxSpeed)
-			pkt = hex.WriteByte(pkt, s.Duration)
-			pkt = hex.WriteWord(pkt, s.NightSpeed)
-		}
-		pkt = encodeVertices(pkt, s.Vertices)
 	}
 	return pkt
 }
 
-// encodeInflections 按 JT/T 808-2013 表 66/68 写入路线的拐点项。
-func (r *Route) encodeInflections(pkt []byte) []byte {
+// encodeInflections 按标准写入路线拐点项；2019 版本在限速块内追加夜间最高速度。
+func (r *Route) encodeInflections(pkt []byte, is2019 bool) []byte {
 	pkt = hex.WriteWord(pkt, uint16(len(r.Inflections)))
 	for _, inf := range r.Inflections {
 		pkt = hex.WriteDoubleWord(pkt, inf.ID)
@@ -468,6 +439,9 @@ func (r *Route) encodeInflections(pkt []byte) []byte {
 		if inf.Attr&RouteInflectionSpeed != 0 {
 			pkt = hex.WriteWord(pkt, inf.MaxSpeed)
 			pkt = hex.WriteByte(pkt, inf.Duration)
+			if is2019 {
+				pkt = hex.WriteWord(pkt, inf.NightSpeed)
+			}
 		}
 	}
 	return pkt
@@ -487,58 +461,21 @@ func decodeRoute(pkt []byte, idx *int, is2019 bool) (*Route, error) {
 		r.StartTime = hex.ReadBCD(pkt, idx, 6)
 		r.EndTime = hex.ReadBCD(pkt, idx, 6)
 	}
+	if err := r.decodeInflections(pkt, idx, is2019); err != nil {
+		return nil, err
+	}
 	if is2019 {
-		if err := r.decodeSegments2019(pkt, idx); err != nil {
-			return nil, err
-		}
 		name, err := decodeName(pkt, idx)
 		if err != nil {
 			return nil, err
 		}
 		r.Name = name
-		return r, nil
-	}
-	if err := r.decodeInflections(pkt, idx); err != nil {
-		return nil, err
 	}
 	return r, nil
 }
 
-// decodeSegments2019 保持 2019 路径的既有“路段 + 顶点列表”解析不变。
-func (r *Route) decodeSegments2019(pkt []byte, idx *int) error {
-	if len(pkt)-*idx < 2 {
-		return errors.New("route segment count missing")
-	}
-	segCnt := int(hex.ReadWord(pkt, idx))
-	r.Segments = make([]RouteSegment, 0, segCnt)
-	for i := 0; i < segCnt; i++ {
-		if len(pkt)-*idx < 4+2+2 {
-			return errors.New("route segment too short")
-		}
-		s := RouteSegment{}
-		s.ID = hex.ReadDoubleWord(pkt, idx)
-		s.Attr = hex.ReadWord(pkt, idx)
-		s.Length = hex.ReadWord(pkt, idx)
-		if AreaAttr(s.Attr).HasSpeed() {
-			if len(pkt)-*idx < 5 {
-				return errors.New("route segment speed fields exceed payload")
-			}
-			s.MaxSpeed = hex.ReadWord(pkt, idx)
-			s.Duration = hex.ReadByte(pkt, idx)
-			s.NightSpeed = hex.ReadWord(pkt, idx)
-		}
-		verts, err := decodeVertices(pkt, idx)
-		if err != nil {
-			return err
-		}
-		s.Vertices = verts
-		r.Segments = append(r.Segments, s)
-	}
-	return nil
-}
-
-// decodeInflections 按 JT/T 808-2013 表 66/68 解析路线的拐点项。
-func (r *Route) decodeInflections(pkt []byte, idx *int) error {
+// decodeInflections 按标准解析路线拐点项；2019 版本在限速块内额外读取夜间最高速度。
+func (r *Route) decodeInflections(pkt []byte, idx *int, is2019 bool) error {
 	if len(pkt)-*idx < 2 {
 		return errors.New("route inflection count missing")
 	}
@@ -564,11 +501,18 @@ func (r *Route) decodeInflections(pkt []byte, idx *int) error {
 			inf.UnderThreshold = hex.ReadWord(pkt, idx)
 		}
 		if inf.Attr&RouteInflectionSpeed != 0 {
-			if len(pkt)-*idx < 3 {
+			need := 3
+			if is2019 {
+				need = 5
+			}
+			if len(pkt)-*idx < need {
 				return errors.New("route inflection speed fields exceed payload")
 			}
 			inf.MaxSpeed = hex.ReadWord(pkt, idx)
 			inf.Duration = hex.ReadByte(pkt, idx)
+			if is2019 {
+				inf.NightSpeed = hex.ReadWord(pkt, idx)
+			}
 		}
 		r.Inflections = append(r.Inflections, inf)
 	}

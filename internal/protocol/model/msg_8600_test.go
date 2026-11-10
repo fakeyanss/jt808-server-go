@@ -93,22 +93,18 @@ func TestRouteRoundTrip(t *testing.T) {
 		Routes: []Route{{
 			ID: 5, Attr: AreaAttrTime | AreaAttrSpeed,
 			StartTime: "261028000000", EndTime: "261028235959",
-			Segments: []RouteSegment{
+			Inflections: []RouteInflection{
 				{
-					ID: 1, Attr: uint16(AreaAttrSpeed), Length: 1500,
+					ID: 1, SectionID: 11,
+					Latitude: 31000000, Longitude: 121000000,
+					Width: 12, Attr: RouteInflectionTime | RouteInflectionSpeed,
+					OverlongThreshold: 100, UnderThreshold: 50,
 					MaxSpeed: 600, Duration: 3, NightSpeed: 400,
-					Vertices: []PolygonVertex{
-						{Latitude: 31000000, Longitude: 121000000},
-						{Latitude: 31000010, Longitude: 121000010},
-					},
 				},
 				{
-					ID: 2, Attr: 0, Length: 800,
-					Vertices: []PolygonVertex{
-						{Latitude: 31000010, Longitude: 121000010},
-						{Latitude: 31000020, Longitude: 121000020},
-						{Latitude: 31000030, Longitude: 121000030},
-					},
+					ID: 2, SectionID: 12,
+					Latitude: 31000010, Longitude: 121000010,
+					Width: 8,
 				},
 			},
 			Name: "测试路线",
@@ -117,8 +113,8 @@ func TestRouteRoundTrip(t *testing.T) {
 	decoded := &MsgRegionRouteSet{}
 	roundTrip(t, msg, decoded)
 	require.Equal(t, msg.Routes[0], decoded.Routes[0])
-	require.Len(t, decoded.Routes[0].Segments, 2)
-	require.Len(t, decoded.Routes[0].Segments[1].Vertices, 3)
+	require.Len(t, decoded.Routes[0].Inflections, 2)
+	require.Equal(t, uint16(400), decoded.Routes[0].Inflections[0].NightSpeed)
 }
 
 func TestRegionRouteSetValidation(t *testing.T) {
@@ -304,7 +300,6 @@ func TestRegionRouteSet2013RouteExactLayout(t *testing.T) {
 	expected = hex.WriteByte(expected, 0)
 	require.Equal(t, expected, pkt.Body)
 	require.Empty(t, decoded.Routes[0].Name)
-	require.Empty(t, decoded.Routes[0].Segments)
 	require.Len(t, decoded.Routes[0].Inflections, 2)
 	require.Equal(t, msg.Routes[0].Inflections, decoded.Routes[0].Inflections)
 }
@@ -514,9 +509,9 @@ func TestRegionRouteSet2019Layouts(t *testing.T) {
 	})
 }
 
-// TestRegionRouteSet2019PolygonOrderUnchanged 锁定 2019 路径的既有
-// “顶点在时间/速度字段之前”布局，避免本轮改动影响 2019。
-func TestRegionRouteSet2019PolygonOrderUnchanged(t *testing.T) {
+// TestRegionRouteSet2019PolygonExactLayout 锁定 2019 多边形区域按标准编码：
+// 时间/限速字段在顶点之前，夜间最高速度在顶点之后、名称之前。
+func TestRegionRouteSet2019PolygonExactLayout(t *testing.T) {
 	msg := &MsgRegionRouteSet{
 		Header:      genMsgHeaderVersion(0x8604, Version2019),
 		SettingAttr: 4,
@@ -532,18 +527,153 @@ func TestRegionRouteSet2019PolygonOrderUnchanged(t *testing.T) {
 	expected := []byte{4, 1}
 	expected = hex.WriteDoubleWord(expected, 9)
 	expected = hex.WriteWord(expected, uint16(AreaAttrSpeed))
+	expected = hex.WriteWord(expected, 800)
+	expected = hex.WriteByte(expected, 6)
 	expected = hex.WriteWord(expected, 1)
 	expected = hex.WriteDoubleWord(expected, 31000000)
 	expected = hex.WriteDoubleWord(expected, 121000000)
-	expected = hex.WriteWord(expected, 800)
-	expected = hex.WriteByte(expected, 6)
 	expected = hex.WriteWord(expected, 500)
 	expected = hex.WriteWord(expected, 0)
 	require.Equal(t, expected, pkt.Body)
+	require.Equal(t, uint16(500), decoded.Polygons[0].NightSpeed)
 }
 
-// TestRegionRouteSetRouteNightSpeedByVersion 锁定时 2019 路径夜间速度
-// 仍随限速位出现，而 2013 路径不再存在夜间速度字段。
+// TestRegionRouteSet2019RouteExactLayout 锁定 2019 路线按标准编码为拐点项：
+// 限速块内包含夜间最高速度，路线尾部包含 WORD 名称长度。
+func TestRegionRouteSet2019RouteExactLayout(t *testing.T) {
+	const name = "路线"
+	gbk := hex.WriteGBK(nil, name)
+	msg := &MsgRegionRouteSet{
+		Header:      genMsgHeaderVersion(0x8606, Version2019),
+		SettingAttr: 1,
+		Routes: []Route{{
+			ID: 5, Attr: AreaAttrTime,
+			StartTime: "261028000000", EndTime: "261028235959",
+			Name: name,
+			Inflections: []RouteInflection{{
+				ID: 11, SectionID: 22,
+				Latitude: 31000000, Longitude: 121000000,
+				Width: 10, Attr: RouteInflectionTime | RouteInflectionSpeed,
+				OverlongThreshold: 100, UnderThreshold: 50,
+				MaxSpeed: 600, Duration: 3, NightSpeed: 400,
+			}},
+		}},
+	}
+	decoded := &MsgRegionRouteSet{}
+	pkt := roundTrip(t, msg, decoded)
+
+	expected := []byte{1, 1}
+	expected = hex.WriteDoubleWord(expected, 5)
+	expected = hex.WriteWord(expected, uint16(AreaAttrTime))
+	expected = hex.WriteBCD(expected, "261028000000")
+	expected = hex.WriteBCD(expected, "261028235959")
+	expected = hex.WriteWord(expected, 1)
+	expected = hex.WriteDoubleWord(expected, 11)
+	expected = hex.WriteDoubleWord(expected, 22)
+	expected = hex.WriteDoubleWord(expected, 31000000)
+	expected = hex.WriteDoubleWord(expected, 121000000)
+	expected = hex.WriteByte(expected, 10)
+	expected = hex.WriteByte(expected, uint8(RouteInflectionTime|RouteInflectionSpeed))
+	expected = hex.WriteWord(expected, 100)
+	expected = hex.WriteWord(expected, 50)
+	expected = hex.WriteWord(expected, 600)
+	expected = hex.WriteByte(expected, 3)
+	expected = hex.WriteWord(expected, 400)
+	expected = hex.WriteWord(expected, uint16(len(gbk)))
+	expected = append(expected, gbk...)
+	require.Equal(t, expected, pkt.Body)
+	require.Equal(t, name, decoded.Routes[0].Name)
+	require.Equal(t, uint16(400), decoded.Routes[0].Inflections[0].NightSpeed)
+}
+
+// TestRegionRouteSet2019RejectsTruncated 校验 2019 多边形/路线在截断、
+// 非法顶点数、条件字段缺失或名称越界时返回错误。
+func TestRegionRouteSet2019RejectsTruncated(t *testing.T) {
+	decode := func(msgID uint16, body []byte) error {
+		return (&MsgRegionRouteSet{}).Decode(&PacketData{Header: genMsgHeaderVersion(msgID, Version2019), Body: body})
+	}
+
+	// 多边形：固定字段后声明限速但缺少速度/持续时间。
+	polygonShort := []byte{1, 1}
+	polygonShort = hex.WriteDoubleWord(polygonShort, 1)
+	polygonShort = hex.WriteWord(polygonShort, uint16(AreaAttrSpeed))
+	require.Error(t, decode(0x8604, polygonShort))
+
+	// 多边形：顶点数为 0。
+	polygonZeroVertex := []byte{1, 1}
+	polygonZeroVertex = hex.WriteDoubleWord(polygonZeroVertex, 1)
+	polygonZeroVertex = hex.WriteWord(polygonZeroVertex, 0)
+	polygonZeroVertex = hex.WriteWord(polygonZeroVertex, 0)
+	require.Error(t, decode(0x8604, polygonZeroVertex))
+
+	// 多边形：顶点项被截断。
+	polygonTruncatedVertex := []byte{1, 1}
+	polygonTruncatedVertex = hex.WriteDoubleWord(polygonTruncatedVertex, 1)
+	polygonTruncatedVertex = hex.WriteWord(polygonTruncatedVertex, 0)
+	polygonTruncatedVertex = hex.WriteWord(polygonTruncatedVertex, 1)
+	polygonTruncatedVertex = append(polygonTruncatedVertex, make([]byte, 7)...)
+	require.Error(t, decode(0x8604, polygonTruncatedVertex))
+
+	// 多边形：名称长度越界。
+	polygonBadName := []byte{1, 1}
+	polygonBadName = hex.WriteDoubleWord(polygonBadName, 1)
+	polygonBadName = hex.WriteWord(polygonBadName, 0)
+	polygonBadName = hex.WriteWord(polygonBadName, 1)
+	polygonBadName = hex.WriteDoubleWord(polygonBadName, 0)
+	polygonBadName = hex.WriteDoubleWord(polygonBadName, 0)
+	polygonBadName = hex.WriteWord(polygonBadName, 100)
+	polygonBadName = append(polygonBadName, 'x')
+	require.Error(t, decode(0x8604, polygonBadName))
+
+	// 路线：拐点固定字段截断。
+	routeShort := []byte{1, 1}
+	routeShort = hex.WriteDoubleWord(routeShort, 1)
+	routeShort = hex.WriteWord(routeShort, 0)
+	routeShort = hex.WriteWord(routeShort, 1)
+	routeShort = append(routeShort, make([]byte, 17)...)
+	require.Error(t, decode(0x8606, routeShort))
+
+	// 路线：拐点限速块缺少夜间最高速度。
+	routeNightMissing := []byte{1, 1}
+	routeNightMissing = hex.WriteDoubleWord(routeNightMissing, 1)
+	routeNightMissing = hex.WriteWord(routeNightMissing, 0)
+	routeNightMissing = hex.WriteWord(routeNightMissing, 1)
+	routeNightMissing = hex.WriteDoubleWord(routeNightMissing, 11)
+	routeNightMissing = hex.WriteDoubleWord(routeNightMissing, 22)
+	routeNightMissing = hex.WriteDoubleWord(routeNightMissing, 0)
+	routeNightMissing = hex.WriteDoubleWord(routeNightMissing, 0)
+	routeNightMissing = hex.WriteByte(routeNightMissing, 10)
+	routeNightMissing = hex.WriteByte(routeNightMissing, uint8(RouteInflectionSpeed))
+	routeNightMissing = hex.WriteWord(routeNightMissing, 600)
+	routeNightMissing = hex.WriteByte(routeNightMissing, 3)
+	require.Error(t, decode(0x8606, routeNightMissing))
+
+	// 路线：拐点阈值字段截断。
+	routeThresholdMissing := []byte{1, 1}
+	routeThresholdMissing = hex.WriteDoubleWord(routeThresholdMissing, 1)
+	routeThresholdMissing = hex.WriteWord(routeThresholdMissing, 0)
+	routeThresholdMissing = hex.WriteWord(routeThresholdMissing, 1)
+	routeThresholdMissing = hex.WriteDoubleWord(routeThresholdMissing, 11)
+	routeThresholdMissing = hex.WriteDoubleWord(routeThresholdMissing, 22)
+	routeThresholdMissing = hex.WriteDoubleWord(routeThresholdMissing, 0)
+	routeThresholdMissing = hex.WriteDoubleWord(routeThresholdMissing, 0)
+	routeThresholdMissing = hex.WriteByte(routeThresholdMissing, 10)
+	routeThresholdMissing = hex.WriteByte(routeThresholdMissing, uint8(RouteInflectionTime))
+	routeThresholdMissing = hex.WriteWord(routeThresholdMissing, 100)
+	require.Error(t, decode(0x8606, routeThresholdMissing))
+
+	// 路线：名称长度越界（最小合法体 2+4+2+2+2，此处少 1 字节名称）。
+	routeBadName := []byte{1, 1}
+	routeBadName = hex.WriteDoubleWord(routeBadName, 1)
+	routeBadName = hex.WriteWord(routeBadName, 0)
+	routeBadName = hex.WriteWord(routeBadName, 0)
+	routeBadName = hex.WriteWord(routeBadName, 100)
+	routeBadName = append(routeBadName, 'x')
+	require.Error(t, decode(0x8606, routeBadName))
+}
+
+// TestRegionRouteSetRouteNightSpeedByVersion 锁定 2019 路线拐点携带夜间
+// 速度，而 2013 路径不存在夜间速度字段。
 func TestRegionRouteSetRouteNightSpeedByVersion(t *testing.T) {
 	t.Run("2013 route has no night speed", func(t *testing.T) {
 		msg := &MsgRegionRouteSet{
@@ -554,15 +684,17 @@ func TestRegionRouteSetRouteNightSpeedByVersion(t *testing.T) {
 				Inflections: []RouteInflection{{
 					ID: 1, SectionID: 2,
 					Attr:     RouteInflectionSpeed | RouteInflectionTime,
-					MaxSpeed: 600, Duration: 3,
+					MaxSpeed: 600, Duration: 3, NightSpeed: 400,
 					OverlongThreshold: 100, UnderThreshold: 50,
 				}},
 			}},
 		}
 		decoded := &MsgRegionRouteSet{}
-		roundTrip(t, msg, decoded)
+		pkt := roundTrip(t, msg, decoded)
 		require.Len(t, decoded.Routes[0].Inflections, 1)
-		require.Equal(t, msg.Routes[0].Inflections, decoded.Routes[0].Inflections)
+		require.Equal(t, uint16(0), decoded.Routes[0].Inflections[0].NightSpeed)
+		// 2013 限速块只有 3 字节，不包含夜间速度。
+		require.Len(t, pkt.Body, 2+4+2+2+18+4+3)
 	})
 
 	t.Run("2019 route keeps night speed", func(t *testing.T) {
@@ -571,19 +703,17 @@ func TestRegionRouteSetRouteNightSpeedByVersion(t *testing.T) {
 			SettingAttr: 1,
 			Routes: []Route{{
 				ID: 5,
-				Segments: []RouteSegment{{
-					ID: 1, Attr: uint16(AreaAttrSpeed), Length: 100,
+				Inflections: []RouteInflection{{
+					ID: 1, SectionID: 2,
+					Attr:     RouteInflectionSpeed,
 					MaxSpeed: 600, Duration: 3, NightSpeed: 400,
-					Vertices: []PolygonVertex{
-						{Latitude: 31000000, Longitude: 121000000},
-					},
 				}},
 				Name: "路线",
 			}},
 		}
 		decoded := &MsgRegionRouteSet{}
 		roundTrip(t, msg, decoded)
-		require.Equal(t, uint16(400), decoded.Routes[0].Segments[0].NightSpeed)
+		require.Equal(t, uint16(400), decoded.Routes[0].Inflections[0].NightSpeed)
 		require.Equal(t, "路线", decoded.Routes[0].Name)
 	})
 }
