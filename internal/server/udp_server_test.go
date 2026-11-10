@@ -1783,11 +1783,19 @@ func TestTCPServerLogoutClearsCacheAndKeepsConn(t *testing.T) {
 }
 
 func TestTCPServerUpdatesCommandOutboxOnAck(t *testing.T) {
-	server, _, device := startSimulatorServer(t)
+	commands := storage.Default().Commands
+	// outbox 已移入内置管控层；网关只上报可靠投递结果，由调用方决定如何落库。
+	server, _, device := startSimulatorServerWith(t, func(serv *TCPServer) {
+		serv.SetReliableResultHandler(func(result model.ReliableResult) {
+			if result.Status != model.ReliableStatusAcked {
+				return
+			}
+			_, _ = commands.MarkAcked(context.Background(), result.Phone, result.MsgID, result.Serial)
+		})
+	})
 	session, err := runtime.Default().Conn.Get(context.Background(), device.SessionID)
 	require.NoError(t, err)
 
-	commands := storage.Default().Commands
 	serial := session.GetNextSerialNum()
 	commandID := "test-command-" + device.Phone
 	command, created, err := commands.Enqueue(context.Background(), &repository.DownlinkCommand{

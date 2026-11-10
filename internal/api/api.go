@@ -2,7 +2,6 @@ package api
 
 import (
 	"context"
-	"crypto/rand"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -19,6 +18,8 @@ import (
 	"github.com/fakeyanss/jt808-server-go/internal/alarmserver"
 	protocolhex "github.com/fakeyanss/jt808-server-go/internal/codec/hex"
 	"github.com/fakeyanss/jt808-server-go/internal/config"
+	"github.com/fakeyanss/jt808-server-go/internal/contracts"
+	"github.com/fakeyanss/jt808-server-go/internal/control"
 	"github.com/fakeyanss/jt808-server-go/internal/httpguard"
 	"github.com/fakeyanss/jt808-server-go/internal/mediaupload"
 	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
@@ -28,9 +29,9 @@ import (
 	"github.com/fakeyanss/jt808-server-go/internal/storage"
 )
 
-// Run 启动业务 API。commands 为 nil 表示 outbox 已关闭（mode=off），
-// 下行入口直接调用 Serv.Send，不提供命令状态查询。
-func Run(ctx context.Context, serv *server.TCPServer, cfg *config.Config, apiOptions config.APIOptions, alarmServ *alarmserver.Server, outboxOptions config.CommandOutboxOptions, commands repository.CommandRepository, mediaUpload *mediaupload.Store) {
+// Run 启动业务 API。outbox 为 nil 或未启用时，下行入口直接调用 Serv.Send，
+// 不提供命令状态查询。
+func Run(ctx context.Context, serv *server.TCPServer, cfg *config.Config, apiOptions config.APIOptions, alarmServ *alarmserver.Server, outbox *control.Outbox, mediaUpload *mediaupload.Store) {
 	// web server structure
 	gin.SetMode(gin.ReleaseMode)
 	router := gin.Default()
@@ -40,7 +41,7 @@ func Run(ctx context.Context, serv *server.TCPServer, cfg *config.Config, apiOpt
 	devices := storage.Default().Devices
 	geo := storage.Default().Geo
 	connRegistry := runtime.Default().Conn
-	outboxEnabled := outboxOptions.Mode != config.CommandOutboxModeOff && commands != nil
+	outboxEnabled := outbox != nil && outbox.Enabled()
 
 	// 0x0801 媒体文件、0x0805 拍摄记录与 0x0802 检索结果查询；文件下载由 mediaUpload 读取共享卷。
 	registerMediaRoutes(api, devices, storage.Default().MediaFiles, storage.Default().MediaCaptures, storage.Default().MediaSearches, mediaUpload)
@@ -51,7 +52,7 @@ func Run(ctx context.Context, serv *server.TCPServer, cfg *config.Config, apiOpt
 			c.JSON(http.StatusNotFound, gin.H{"err": "command outbox is disabled"})
 			return
 		}
-		command, err := commands.Get(c.Request.Context(), c.Param("commandId"))
+		command, err := outbox.Get(c.Request.Context(), c.Param("commandId"))
 		if errors.Is(err, repository.ErrCommandNotFound) {
 			c.JSON(http.StatusNotFound, gin.H{"err": "command not found"})
 			return
@@ -339,7 +340,7 @@ func Run(ctx context.Context, serv *server.TCPServer, cfg *config.Config, apiOpt
 			}
 		}
 		msg := &model.Msg8105{Header: model.GenMsgHeader(device, 0x8105, session.GetNextSerialNum()), CommandWord: request.CommandWord, CommandParam: request.CommandParam, Parameters: request.Parameters}
-		command, created, err := dispatchDownlink(c, commands, serv, session, msg, outboxOptions)
+		command, created, err := dispatchDownlink(c, outbox, session, msg)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"err": err.Error()})
 			return
@@ -376,7 +377,7 @@ func Run(ctx context.Context, serv *server.TCPServer, cfg *config.Config, apiOpt
 			return
 		}
 		msg := &model.Msg860Delete{Header: model.GenMsgHeader(device, request.MessageID, session.GetNextSerialNum()), IDs: request.IDs}
-		command, created, err := dispatchDownlink(c, commands, serv, session, msg, outboxOptions)
+		command, created, err := dispatchDownlink(c, outbox, session, msg)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"err": err.Error()})
 			return
@@ -445,7 +446,7 @@ func Run(ctx context.Context, serv *server.TCPServer, cfg *config.Config, apiOpt
 			c.JSON(http.StatusBadRequest, gin.H{"err": "at least one region/route item is required"})
 			return
 		}
-		command, created, err := dispatchDownlink(c, commands, serv, session, msg, outboxOptions)
+		command, created, err := dispatchDownlink(c, outbox, session, msg)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"err": err.Error()})
 			return
@@ -544,7 +545,7 @@ func Run(ctx context.Context, serv *server.TCPServer, cfg *config.Config, apiOpt
 			return
 		}
 		msg := &model.MsgRecordCommand{Header: model.GenMsgHeader(device, request.MessageID, session.GetNextSerialNum()), Command: request.Command, Data: data}
-		command, created, err := dispatchDownlink(c, commands, serv, session, msg, outboxOptions)
+		command, created, err := dispatchDownlink(c, outbox, session, msg)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"err": err.Error()})
 			return
@@ -573,7 +574,7 @@ func Run(ctx context.Context, serv *server.TCPServer, cfg *config.Config, apiOpt
 			c.JSON(http.StatusBadRequest, gin.H{"err": "invalid camera command fields"})
 			return
 		}
-		command, created, err := dispatchDownlink(c, commands, serv, session, &request, outboxOptions)
+		command, created, err := dispatchDownlink(c, outbox, session, &request)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"err": err.Error()})
 			return
@@ -706,7 +707,7 @@ func Run(ctx context.Context, serv *server.TCPServer, cfg *config.Config, apiOpt
 			c.JSON(http.StatusBadRequest, gin.H{"err": "bodyHex does not match the selected JT808 media command format"})
 			return
 		}
-		command, created, err := dispatchDownlink(c, commands, serv, session, msg, outboxOptions)
+		command, created, err := dispatchDownlink(c, outbox, session, msg)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"err": err.Error()})
 			return
@@ -736,7 +737,7 @@ func Run(ctx context.Context, serv *server.TCPServer, cfg *config.Config, apiOpt
 			c.JSON(http.StatusBadRequest, gin.H{"err": "invalid text issue fields"})
 			return
 		}
-		command, created, err := dispatchDownlink(c, commands, serv, session, &request, outboxOptions)
+		command, created, err := dispatchDownlink(c, outbox, session, &request)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"err": err.Error()})
 			return
@@ -766,7 +767,7 @@ func Run(ctx context.Context, serv *server.TCPServer, cfg *config.Config, apiOpt
 			c.JSON(http.StatusBadRequest, gin.H{"err": "invalid event set fields"})
 			return
 		}
-		command, created, err := dispatchDownlink(c, commands, serv, session, &request, outboxOptions)
+		command, created, err := dispatchDownlink(c, outbox, session, &request)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"err": err.Error()})
 			return
@@ -796,7 +797,7 @@ func Run(ctx context.Context, serv *server.TCPServer, cfg *config.Config, apiOpt
 			c.JSON(http.StatusBadRequest, gin.H{"err": "invalid vehicle control fields"})
 			return
 		}
-		command, created, err := dispatchDownlink(c, commands, serv, session, &request, outboxOptions)
+		command, created, err := dispatchDownlink(c, outbox, session, &request)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"err": err.Error()})
 			return
@@ -826,7 +827,7 @@ func Run(ctx context.Context, serv *server.TCPServer, cfg *config.Config, apiOpt
 			c.JSON(http.StatusBadRequest, gin.H{"err": "invalid question issue fields"})
 			return
 		}
-		command, created, err := dispatchDownlink(c, commands, serv, session, &request, outboxOptions)
+		command, created, err := dispatchDownlink(c, outbox, session, &request)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"err": err.Error()})
 			return
@@ -856,7 +857,7 @@ func Run(ctx context.Context, serv *server.TCPServer, cfg *config.Config, apiOpt
 			c.JSON(http.StatusBadRequest, gin.H{"err": "invalid info menu set fields"})
 			return
 		}
-		command, created, err := dispatchDownlink(c, commands, serv, session, &request, outboxOptions)
+		command, created, err := dispatchDownlink(c, outbox, session, &request)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"err": err.Error()})
 			return
@@ -886,7 +887,7 @@ func Run(ctx context.Context, serv *server.TCPServer, cfg *config.Config, apiOpt
 			c.JSON(http.StatusBadRequest, gin.H{"err": "invalid info service fields"})
 			return
 		}
-		command, created, err := dispatchDownlink(c, commands, serv, session, &request, outboxOptions)
+		command, created, err := dispatchDownlink(c, outbox, session, &request)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"err": err.Error()})
 			return
@@ -916,7 +917,7 @@ func Run(ctx context.Context, serv *server.TCPServer, cfg *config.Config, apiOpt
 			c.JSON(http.StatusBadRequest, gin.H{"err": "invalid call callback fields"})
 			return
 		}
-		command, created, err := dispatchDownlink(c, commands, serv, session, &request, outboxOptions)
+		command, created, err := dispatchDownlink(c, outbox, session, &request)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"err": err.Error()})
 			return
@@ -946,7 +947,7 @@ func Run(ctx context.Context, serv *server.TCPServer, cfg *config.Config, apiOpt
 			c.JSON(http.StatusBadRequest, gin.H{"err": "invalid phonebook set fields"})
 			return
 		}
-		command, created, err := dispatchDownlink(c, commands, serv, session, &request, outboxOptions)
+		command, created, err := dispatchDownlink(c, outbox, session, &request)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"err": err.Error()})
 			return
@@ -976,7 +977,7 @@ func Run(ctx context.Context, serv *server.TCPServer, cfg *config.Config, apiOpt
 			c.JSON(http.StatusBadRequest, gin.H{"err": "invalid terminal upgrade fields"})
 			return
 		}
-		command, created, err := dispatchDownlink(c, commands, serv, session, &request, outboxOptions)
+		command, created, err := dispatchDownlink(c, outbox, session, &request)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"err": err.Error()})
 			return
@@ -1006,7 +1007,7 @@ func Run(ctx context.Context, serv *server.TCPServer, cfg *config.Config, apiOpt
 			c.JSON(http.StatusBadRequest, gin.H{"err": "invalid transparent downlink fields"})
 			return
 		}
-		command, created, err := dispatchDownlink(c, commands, serv, session, &request, outboxOptions)
+		command, created, err := dispatchDownlink(c, outbox, session, &request)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"err": err.Error()})
 			return
@@ -1081,7 +1082,7 @@ func Run(ctx context.Context, serv *server.TCPServer, cfg *config.Config, apiOpt
 			Header:     header,
 			Parameters: &params,
 		}
-		command, created, err := dispatchDownlink(c, commands, serv, session, &msg, outboxOptions)
+		command, created, err := dispatchDownlink(c, outbox, session, &msg)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"err": err.Error()})
 			return
@@ -1175,7 +1176,7 @@ func Run(ctx context.Context, serv *server.TCPServer, cfg *config.Config, apiOpt
 			AlarmNo:   request.AlarmNo,
 			Reserved:  reserved,
 		}
-		command, created, err := dispatchDownlink(c, commands, serv, session, msg, outboxOptions)
+		command, created, err := dispatchDownlink(c, outbox, session, msg)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"err": err.Error()})
 			return
@@ -1257,116 +1258,56 @@ func lookupSessionByPhone(ctx context.Context, conn runtime.ConnectionRegistry, 
 	return conn.GetByPhone(ctx, device.Phone)
 }
 
-// dispatchDownlink 按 outbox 模式选择下发路径：
-// off 直接交给 Serv.Send（不落库、不可查、不可重投）；memory/durable 走 outbox。
+// dispatchDownlink 通过内置管控的下行契约下发命令。
+// off 模式由 outbox 直接发送并返回 nil 结果，保持既有的 202 语义。
 func dispatchDownlink(
 	c *gin.Context,
-	commands repository.CommandRepository,
-	serv *server.TCPServer,
+	outbox *control.Outbox,
 	session *model.Session,
 	msg model.JT808Msg,
-	outbox config.CommandOutboxOptions,
-) (*repository.DownlinkCommand, bool, error) {
-	if outbox.Mode == config.CommandOutboxModeOff {
-		serv.Send(session.ID, msg)
-		return nil, false, nil
-	}
-	if commands == nil {
-		return nil, false, errors.New("command outbox repository is not configured")
-	}
-	return enqueueDownlinkCommand(c, commands, serv, session, msg, outbox)
-}
-
-// enqueueDownlinkCommand 把下行命令写入 outbox 后再发送。
-// Idempotency-Key 请求头重复时直接返回已有记录（duplicate=true），不会二次下发。
-// 返回的 created=false 表示命中了幂等键。
-func enqueueDownlinkCommand(
-	c *gin.Context,
-	commands repository.CommandRepository,
-	serv *server.TCPServer,
-	session *model.Session,
-	msg model.JT808Msg,
-	outbox config.CommandOutboxOptions,
-) (*repository.DownlinkCommand, bool, error) {
-	header := msg.GetHeader()
-	if header == nil {
-		return nil, false, errors.New("downlink message header is required")
+) (*contracts.DownlinkResult, bool, error) {
+	if outbox == nil {
+		return nil, false, errors.New("command outbox is not configured")
 	}
 	idempotencyKey := strings.TrimSpace(c.GetHeader("Idempotency-Key"))
 	if len(idempotencyKey) > 128 {
 		return nil, false, errors.New("Idempotency-Key must not exceed 128 characters")
 	}
-	commandID, err := newCommandID()
-	if err != nil {
+	// off 模式保持既有行为：复用报文头里的流水号，不额外分配；
+	// 启用 outbox 时由网关在入队时重新分配，与实际发送的流水号一致。
+	serial := uint16(0)
+	if header := msg.GetHeader(); header != nil {
+		serial = header.SerialNumber
+		if outbox.Enabled() {
+			serial = session.GetNextSerialNum()
+			header.SerialNumber = serial
+		}
+	}
+	result, err := outbox.Submit(c.Request.Context(), contracts.DownlinkRequest{
+		SessionID:      session.ID,
+		IdempotencyKey: idempotencyKey,
+		Serial:         serial,
+		Message:        msg,
+	})
+	if !outbox.Enabled() {
 		return nil, false, err
 	}
-	if idempotencyKey == "" {
-		idempotencyKey = commandID
-	}
-
-	serial := session.GetNextSerialNum()
-	header.SerialNumber = serial
-	encoded, err := msg.Encode()
-	if err != nil {
-		return nil, false, fmt.Errorf("encode downlink message: %w", err)
-	}
-	headerBytes, err := header.Encode()
-	if err != nil {
-		return nil, false, fmt.Errorf("encode downlink header: %w", err)
-	}
-	if len(headerBytes) >= len(encoded) {
-		return nil, false, errors.New("encoded downlink message has no body")
-	}
-
-	now := time.Now()
-	command, created, err := commands.Enqueue(c.Request.Context(), &repository.DownlinkCommand{
-		CommandID:      commandID,
-		IdempotencyKey: idempotencyKey,
-		Phone:          header.PhoneNumber,
-		MsgID:          header.MsgID,
-		Serial:         serial,
-		Payload:        encoded[len(headerBytes):],
-		Status:         repository.CommandStatusPending,
-		// initialWait 覆盖会话重传窗口，到期前不重投，避免与仍在重传的报文重复。
-		NextAttemptAt: now.Add(outbox.InitialWait),
-		ExpiresAt:     now.Add(outbox.ExpireAfter),
-	})
-	if err != nil {
-		return nil, false, fmt.Errorf("enqueue downlink command: %w", err)
-	}
-	if !created {
-		return command, false, nil
-	}
-
-	if err := serv.Send(session.ID, msg, server.WithSerial(serial)); err != nil {
-		// 首次下发失败不直接判死：保持 pending 并安排重投，设备重新上线后仍可补发。
-		next := time.Now().Add(outbox.RetryBase)
-		_, _ = commands.ScheduleRetry(c.Request.Context(), header.PhoneNumber, header.MsgID, serial, next, err.Error())
-		return command, true, fmt.Errorf("send downlink command: %w", err)
-	}
-	return command, true, nil
+	created := result.ID != "" && !result.Duplicated
+	return &result, created, err
 }
 
 // writeCommandAccepted 返回下行命令受理结果；幂等命中用 200 与 202 区分。
-func writeCommandAccepted(c *gin.Context, command *repository.DownlinkCommand, created bool, fields gin.H) {
+func writeCommandAccepted(c *gin.Context, command *contracts.DownlinkResult, created bool, fields gin.H) {
 	// off 模式没有 outbox 记录，只返回已下发。
 	if command == nil {
 		c.JSON(http.StatusAccepted, fields)
 		return
 	}
-	fields["commandId"] = command.CommandID
+	fields["commandId"] = command.ID
 	fields["duplicate"] = !created
 	status := http.StatusAccepted
 	if !created {
 		status = http.StatusOK
 	}
 	c.JSON(status, fields)
-}
-
-func newCommandID() (string, error) {
-	buffer := make([]byte, 16)
-	if _, err := rand.Read(buffer); err != nil {
-		return "", fmt.Errorf("generate command id: %w", err)
-	}
-	return hex.EncodeToString(buffer), nil
 }

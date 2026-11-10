@@ -18,7 +18,6 @@ import (
 	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
 	"github.com/fakeyanss/jt808-server-go/internal/repository"
 	"github.com/fakeyanss/jt808-server-go/internal/runtime"
-	"github.com/fakeyanss/jt808-server-go/internal/storage"
 	"github.com/fakeyanss/jt808-server-go/pkg/routines"
 )
 
@@ -69,12 +68,7 @@ func (serv *TCPServer) runtimeStores() *runtime.Stores {
 }
 
 // commandRepository 返回下行命令 outbox；未注入时回退到进程默认存储。
-func (serv *TCPServer) commandRepository() repository.CommandRepository {
-	if serv.deps.Storage != nil {
-		return serv.deps.Storage.Commands
-	}
-	return storage.Default().Commands
-}
+// 已移除：outbox 归内置管控模块所有，协议层只上报可靠投递结果。
 
 // SetHooks 设置生命周期钩子。未设置时使用 action.Noop。
 func (serv *TCPServer) SetHooks(hooks action.Hooks) {
@@ -192,11 +186,6 @@ func (serv *TCPServer) accept(conn net.Conn) *model.Session {
 		session.OnReliableResult = func(result model.ReliableResult) {
 			observe(result)
 			go handler(result)
-		}
-	} else if commands := serv.commandRepository(); commands != nil {
-		session.OnReliableResult = func(result model.ReliableResult) {
-			observe(result)
-			go recordReliableResult(commands, result)
 		}
 	} else {
 		session.OnReliableResult = observe

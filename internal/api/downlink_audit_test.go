@@ -14,7 +14,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 
-	"github.com/fakeyanss/jt808-server-go/internal/repository"
+	"github.com/fakeyanss/jt808-server-go/internal/contracts"
 )
 
 // 每一条直连下发都必须登记理由，避免新入口绕过 outbox 且无人评审。
@@ -83,7 +83,7 @@ func TestWriteCommandAcceptedMatrix(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	tests := []struct {
 		name       string
-		command    *repository.DownlinkCommand
+		command    *contracts.DownlinkResult
 		created    bool
 		wantStatus int
 		wantID     bool
@@ -91,7 +91,7 @@ func TestWriteCommandAcceptedMatrix(t *testing.T) {
 	}{
 		{
 			name:       "新建命令返回 202 与 commandId",
-			command:    &repository.DownlinkCommand{CommandID: "cmd-1"},
+			command:    &contracts.DownlinkResult{ID: "cmd-1"},
 			created:    true,
 			wantStatus: http.StatusAccepted,
 			wantID:     true,
@@ -99,7 +99,7 @@ func TestWriteCommandAcceptedMatrix(t *testing.T) {
 		},
 		{
 			name:       "幂等命中返回 200 与 duplicate=true",
-			command:    &repository.DownlinkCommand{CommandID: "cmd-1"},
+			command:    &contracts.DownlinkResult{ID: "cmd-1"},
 			created:    false,
 			wantStatus: http.StatusOK,
 			wantID:     true,

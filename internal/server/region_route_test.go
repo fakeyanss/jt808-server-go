@@ -18,7 +18,17 @@ import (
 // for region/route end-to-end tests.
 func startSimulatorServer(t *testing.T) (*TCPServer, *client.TCPClient, *model.Device) {
 	t.Helper()
+	return startSimulatorServerWith(t, nil)
+}
+
+// startSimulatorServerWith 允许在终端连接建立前注入服务端依赖；
+// 会话在 accept 时捕获可靠投递回调，因此配置必须先于拨号。
+func startSimulatorServerWith(t *testing.T, configure func(*TCPServer)) (*TCPServer, *client.TCPClient, *model.Device) {
+	t.Helper()
 	server := NewTCPServer()
+	if configure != nil {
+		configure(server)
+	}
 	require.NoError(t, server.Listen("127.0.0.1:0"))
 	go server.Start()
 	t.Cleanup(server.Stop)
