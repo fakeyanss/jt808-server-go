@@ -137,10 +137,10 @@ func TestSQLitePersistsRegionItemsAcrossReopen(t *testing.T) {
 		SettingAttr: 1,
 		Type:        model.RegionRouteRoute,
 		Routes: []model.Route{{
-			ID:       9,
-			Attr:     model.AreaAttrSpeed,
-			Segments: []model.RouteSegment{{ID: 1, Length: 100, MaxSpeed: 60}},
-			Name:     "路线九",
+			ID:          9,
+			Attr:        model.AreaAttrSpeed,
+			Inflections: []model.RouteInflection{{ID: 1, SectionID: 2, Width: 10}},
+			Name:        "路线九",
 		}},
 	})
 
@@ -163,7 +163,7 @@ func TestSQLitePersistsRegionItemsAcrossReopen(t *testing.T) {
 	require.Len(t, routes, 1)
 	require.Equal(t, uint32(9), routes[0].ID)
 	require.Equal(t, "路线九", routes[0].Name)
-	require.Len(t, routes[0].Segments, 1)
+	require.Len(t, routes[0].Inflections, 1)
 
 	// 按 ID 删除后重开：只剩另一条（此处先补一条再删）。
 	reloaded.ApplySet(phone, &model.MsgRegionRouteSet{
