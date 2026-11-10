@@ -22,6 +22,7 @@ import (
 	"github.com/rs/zerolog/log"
 
 	"github.com/fakeyanss/jt808-server-go/internal/contracts"
+	"github.com/fakeyanss/jt808-server-go/internal/protocol"
 	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
 	"github.com/fakeyanss/jt808-server-go/internal/runtime"
 )
@@ -87,24 +88,31 @@ type record struct {
 	Reason    string
 	CreatedAt time.Time
 	UpdatedAt time.Time
+	// ExpectMsgID/ResponseBody 用于查询 broker：网关等待终端应答并带回消息体。
+	ExpectMsgID  uint16
+	ResponseBody []byte
 }
 
 type downlinkRequest struct {
-	Phone          string `json:"phone"`
-	SessionID      string `json:"sessionId"`
-	IdempotencyKey string `json:"idempotencyKey"`
-	Serial         uint16 `json:"serial"`
-	Mode           string `json:"mode"`
-	MessageBase64  string `json:"messageBase64"`
+	Phone               string `json:"phone"`
+	SessionID           string `json:"sessionId"`
+	IdempotencyKey      string `json:"idempotencyKey"`
+	Serial              uint16 `json:"serial"`
+	Mode                string `json:"mode"`
+	MessageBase64       string `json:"messageBase64"`
+	ExpectResponseMsgID uint16 `json:"expectResponseMsgId"`
+	ResponseTimeoutMS   int64  `json:"responseTimeoutMs"`
 }
 
 type downlinkResponse struct {
-	DownlinkID string `json:"downlinkId"`
-	Serial     uint16 `json:"serial"`
-	Status     string `json:"status"`
-	Duplicated bool   `json:"duplicated"`
-	Result     *uint8 `json:"result,omitempty"`
-	Reason     string `json:"reason,omitempty"`
+	DownlinkID         string `json:"downlinkId"`
+	Serial             uint16 `json:"serial"`
+	Status             string `json:"status"`
+	Duplicated         bool   `json:"duplicated"`
+	Result             *uint8 `json:"result,omitempty"`
+	Reason             string `json:"reason,omitempty"`
+	ResponseMsgID      uint16 `json:"responseMsgId,omitempty"`
+	ResponseBodyBase64 string `json:"responseBodyBase64,omitempty"`
 }
 
 // NewServer 构造网关侧下行入口。
@@ -245,6 +253,22 @@ func (s *Server) handleSubmit(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_request", "idempotencyKey must not exceed 128 characters")
 		return
 	}
+	if request.ExpectResponseMsgID != 0 {
+		if mode != ModeSyncAck {
+			writeError(w, http.StatusBadRequest, "invalid_request", "expectResponseMsgId requires mode=sync_ack")
+			return
+		}
+		switch request.ExpectResponseMsgID {
+		case 0x0104, 0x0107, 0x0201, 0x0608:
+		default:
+			writeError(w, http.StatusBadRequest, "invalid_request", "unsupported expectResponseMsgId")
+			return
+		}
+	}
+	if request.ResponseTimeoutMS < 0 || request.ResponseTimeoutMS > 30000 {
+		writeError(w, http.StatusBadRequest, "invalid_request", "responseTimeoutMs must be between 0 and 30000")
+		return
+	}
 
 	raw, err := base64.StdEncoding.DecodeString(request.MessageBase64)
 	if err != nil {
@@ -313,14 +337,15 @@ func (s *Server) handleSubmit(w http.ResponseWriter, r *http.Request) {
 	}
 
 	rec := &record{
-		ID:        response.DownlinkID,
-		Key:       key,
-		Phone:     request.Phone,
-		MsgID:     header.MsgID,
-		Serial:    serial,
-		Status:    contracts.DownlinkStatusAccepted,
-		CreatedAt: now,
-		UpdatedAt: now,
+		ID:          response.DownlinkID,
+		Key:         key,
+		Phone:       request.Phone,
+		MsgID:       header.MsgID,
+		Serial:      serial,
+		Status:      contracts.DownlinkStatusAccepted,
+		CreatedAt:   now,
+		UpdatedAt:   now,
+		ExpectMsgID: request.ExpectResponseMsgID,
 	}
 	waiter = s.register(rec)
 	if mode != ModeSyncAck {
@@ -349,7 +374,11 @@ func (s *Server) handleSubmit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	timer := time.NewTimer(s.deps.Timeout)
+	timeout := s.deps.Timeout
+	if request.ResponseTimeoutMS > 0 {
+		timeout = time.Duration(request.ResponseTimeoutMS) * time.Millisecond
+	}
+	timer := time.NewTimer(timeout)
 	defer timer.Stop()
 	select {
 	case <-waiter:
@@ -438,8 +467,76 @@ func (s *Server) HandleReliableResult(result model.ReliableResult) {
 	}
 	rec.UpdatedAt = s.deps.Clock()
 	waiter := s.waiting[key]
+	if rec.ExpectMsgID != 0 && result.Status == model.ReliableStatusAcked && rec.Status == contracts.DownlinkStatusAcked {
+		// 查询类下行：通用应答只说明命令被接收，继续等终端的查询应答体。
+		s.mu.Unlock()
+		return
+	}
 	if waiter != nil {
 		delete(s.waiting, key)
+	}
+	s.mu.Unlock()
+	if waiter != nil {
+		close(waiter)
+	}
+}
+
+// HandleQueryResponse 把终端的查询应答交给等待中的下行请求。
+//
+// 0x0104/0x0201 的应答体里带原始下行流水号；0x0107/0x0608 的协议体不含流水号，
+// 因此按 (phone, expectMsgID) 匹配唯一在途记录。
+func (s *Server) HandleQueryResponse(msgID uint16, header *model.MsgHeader, body []byte) {
+	if s == nil || header == nil {
+		return
+	}
+	phone := header.PhoneNumber
+	serial := uint16(0)
+	switch msgID {
+	case 0x0104:
+		if incoming, err := protocol.DecodeMessageBody(0x0104, header, body); err == nil {
+			if msg, ok := incoming.(*model.Msg0104); ok {
+				serial = msg.AnswerSerialNumber
+			}
+		}
+	case 0x0201:
+		if incoming, err := protocol.DecodeMessageBody(0x0201, header, body); err == nil {
+			if msg, ok := incoming.(*model.Msg0201); ok && msg.AnswerSerialNumber != 0 {
+				serial = msg.AnswerSerialNumber
+			}
+		}
+	}
+
+	s.mu.Lock()
+	var matched *record
+	for _, rec := range s.byID {
+		if rec.Phone != phone || rec.ExpectMsgID != msgID {
+			continue
+		}
+		if rec.Status != contracts.DownlinkStatusAccepted && rec.Status != contracts.DownlinkStatusAcked {
+			continue
+		}
+		if serial != 0 && rec.Serial != serial {
+			continue
+		}
+		if matched != nil {
+			// 同类等待项不唯一时只在能按流水号定位时结算，避免误配对。
+			matched = nil
+			break
+		}
+		matched = rec
+	}
+	if matched == nil {
+		s.mu.Unlock()
+		return
+	}
+	matched.Status = contracts.DownlinkStatusAcked
+	zero := uint8(0)
+	matched.Result = &zero
+	matched.ResponseBody = append([]byte(nil), body...)
+	matched.UpdatedAt = s.deps.Clock()
+	waiter := s.waiting[routingKey(matched.Phone, matched.MsgID, matched.Serial)]
+	if waiter != nil {
+		delete(s.waiting, routingKey(matched.Phone, matched.MsgID, matched.Serial))
 	}
 	s.mu.Unlock()
 	if waiter != nil {
@@ -520,13 +617,22 @@ func (s *Server) responseFor(rec *record, duplicated bool) downlinkResponse {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return downlinkResponse{
-		DownlinkID: rec.ID,
-		Serial:     rec.Serial,
-		Status:     rec.Status,
-		Duplicated: duplicated,
-		Result:     rec.Result,
-		Reason:     rec.Reason,
+		DownlinkID:         rec.ID,
+		Serial:             rec.Serial,
+		Status:             rec.Status,
+		Duplicated:         duplicated,
+		Result:             rec.Result,
+		Reason:             rec.Reason,
+		ResponseMsgID:      rec.ExpectMsgID,
+		ResponseBodyBase64: encodeOptional(rec.ResponseBody),
 	}
+}
+
+func encodeOptional(body []byte) string {
+	if len(body) == 0 {
+		return ""
+	}
+	return base64.StdEncoding.EncodeToString(body)
 }
 
 func routingKey(phone string, msgID, serial uint16) string {

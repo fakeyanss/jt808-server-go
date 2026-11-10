@@ -72,6 +72,28 @@ func TestSQLitePersistsLocationsAcrossReopen(t *testing.T) {
 	require.Equal(t, base.UnixMilli(), records[2].ReceivedAt.UnixMilli())
 }
 
+// dedup_key 是 E2 的幂等键：同一手机同一 key 只落一条；空 key 视为老数据不去重。
+func TestSQLiteLocationDedupKeyIsIdempotent(t *testing.T) {
+	const phone = "188765700009"
+	ctx := context.Background()
+	store := openTestSQLite(t)
+	repo := store.LocationRepository(repository.LocationRetention{})
+	base := time.UnixMilli(time.Now().UnixMilli())
+
+	duplicated := sampleLocation(phone, 1, base)
+	duplicated.DedupKey = "hash-1"
+	replay := sampleLocation(phone, 2, base.Add(time.Second))
+	replay.DedupKey = "hash-1"
+	legacyFirst := sampleLocation(phone, 3, base.Add(2*time.Second))
+	legacySecond := sampleLocation(phone, 4, base.Add(3*time.Second))
+
+	require.NoError(t, repo.Record(ctx, []repository.LocationRecord{duplicated, replay, legacyFirst, legacySecond}))
+
+	records, err := repo.List(ctx, phone, 0)
+	require.NoError(t, err)
+	require.Len(t, records, 3, "dedup_key rejects the replay, NULL keys stay independent")
+}
+
 // SQLite 定位分页：按上报时间半开区间过滤，返回倒序页与总数。
 func TestSQLiteLocationListPageFiltersByReportTime(t *testing.T) {
 	const phone = "188765700003"

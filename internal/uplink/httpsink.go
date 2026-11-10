@@ -32,6 +32,8 @@ type HTTPSinkOptions struct {
 	QueueSize   int
 	Workers     int
 	MaxAttempts int
+	// OnUnknownDeviceDropped 在 409 重投仍失败时回调，用于指标与告警。
+	OnUnknownDeviceDropped func(phone string)
 }
 
 // HTTPSinkStats 是 HTTP 出口的累计计数与当前水位。
@@ -41,25 +43,32 @@ type HTTPSinkStats struct {
 	Timeouts   int64
 	Dropped    int64
 	Rejected   int64
+	Unknown    int64
 	InFlight   int64
 	QueueDepth int
 }
 
 // HTTPEnvelope 是上行出口的 JSON 信封，字段与设计文档第 4 节一致。
 type HTTPEnvelope struct {
-	EventID       string                   `json:"eventId"`
-	Phone         string                   `json:"phone"`
-	MsgID         uint16                   `json:"msgId"`
-	Serial        uint16                   `json:"serial"`
-	OccurredAtMS  int64                    `json:"occurredAtMs"`
-	GatewayID     string                   `json:"gatewayId"`
-	SessionID     string                   `json:"sessionId"`
-	Transport     string                   `json:"transport"`
-	Reliability   string                   `json:"reliability"`
-	Payload       json.RawMessage          `json:"payload,omitempty"`
-	PayloadBase64 string                   `json:"payloadBase64,omitempty"`
-	Meta          map[string]any           `json:"meta,omitempty"`
-	Reply         *contracts.TerminalReply `json:"reply,omitempty"`
+	EventID             string                   `json:"eventId"`
+	Phone               string                   `json:"phone"`
+	MsgID               uint16                   `json:"msgId"`
+	RawMsgID            uint16                   `json:"rawMsgId"`
+	Serial              uint16                   `json:"serial"`
+	OccurredAtMS        int64                    `json:"occurredAtMs"`
+	GatewayID           string                   `json:"gatewayId"`
+	SessionID           string                   `json:"sessionId"`
+	Transport           string                   `json:"transport"`
+	Reliability         string                   `json:"reliability"`
+	ProtocolVersion     string                   `json:"protocolVersion,omitempty"`
+	HeaderAttr          uint16                   `json:"headerAttr,omitempty"`
+	FragmentReassembled bool                     `json:"fragmentReassembled"`
+	FragmentTotal       uint16                   `json:"fragmentTotal,omitempty"`
+	BodyBase64          string                   `json:"bodyBase64,omitempty"`
+	Payload             json.RawMessage          `json:"payload,omitempty"`
+	PayloadBase64       string                   `json:"payloadBase64,omitempty"`
+	Meta                map[string]any           `json:"meta,omitempty"`
+	Reply               *contracts.TerminalReply `json:"reply,omitempty"`
 }
 
 // HTTPSink 把上行事件通过 HTTP hook 投递给管控。
@@ -87,8 +96,26 @@ type HTTPSink struct {
 	timeouts  atomic.Int64
 	dropped   atomic.Int64
 	rejected  atomic.Int64
+	unknown   atomic.Int64
 	inFlight  atomic.Int64
 	closed    atomic.Bool
+
+	onUnknownDropped func(phone string)
+	regMu            sync.Mutex
+	registrations    map[string]cachedRegistration
+	unknownSince     map[string]time.Time
+}
+
+const (
+	// registrationEventTTL 是注册事件缓存的有效期；只用于 409 时的一次性重投。
+	registrationEventTTL = 10 * time.Minute
+	// knownDeviceCooldown 是同一手机号连续 409 的熔断窗口，避免事件反复弹跳。
+	knownDeviceCooldown = 30 * time.Second
+)
+
+type cachedRegistration struct {
+	envelope  HTTPEnvelope
+	expiresAt time.Time
 }
 
 // NewHTTPSink 构造 HTTP 上行出口；URL、凭据与边界参数非法时返回错误。
@@ -123,7 +150,10 @@ func NewHTTPSink(options HTTPSinkOptions) (*HTTPSink, error) {
 		workers: options.Workers,
 		done:    make(chan struct{}),
 		// confirm-before-ack 的并发上限与队列容量一致，避免无界 goroutine。
-		slot: make(chan struct{}, options.QueueSize),
+		slot:             make(chan struct{}, options.QueueSize),
+		onUnknownDropped: options.OnUnknownDeviceDropped,
+		registrations:    map[string]cachedRegistration{},
+		unknownSince:     map[string]time.Time{},
 	}, nil
 }
 
@@ -173,6 +203,7 @@ func (s *HTTPSink) Stats() HTTPSinkStats {
 		Timeouts:   s.timeouts.Load(),
 		Dropped:    s.dropped.Load(),
 		Rejected:   s.rejected.Load(),
+		Unknown:    s.unknown.Load(),
 		InFlight:   s.inFlight.Load(),
 		QueueDepth: len(s.queue),
 	}
@@ -192,6 +223,11 @@ func (s *HTTPSink) Deliver(ctx context.Context, event contracts.UplinkEvent) (co
 		s.dropped.Add(1)
 		log.Warn().Err(err).Str("event_id", event.EventID).Msg("uplink http sink dropped event: encode failed")
 		return contracts.UplinkResult{Accepted: true}, nil
+	}
+
+	if event.MsgID == 0x0100 {
+		// 注册事件是 409 重投的唯一依据；即使 best-effort 也要先缓存再投递。
+		s.rememberRegistration(envelope)
 	}
 
 	if event.Reliability != contracts.ReliabilityConfirmBeforeAck {
@@ -246,11 +282,96 @@ func (s *HTTPSink) deliverSync(ctx context.Context, envelope HTTPEnvelope) (cont
 
 	s.inFlight.Add(1)
 	defer s.inFlight.Add(-1)
-	err := s.postWithRetry(ctx, envelope)
-	if err != nil {
-		return contracts.UplinkResult{Reason: err.Error()}, err
+	status, err := s.postWithRetryStatus(ctx, envelope)
+	if err == nil {
+		return contracts.UplinkResult{Accepted: true}, nil
 	}
-	return contracts.UplinkResult{Accepted: true}, nil
+	if status == http.StatusConflict && envelope.MsgID != 0x0100 {
+		return s.handleUnknownDevice(ctx, envelope, err)
+	}
+	return contracts.UplinkResult{Reason: err.Error()}, err
+}
+
+// handleUnknownDevice 处理管控返回的 409。
+//
+// 边界：
+//   - 每个入站事件最多重投一次注册事件；
+//   - 重投后仍 409 则熔断 30s，期间同手机号事件直接丢弃并计数；
+//   - 丢弃返回错误，网关不应答终端，计入终端自身的重传窗口，不在网关内部循环。
+func (s *HTTPSink) handleUnknownDevice(ctx context.Context, envelope HTTPEnvelope, cause error) (contracts.UplinkResult, error) {
+	if s.unknownRecently(envelope.Phone) {
+		s.dropUnknown(envelope, "device remains unknown within cooldown window")
+		return contracts.UplinkResult{Reason: "unknown_device"}, fmt.Errorf("uplink http sink: unknown device (cooldown): %w", cause)
+	}
+	if registration, ok := s.registration(envelope.Phone); ok && registration.EventID != envelope.EventID {
+		if _, retryErr := s.postWithRetryStatus(ctx, registration); retryErr == nil {
+			if status, err := s.postWithRetryStatus(ctx, envelope); err == nil {
+				return contracts.UplinkResult{Accepted: true}, nil
+			} else if status != http.StatusConflict {
+				return contracts.UplinkResult{Reason: err.Error()}, err
+			}
+		}
+	}
+	s.markUnknown(envelope.Phone)
+	s.dropUnknown(envelope, "device is not registered after registration replay")
+	return contracts.UplinkResult{Reason: "unknown_device"}, fmt.Errorf("uplink http sink: unknown device: %w", cause)
+}
+
+func (s *HTTPSink) dropUnknown(envelope HTTPEnvelope, reason string) {
+	s.unknown.Add(1)
+	log.Error().
+		Str("event_id", envelope.EventID).
+		Str("phone", envelope.Phone).
+		Str("msg_id", fmt.Sprintf("0x%04X", envelope.MsgID)).
+		Msg("Uplink event dropped: " + reason)
+	if s.onUnknownDropped != nil {
+		s.onUnknownDropped(envelope.Phone)
+	}
+}
+
+func (s *HTTPSink) rememberRegistration(envelope HTTPEnvelope) {
+	s.regMu.Lock()
+	defer s.regMu.Unlock()
+	now := time.Now()
+	if len(s.registrations) > 20000 {
+		for phone, entry := range s.registrations {
+			if now.After(entry.expiresAt) {
+				delete(s.registrations, phone)
+			}
+		}
+	}
+	s.registrations[envelope.Phone] = cachedRegistration{envelope: envelope, expiresAt: now.Add(registrationEventTTL)}
+}
+
+func (s *HTTPSink) registration(phone string) (HTTPEnvelope, bool) {
+	s.regMu.Lock()
+	defer s.regMu.Unlock()
+	entry, ok := s.registrations[phone]
+	if !ok || time.Now().After(entry.expiresAt) {
+		delete(s.registrations, phone)
+		return HTTPEnvelope{}, false
+	}
+	return entry.envelope, true
+}
+
+func (s *HTTPSink) unknownRecently(phone string) bool {
+	s.regMu.Lock()
+	defer s.regMu.Unlock()
+	since, ok := s.unknownSince[phone]
+	return ok && time.Since(since) < knownDeviceCooldown
+}
+
+func (s *HTTPSink) markUnknown(phone string) {
+	s.regMu.Lock()
+	defer s.regMu.Unlock()
+	if len(s.unknownSince) > 20000 {
+		for key, since := range s.unknownSince {
+			if time.Since(since) >= knownDeviceCooldown {
+				delete(s.unknownSince, key)
+			}
+		}
+	}
+	s.unknownSince[phone] = time.Now()
 }
 
 func (s *HTTPSink) worker(ctx context.Context) {
@@ -273,10 +394,17 @@ func (s *HTTPSink) worker(ctx context.Context) {
 }
 
 func (s *HTTPSink) postWithRetry(ctx context.Context, envelope HTTPEnvelope) error {
+	_, err := s.postWithRetryStatus(ctx, envelope)
+	return err
+}
+
+// postWithRetryStatus 与 postWithRetry 相同，但把最后一次 HTTP 状态码带回，
+// 供 409 unknown_device 判定使用。
+func (s *HTTPSink) postWithRetryStatus(ctx context.Context, envelope HTTPEnvelope) (int, error) {
 	body, err := json.Marshal(envelope)
 	if err != nil {
 		s.failed.Add(1)
-		return fmt.Errorf("marshal uplink event: %w", err)
+		return 0, fmt.Errorf("marshal uplink event: %w", err)
 	}
 
 	attempts := s.maxAttempts
@@ -285,19 +413,21 @@ func (s *HTTPSink) postWithRetry(ctx context.Context, envelope HTTPEnvelope) err
 	}
 	var lastErr error
 	var lastElapsed time.Duration
+	lastStatus := 0
 	for attempt := 0; attempt < attempts; attempt++ {
 		if attempt > 0 {
 			select {
 			case <-time.After(httpSinkRetryDelay):
 			case <-ctx.Done():
 				s.recordFailure(envelope, lastErr, lastElapsed)
-				return lastErr
+				return lastStatus, lastErr
 			}
 		}
 		start := time.Now()
 		status, err := s.post(ctx, body, envelope.EventID)
 		elapsed := time.Since(start)
 		lastElapsed = elapsed
+		lastStatus = status
 		if err == nil && status >= 200 && status < 300 {
 			s.delivered.Add(1)
 			log.Debug().
@@ -305,7 +435,7 @@ func (s *HTTPSink) postWithRetry(ctx context.Context, envelope HTTPEnvelope) err
 				Int("status", status).
 				Dur("elapsed", elapsed).
 				Msg("uplink http sink delivered event")
-			return nil
+			return status, nil
 		}
 		if err != nil {
 			lastErr = err
@@ -318,7 +448,7 @@ func (s *HTTPSink) postWithRetry(ctx context.Context, envelope HTTPEnvelope) err
 	}
 
 	s.recordFailure(envelope, lastErr, lastElapsed)
-	return lastErr
+	return lastStatus, lastErr
 }
 
 func (s *HTTPSink) post(ctx context.Context, body []byte, eventID string) (int, error) {
@@ -362,19 +492,27 @@ func errIsDeadline(err error) bool {
 // BuildHTTPEnvelope 把契约事件转换为线上 JSON 信封。
 func BuildHTTPEnvelope(event contracts.UplinkEvent) (HTTPEnvelope, error) {
 	envelope := HTTPEnvelope{
-		EventID:     event.EventID,
-		Phone:       event.Phone,
-		MsgID:       event.MsgID,
-		Serial:      event.Serial,
-		GatewayID:   event.GatewayID,
-		SessionID:   event.SessionID,
-		Transport:   event.Transport,
-		Reliability: string(event.Reliability),
-		Meta:        event.Meta,
-		Reply:       event.Reply,
+		EventID:             event.EventID,
+		Phone:               event.Phone,
+		MsgID:               event.MsgID,
+		RawMsgID:            event.RawMsgID,
+		Serial:              event.Serial,
+		GatewayID:           event.GatewayID,
+		SessionID:           event.SessionID,
+		Transport:           event.Transport,
+		Reliability:         string(event.Reliability),
+		ProtocolVersion:     event.ProtocolVersion,
+		HeaderAttr:          event.HeaderAttr,
+		FragmentReassembled: event.FragmentReassembled,
+		FragmentTotal:       event.FragmentTotal,
+		Meta:                event.Meta,
+		Reply:               event.Reply,
 	}
 	if !event.OccurredAt.IsZero() {
 		envelope.OccurredAtMS = event.OccurredAt.UnixMilli()
+	}
+	if len(event.Body) > 0 {
+		envelope.BodyBase64 = base64.StdEncoding.EncodeToString(event.Body)
 	}
 	if event.Payload != nil {
 		payload, err := json.Marshal(event.Payload)

@@ -15,11 +15,15 @@ import (
 	"github.com/rs/zerolog/log"
 
 	"github.com/fakeyanss/jt808-server-go/internal/contracts"
+	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
+	"github.com/fakeyanss/jt808-server-go/internal/repository"
 )
 
 const (
 	// PathUplink 是管控侧上行入口。
 	PathUplink = "/internal/v1/uplink"
+	// PathDeviceLookup 是网关只读查询设备档案的入口。
+	PathDeviceLookup = "/internal/v1/device/lookup"
 )
 
 // EventConsumer 处理某一类上行事件。
@@ -30,6 +34,20 @@ type EventConsumer interface {
 	ConsumeEvent(ctx context.Context, event contracts.UplinkEvent) (contracts.UplinkResult, error)
 }
 
+// StatusError 是带 HTTP 状态码的业务错误，例如 409 unknown_device。
+type StatusError struct {
+	Status  int
+	Code    string
+	Message string
+}
+
+func (e *StatusError) Error() string {
+	if e == nil {
+		return ""
+	}
+	return e.Code + ": " + e.Message
+}
+
 // ServerOptions 是管控侧上行入口的构造参数。
 type ServerOptions struct {
 	// Token 是 gateway -> control 的共享密钥。
@@ -38,8 +56,10 @@ type ServerOptions struct {
 	DedupTTL time.Duration
 	// DedupMaxEntries 限制去重表规模。
 	DedupMaxEntries int
-	// MaxBodyBytes 限制请求体；超出返回 413。
-	MaxBodyBytes int64
+	// MaxRequestBytes 限制 HTTP 请求体（含 base64 膨胀）；超出返回 413。
+	MaxRequestBytes int64
+	// MaxDecodedBodyBytes 在解码后二次校验原始消息体；超出返回 413。
+	MaxDecodedBodyBytes int64
 }
 
 // Server 是管控侧上行 HTTP 入口。
@@ -51,6 +71,7 @@ type Server struct {
 	defaultConsumer EventConsumer
 	replyHandler    contracts.TerminalReplyHandler
 	dedup           *dedupCache
+	deviceLookup    func(ctx context.Context, phone string) (*model.Device, error)
 
 	httpServer *http.Server
 	listener   net.Listener
@@ -70,8 +91,11 @@ func NewServer(options ServerOptions) (*Server, error) {
 	if options.DedupMaxEntries <= 0 {
 		options.DedupMaxEntries = 100000
 	}
-	if options.MaxBodyBytes <= 0 {
-		options.MaxBodyBytes = 4 * 1024 * 1024
+	if options.MaxRequestBytes <= 0 {
+		options.MaxRequestBytes = 12 * 1024 * 1024
+	}
+	if options.MaxDecodedBodyBytes <= 0 {
+		options.MaxDecodedBodyBytes = 8 * 1024 * 1024
 	}
 	return &Server{
 		opts:      options,
@@ -108,6 +132,16 @@ func (s *Server) SetTerminalReplyHandler(handler contracts.TerminalReplyHandler)
 	}
 	s.mu.Lock()
 	s.replyHandler = handler
+	s.mu.Unlock()
+}
+
+// SetDeviceLookup 设置网关只读查询设备档案的回调。
+func (s *Server) SetDeviceLookup(lookup func(ctx context.Context, phone string) (*model.Device, error)) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	s.deviceLookup = lookup
 	s.mu.Unlock()
 }
 
@@ -154,6 +188,7 @@ func (s *Server) ValidateCoverage(policy Policy) error {
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc(PathUplink, s.handle)
+	mux.HandleFunc(PathDeviceLookup, s.handleDeviceLookup)
 	return mux
 }
 
@@ -216,7 +251,7 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	r.Body = http.MaxBytesReader(w, r.Body, s.opts.MaxBodyBytes)
+	r.Body = http.MaxBytesReader(w, r.Body, s.opts.MaxRequestBytes)
 	var envelope HTTPEnvelope
 	if err := json.NewDecoder(r.Body).Decode(&envelope); err != nil {
 		var maxErr *http.MaxBytesError
@@ -288,8 +323,26 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_payload", err.Error())
 		return
 	}
+	if s.opts.MaxDecodedBodyBytes > 0 && int64(len(event.Body)) > s.opts.MaxDecodedBodyBytes {
+		log.Error().
+			Str("event_id", envelope.EventID).
+			Str("phone", envelope.Phone).
+			Uint16("msg_id", envelope.MsgID).
+			Int("body_bytes", len(event.Body)).
+			Int64("limit_bytes", s.opts.MaxDecodedBodyBytes).
+			Msg("Decoded uplink body exceeds limit")
+		writeError(w, http.StatusRequestEntityTooLarge, "too_large", "decoded body exceeds limit")
+		return
+	}
 	result, err := consumer.ConsumeEvent(r.Context(), event)
 	if err != nil {
+		var statusErr *StatusError
+		if errors.As(err, &statusErr) {
+			log.Warn().Err(err).Str("event_id", envelope.EventID).Int("status", statusErr.Status).
+				Msg("Uplink event rejected with explicit status")
+			writeError(w, statusErr.Status, statusErr.Code, statusErr.Message)
+			return
+		}
 		if confirm {
 			log.Error().Err(err).Str("event_id", envelope.EventID).Msg("Failed to consume confirm-before-ack event")
 			writeError(w, http.StatusServiceUnavailable, "handle_failed", err.Error())
@@ -311,6 +364,46 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, body)
 }
 
+func (s *Server) handleDeviceLookup(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "use POST")
+		return
+	}
+	if !s.authorized(r) {
+		writeError(w, http.StatusUnauthorized, "unauthorized", "invalid or missing bearer token")
+		return
+	}
+	s.mu.RLock()
+	lookup := s.deviceLookup
+	s.mu.RUnlock()
+	if lookup == nil {
+		writeError(w, http.StatusServiceUnavailable, "not_configured", "device lookup is not configured")
+		return
+	}
+	var request struct {
+		Phone string `json:"phone"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&request); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_json", err.Error())
+		return
+	}
+	device, err := lookup(r.Context(), strings.TrimSpace(request.Phone))
+	if err != nil {
+		if errors.Is(err, repository.ErrDeviceNotFound) {
+			writeError(w, http.StatusNotFound, "device_not_found", "device is not registered")
+			return
+		}
+		writeError(w, http.StatusServiceUnavailable, "lookup_failed", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"phone":    device.Phone,
+		"id":       device.ID,
+		"plate":    device.Plate,
+		"authCode": device.AuthCode,
+	})
+}
+
 func (s *Server) authorized(r *http.Request) bool {
 	auth := strings.TrimSpace(r.Header.Get("Authorization"))
 	const prefix = "Bearer "
@@ -324,21 +417,36 @@ func (s *Server) authorized(r *http.Request) bool {
 // Payload 保留为 json.RawMessage，由具体 consumer 决定如何解码。
 func envelopeToEvent(envelope HTTPEnvelope) (contracts.UplinkEvent, error) {
 	event := contracts.UplinkEvent{
-		EventID:     envelope.EventID,
-		Phone:       envelope.Phone,
-		MsgID:       envelope.MsgID,
-		Serial:      envelope.Serial,
-		GatewayID:   envelope.GatewayID,
-		SessionID:   envelope.SessionID,
-		Transport:   envelope.Transport,
-		Reliability: contracts.Reliability(envelope.Reliability),
-		Payload:     envelope.Payload,
-		PayloadRaw:  nil,
-		Meta:        envelope.Meta,
-		Reply:       envelope.Reply,
+		EventID:             envelope.EventID,
+		Phone:               envelope.Phone,
+		MsgID:               envelope.MsgID,
+		RawMsgID:            envelope.RawMsgID,
+		Serial:              envelope.Serial,
+		GatewayID:           envelope.GatewayID,
+		SessionID:           envelope.SessionID,
+		Transport:           envelope.Transport,
+		Reliability:         contracts.Reliability(envelope.Reliability),
+		ProtocolVersion:     envelope.ProtocolVersion,
+		HeaderAttr:          envelope.HeaderAttr,
+		FragmentReassembled: envelope.FragmentReassembled,
+		FragmentTotal:       envelope.FragmentTotal,
+		Payload:             envelope.Payload,
+		PayloadRaw:          nil,
+		Meta:                envelope.Meta,
+		Reply:               envelope.Reply,
+	}
+	if envelope.RawMsgID == 0 {
+		event.RawMsgID = envelope.MsgID
 	}
 	if envelope.OccurredAtMS > 0 {
 		event.OccurredAt = time.UnixMilli(envelope.OccurredAtMS)
+	}
+	if envelope.BodyBase64 != "" {
+		decoded, err := base64.StdEncoding.DecodeString(envelope.BodyBase64)
+		if err != nil {
+			return contracts.UplinkEvent{}, fmt.Errorf("bodyBase64 is not valid base64")
+		}
+		event.Body = decoded
 	}
 	if envelope.PayloadBase64 != "" {
 		decoded, err := base64.StdEncoding.DecodeString(envelope.PayloadBase64)

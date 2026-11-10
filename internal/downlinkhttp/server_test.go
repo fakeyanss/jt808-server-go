@@ -296,6 +296,75 @@ func TestSubmitSyncAckWaitsForTerminalResult(t *testing.T) {
 	}
 }
 
+// 查询类下行在 ack 后继续等待终端应答体，并在返回前写入 receipt。
+func TestSubmitSyncAckReturnsQueryResponse(t *testing.T) {
+	sent := make(chan struct{}, 1)
+	server, httpServer, _, _ := newHarness(t, func(deps *Dependencies) {
+		deps.Send = func(context.Context, string, model.JT808Msg, uint16) error {
+			select {
+			case sent <- struct{}{}:
+			default:
+			}
+			return nil
+		}
+	})
+	_, encoded := testMessage(t, testPhone)
+	result := make(chan downlinkResponse, 1)
+	go func() {
+		response, payload := postDownlink(t, http.DefaultClient, httpServer.URL, testToken, downlinkRequest{
+			Phone:               testPhone,
+			Mode:                ModeSyncAck,
+			Serial:              52,
+			MessageBase64:       base64.StdEncoding.EncodeToString(encoded),
+			ExpectResponseMsgID: 0x0104,
+			ResponseTimeoutMS:   1000,
+		})
+		if response.StatusCode != http.StatusOK {
+			result <- downlinkResponse{Reason: string(payload)}
+			return
+		}
+		result <- decodeResponse(t, payload)
+	}()
+
+	select {
+	case <-sent:
+	case <-time.After(time.Second):
+		t.Fatal("downlink was not sent")
+	}
+	zero := uint8(0)
+	server.HandleReliableResult(model.ReliableResult{
+		Phone:          testPhone,
+		MsgID:          0x8105,
+		Serial:         52,
+		Status:         model.ReliableStatusAcked,
+		TerminalResult: &zero,
+	})
+	// 0x0104 应答体：应答流水号 52 + 参数个数 0。
+	responseBody := []byte{0x00, 0x34, 0x00}
+	server.HandleQueryResponse(0x0104, &model.MsgHeader{
+		MsgID:        0x0104,
+		PhoneNumber:  testPhone,
+		SerialNumber: 9,
+		Attr:         &model.MsgBodyAttr{},
+	}, responseBody)
+
+	select {
+	case parsed := <-result:
+		if parsed.Status != contracts.DownlinkStatusAcked {
+			t.Fatalf("expected acked, got %+v", parsed)
+		}
+		if parsed.ResponseMsgID != 0x0104 {
+			t.Fatalf("expected response msg 0x0104, got 0x%04X", parsed.ResponseMsgID)
+		}
+		want := base64.StdEncoding.EncodeToString(responseBody)
+		if parsed.ResponseBodyBase64 != want {
+			t.Fatalf("expected response body %q, got %q", want, parsed.ResponseBodyBase64)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("sync_ack did not return query response")
+	}
+}
+
 func TestSubmitSyncAckReturns429WhenInFlightFull(t *testing.T) {
 	block := make(chan struct{})
 	release := make(chan struct{})

@@ -104,6 +104,7 @@ func TestStoreSaveFallsBackForUnknownFormat(t *testing.T) {
 	file, err := store.Save(upload)
 	require.NoError(t, err)
 	require.Equal(t, ".bin", filepath.Ext(file.RelativePath))
+	require.Equal(t, "188765432107/00000000/9003.bin", filepath.ToSlash(file.RelativePath))
 	require.True(t, file.LocationTime.IsZero())
 	require.Equal(t, uint32(0), file.AlarmSign)
 }

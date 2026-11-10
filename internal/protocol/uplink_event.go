@@ -2,6 +2,8 @@ package protocol
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"time"
 
@@ -17,7 +19,9 @@ const uplinkTimeLayout = "060102150405"
 var uplinkZone = time.FixedZone("CST", 8*3600)
 
 // buildUplinkEvent 把已解码的上行数据转换为出口事件信封。
-// 事件 ID 只使用手机号、消息 ID、流水号与发生时间，保证终端重传时稳定。
+//
+// EventID 只用手机号、消息 ID、流水号与消息体计算，终端重传同一条报文时稳定；
+// 不掺入收包时间，避免重传被当成两条不同事件。
 func buildUplinkEvent(
 	ctx context.Context,
 	msgID uint16,
@@ -30,14 +34,33 @@ func buildUplinkEvent(
 	phone := ""
 	serial := uint16(0)
 	packetCount := 1
+	reassembled := true
 	sessionID := ""
 	transport := ""
+	protocolVersion := ""
+	headerAttr := uint16(0)
+	body := []byte(nil)
 	if header != nil {
 		phone = header.PhoneNumber
 		serial = header.SerialNumber
-		if header.Frag != nil && header.Frag.Total > 0 {
-			packetCount = int(header.Frag.Total)
+		protocolVersion = protocolVersionLabel(header.GetVersionDesc())
+		if header.Attr != nil {
+			headerAttr = header.Attr.Encode()
 		}
+		if header.Frag != nil {
+			if header.Frag.Total > 0 {
+				packetCount = int(header.Frag.Total)
+			}
+			reassembled = false
+		}
+	}
+	if packet, ok := ctx.Value(model.PacketDecodeCtxKey{}).(*model.PacketData); ok && packet != nil {
+		body = append([]byte(nil), packet.Body...)
+		if packet.SegCompleted || packet.Header == nil || packet.Header.Frag == nil {
+			reassembled = true
+		}
+	} else if media, ok := in.(*model.Msg0801); ok && media != nil {
+		body = append([]byte(nil), media.FragmentData...)
 	}
 	if session, ok := ctx.Value(model.SessionCtxKey{}).(*model.Session); ok && session != nil {
 		sessionID = session.ID
@@ -45,23 +68,25 @@ func buildUplinkEvent(
 	}
 
 	occurredAt := uplinkOccurredAt(in)
-	occurredAtMS := int64(0)
-	if !occurredAt.IsZero() {
-		occurredAtMS = occurredAt.UnixMilli()
-	}
 
 	event := contracts.UplinkEvent{
-		EventID:     fmt.Sprintf("%s|0x%04X|%d|%d", phone, msgID, serial, occurredAtMS),
-		Phone:       phone,
-		MsgID:       msgID,
-		Serial:      serial,
-		OccurredAt:  occurredAt,
-		GatewayID:   gatewayID,
-		SessionID:   sessionID,
-		Transport:   transport,
-		Reliability: reliability,
-		Payload:     in,
-		Meta:        map[string]any{"packetCount": packetCount},
+		EventID:             uplinkEventID(phone, msgID, serial, body),
+		Phone:               phone,
+		MsgID:               msgID,
+		RawMsgID:            msgID,
+		Serial:              serial,
+		OccurredAt:          occurredAt,
+		GatewayID:           gatewayID,
+		SessionID:           sessionID,
+		Transport:           transport,
+		Reliability:         reliability,
+		ProtocolVersion:     protocolVersion,
+		HeaderAttr:          headerAttr,
+		FragmentReassembled: reassembled,
+		FragmentTotal:       uint16(packetCount),
+		Body:                body,
+		Payload:             in,
+		Meta:                map[string]any{"packetCount": packetCount},
 	}
 	if media, ok := in.(*model.Msg0801); ok && media != nil {
 		// 0x0801 的图片本体单独走 payloadBase64，避免把大块字节塞进结构化载荷。
@@ -118,6 +143,26 @@ func parseUplinkTime(value string) time.Time {
 		return time.Time{}
 	}
 	return parsed
+}
+
+// uplinkEventID 用手机号、消息 ID、流水号与原始消息体派生稳定 ID。
+func uplinkEventID(phone string, msgID, serial uint16, body []byte) string {
+	sum := sha256.New()
+	fmt.Fprintf(sum, "%s|%04X|%d|", phone, msgID, serial)
+	sum.Write(body)
+	return hex.EncodeToString(sum.Sum(nil))[:16]
+}
+
+// protocolVersionLabel 把协议版本枚举转换为事件里的可读标签。
+func protocolVersionLabel(version model.VersionType) string {
+	switch version {
+	case model.Version2019:
+		return "2019"
+	case model.Version2013:
+		return "2013"
+	default:
+		return "2011"
+	}
 }
 
 // uplinkReliability 把既有可靠性分类映射到出口契约的两档语义。

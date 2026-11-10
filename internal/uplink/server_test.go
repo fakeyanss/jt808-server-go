@@ -3,6 +3,7 @@ package uplink
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -243,12 +244,25 @@ func TestUplinkReplyWithoutHandlerReturns503(t *testing.T) {
 	}
 }
 
-func TestUplinkRejectsOversizedBody(t *testing.T) {
-	_, httpServer := newTestServer(t, ServerOptions{MaxBodyBytes: 64})
+func TestUplinkRejectsOversizedRequest(t *testing.T) {
+	_, httpServer := newTestServer(t, ServerOptions{MaxRequestBytes: 1024})
 	response, payload := postEnvelope(t, httpServer.URL, testControlToken, HTTPEnvelope{
 		EventID: "event-7",
 		MsgID:   0x0200,
-		Meta:    map[string]any{"padding": strings.Repeat("x", 512)},
+		Meta:    map[string]any{"padding": strings.Repeat("x", 4096)},
+	})
+	if response.StatusCode != http.StatusRequestEntityTooLarge {
+		t.Fatalf("expected 413, got %d: %s", response.StatusCode, payload)
+	}
+}
+
+func TestUplinkRejectsOversizedDecodedBody(t *testing.T) {
+	server, httpServer := newTestServer(t, ServerOptions{MaxRequestBytes: 1 << 20, MaxDecodedBodyBytes: 64})
+	server.RegisterDefaultConsumer(&fakeConsumer{})
+	response, payload := postEnvelope(t, httpServer.URL, testControlToken, HTTPEnvelope{
+		EventID:    "event-8",
+		MsgID:      0x0200,
+		BodyBase64: base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{0}, 128)),
 	})
 	if response.StatusCode != http.StatusRequestEntityTooLarge {
 		t.Fatalf("expected 413, got %d: %s", response.StatusCode, payload)

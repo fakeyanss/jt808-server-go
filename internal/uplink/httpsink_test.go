@@ -155,6 +155,56 @@ func TestHTTPSinkConfirmNon2xxFails(t *testing.T) {
 	require.Zero(t, stats.Delivered)
 }
 
+// 409 只允许重投一次注册事件；重投后仍失败则丢弃并计数，冷却期内不再重投。
+func TestHTTPSinkUnknownDeviceRedeliveryIsBounded(t *testing.T) {
+	var registrations, events atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var envelope HTTPEnvelope
+		if err := json.NewDecoder(r.Body).Decode(&envelope); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		if envelope.MsgID == 0x0100 {
+			registrations.Add(1)
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		events.Add(1)
+		w.WriteHeader(http.StatusConflict)
+	}))
+	defer server.Close()
+
+	var dropped int
+	sink := newTestSink(t, server.URL, func(o *HTTPSinkOptions) {
+		o.OnUnknownDeviceDropped = func(string) { dropped++ }
+	})
+
+	registration := testEvent(contracts.ReliabilityConfirmBeforeAck)
+	registration.MsgID = 0x0100
+	registration.EventID = "188765499021|0x0100|1|0"
+	_, err := sink.Deliver(context.Background(), registration)
+	require.NoError(t, err)
+
+	location := testEvent(contracts.ReliabilityConfirmBeforeAck)
+	_, err = sink.Deliver(context.Background(), location)
+	require.Error(t, err)
+	require.Equal(t, int64(2), registrations.Load(), "registration is replayed exactly once")
+	require.Equal(t, int64(2), events.Load(), "non-registration event is retried exactly once")
+	require.Equal(t, 1, dropped)
+
+	// 冷却窗口内同一 phone 的事件仍会尝试一次（拿不到 409 就无法判定），
+	// 但不再重投注册事件，直接丢弃并计数。
+	batch := testEvent(contracts.ReliabilityConfirmBeforeAck)
+	batch.MsgID = 0x0704
+	batch.EventID = "188765499021|0x0704|8|0"
+	_, err = sink.Deliver(context.Background(), batch)
+	require.Error(t, err)
+	require.Equal(t, int64(2), registrations.Load())
+	require.Equal(t, int64(3), events.Load())
+	require.Equal(t, 2, dropped)
+	require.Equal(t, int64(2), sink.Stats().Unknown)
+}
+
 func TestHTTPSinkConfirmTimeoutFails(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		select {

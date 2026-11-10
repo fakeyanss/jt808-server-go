@@ -21,6 +21,7 @@ import (
 	"github.com/fakeyanss/jt808-server-go/internal/contracts"
 	"github.com/fakeyanss/jt808-server-go/internal/httpguard"
 	"github.com/fakeyanss/jt808-server-go/internal/mediaupload"
+	"github.com/fakeyanss/jt808-server-go/internal/protocol"
 	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
 	"github.com/fakeyanss/jt808-server-go/internal/repository"
 	"github.com/fakeyanss/jt808-server-go/internal/runtime"
@@ -28,9 +29,15 @@ import (
 	"github.com/fakeyanss/jt808-server-go/internal/storage"
 )
 
+// Queryer 把查询类下行交给网关并等待终端应答体。
+// standalone 下为 nil，沿用进程内 broker；cluster 下由管控实现。
+type Queryer interface {
+	Query(ctx context.Context, phone string, msg model.JT808Msg, expectMsgID uint16, timeout time.Duration) ([]byte, error)
+}
+
 // Run 启动业务 API。downlink 为下行契约实现；未启用时下行入口直接发送，
 // 不提供命令状态查询。
-func Run(ctx context.Context, serv *server.TCPServer, cfg *config.Config, apiOptions config.APIOptions, alarmServ *alarmserver.Server, downlink contracts.Downlink, mediaUpload *mediaupload.Store) {
+func Run(ctx context.Context, serv *server.TCPServer, cfg *config.Config, apiOptions config.APIOptions, alarmServ *alarmserver.Server, downlink contracts.Downlink, mediaUpload *mediaupload.Store, queryer Queryer) {
 	// web server structure
 	gin.SetMode(gin.ReleaseMode)
 	router := gin.Default()
@@ -163,28 +170,14 @@ func Run(ctx context.Context, serv *server.TCPServer, cfg *config.Config, apiOpt
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
 		}
-		session, err := lookupSessionByPhone(c.Request.Context(), connRegistry, device)
-		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
-			return
-		}
-		serial := session.GetNextSerialNum()
-		responses := runtime.Default().ParamResponses
-		responseCh, cancel, err := responses.Register(phone, serial)
-		if err != nil {
-			c.JSON(http.StatusConflict, gin.H{"err": err.Error()})
-			return
-		}
-		defer cancel()
-
-		var msg model.JT808Msg
+		var ids []uint32
 		if rawIDs := c.Query("ids"); rawIDs != "" {
 			parts := strings.Split(rawIDs, ",")
 			if len(parts) > 255 {
 				c.JSON(http.StatusBadRequest, gin.H{"err": "at most 255 parameter IDs are allowed"})
 				return
 			}
-			ids := make([]uint32, 0, len(parts))
+			ids = make([]uint32, 0, len(parts))
 			for _, raw := range parts {
 				id, parseErr := strconv.ParseUint(strings.TrimSpace(raw), 0, 32)
 				if parseErr != nil {
@@ -193,10 +186,49 @@ func Run(ctx context.Context, serv *server.TCPServer, cfg *config.Config, apiOpt
 				}
 				ids = append(ids, uint32(id))
 			}
-			msg = &model.Msg8106{Header: model.GenMsgHeader(device, 0x8106, serial), ParamIDs: ids}
-		} else {
-			msg = &model.Msg8104{Header: model.GenMsgHeader(device, 0x8104, serial)}
 		}
+
+		var msg model.JT808Msg
+		if len(ids) > 0 {
+			msg = &model.Msg8106{Header: model.GenMsgHeader(device, 0x8106, 0), ParamIDs: ids}
+		} else {
+			msg = &model.Msg8104{Header: model.GenMsgHeader(device, 0x8104, 0)}
+		}
+		if queryer != nil {
+			body, queryErr := queryer.Query(c.Request.Context(), phone, msg, 0x0104, 10*time.Second)
+			if queryErr != nil {
+				c.JSON(http.StatusGatewayTimeout, gin.H{"err": "terminal parameter query timed out: " + queryErr.Error()})
+				return
+			}
+			decoded, decodeErr := decodeQueryResponse(device, 0x0104, body)
+			if decodeErr != nil {
+				c.JSON(http.StatusBadGateway, gin.H{"err": decodeErr.Error()})
+				return
+			}
+			response, ok := decoded.(*model.Msg0104)
+			if !ok {
+				c.JSON(http.StatusBadGateway, gin.H{"err": "unexpected parameter response"})
+				return
+			}
+			c.JSON(http.StatusOK, response.Parameters)
+			return
+		}
+
+		session, err := lookupSessionByPhone(c.Request.Context(), connRegistry, device)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
+			return
+		}
+		serial := session.GetNextSerialNum()
+		msg.GetHeader().SerialNumber = serial
+		responses := runtime.Default().ParamResponses
+		responseCh, cancel, err := responses.Register(phone, serial)
+		if err != nil {
+			c.JSON(http.StatusConflict, gin.H{"err": err.Error()})
+			return
+		}
+		defer cancel()
+
 		directSend(serv, session, msg)
 		ctx, cancelRequest := context.WithTimeout(c.Request.Context(), 10*time.Second)
 		defer cancelRequest()
@@ -218,11 +250,27 @@ func Run(ctx context.Context, serv *server.TCPServer, cfg *config.Config, apiOpt
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
 		}
+		msg := &model.Msg8107{Header: model.GenMsgHeader(device, 0x8107, 0)}
+		if queryer != nil {
+			body, queryErr := queryer.Query(c.Request.Context(), phone, msg, 0x0107, 10*time.Second)
+			if queryErr != nil {
+				c.JSON(http.StatusGatewayTimeout, gin.H{"err": "terminal property query timed out: " + queryErr.Error()})
+				return
+			}
+			decoded, decodeErr := decodeQueryResponse(device, 0x0107, body)
+			if decodeErr != nil {
+				c.JSON(http.StatusBadGateway, gin.H{"err": decodeErr.Error()})
+				return
+			}
+			c.JSON(http.StatusOK, decoded)
+			return
+		}
 		session, err := lookupSessionByPhone(c.Request.Context(), connRegistry, device)
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
 		}
+		msg.Header.SerialNumber = session.GetNextSerialNum()
 		responses := runtime.Default().PropertyResponses
 		responseCh, cancel, err := responses.Register(phone)
 		if err != nil {
@@ -230,7 +278,7 @@ func Run(ctx context.Context, serv *server.TCPServer, cfg *config.Config, apiOpt
 			return
 		}
 		defer cancel()
-		directSend(serv, session, &model.Msg8107{Header: model.GenMsgHeader(device, 0x8107, session.GetNextSerialNum())})
+		directSend(serv, session, msg)
 		ctx, cancelRequest := context.WithTimeout(c.Request.Context(), 10*time.Second)
 		defer cancelRequest()
 		select {
@@ -251,12 +299,33 @@ func Run(ctx context.Context, serv *server.TCPServer, cfg *config.Config, apiOpt
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
 		}
+		msg := &model.Msg8201{Header: model.GenMsgHeader(device, 0x8201, 0)}
+		if queryer != nil {
+			body, queryErr := queryer.Query(c.Request.Context(), phone, msg, 0x0201, 10*time.Second)
+			if queryErr != nil {
+				c.JSON(http.StatusGatewayTimeout, gin.H{"err": "terminal location query timed out: " + queryErr.Error()})
+				return
+			}
+			decoded, decodeErr := decodeQueryResponse(device, 0x0201, body)
+			if decodeErr != nil {
+				c.JSON(http.StatusBadGateway, gin.H{"err": decodeErr.Error()})
+				return
+			}
+			response, ok := decoded.(*model.Msg0201)
+			if !ok {
+				c.JSON(http.StatusBadGateway, gin.H{"err": "unexpected location response"})
+				return
+			}
+			c.JSON(http.StatusOK, response.Location)
+			return
+		}
 		session, err := lookupSessionByPhone(c.Request.Context(), connRegistry, device)
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
 		}
 		serial := session.GetNextSerialNum()
+		msg.Header.SerialNumber = serial
 		responses := runtime.Default().LocationResponses
 		responseCh, cancel, err := responses.Register(phone, serial)
 		if err != nil {
@@ -264,7 +333,7 @@ func Run(ctx context.Context, serv *server.TCPServer, cfg *config.Config, apiOpt
 			return
 		}
 		defer cancel()
-		directSend(serv, session, &model.Msg8201{Header: model.GenMsgHeader(device, 0x8201, serial)})
+		directSend(serv, session, msg)
 		ctx, cancelRequest := context.WithTimeout(c.Request.Context(), 10*time.Second)
 		defer cancelRequest()
 		select {
@@ -470,6 +539,21 @@ func Run(ctx context.Context, serv *server.TCPServer, cfg *config.Config, apiOpt
 		device, err := devices.GetByPhone(c.Request.Context(), phone)
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
+			return
+		}
+		if queryer != nil {
+			msg := &model.Msg8608{Header: model.GenMsgHeader(device, 0x8608, 0), QueryType: request.QueryType, IDs: request.IDs}
+			body, queryErr := queryer.Query(c.Request.Context(), phone, msg, 0x0608, 10*time.Second)
+			if queryErr != nil {
+				c.JSON(http.StatusGatewayTimeout, gin.H{"err": "region/route query timed out: " + queryErr.Error()})
+				return
+			}
+			decoded, decodeErr := decodeQueryResponse(device, 0x0608, body)
+			if decodeErr != nil {
+				c.JSON(http.StatusBadGateway, gin.H{"err": decodeErr.Error()})
+				return
+			}
+			c.JSON(http.StatusOK, decoded)
 			return
 		}
 		session, err := lookupSessionByPhone(c.Request.Context(), connRegistry, device)
@@ -1248,6 +1332,12 @@ func Run(ctx context.Context, serv *server.TCPServer, cfg *config.Config, apiOpt
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		log.Warn().Err(err).Msg("Fail to shutdown HTTP API server")
 	}
+}
+
+// decodeQueryResponse 用终端的协议版本重建报文头并解码查询应答体。
+func decodeQueryResponse(device *model.Device, msgID uint16, body []byte) (model.JT808Msg, error) {
+	header := model.GenMsgHeader(device, msgID, 0)
+	return protocol.DecodeMessageBody(msgID, header, body)
 }
 
 // lookupSessionByPhone 按终端手机号在运行时会话注册表中定位当前活连接。
