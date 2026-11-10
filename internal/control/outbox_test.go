@@ -9,10 +9,10 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/fakeyanss/jt808-server-go/internal/contracts"
 	"github.com/fakeyanss/jt808-server-go/internal/observability"
 	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
 	"github.com/fakeyanss/jt808-server-go/internal/repository"
-	"github.com/fakeyanss/jt808-server-go/internal/runtime"
 )
 
 const (
@@ -36,31 +36,39 @@ type sentMessage struct {
 	body      []byte
 }
 
-// fakeSender 记录重投下发的报文，并可按需注入同步写失败。
+// fakeSender 记录重投下发的报文，并可按需注入离线、拒绝或传输错误。
 type fakeSender struct {
-	mu      sync.Mutex
-	sent    []sentMessage
-	sendErr error
+	mu       sync.Mutex
+	sent     []sentMessage
+	sendErr  error
+	offline  bool
+	rejected bool
 }
 
-func (f *fakeSender) send(sessionID string, msg model.JT808Msg, serial uint16) error {
+func (f *fakeSender) Send(_ context.Context, request contracts.DownlinkRequest) (contracts.DownlinkReceipt, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.sendErr != nil {
-		return f.sendErr
+		return contracts.DownlinkReceipt{}, f.sendErr
 	}
-	header := msg.GetHeader()
+	if f.offline {
+		return contracts.DownlinkReceipt{Status: contracts.DownlinkStatusOffline, Reason: "device offline"}, nil
+	}
+	if f.rejected {
+		return contracts.DownlinkReceipt{Status: contracts.DownlinkStatusRejected, Reason: "gateway rejected downlink"}, nil
+	}
+	header := request.Message.GetHeader()
 	body := []byte(nil)
-	if raw, ok := msg.(*model.MsgRawBody); ok {
+	if raw, ok := request.Message.(*model.MsgRawBody); ok {
 		body = append([]byte(nil), raw.Body...)
 	}
 	f.sent = append(f.sent, sentMessage{
-		sessionID: sessionID,
+		sessionID: request.SessionID,
 		msgID:     header.MsgID,
-		serial:    serial,
+		serial:    header.SerialNumber,
 		body:      body,
 	})
-	return nil
+	return contracts.DownlinkReceipt{Status: contracts.DownlinkStatusAccepted, Serial: request.Serial}, nil
 }
 
 func (f *fakeSender) count() int {
@@ -73,7 +81,6 @@ type harness struct {
 	service *Outbox
 	repo    repository.CommandRepository
 	devices repository.DeviceRepository
-	conn    runtime.ConnectionRegistry
 	sender  *fakeSender
 	clock   *fakeClock
 	metrics *observability.Metrics
@@ -85,7 +92,6 @@ func newHarness(t *testing.T, options OutboxOptions) *harness {
 	ctx := context.Background()
 	repo := repository.NewCommandRepository()
 	devices := repository.NewDeviceRepository()
-	conn := runtime.NewConnectionRegistry()
 	sender := &fakeSender{}
 	metrics := observability.NewMetrics()
 	clock := &fakeClock{now: time.Date(2026, 11, 8, 12, 0, 0, 0, time.UTC)}
@@ -98,33 +104,21 @@ func newHarness(t *testing.T, options OutboxOptions) *harness {
 	service, err := NewOutbox(OutboxDependencies{
 		Commands: repo,
 		Devices:  devices,
-		Conn:     conn,
 		Metrics:  metrics,
-		Send: senderFunc(func(sessionID string, msg model.JT808Msg, serial uint16) error {
-			return sender.send(sessionID, msg, serial)
-		}),
-		Owner: "test-node",
-		Clock: clock.Now,
+		Send:     sender,
+		Owner:    "test-node",
+		Clock:    clock.Now,
 	}, options)
 	require.NoError(t, err)
 	return &harness{
 		service: service,
 		repo:    repo,
 		devices: devices,
-		conn:    conn,
 		sender:  sender,
 		clock:   clock,
 		metrics: metrics,
 		options: options,
 	}
-}
-
-func (h *harness) bindOnline(t *testing.T) {
-	t.Helper()
-	ctx := context.Background()
-	require.NoError(t, h.conn.Bind(ctx, &model.Session{ID: testSessionID}))
-	_, err := h.conn.BindPhone(ctx, testPhone, testSessionID)
-	require.NoError(t, err)
 }
 
 func (h *harness) enqueue(t *testing.T, commandID string, attempts int, next, expires time.Time) *repository.DownlinkCommand {
@@ -162,7 +156,6 @@ func defaultTestOptions() OutboxOptions {
 func TestReplayAfterRestart(t *testing.T) {
 	ctx := context.Background()
 	h := newHarness(t, defaultTestOptions())
-	h.bindOnline(t)
 	command := h.enqueue(t, "cmd-restart", 1, h.clock.now.Add(-time.Minute), h.clock.now.Add(time.Hour))
 
 	require.NoError(t, h.service.Tick(ctx))
@@ -171,7 +164,8 @@ func TestReplayAfterRestart(t *testing.T) {
 	h.sender.mu.Lock()
 	sent := h.sender.sent[0]
 	h.sender.mu.Unlock()
-	require.Equal(t, testSessionID, sent.sessionID)
+	// outbox 不再依赖本地会话：网关按 phone 路由，SessionID 由网关侧解析。
+	require.Empty(t, sent.sessionID)
 	require.Equal(t, uint16(0x8105), sent.msgID)
 	// 重投复用原始流水号。
 	require.Equal(t, command.Serial, sent.serial)
@@ -200,6 +194,7 @@ func TestReplayAfterRestart(t *testing.T) {
 func TestReplayKeepsWaitingWhileDeviceOffline(t *testing.T) {
 	ctx := context.Background()
 	h := newHarness(t, defaultTestOptions())
+	h.sender.offline = true
 	command := h.enqueue(t, "cmd-offline", 1, h.clock.now.Add(-time.Minute), h.clock.now.Add(time.Hour))
 
 	require.NoError(t, h.service.Tick(ctx))
@@ -212,8 +207,37 @@ func TestReplayKeepsWaitingWhileDeviceOffline(t *testing.T) {
 	require.Equal(t, "device offline", stored.LastError)
 	require.Empty(t, stored.LeaseOwner)
 
-	// 设备上线后下一轮补发。
-	h.bindOnline(t)
+	// 设备上线后同一轮即可补发。
+	h.sender.offline = false
+	require.NoError(t, h.service.Tick(ctx))
+	require.Equal(t, 1, h.sender.count())
+	stored, err = h.repo.Get(ctx, command.CommandID)
+	require.NoError(t, err)
+	require.Equal(t, 2, stored.Attempts)
+}
+
+// TestReplayOfflineDoesNotConsumeAttempts 覆盖长期离线：反复释放租约不得递增
+// 或清零 attempts，否则 MaxAttempts 这道闸会在设备恢复前失效。
+func TestReplayOfflineDoesNotConsumeAttempts(t *testing.T) {
+	ctx := context.Background()
+	options := defaultTestOptions()
+	options.MaxAttempts = 2
+	h := newHarness(t, options)
+	h.sender.offline = true
+	command := h.enqueue(t, "cmd-offline-long", 1, h.clock.now.Add(-time.Minute), h.clock.now.Add(time.Hour))
+
+	for i := 0; i < options.MaxAttempts+5; i++ {
+		require.NoError(t, h.service.Tick(ctx))
+		h.clock.advance(time.Second)
+	}
+	stored, err := h.repo.Get(ctx, command.CommandID)
+	require.NoError(t, err)
+	require.Equal(t, repository.CommandStatusPending, stored.Status)
+	require.Equal(t, 1, stored.Attempts)
+	require.Empty(t, stored.LeaseOwner)
+
+	// 恢复在线后仍能正常发出，且只把 attempts 推进到 2。
+	h.sender.offline = false
 	require.NoError(t, h.service.Tick(ctx))
 	require.Equal(t, 1, h.sender.count())
 	stored, err = h.repo.Get(ctx, command.CommandID)
@@ -227,7 +251,6 @@ func TestReplayMarksFailedWhenAttemptsExhausted(t *testing.T) {
 	options := defaultTestOptions()
 	options.MaxAttempts = 2
 	h := newHarness(t, options)
-	h.bindOnline(t)
 	command := h.enqueue(t, "cmd-exhausted", 1, h.clock.now.Add(-time.Minute), h.clock.now.Add(time.Hour))
 
 	// 第一次重投把 attempts 推到 2，即上限。
@@ -257,18 +280,14 @@ func TestReplayIsIdempotentAcrossInstances(t *testing.T) {
 	ctx := context.Background()
 	options := defaultTestOptions()
 	h := newHarness(t, options)
-	h.bindOnline(t)
 	h.enqueue(t, "cmd-idempotent", 1, h.clock.now.Add(-time.Minute), h.clock.now.Add(time.Hour))
 
 	second, err := NewOutbox(OutboxDependencies{
 		Commands: h.repo,
 		Devices:  h.devices,
-		Conn:     h.conn,
-		Send: senderFunc(func(sessionID string, msg model.JT808Msg, serial uint16) error {
-			return h.sender.send(sessionID, msg, serial)
-		}),
-		Owner: "other-node",
-		Clock: h.clock.Now,
+		Send:     h.sender,
+		Owner:    "other-node",
+		Clock:    h.clock.Now,
 	}, options)
 	require.NoError(t, err)
 
@@ -310,7 +329,6 @@ func TestReplaySchedulesBackoffOnFailure(t *testing.T) {
 	ctx := context.Background()
 	options := defaultTestOptions()
 	h := newHarness(t, options)
-	h.bindOnline(t)
 	command := h.enqueue(t, "cmd-backoff", 1, h.clock.now.Add(-time.Minute), h.clock.now.Add(time.Hour))
 
 	require.NoError(t, h.service.Tick(ctx))
@@ -335,7 +353,6 @@ func TestReplaySchedulesBackoffOnFailure(t *testing.T) {
 func TestReplaySynchronousSendFailureSchedulesRetry(t *testing.T) {
 	ctx := context.Background()
 	h := newHarness(t, defaultTestOptions())
-	h.bindOnline(t)
 	h.sender.sendErr = errors.New("write failed")
 	command := h.enqueue(t, "cmd-send-fail", 1, h.clock.now.Add(-time.Minute), h.clock.now.Add(time.Hour))
 
@@ -345,4 +362,74 @@ func TestReplaySynchronousSendFailureSchedulesRetry(t *testing.T) {
 	require.Equal(t, repository.CommandStatusPending, stored.Status)
 	require.Equal(t, "write failed", stored.LastError)
 	require.Empty(t, stored.LeaseOwner)
+}
+
+// TestReplayPermanentErrorMarksFailedImmediately 覆盖确定性失败：400/401/403/413
+// 重投必然同样失败，应直接终结并记录原因，不进入退避。
+func TestReplayPermanentErrorMarksFailedImmediately(t *testing.T) {
+	ctx := context.Background()
+	h := newHarness(t, defaultTestOptions())
+	h.sender.sendErr = &contracts.DownlinkError{
+		Kind:       contracts.DownlinkErrorPermanent,
+		StatusCode: 403,
+		Message:    "forbidden",
+	}
+	command := h.enqueue(t, "cmd-permanent", 1, h.clock.now.Add(-time.Minute), h.clock.now.Add(time.Hour))
+
+	require.NoError(t, h.service.Tick(ctx))
+	stored, err := h.repo.Get(ctx, command.CommandID)
+	require.NoError(t, err)
+	require.Equal(t, repository.CommandStatusFailed, stored.Status)
+	require.Contains(t, stored.LastError, "403")
+	require.Empty(t, stored.LeaseOwner)
+}
+
+// TestReplayTransientHonorsRetryAfter 覆盖 429 限流：退避采用网关给出的 Retry-After，
+// 不按本地指数退避立刻重投。
+func TestReplayTransientHonorsRetryAfter(t *testing.T) {
+	ctx := context.Background()
+	h := newHarness(t, defaultTestOptions())
+	h.sender.sendErr = &contracts.DownlinkError{
+		Kind:       contracts.DownlinkErrorTransient,
+		StatusCode: 429,
+		RetryAfter: 30 * time.Second,
+		Message:    "too many requests",
+	}
+	command := h.enqueue(t, "cmd-429", 1, h.clock.now.Add(-time.Minute), h.clock.now.Add(time.Hour))
+
+	require.NoError(t, h.service.Tick(ctx))
+	stored, err := h.repo.Get(ctx, command.CommandID)
+	require.NoError(t, err)
+	require.Equal(t, repository.CommandStatusPending, stored.Status)
+	require.Contains(t, stored.LastError, "429")
+	require.True(t, stored.NextAttemptAt.Equal(h.clock.now.Add(30*time.Second)),
+		"next attempt should honor Retry-After, got %s", stored.NextAttemptAt)
+	require.Empty(t, stored.LeaseOwner)
+}
+
+// TestSubmitPermanentErrorFailsImmediately 覆盖首次下发即确定性失败：命令不进入
+// 重投窗口，直接终结，避免占用 in-flight 名额。
+func TestSubmitPermanentErrorFailsImmediately(t *testing.T) {
+	ctx := context.Background()
+	h := newHarness(t, defaultTestOptions())
+	h.sender.sendErr = &contracts.DownlinkError{
+		Kind:       contracts.DownlinkErrorPermanent,
+		StatusCode: 400,
+		Message:    "bad request",
+	}
+	result, err := h.service.Submit(ctx, contracts.DownlinkRequest{
+		Phone: testPhone,
+		Message: &model.MsgRawBody{
+			Header: model.GenMsgHeader(&model.Device{Phone: testPhone, VersionDesc: model.Version2013}, 0x8105, 0),
+			Body:   []byte{0x02},
+		},
+	})
+	require.Error(t, err)
+	require.NotEmpty(t, result.ID)
+	require.Equal(t, 0, h.sender.count())
+
+	stored, getErr := h.repo.Get(ctx, result.ID)
+	require.NoError(t, getErr)
+	require.Equal(t, repository.CommandStatusFailed, stored.Status)
+	require.Contains(t, stored.LastError, "400")
 }

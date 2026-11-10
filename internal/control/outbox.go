@@ -21,7 +21,6 @@ import (
 	"github.com/fakeyanss/jt808-server-go/internal/observability"
 	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
 	"github.com/fakeyanss/jt808-server-go/internal/repository"
-	"github.com/fakeyanss/jt808-server-go/internal/runtime"
 )
 
 // 重投相关的默认值。可由配置覆盖。
@@ -80,10 +79,8 @@ func (o OutboxOptions) withDefaults() OutboxOptions {
 type OutboxDependencies struct {
 	Commands repository.CommandRepository
 	Devices  repository.DeviceRepository
-	// Conn 仅在进程内有网关时使用，用于发送前快速判断离线；
-	// control-only 形态为 nil，离线判断交给 DownlinkSender 的返回值。
-	Conn runtime.ConnectionRegistry
 	// Send 是下行传输契约：本地直连与 HTTP 网关实现同一接口。
+	// 离线判断一律看回执，不在控制面持有连接注册表（control-only 没有本地会话）。
 	Send contracts.DownlinkSender
 	// Metrics 收集终端应答处理结果；为空时只记日志。
 	Metrics *observability.Metrics
@@ -97,7 +94,6 @@ type OutboxDependencies struct {
 type Outbox struct {
 	commands repository.CommandRepository
 	devices  repository.DeviceRepository
-	conn     runtime.ConnectionRegistry
 	send     contracts.DownlinkSender
 	metrics  *observability.Metrics
 	owner    string
@@ -135,7 +131,6 @@ func NewOutbox(deps OutboxDependencies, options OutboxOptions) (*Outbox, error) 
 	return &Outbox{
 		commands: deps.Commands,
 		devices:  deps.Devices,
-		conn:     deps.Conn,
 		send:     deps.Send,
 		metrics:  deps.Metrics,
 		owner:    owner,
@@ -173,8 +168,13 @@ func (o *Outbox) Submit(ctx context.Context, request contracts.DownlinkRequest) 
 	}
 	serial := request.Serial
 	if serial == 0 {
-		// outbox 以 (phone, msgID, serial) 关联终端应答；流水号必须在下发前确定。
-		return contracts.DownlinkResult{}, fmt.Errorf("downlink serial is required when outbox is enabled")
+		// 流水号由管控统一分配：off 模式由网关在发送时分配；落库模式必须先
+		// 确定 (phone, msgId, serial) 才能关联终端应答并支持重投复用。
+		allocated, err := o.commands.NextSerial(ctx, header.PhoneNumber, header.MsgID)
+		if err != nil {
+			return contracts.DownlinkResult{}, fmt.Errorf("allocate downlink serial: %w", err)
+		}
+		serial = allocated
 	}
 	idempotencyKey := strings.TrimSpace(request.IdempotencyKey)
 	if len(idempotencyKey) > 128 {
@@ -188,6 +188,7 @@ func (o *Outbox) Submit(ctx context.Context, request contracts.DownlinkRequest) 
 		idempotencyKey = commandID
 	}
 
+	request.Serial = serial
 	header.SerialNumber = serial
 	encoded, err := request.Message.Encode()
 	if err != nil {
@@ -224,20 +225,27 @@ func (o *Outbox) Submit(ctx context.Context, request contracts.DownlinkRequest) 
 
 	receipt, sendErr := o.send.Send(ctx, request)
 	if sendErr != nil {
-		// 首次下发失败不直接判死：保持 pending 并安排重投，设备重新上线后仍可补发。
-		next := o.clock().Add(o.opts.RetryBase)
-		_, _ = o.commands.ScheduleRetry(ctx, header.PhoneNumber, header.MsgID, serial, next, sendErr.Error())
+		classified := contracts.ClassifyDownlinkError(sendErr)
+		if classified.IsPermanent() {
+			// 400/401/403/413 是确定性拒绝：重投必然同样失败，直接终结并记录原因，
+			// 不占用重投窗口与 in-flight 名额。
+			o.fail(ctx, header.PhoneNumber, header.MsgID, serial, classified.Error())
+			return result, fmt.Errorf("send downlink command: %w", sendErr)
+		}
+		// 可重试失败（429/5xx/网络/超时）保持 pending，按退避安排下一次。
+		next := o.clock().Add(o.retryDelayFor(1, classified))
+		_, _ = o.commands.ScheduleRetry(ctx, header.PhoneNumber, header.MsgID, serial, next, classified.Error())
 		return result, fmt.Errorf("send downlink command: %w", sendErr)
 	}
 	switch receipt.Status {
 	case contracts.DownlinkStatusOffline:
-		// 设备不在线：保持 pending，等设备上线后由 Tick 重投。
+		// 设备不在线：保持 pending（不消耗尝试次数），等设备上线后由 Tick 重投。
 		log.Info().
 			Str("command_id", commandID).
 			Str("phone", header.PhoneNumber).
 			Msg("Downlink command is waiting for device to come online")
 	case contracts.DownlinkStatusRejected:
-		next := o.clock().Add(o.opts.RetryBase)
+		next := o.clock().Add(o.retryDelayFor(1, nil))
 		reason := receipt.Reason
 		if reason == "" {
 			reason = "gateway rejected downlink"
@@ -341,7 +349,8 @@ func (o *Outbox) Tick(ctx context.Context) error {
 }
 
 // dispatch 把一条已占用租约的命令交给下行契约，并对回执做明确落点：
-// offline → 释放租约等待；rejected/传输错误 → 退避重投；acked/failed → 推进状态。
+// offline → 释放租约且不消耗尝试次数；rejected/可重试错误 → 退避重投；
+// 永久错误 → 立即终结；acked/failed → 推进状态。
 func (o *Outbox) dispatch(ctx context.Context, command *repository.DownlinkCommand) {
 	request := contracts.DownlinkRequest{
 		Phone:          command.Phone,
@@ -349,26 +358,20 @@ func (o *Outbox) dispatch(ctx context.Context, command *repository.DownlinkComma
 		IdempotencyKey: command.CommandID,
 		Serial:         command.Serial,
 	}
-	// 进程内有网关时先做一次廉价离线判断，减少无意义的 HTTP 调用；
-	// control-only 下 conn 为 nil，交给网关返回 offline/rejected。
-	if o.conn != nil {
-		session, err := o.conn.GetByPhone(ctx, command.Phone)
-		if err != nil || session == nil {
-			o.release(ctx, command, "device offline")
-			return
-		}
-		request.SessionID = session.ID
-	}
 	device, err := o.devices.GetByPhone(ctx, command.Phone)
 	if err != nil {
 		// 设备档案缺失时无法重建报文头（协议版本属性），保持等待并由过期兜底。
-		o.release(ctx, command, "device profile unavailable")
+		o.releaseOffline(ctx, command, "device profile unavailable")
 		return
 	}
 	if command.Attempts >= o.opts.MaxAttempts {
 		o.fail(ctx, command.Phone, command.MsgID, command.Serial, "retry attempts exhausted")
 		return
 	}
+
+	// 记录占用前的尝试快照，供离线释放时原样恢复。
+	previousAttempts := command.Attempts
+	previousLastAttempt := command.LastAttemptAt
 
 	now := o.clock()
 	begun, err := o.commands.BeginAttempt(ctx, command.CommandID, o.owner, now)
@@ -381,6 +384,7 @@ func (o *Outbox) dispatch(ctx context.Context, command *repository.DownlinkComma
 		log.Debug().Str("command_id", command.CommandID).Msg("Command lease was lost before dispatch")
 		return
 	}
+	attempts := previousAttempts + 1
 
 	request.Message = &model.MsgRawBody{
 		Header: model.GenMsgHeader(device, command.MsgID, command.Serial),
@@ -388,21 +392,34 @@ func (o *Outbox) dispatch(ctx context.Context, command *repository.DownlinkComma
 	}
 	receipt, err := o.send.Send(ctx, request)
 	if err != nil {
+		classified := contracts.ClassifyDownlinkError(err)
 		log.Error().Err(err).
 			Str("command_id", command.CommandID).
 			Str("phone", command.Phone).
 			Uint16("msg_id", command.MsgID).
 			Uint16("serial", command.Serial).
+			Bool("permanent", classified.IsPermanent()).
 			Msg("Failed to replay downlink command")
-		o.handleFailure(ctx, command.Phone, command.MsgID, command.Serial, err.Error())
+		if classified.IsPermanent() {
+			o.fail(ctx, command.Phone, command.MsgID, command.Serial, classified.Error())
+			return
+		}
+		o.releaseAfterFailure(ctx, command, attempts, classified)
 		return
 	}
 	switch receipt.Status {
 	case contracts.DownlinkStatusOffline:
-		o.release(ctx, command, "device offline")
+		o.releaseOfflineWithSnapshot(ctx, command, previousAttempts, previousLastAttempt, "device offline")
 		return
 	case contracts.DownlinkStatusRejected:
-		o.handleFailure(ctx, command.Phone, command.MsgID, command.Serial, receipt.Reason)
+		reason := receipt.Reason
+		if reason == "" {
+			reason = "gateway rejected downlink"
+		}
+		o.releaseAfterFailure(ctx, command, attempts, &contracts.DownlinkError{
+			Kind:    contracts.DownlinkErrorTransient,
+			Message: reason,
+		})
 		return
 	case contracts.DownlinkStatusAcked, contracts.DownlinkStatusFailed:
 		o.handleReceipt(ctx, request, receipt)
@@ -413,7 +430,7 @@ func (o *Outbox) dispatch(ctx context.Context, command *repository.DownlinkComma
 		Str("phone", command.Phone).
 		Uint16("msg_id", command.MsgID).
 		Uint16("serial", command.Serial).
-		Int("attempt", command.Attempts+1).
+		Int("attempt", attempts).
 		Msg("Replayed pending downlink command")
 }
 
@@ -703,11 +720,20 @@ func (o *Outbox) handleFailure(ctx context.Context, phone string, msgID, serial 
 	}
 }
 
-// release 释放租约并保持 pending；设备离线不消耗重投次数。
-func (o *Outbox) release(ctx context.Context, command *repository.DownlinkCommand, reason string) {
-	updated, err := o.commands.ReleaseAttempt(ctx, command.CommandID, o.owner, o.clock(), reason)
+// releaseOffline 释放租约但保持 pending，用于设备离线或档案未就绪等“未真正下发”的场景。
+//
+// 与 ReleaseAttempt 的区别：ReleaseAttempt 用于真实下发失败后的退避，会写入
+// 下一次可投时刻且 attempts 已由 BeginAttempt 递增；ReleaseOffline 则把
+// attempts/last_attempt_at 回退到占用前快照，避免设备长期离线期间把
+// MaxAttempts 这道闸反复刷掉。
+func (o *Outbox) releaseOffline(ctx context.Context, command *repository.DownlinkCommand, reason string) {
+	o.releaseOfflineWithSnapshot(ctx, command, command.Attempts, command.LastAttemptAt, reason)
+}
+
+func (o *Outbox) releaseOfflineWithSnapshot(ctx context.Context, command *repository.DownlinkCommand, attempts int, lastAttemptAt time.Time, reason string) {
+	updated, err := o.commands.ReleaseOffline(ctx, command.CommandID, o.owner, attempts, lastAttemptAt, reason)
 	if err != nil {
-		log.Error().Err(err).Str("command_id", command.CommandID).Msg("Failed to release command lease")
+		log.Error().Err(err).Str("command_id", command.CommandID).Msg("Failed to release command lease while offline")
 		return
 	}
 	log.Debug().
@@ -715,7 +741,32 @@ func (o *Outbox) release(ctx context.Context, command *repository.DownlinkComman
 		Str("phone", command.Phone).
 		Str("reason", reason).
 		Bool("released", updated).
-		Msg("Released command lease to wait")
+		Msg("Released command lease to wait for device")
+}
+
+// releaseAfterFailure 处理真实下发失败：未到上限则按退避重投，否则终结。
+func (o *Outbox) releaseAfterFailure(ctx context.Context, command *repository.DownlinkCommand, attempts int, failure *contracts.DownlinkError) {
+	reason := failure.Error()
+	if attempts >= o.opts.MaxAttempts {
+		o.fail(ctx, command.Phone, command.MsgID, command.Serial, reason)
+		return
+	}
+	next := o.clock().Add(o.retryDelayFor(attempts, failure))
+	updated, err := o.commands.ReleaseAttempt(ctx, command.CommandID, o.owner, next, reason)
+	if err != nil {
+		log.Error().Err(err).Str("command_id", command.CommandID).Msg("Failed to release command lease after failure")
+		return
+	}
+	log.Info().
+		Str("command_id", command.CommandID).
+		Str("phone", command.Phone).
+		Uint16("msg_id", command.MsgID).
+		Uint16("serial", command.Serial).
+		Int("attempts", attempts).
+		Time("next_attempt_at", next).
+		Str("reason", reason).
+		Bool("released", updated).
+		Msg("Scheduled downlink command retry after send failure")
 }
 
 // fail 把命令转 failed；失败原因写入 last_error 供运维排查。
@@ -737,6 +788,18 @@ func (o *Outbox) fail(ctx context.Context, phone string, msgID, serial uint16, r
 			Str("reason", reason).
 			Msg("Downlink command marked failed")
 	}
+}
+
+// retryDelayFor 计算下一次重投间隔：优先尊重网关的 Retry-After（429 限流），
+// 否则按尝试次数指数退避。RetryMax 同时约束两种情况，避免无限挂起。
+func (o *Outbox) retryDelayFor(attempts int, failure *contracts.DownlinkError) time.Duration {
+	if failure != nil && failure.RetryAfter > 0 {
+		if failure.RetryAfter > o.opts.RetryMax {
+			return o.opts.RetryMax
+		}
+		return failure.RetryAfter
+	}
+	return o.retryDelay(attempts)
 }
 
 // retryDelay 按尝试次数指数退避，并受 RetryMax 上限约束。

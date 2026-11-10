@@ -167,6 +167,11 @@ func protocolVersionLabel(version model.VersionType) string {
 
 // uplinkReliability 把既有可靠性分类映射到出口契约的两档语义。
 func uplinkReliability(policy *uplink.Policy, msgID uint16, incoming model.JT808Msg) contracts.Reliability {
+	if msgID == 0x0001 {
+		// 通用应答是 outbox 的唯一收尾信号：必须确认管控已受理，否则命令会
+		// 一直 pending 直到重投上限。管控不可用时由终端重传换取一致性。
+		return contracts.ReliabilityConfirmBeforeAck
+	}
 	if policy != nil && policy.AtLeastOnce(msgID, incoming) {
 		return contracts.ReliabilityConfirmBeforeAck
 	}

@@ -45,7 +45,8 @@ type BusinessOptions struct {
 // BusinessExecutor 是管控侧的上行事件消费者。
 //
 // 它复用 protocol 的 handler 实现：输入从活连接换成“事件 + 原始消息体”，
-// 并按手机号串行处理，保证 0x0100 先于 0x0102 落库（E2 控制面单副本）。
+// 并按手机号串行处理；多副本下顺序不保证，但字段所有权隔离与 409 有界重投
+// 保证最终状态一致（0x0100 与 0x0102 互不覆盖对方字段）。
 type BusinessExecutor struct {
 	opts BusinessOptions
 	proc *protocol.JT808MsgProcessor

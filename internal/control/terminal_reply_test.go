@@ -286,7 +286,6 @@ func TestTerminalReplyTransportAndHTTPDoNotDoubleCount(t *testing.T) {
 func TestTerminalReplyAckStopsReplay(t *testing.T) {
 	ctx := context.Background()
 	h := newHarness(t, defaultTestOptions())
-	h.bindOnline(t)
 	command := h.enqueue(t, "cmd-reply-lease", 1, h.clock.now.Add(-time.Minute), h.clock.now.Add(time.Hour))
 
 	require.NoError(t, h.service.Tick(ctx))

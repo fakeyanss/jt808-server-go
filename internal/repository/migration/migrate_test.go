@@ -26,7 +26,7 @@ func newTestDB(t *testing.T) *sql.DB {
 
 func TestExpectedVersionMatchesEmbeddedFiles(t *testing.T) {
 	// 开发阶段按批次追加版本；引导脚本不参与版本编号。
-	require.Len(t, migrations, 12)
+	require.Len(t, migrations, 13)
 	require.Equal(t, "20261101_init.sql", migrations[0].name)
 	require.Equal(t, "20261102_persistence_tables.sql", migrations[1].name)
 	require.Equal(t, "20261105_drop_device_runtime.sql", migrations[2].name)
@@ -39,7 +39,8 @@ func TestExpectedVersionMatchesEmbeddedFiles(t *testing.T) {
 	require.Equal(t, "20261114_media_search_results.sql", migrations[9].name)
 	require.Equal(t, "20261115_retention_indexes.sql", migrations[10].name)
 	require.Equal(t, "20261116_locations_dedup_key.sql", migrations[11].name)
-	require.Equal(t, 20261116, ExpectedVersion())
+	require.Equal(t, "20261117_command_serial.sql", migrations[12].name)
+	require.Equal(t, 20261117, ExpectedVersion())
 }
 
 // 同一库重复执行迁移只应用一次，版本记录不重复。

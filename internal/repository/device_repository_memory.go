@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"sync"
+	"time"
 
 	"golang.org/x/exp/maps"
 
@@ -66,6 +67,65 @@ func (cache *memoryDeviceRepository) Upsert(_ context.Context, d *model.Device) 
 	copy := cloneDevice(d)
 	cache.cacheByPlate[copy.Plate] = copy
 	cache.cacheByPhone[copy.Phone] = copy
+	return nil
+}
+
+// SaveRegistration 只更新 0x0100 拥有的静态字段。
+//
+// 多副本下 0x0100 与 0x0102 可能乱序到达：注册不得整行覆盖，否则会把鉴权
+// 刚写入的在线状态、会话与最后通信时间冲掉；在线状态只由鉴权侧维护。
+func (cache *memoryDeviceRepository) SaveRegistration(_ context.Context, d *model.Device) error {
+	if d == nil || d.Phone == "" {
+		return errors.New("save registration: empty phone")
+	}
+	cache.mutex.Lock()
+	defer cache.mutex.Unlock()
+	existing, ok := cache.cacheByPhone[d.Phone]
+	if !ok {
+		copy := cloneDevice(d)
+		if copy.Keepalive <= 0 {
+			copy.Keepalive = time.Minute
+		}
+		// 注册只建立档案，不建立在线会话与在线状态；二者由 0x0102 鉴权后写入。
+		copy.Status = model.DeviceStatusOffline
+		copy.SessionID = ""
+		if copy.Plate != "" {
+			cache.cacheByPlate[copy.Plate] = copy
+		}
+		cache.cacheByPhone[copy.Phone] = copy
+		return nil
+	}
+	if existing.Plate != d.Plate {
+		delete(cache.cacheByPlate, existing.Plate)
+		existing.Plate = d.Plate
+		if d.Plate != "" {
+			cache.cacheByPlate[d.Plate] = existing
+		}
+	}
+	existing.ID = d.ID
+	existing.VersionDesc = d.VersionDesc
+	existing.ProtocolVersion = d.ProtocolVersion
+	existing.AuthCode = d.AuthCode
+	return nil
+}
+
+// SaveAuthState 只更新 0x0102 拥有的在线状态与终端信息。
+// 档案不存在时返回 ErrDeviceNotFound，由管控 409 让网关有界重投注册事件。
+func (cache *memoryDeviceRepository) SaveAuthState(_ context.Context, d *model.Device) error {
+	if d == nil || d.Phone == "" {
+		return ErrDeviceNotFound
+	}
+	cache.mutex.Lock()
+	defer cache.mutex.Unlock()
+	existing, ok := cache.cacheByPhone[d.Phone]
+	if !ok {
+		return ErrDeviceNotFound
+	}
+	existing.IMEI = d.IMEI
+	existing.SoftwareVersion = d.SoftwareVersion
+	existing.Status = d.Status
+	existing.SessionID = d.SessionID
+	existing.LastestComTime = d.LastestComTime
 	return nil
 }
 

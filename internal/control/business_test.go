@@ -5,13 +5,17 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 
 	"github.com/fakeyanss/jt808-server-go/internal/blob"
+	"github.com/fakeyanss/jt808-server-go/internal/codec/hash"
 	"github.com/fakeyanss/jt808-server-go/internal/codec/hex"
 	"github.com/fakeyanss/jt808-server-go/internal/contracts"
+	"github.com/fakeyanss/jt808-server-go/internal/protocol"
 	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
 	"github.com/fakeyanss/jt808-server-go/internal/repository"
 	"github.com/fakeyanss/jt808-server-go/internal/storage"
@@ -189,11 +193,128 @@ func TestBusinessExecutorIgnoresGatewayOwnedEvents(t *testing.T) {
 	executor := NewBusinessExecutor(BusinessOptions{Devices: storage.Default().Devices})
 	result, err := executor.ConsumeEvent(context.Background(), contracts.UplinkEvent{
 		EventID: "evt-gateway",
-		MsgID:   0x0001,
+		MsgID:   0x0002,
 		Phone:   "188765400006",
 	})
 	require.NoError(t, err)
 	require.True(t, result.Accepted)
+}
+
+// 0x0001 归属改为 OwnerBoth 后，控制面业务半边是 no-op：应答由 uplink
+// 入口直接交给 outbox，不在业务执行器里重复处理。
+func TestBusinessExecutorAcceptsTerminalReplyHalf(t *testing.T) {
+	ctx := context.Background()
+	devices := repository.NewDeviceRepository()
+	require.NoError(t, devices.Upsert(ctx, &model.Device{Phone: "188765400006"}))
+	executor := NewBusinessExecutor(BusinessOptions{Devices: devices})
+	result, err := executor.ConsumeEvent(ctx, contracts.UplinkEvent{
+		EventID: "evt-reply",
+		MsgID:   0x0001,
+		Phone:   "188765400006",
+		Body:    []byte{0x81, 0x05, 0x00, 0x01, 0x00},
+	})
+	require.NoError(t, err)
+	require.True(t, result.Accepted)
+}
+
+// TestRegistrationAndAuthStateAreOrderIndependent 覆盖乱序自愈：
+//  1. 先 0x0102（档案不存在）→ 409，注册到达后重投成功；
+//  2. 先 0x0100 再 0x0102。
+//
+// 两种顺序的终态必须一致：档案字段完整，在线状态、会话与最后通信时间不被注册覆盖。
+func TestRegistrationAndAuthStateAreOrderIndependent(t *testing.T) {
+	const phone = "188765410001"
+	registration := func() contracts.UplinkEvent {
+		return contracts.UplinkEvent{
+			EventID:         "evt-reg",
+			MsgID:           0x0100,
+			Phone:           phone,
+			ProtocolVersion: "2019",
+			Body:            registrationBody2019(),
+		}
+	}
+	auth := func() contracts.UplinkEvent {
+		return contracts.UplinkEvent{
+			EventID:         "evt-auth",
+			MsgID:           0x0102,
+			Phone:           phone,
+			SessionID:       "sess-order",
+			ProtocolVersion: "2019",
+			Body:            authBody2019(authCode2019(phone), "123456789012345", "V1.0.0"),
+		}
+	}
+
+	run := func(t *testing.T, authFirst bool) *model.Device {
+		t.Helper()
+		ctx := context.Background()
+		stores := storage.NewMemory()
+		devices := stores.Devices
+		executor := NewBusinessExecutor(BusinessOptions{
+			Devices:       devices,
+			ProcessorDeps: protocol.ProcessorDeps{Storage: stores},
+		})
+		if authFirst {
+			_, err := executor.ConsumeEvent(ctx, auth())
+			require.Error(t, err, "鉴权先到时应返回 409 等待注册")
+			_, err = executor.ConsumeEvent(ctx, registration())
+			require.NoError(t, err)
+			_, err = executor.ConsumeEvent(ctx, auth())
+			require.NoError(t, err)
+		} else {
+			_, err := executor.ConsumeEvent(ctx, registration())
+			require.NoError(t, err)
+			_, err = executor.ConsumeEvent(ctx, auth())
+			require.NoError(t, err)
+		}
+		device, err := devices.GetByPhone(ctx, phone)
+		require.NoError(t, err)
+		return device
+	}
+
+	authFirst := run(t, true)
+	registerFirst := run(t, false)
+
+	require.Equal(t, registerFirst.ID, authFirst.ID)
+	require.Equal(t, registerFirst.Plate, authFirst.Plate)
+	require.Equal(t, registerFirst.AuthCode, authFirst.AuthCode)
+	require.Equal(t, registerFirst.VersionDesc, authFirst.VersionDesc)
+	require.Equal(t, registerFirst.IMEI, authFirst.IMEI)
+	require.Equal(t, registerFirst.SoftwareVersion, authFirst.SoftwareVersion)
+	require.Equal(t, model.DeviceStatusOnline, authFirst.Status)
+	require.Equal(t, "sess-order", authFirst.SessionID)
+	require.False(t, authFirst.LastestComTime.IsZero())
+	require.Equal(t, "京A12345", authFirst.Plate)
+}
+
+// registrationBody2019 构造 2019 版本 0x0100 报文体（厂商 11、型号 30、终端 ID 30）。
+func registrationBody2019() []byte {
+	var body []byte
+	body = hex.WriteWord(body, 11)
+	body = hex.WriteWord(body, 1101)
+	body = hex.WriteString(body, "MANUFACTUR1")
+	body = hex.WriteString(body, strings.Repeat("M", 30))
+	body = hex.WriteString(body, strings.Repeat("D", 30))
+	body = hex.WriteByte(body, 1)
+	return hex.WriteGBK(body, "京A12345")
+}
+
+// authBody2019 构造 2019 版本 0x0102 报文体。
+func authBody2019(authCode, imei, software string) []byte {
+	var body []byte
+	body = hex.WriteByte(body, uint8(len(authCode)))
+	body = hex.WriteString(body, authCode)
+	imeiBytes := make([]byte, 15)
+	copy(imeiBytes, imei)
+	body = append(body, imeiBytes...)
+	softwareBytes := make([]byte, 20)
+	copy(softwareBytes, software)
+	return append(body, softwareBytes...)
+}
+
+// authCode2019 复算注册鉴权码，与被测实现保持同一算法。
+func authCode2019(phone string) string {
+	source := strings.Repeat("D", 30) + "_" + "京A12345" + "_" + phone
+	return strconv.Itoa(int(hash.FNV32(source)))
 }
 
 type failingMediaFiles struct{}

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -118,8 +119,18 @@ func (c *Client) Send(ctx context.Context, request contracts.DownlinkRequest) (c
 	defer response.Body.Close()
 	payload, _ := io.ReadAll(io.LimitReader(response.Body, 64*1024))
 	if response.StatusCode != http.StatusOK && response.StatusCode != http.StatusAccepted {
-		return contracts.DownlinkReceipt{}, fmt.Errorf(
-			"gateway downlink returned status %d: %s", response.StatusCode, strings.TrimSpace(string(payload)))
+		// 400/401/403/413 是确定性拒绝，429/5xx 可重试；带上 Retry-After
+		// 让 outbox 在限流时按网关节奏退避，而不是按本地指数退避硬打。
+		failure := &contracts.DownlinkError{
+			Kind:       contracts.ClassifyDownlinkStatus(response.StatusCode),
+			StatusCode: response.StatusCode,
+			Code:       strings.TrimSpace(string(payload)),
+			Message:    fmt.Sprintf("gateway downlink returned status %d", response.StatusCode),
+		}
+		if retryAfter := parseRetryAfter(response.Header.Get("Retry-After")); retryAfter > 0 {
+			failure.RetryAfter = retryAfter
+		}
+		return contracts.DownlinkReceipt{}, failure
 	}
 	var parsed downlinkResponse
 	if err := json.Unmarshal(payload, &parsed); err != nil {
@@ -142,6 +153,26 @@ func (c *Client) Send(ctx context.Context, request contracts.DownlinkRequest) (c
 		ResponseMsgID: parsed.ResponseMsgID,
 		ResponseBody:  responseBody,
 	}, nil
+}
+
+// parseRetryAfter 解析 Retry-After（秒数或 HTTP 日期）；无法解析时返回 0。
+func parseRetryAfter(value string) time.Duration {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return 0
+	}
+	if seconds, err := strconv.Atoi(value); err == nil {
+		if seconds <= 0 {
+			return 0
+		}
+		return time.Duration(seconds) * time.Second
+	}
+	if when, err := http.ParseTime(value); err == nil {
+		if delay := time.Until(when); delay > 0 {
+			return delay
+		}
+	}
+	return 0
 }
 
 // 确保 model 包被使用：编译期校验请求消息实现了 JT808Msg。

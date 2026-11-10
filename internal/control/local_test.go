@@ -117,9 +117,7 @@ func TestStaticAttachmentAllocatorIsSticky(t *testing.T) {
 func TestSubmitOffModeSendsWithoutPersistence(t *testing.T) {
 	sender := &fakeSender{}
 	outbox, err := NewOutbox(OutboxDependencies{
-		Send: senderFunc(func(sessionID string, msg model.JT808Msg, serial uint16) error {
-			return sender.send(sessionID, msg, serial)
-		}),
+		Send: sender,
 	}, OutboxOptions{Enabled: false})
 	require.NoError(t, err)
 
@@ -175,7 +173,6 @@ func TestTerminalReplyOutcomeIsTransportIndependent(t *testing.T) {
 	options.InitialWait = time.Second
 	options.ExpireAfter = time.Hour
 	h := newHarness(t, options)
-	h.bindOnline(t)
 	device, err := h.devices.GetByPhone(ctx, testPhone)
 	require.NoError(t, err)
 

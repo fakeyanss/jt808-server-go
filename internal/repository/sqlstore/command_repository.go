@@ -50,6 +50,25 @@ const (
 		SET lease_owner = '', lease_expires_at = 0, next_attempt_at = ?, last_error = ?, updated_at = ?
 		WHERE command_id = ? AND status = 'pending' AND lease_owner = ?`
 
+	commandReleaseOfflineSQL = `UPDATE command_outbox
+		SET lease_owner = '', lease_expires_at = 0, attempts = ?, last_attempt_at = ?, last_error = ?, updated_at = ?
+		WHERE command_id = ? AND status = 'pending' AND lease_owner = ?`
+
+	commandSerialSelectSQL = `SELECT next_serial FROM command_serial WHERE phone = ?`
+
+	commandSerialInsertSQLite = `INSERT INTO command_serial (phone, next_serial, updated_at)
+		VALUES (?, ?, ?) ON CONFLICT(phone) DO NOTHING`
+
+	commandSerialInsertMySQL = `INSERT IGNORE INTO command_serial (phone, next_serial, updated_at)
+		VALUES (?, ?, ?)`
+
+	commandSerialUpdateSQL = `UPDATE command_serial SET next_serial = ?, updated_at = ? WHERE phone = ?`
+
+	commandSerialSeedSQL = `SELECT COALESCE(MAX(serial), 0) FROM command_outbox WHERE phone = ?`
+
+	commandSerialInFlightSQL = `SELECT COUNT(1) FROM command_outbox
+		WHERE phone = ? AND msg_id = ? AND serial = ? AND status = 'pending'`
+
 	commandScheduleRetrySQL = `UPDATE command_outbox
 		SET lease_owner = '', lease_expires_at = 0, next_attempt_at = ?, last_error = ?, updated_at = ?
 		WHERE phone = ? AND msg_id = ? AND serial = ? AND status = 'pending'`
@@ -151,8 +170,12 @@ func (r *commandRepository) Get(ctx context.Context, commandID string) (*reposit
 }
 
 func (r *commandRepository) FindByRouting(ctx context.Context, phone string, msgID, serial uint16) (*repository.DownlinkCommand, error) {
+	// 同一 (phone, msg_id, serial) 可能在回绕后出现多条记录：优先返回仍在途的
+	// pending 命令，否则返回最近创建的一条，供迟到应答归类为 duplicate/late。
 	row := r.store.db.QueryRowContext(ctx,
-		commandSelectColumns+` WHERE phone = ? AND msg_id = ? AND serial = ?`, phone, int64(msgID), int64(serial))
+		commandSelectColumns+` WHERE phone = ? AND msg_id = ? AND serial = ?
+		ORDER BY CASE WHEN status = 'pending' THEN 0 ELSE 1 END, created_at DESC LIMIT 1`,
+		phone, int64(msgID), int64(serial))
 	command, err := scanCommand(row)
 	if errors.Is(err, stdsql.ErrNoRows) {
 		return nil, repository.ErrCommandNotFound
@@ -281,6 +304,87 @@ func (r *commandRepository) ReleaseAttempt(ctx context.Context, commandID, owner
 		return false, fmt.Errorf("release command %s rows affected: %w", commandID, err)
 	}
 	return affected > 0, nil
+}
+
+func (r *commandRepository) ReleaseOffline(ctx context.Context, commandID, owner string, attempts int, lastAttemptAt time.Time, reason string) (bool, error) {
+	result, err := r.store.db.ExecContext(ctx, commandReleaseOfflineSQL,
+		attempts, unixMilliOrZero(lastAttemptAt), reason, time.Now().UnixMilli(), commandID, owner)
+	if err != nil {
+		return false, fmt.Errorf("release offline command %s: %w", commandID, err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("release offline command %s rows affected: %w", commandID, err)
+	}
+	return affected > 0, nil
+}
+
+// NextSerial 在单个事务内完成“读取游标 → 跳过在途组合 → 写回游标”。
+//
+// MySQL 用 SELECT ... FOR UPDATE 锁住该 phone 的游标行；SQLite 是单写者模型且
+// 连接池限定单连接，事务本身即串行化。播种值取该 phone 已存在的最大 serial + 1，
+// 保证重启或多实例接手时不会从 0 重新开始。
+func (r *commandRepository) NextSerial(ctx context.Context, phone string, msgID uint16) (uint16, error) {
+	if phone == "" {
+		return 0, fmt.Errorf("next serial: empty phone")
+	}
+	tx, err := r.store.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, fmt.Errorf("next serial: begin transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	now := time.Now().UnixMilli()
+	insertStmt := commandSerialInsertSQLite
+	lockClause := ""
+	if r.store.backend == BackendMySQL {
+		insertStmt = commandSerialInsertMySQL
+		lockClause = " FOR UPDATE"
+	}
+	var seed int64
+	if err := tx.QueryRowContext(ctx, commandSerialSeedSQL, phone).Scan(&seed); err != nil {
+		return 0, fmt.Errorf("next serial: read max serial: %w", err)
+	}
+	if seed < 1 || seed > 65535 {
+		seed = 1
+	}
+	if _, err := tx.ExecContext(ctx, insertStmt, phone, seed, now); err != nil {
+		return 0, fmt.Errorf("next serial: seed cursor: %w", err)
+	}
+
+	var next int64
+	if err := tx.QueryRowContext(ctx, commandSerialSelectSQL+lockClause, phone).Scan(&next); err != nil {
+		return 0, fmt.Errorf("next serial: read cursor: %w", err)
+	}
+	for i := 0; i < 65535; i++ {
+		candidate := normalizeSerial(next)
+		var inFlight int64
+		if err := tx.QueryRowContext(ctx, commandSerialInFlightSQL,
+			phone, int64(msgID), int64(candidate)).Scan(&inFlight); err != nil {
+			return 0, fmt.Errorf("next serial: check in-flight %s/%04X/%d: %w", phone, msgID, candidate, err)
+		}
+		if inFlight == 0 {
+			if _, err := tx.ExecContext(ctx, commandSerialUpdateSQL,
+				int64(normalizeSerial(int64(candidate)+1)), now, phone); err != nil {
+				return 0, fmt.Errorf("next serial: update cursor: %w", err)
+			}
+			if err := tx.Commit(); err != nil {
+				return 0, fmt.Errorf("next serial: commit: %w", err)
+			}
+			return candidate, nil
+		}
+		next = int64(normalizeSerial(int64(candidate) + 1))
+	}
+	return 0, fmt.Errorf("next serial: no free serial for %s/%04X", phone, msgID)
+}
+
+// normalizeSerial 把游标限制在 1..65535，0 是协议保留值。
+func normalizeSerial(value int64) uint16 {
+	for value < 1 {
+		value += 65535
+	}
+	value = (value-1)%65535 + 1
+	return uint16(value)
 }
 
 func (r *commandRepository) ScheduleRetry(ctx context.Context, phone string, msgID, serial uint16, next time.Time, reason string) (bool, error) {

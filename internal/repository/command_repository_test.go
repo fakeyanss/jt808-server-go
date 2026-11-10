@@ -8,6 +8,26 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestCommandRepositoryMemoryNextSerialSkipsInFlight(t *testing.T) {
+	ctx := context.Background()
+	const phone = "188765471001"
+
+	// 回绕场景：游标从该 phone 已存在的最大流水号之后开始，65535 之后回到 1。
+	repo := NewCommandRepository()
+	_, _, err := repo.Enqueue(ctx, &DownlinkCommand{
+		CommandID: "seed", IdempotencyKey: "seed", Phone: phone, MsgID: 0x8201, Serial: 65535,
+	})
+	require.NoError(t, err)
+	_, _, err = repo.Enqueue(ctx, &DownlinkCommand{
+		CommandID: "in-flight", IdempotencyKey: "in-flight", Phone: phone, MsgID: 0x8105, Serial: 1,
+	})
+	require.NoError(t, err)
+
+	serial, err := repo.NextSerial(ctx, phone, 0x8105)
+	require.NoError(t, err)
+	require.Equal(t, uint16(2), serial, "回绕后必须跳过同 msgId 仍在途的 serial")
+}
+
 func TestCommandRepositoryMemoryIdempotencyAndResult(t *testing.T) {
 	ctx := context.Background()
 	repo := NewCommandRepository()
