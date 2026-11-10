@@ -42,8 +42,8 @@ func Run(ctx context.Context, serv *server.TCPServer, cfg *config.Config, apiOpt
 	connRegistry := runtime.Default().Conn
 	outboxEnabled := outboxOptions.Mode != config.CommandOutboxModeOff && commands != nil
 
-	// 0x0801 媒体文件与 0x0805 拍摄记录查询；文件下载由 mediaUpload 读取共享卷。
-	registerMediaRoutes(api, devices, storage.Default().MediaFiles, storage.Default().MediaCaptures, mediaUpload)
+	// 0x0801 媒体文件、0x0805 拍摄记录与 0x0802 检索结果查询；文件下载由 mediaUpload 读取共享卷。
+	registerMediaRoutes(api, devices, storage.Default().MediaFiles, storage.Default().MediaCaptures, storage.Default().MediaSearches, mediaUpload)
 
 	// 下行命令投递状态查询；命令下发时返回的 commandId 可在此回查。
 	api.GET("/commands/:commandId", func(c *gin.Context) {

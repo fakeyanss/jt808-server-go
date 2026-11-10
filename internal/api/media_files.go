@@ -32,7 +32,7 @@ const mediaTimeLayout = "2006-01-02 15:04:05"
 // 鉴权沿用业务 API 的 token 中间件；这里只做参数校验与仓储/文件读取。
 // 注意：0x0801 位置体只有报警标志位、没有报警流水号，
 // 列表的 alarmOnly 只能按报警类别过滤，无法按某一条报警精确关联。
-func registerMediaRoutes(api *gin.RouterGroup, devices repository.DeviceRepository, files repository.MediaFileRepository, captures repository.MediaCaptureRepository, uploads *mediaupload.Store) {
+func registerMediaRoutes(api *gin.RouterGroup, devices repository.DeviceRepository, files repository.MediaFileRepository, captures repository.MediaCaptureRepository, searches repository.MediaSearchRepository, uploads *mediaupload.Store) {
 	group := api.Group("/device/:phone/media")
 	group.GET("/files", func(c *gin.Context) {
 		phone, ok := requireMediaDevice(c, devices)
@@ -132,6 +132,25 @@ func registerMediaRoutes(api *gin.RouterGroup, devices repository.DeviceReposito
 			return
 		}
 		items, err := captures.ListCaptures(c.Request.Context(), phone, limit)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"err": err.Error()})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"phone": phone, "count": len(items), "items": items})
+	})
+
+	// 0x0802 是 0x8802 检索命令的应答；这里返回终端最近上报的本地媒体清单。
+	group.GET("/search-results", func(c *gin.Context) {
+		phone, ok := requireMediaDevice(c, devices)
+		if !ok {
+			return
+		}
+		limit, err := parseMediaLimit(c.Query("limit"))
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
+			return
+		}
+		items, err := searches.List(c.Request.Context(), phone, limit)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"err": err.Error()})
 			return
