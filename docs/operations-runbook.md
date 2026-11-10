@@ -156,14 +156,19 @@ tar -czf /backup/jt808-files-$(date +%Y%m%d-%H%M).tgz ./data ./logs
 
 | 数据 | 配置 | 默认 | 生效方式 |
 |---|---|---|---|
-| 定位历史 `locations` | `retention.locations.retentionDays` / `maxPerDevice` | 7 天 / 10000 条 | 写入时按设备裁剪 |
+| 定位历史 `locations` | `retention.locations.retentionDays` / `maxPerDevice` | 7 天 / 10000 条 | 写入时按设备裁剪；开启定期清理后同时按接收时间全局删除 |
 | 报警历史 `alarms` | `retention.alarms.dedupWindowMs` / `confirmExpireMs` / `maxPerDevice` | 30 分钟去重 / 10 分钟确认关联 / 1000 条 | 写入时去重与裁剪 |
+| 报警历史 `alarms` | `retention.alarms.retentionDays` | 0（关闭） | 定期清理按接收时间删除 |
+| `0x0801` 媒体元数据与文件 | `retention.mediaFiles.retentionDays` | 0（关闭） | 定期清理：先删文件，再删 `media_files` 记录 |
+| `0x0805` 拍摄应答 | `retention.mediaCaptures.retentionDays` | 0（关闭） | 定期清理 `media_captures` 与同事务删除 `media_capture_items` |
 | 媒体 `.h264` | `mediaServer.retentionDays` | 7 天 | 每小时扫描目录，跳过正在写入的流 |
 | 苏标附件 | `alarmServer.retentionDays` | 7 天 | 每小时扫描目录，跳过未完成组装的临时文件 |
 
-- 显式 `0` 表示关闭对应清理。
-- 历史表裁剪依赖 SQL 后端；`memory` 后端本身不持久化。
-- 清理只删除过期文件，不修改数据库记录；数据库裁剪与文件清理相互独立。
+- 显式 `0` 表示关闭对应清理；负数、超过 36500 天、非法 `interval` 或 `batchSize` 越界会导致启动失败。
+- 历史表定期清理由 `retention.cleanup.enabled` 控制，默认关闭；开启后按 `interval` 执行，按主键分批删除（默认每批 1000 行，上限 5000），批间让出。
+- 历史表清理仅依赖 SQL 后端；`memory` 后端数据随进程结束释放，开启时只记录告警并跳过。
+- 媒体文件清理顺序为先删文件、再删元数据；文件删除失败时保留记录并在下次运行重试，文件已不存在则视为删除成功。
+- 媒体 `.h264` 目录清理与数据库保留期清理相互独立。
 
 ---
 
@@ -198,6 +203,10 @@ tar -czf /backup/jt808-files-$(date +%Y%m%d-%H%M).tgz ./data ./logs
 | `jt808_media_streams` | 进行中的 1078 媒体会话数 |
 | `jt808_attachments_active` | 进行中的苏标附件组装数 |
 | `jt808_attachments_completed_total` | 已完成附件累计数 |
+| `jt808_retention_deleted_total{category}` | 定期清理累计删除行数，`category` 为 `locations` / `alarms` / `mediaFiles` / `mediaCaptures` |
+| `jt808_retention_failures_total{category}` | 定期清理累计失败批次数 |
+| `jt808_retention_last_run_timestamp_seconds` | 最近一次清理运行时间；为 0 表示尚未运行 |
+| `jt808_retention_last_run_duration_seconds` | 最近一次清理总耗时 |
 
 采集示例：
 

@@ -50,7 +50,7 @@ jt808-server-go 是一个用 Go 编写的 JT/T 808 终端接入服务。它把�
 | `memory` 后端 | 重启丢失全部业务数据；不保存定位历史（管理面 `/locations` 返回 503）；outbox 默认 `memory`，重启丢失 pending 命令；`retention` 配置不生效 |
 | 定位投影 | 最新定位 `Geo` 始终在进程内，SQL 后端重启后需等下一次上报才恢复；SQL 只持久化定位历史 |
 | 行业媒体快照 | `0x0801` 已落盘并落库，分包与非分包都覆盖；`0x0805` 拍摄记录落库，按 mediaId 关联文件是否到达；`0x0800/0x0802` 等其余快照仍只在内存 |
-| 媒体取证关联 | `0x0801` 位置体只有报警标志位、没有报警流水号，`alarmSign` 只表达报警类别，无法与某一条具体报警精确关联；本批不做保留期清理，磁盘占用需通过 `jt808_media_files` / `jt808_media_file_bytes` 指标监控 |
+| 媒体取证关联 | `0x0801` 位置体只有报警标志位、没有报警流水号，`alarmSign` 只表达报警类别，无法与某一条具体报警精确关联；媒体保留期清理默认关闭，需显式开启 `retention.cleanup.enabled` 并配置 `retention.mediaFiles.retentionDays`，未开启时通过 `jt808_media_files` / `jt808_media_file_bytes` 指标监控磁盘占用 |
 | 集群与分布式 | 会话、心跳、分包缓存与查询应答协调均为节点本地状态；媒体文件按本地目录落盘，Cluster 形态要求 `mediaUpload.dir` 位于所有节点可见的共享卷；未实现共享会话路由、跨节点下行投递、节点路由、对象存储、MQ Sink、Redis/Kafka 等分布式能力 |
 | 升级工作流 | 只有 `0x8108` 下发与 `0x0108` 结果记录；没有升级包托管/下载 URL、版本与车型管理、灰度发布、失败重试与回滚 |
 | 投递保证 | 下行 outbox 为 at-least-once，可能重复执行；上行 `best_effort` 可能丢一条，`at_least_once` 依赖终端重传，不是 exactly-once |
@@ -262,8 +262,14 @@ make run
 | `storage.mysql.dsn` | 空 | `mysql` 后端 DSN，如 `user:pass@tcp(host:port)/db` |
 | `retention.locations.retentionDays` / `maxPerDevice` | `7` / `10000` | 定位历史保留；仅 SQL 后端生效 |
 | `retention.alarms.dedupWindowMs` / `confirmExpireMs` / `maxPerDevice` | `1800000` / `600000` / `1000` | 报警去重、确认关联与上限 |
+| `retention.alarms.retentionDays` | `0` | 报警按接收时间的定期清理；`0` 表示关闭 |
+| `retention.mediaFiles.retentionDays` | `0` | `0x0801` 媒体元数据与落盘文件按接收时间清理；`0` 表示关闭 |
+| `retention.mediaCaptures.retentionDays` | `0` | `0x0805` 拍摄应答及明细按接收时间清理；`0` 表示关闭 |
+| `retention.cleanup.enabled` / `interval` / `batchSize` | `false` / `1h` / `1000` | 定期清理任务开关、周期与单批删除行数（上限 5000） |
 
 定位 7 天/10000 条为工程默认值（JT/T 808 未规定平台侧保存期限）；报警 30 分钟去重、10 分钟确认关联、1000 条上限沿用既有内存实现。显式写 `0` 表示关闭对应策略。`memory` 后端下 `retention` 不生效。
+
+定期清理默认关闭，只有 `retention.cleanup.enabled: true` 且对应 `retentionDays > 0` 的类别才会删除；负数、超过 36500 天、非法 `interval` 或越界 `batchSize` 会在启动时报错。清理仅支持 SQL 后端，按主键分批删除并在批间让出；`media_files` 先删文件再删元数据，文件删除失败时保留记录等待下次重试。
 
 ### 5.2 接入与协议
 

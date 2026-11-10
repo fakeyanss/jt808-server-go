@@ -321,15 +321,19 @@ type Coordinator interface {
 | `terminal_properties` | 终端属性档案（B，来源 0x0107 查询应答） | `phone` PK，常用属性列化 + `extra_json` 长尾兜底；与 `devices` 不合并（见 §7.4） |
 | `region_items` | 区域/路线（B） | 唯一键 `(phone, region_type, item_id)`，payload JSON，`updated_at`；`region_type` 取 1 圆 / 2 矩 / 3 多边形 / 4 路线；"清空后重设"在同一事务内 DELETE + INSERT；**P2.1 已落地** |
 | `terminal_catalogs` | 事件/信息菜单/电话本/升级/透传等下发目录（B） | 唯一键 `(phone, catalog_type, item_key)`，完整 payload JSON；`catalog_type` 取 event / info_menu / phonebook / upgrade / transparent_down；**P2.1 已落地** |
-| `locations` | 定位历史（B，时序） | 主键 `(phone, record_id)`（`record_id` 为纳秒时间戳 + 进程内递增）；索引 `(phone, report_time_ms)`、`(report_time_ms)`；批量 INSERT；按 `received_at_ms` 保留期删除；**P2.1 已落地** |
-| `alarms` | 报警历史与确认（B，时序） | 主键 `(phone, message_serial, received_at_ms)`；`confirmed`；索引 `(phone, received_at_ms)`、`(received_at_ms)`；去重窗口内同流水号只更新 `alarm_sign`；**P2.1 已落地** |
+| `locations` | 定位历史（B，时序） | 主键 `(phone, record_id)`（`record_id` 为纳秒时间戳 + 进程内递增）；索引 `(phone, report_time_ms)`、`(report_time_ms)`、`(received_at_ms)`；批量 INSERT；写入时按设备裁剪，开启 `retention.cleanup` 后按 `received_at_ms` 分批全局删除；**P2.1 已落地** |
+| `alarms` | 报警历史与确认（B，时序） | 主键 `(phone, message_serial, received_at_ms)`；`confirmed`；索引 `(phone, received_at_ms)`、`(received_at_ms)`；去重窗口内同流水号只更新 `alarm_sign`；按 `received_at_ms` 分批全局删除（默认关闭）；**P2.1 已落地** |
 | `command_outbox` | 下行命令（B，幂等可重投） | `command_id` PK，`phone`,`owner`,`state`,`idempotency_key`,`created_at`；**本期非交付项** |
 | `media_resource_lists` | 音视频资源列表（B，来源 0x1205） | `phone` PK；按设备整包覆盖 `items_json` 与 `media_count`；**P1 已落地** |
 | `media_upload_tasks` | 文件上传指令元数据（B，来源 0x9206） | 主键 `(phone, serial)`；FTP 参数、时间范围、报警标志等序列化为 `payload_json`；**P1 已落地** |
 | `media_upload_notices` | 文件上传完成通知（B，来源 0x1206） | 主键 `(phone, serial)`；保存上传结果 `result`；**P1 已落地** |
+| `media_files` | 0x0801 媒体文件元数据（B） | 主键 `(phone, media_id)`；索引 `(phone, location_time, received_at)`、`(received_at)`；文件落 `mediaUpload.dir`，元数据与文件由保留期清理保持一致 |
+| `media_captures` / `media_capture_items` | 0x0805 拍摄应答及明细（B） | 主键 `(phone, record_id)` / `(phone, record_id, item_index)`；索引 `(received_at)`；删除主表时同事务删除明细 |
 | `waybills` | 运单元数据（B，**后续独立任务**） | 按 phone/时间索引 |
 
 大 payload（0x0801 媒体、0x8900/0901 透传压缩字节）**不入关系库**，落文件/对象存储，库里存 URI 与元数据。
+
+历史数据清理由进程内 `retention.Cleaner` 执行，仅 SQL 后端启用，默认关闭。各表按服务端接收时间（`received_at_ms` / `received_at`）取过期主键并分批删除；`media_files` 先删文件再删元数据，文件删除失败时保留记录重试。`memory` 后端数据随进程结束释放，不参与清理。
 
 ### 7.2 迁移
 
