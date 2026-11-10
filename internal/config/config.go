@@ -7,6 +7,7 @@ import (
 	"net"
 	neturl "net/url"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -52,7 +53,10 @@ type logConf struct {
 }
 
 type serverConf struct {
-	Name               string      `yaml:"name"`
+	Name string `yaml:"name"`
+	// Mode 选择运行形态：standalone（缺省，四角色同进程）或 cluster（按 cluster.roles 拆进程）。
+	// cluster 下必须配合 cluster 段使用；显式配置 cluster.roles 而 mode=standalone 视为矛盾配置。
+	Mode               string      `yaml:"mode"`
 	Port               *servPort   `yaml:"port"`
 	Banner             *servBanner `yaml:"banner"`
 	Action             *actionConf `yaml:"action"`
@@ -166,6 +170,7 @@ type Config struct {
 	API           *apiConf           `yaml:"api"`
 	CommandOutbox *commandOutboxConf `yaml:"commandOutbox"`
 	Uplink        *uplinkConf        `yaml:"uplink"`
+	Cluster       *clusterConf       `yaml:"cluster"`
 }
 
 // 业务 API 的默认限流参数；token 为空表示未开启鉴权，启动时会打警告。
@@ -1273,6 +1278,466 @@ func (c *Config) ParseCommandOutbox() (CommandOutboxOptions, error) {
 	}
 	options.RetryOnTerminalFailure = conf.RetryOnTerminalFailure
 	return options, nil
+}
+
+// 运行形态与角色。standalone 是缺省且零外部依赖；cluster 按 roles 拆进程。
+const (
+	ServerModeStandalone = "standalone"
+	ServerModeCluster    = "cluster"
+
+	RoleGateway    = "gateway"
+	RoleControl    = "control"
+	RoleMedia      = "media"
+	RoleAttachment = "attachment"
+)
+
+// 文件存储后端。local 只用于 standalone；sharedVolume 是过渡形态；objectStore 是正式形态。
+// 配置值大小写不敏感，内部统一为小写规范值。
+const (
+	BlobBackendLocal        = "local"
+	BlobBackendSharedVolume = "sharedvolume"
+	BlobBackendObjectStore  = "objectstore"
+)
+
+const (
+	DefaultClusterDownlinkTimeout  = 8 * time.Second
+	DefaultClusterDownlinkIDTTL    = 2 * time.Minute
+	DefaultClusterDownlinkMaxInFly = 256
+	DefaultClusterUplinkDedupTTL   = 10 * time.Minute
+	DefaultClusterUplinkDedupMax   = 100000
+	DefaultClusterUplinkMaxBody    = 4 * 1024 * 1024
+	DefaultClusterBlobRoot         = "./data/blobs"
+	DefaultClusterBlobMarker       = ".jt808-shared-volume"
+)
+
+// clusterConf 配置角色拆分与两个内部 HTTP 契约。
+type clusterConf struct {
+	Roles    []string             `yaml:"roles"`
+	Gateway  *clusterGatewayConf  `yaml:"gateway"`
+	Control  *clusterControlConf  `yaml:"control"`
+	Downlink *clusterDownlinkConf `yaml:"downlink"`
+	Uplink   *clusterUplinkConf   `yaml:"uplink"`
+	Blob     *clusterBlobConf     `yaml:"blob"`
+}
+
+type clusterGatewayConf struct {
+	// Addr 是网关侧下行 HTTP 入口的监听地址。
+	Addr string `yaml:"addr"`
+	// URL 是管控侧调用下行入口的基址；control 角色必填。
+	URL string `yaml:"url"`
+	// Token 是 control -> gateway 的共享密钥；gateway 校验、control 发送。
+	Token string `yaml:"token"`
+}
+
+type clusterControlConf struct {
+	// Addr 是管控侧上行 HTTP 入口的监听地址。
+	Addr string `yaml:"addr"`
+	// Token 是 gateway -> control 的共享密钥；control 校验、gateway 发送。
+	// 同一方向上 gateway 的 uplink.http.token 必须与本值一致。
+	Token string `yaml:"token"`
+}
+
+type clusterDownlinkConf struct {
+	TimeoutMS int    `yaml:"timeoutMs"`
+	IDTTL     string `yaml:"idempotencyTTL"`
+	MaxInFly  int    `yaml:"maxInFlight"`
+}
+
+type clusterUplinkConf struct {
+	DedupTTL        string `yaml:"dedupTTL"`
+	DedupMaxEntries int    `yaml:"dedupMaxEntries"`
+	MaxBodyBytes    int    `yaml:"maxBodyBytes"`
+}
+
+type clusterBlobConf struct {
+	Backend string `yaml:"backend"`
+	// SharedVolume 必须显式为 true，避免把本机独占目录误当成共享卷。
+	SharedVolume bool   `yaml:"sharedVolume"`
+	Marker       string `yaml:"marker"`
+	Root         string `yaml:"root"`
+}
+
+// RoleSet 是角色集合。
+type RoleSet map[string]bool
+
+// Has 判断角色是否启用。
+func (r RoleSet) Has(role string) bool { return r != nil && r[role] }
+
+// List 按固定顺序返回已启用角色，保证日志稳定。
+func (r RoleSet) List() []string {
+	order := []string{RoleGateway, RoleControl, RoleMedia, RoleAttachment}
+	roles := make([]string, 0, len(r))
+	for _, role := range order {
+		if r.Has(role) {
+			roles = append(roles, role)
+		}
+	}
+	return roles
+}
+
+// ClusterOptions 是 server.mode 与 cluster.* 的归一化配置。
+type ClusterOptions struct {
+	Mode    string
+	Roles   RoleSet
+	Gateway struct {
+		Addr  string
+		URL   string
+		Token string
+	}
+	Control struct {
+		Addr  string
+		Token string
+	}
+	Downlink struct {
+		Timeout     time.Duration
+		IDTTL       time.Duration
+		MaxInFlight int
+	}
+	Uplink struct {
+		DedupTTL        time.Duration
+		DedupMaxEntries int
+		MaxBodyBytes    int64
+	}
+	Blob struct {
+		Backend      string
+		SharedVolume bool
+		Marker       string
+		Root         string
+	}
+}
+
+// IsStandalone 表示进程是否运行在 standalone 形态。
+func (o ClusterOptions) IsStandalone() bool { return o.Mode == ServerModeStandalone }
+
+// ParseServerMode 归一化并校验 server.mode 与 cluster.*。
+// 返回的错误一次性列出全部问题，便于启动时一次修完。
+func (c *Config) ParseServerMode() (ClusterOptions, error) {
+	options := ClusterOptions{
+		Mode:  ServerModeStandalone,
+		Roles: RoleSet{},
+	}
+	options.Downlink.Timeout = DefaultClusterDownlinkTimeout
+	options.Downlink.IDTTL = DefaultClusterDownlinkIDTTL
+	options.Downlink.MaxInFlight = DefaultClusterDownlinkMaxInFly
+	options.Uplink.DedupTTL = DefaultClusterUplinkDedupTTL
+	options.Uplink.DedupMaxEntries = DefaultClusterUplinkDedupMax
+	options.Uplink.MaxBodyBytes = DefaultClusterUplinkMaxBody
+	options.Blob.Root = DefaultClusterBlobRoot
+	options.Blob.Marker = DefaultClusterBlobMarker
+
+	if c == nil {
+		return options, nil
+	}
+	mode := strings.ToLower(strings.TrimSpace(c.Server.Mode))
+	if mode == "" {
+		mode = ServerModeStandalone
+	}
+	if mode != ServerModeStandalone && mode != ServerModeCluster {
+		return options, fmt.Errorf("server.mode must be %s or %s, got %q",
+			ServerModeStandalone, ServerModeCluster, c.Server.Mode)
+	}
+	options.Mode = mode
+
+	conf := c.Cluster
+	if conf == nil {
+		if mode == ServerModeCluster {
+			return options, fmt.Errorf("cluster section is required when server.mode=%s", ServerModeCluster)
+		}
+		return options, nil
+	}
+
+	var problems []string
+	roles := RoleSet{}
+	seen := map[string]bool{}
+	for _, raw := range conf.Roles {
+		role := strings.ToLower(strings.TrimSpace(raw))
+		if role == "" {
+			problems = append(problems, "cluster.roles must not contain empty entries")
+			continue
+		}
+		switch role {
+		case RoleGateway, RoleControl, RoleMedia, RoleAttachment:
+		default:
+			problems = append(problems, fmt.Sprintf("cluster.roles contains unknown role %q", raw))
+			continue
+		}
+		if seen[role] {
+			problems = append(problems, fmt.Sprintf("cluster.roles contains duplicate role %q", role))
+			continue
+		}
+		seen[role] = true
+		roles[role] = true
+	}
+	options.Roles = roles
+
+	if mode == ServerModeStandalone {
+		if len(conf.Roles) > 0 {
+			problems = append(problems, "cluster.roles must be empty when server.mode=standalone")
+		}
+		if len(problems) > 0 {
+			return options, fmt.Errorf("%s", strings.Join(problems, "; "))
+		}
+		return options, nil
+	}
+
+	if len(roles) == 0 {
+		problems = append(problems, "cluster.roles must not be empty when server.mode=cluster")
+	}
+
+	// gateway / control 的监听与凭据。
+	if conf.Gateway != nil {
+		options.Gateway.Addr = strings.TrimSpace(conf.Gateway.Addr)
+		options.Gateway.URL = strings.TrimSpace(conf.Gateway.URL)
+		options.Gateway.Token = strings.TrimSpace(conf.Gateway.Token)
+	}
+	if conf.Control != nil {
+		options.Control.Addr = strings.TrimSpace(conf.Control.Addr)
+		options.Control.Token = strings.TrimSpace(conf.Control.Token)
+	}
+	if roles.Has(RoleGateway) {
+		if options.Gateway.Addr == "" {
+			problems = append(problems, "cluster.gateway.addr is required for role gateway")
+		} else if err := validateListenAddr("cluster.gateway.addr", options.Gateway.Addr); err != nil {
+			problems = append(problems, err.Error())
+		}
+		if options.Gateway.Token == "" {
+			problems = append(problems, "cluster.gateway.token is required for role gateway")
+		}
+	}
+	if roles.Has(RoleControl) {
+		if options.Gateway.URL == "" {
+			problems = append(problems, "cluster.gateway.url is required for role control")
+		} else if err := validateHTTPURL("cluster.gateway.url", options.Gateway.URL); err != nil {
+			problems = append(problems, err.Error())
+		}
+		if options.Control.Addr == "" {
+			problems = append(problems, "cluster.control.addr is required for role control")
+		} else if err := validateListenAddr("cluster.control.addr", options.Control.Addr); err != nil {
+			problems = append(problems, err.Error())
+		}
+		if options.Control.Token == "" {
+			problems = append(problems, "cluster.control.token is required for role control")
+		}
+	}
+
+	// 下行参数。
+	if dl := conf.Downlink; dl != nil {
+		if dl.TimeoutMS != 0 {
+			if dl.TimeoutMS < 1 {
+				problems = append(problems, fmt.Sprintf("cluster.downlink.timeoutMs must be > 0, got %d", dl.TimeoutMS))
+			}
+			options.Downlink.Timeout = time.Duration(dl.TimeoutMS) * time.Millisecond
+		}
+		if raw := strings.TrimSpace(dl.IDTTL); raw != "" {
+			parsed, err := time.ParseDuration(raw)
+			if err != nil || parsed <= 0 {
+				problems = append(problems, fmt.Sprintf("cluster.downlink.idempotencyTTL must be a positive duration, got %q", raw))
+			} else {
+				options.Downlink.IDTTL = parsed
+			}
+		}
+		if dl.MaxInFly != 0 {
+			if dl.MaxInFly < 1 {
+				problems = append(problems, fmt.Sprintf("cluster.downlink.maxInFlight must be >= 1, got %d", dl.MaxInFly))
+			}
+			options.Downlink.MaxInFlight = dl.MaxInFly
+		}
+	}
+	// 下行超时上限：覆盖一次下发到会话重传耗尽的窗口。
+	if c.Server.AckTimeoutMS > 0 && c.Server.MaxRetransmissions >= 0 {
+		capWindow := time.Duration(c.Server.AckTimeoutMS) * time.Millisecond * time.Duration(c.Server.MaxRetransmissions+1)
+		if capWindow > 0 && options.Downlink.Timeout > capWindow {
+			problems = append(problems, fmt.Sprintf(
+				"cluster.downlink.timeoutMs must not exceed server.ackTimeoutMs × (maxRetransmissions+1) = %s, got %s",
+				capWindow, options.Downlink.Timeout))
+		}
+	}
+
+	// 上行入口参数。
+	if up := conf.Uplink; up != nil {
+		if raw := strings.TrimSpace(up.DedupTTL); raw != "" {
+			parsed, err := time.ParseDuration(raw)
+			if err != nil || parsed <= 0 {
+				problems = append(problems, fmt.Sprintf("cluster.uplink.dedupTTL must be a positive duration, got %q", raw))
+			} else {
+				options.Uplink.DedupTTL = parsed
+			}
+		}
+		if up.DedupMaxEntries != 0 {
+			if up.DedupMaxEntries < 1 {
+				problems = append(problems, fmt.Sprintf("cluster.uplink.dedupMaxEntries must be >= 1, got %d", up.DedupMaxEntries))
+			}
+			options.Uplink.DedupMaxEntries = up.DedupMaxEntries
+		}
+		if up.MaxBodyBytes != 0 {
+			if up.MaxBodyBytes < 1024 || up.MaxBodyBytes > 64*1024*1024 {
+				problems = append(problems, fmt.Sprintf("cluster.uplink.maxBodyBytes must be in [1024, 67108864], got %d", up.MaxBodyBytes))
+			}
+			options.Uplink.MaxBodyBytes = int64(up.MaxBodyBytes)
+		}
+	}
+
+	// 文件存储。
+	if blob := conf.Blob; blob != nil {
+		options.Blob.Backend = strings.ToLower(strings.TrimSpace(blob.Backend))
+		options.Blob.SharedVolume = blob.SharedVolume
+		if marker := strings.TrimSpace(blob.Marker); marker != "" {
+			options.Blob.Marker = marker
+		}
+		if root := strings.TrimSpace(blob.Root); root != "" {
+			options.Blob.Root = root
+		}
+	}
+	needsBlob := roles.Has(RoleMedia) || roles.Has(RoleAttachment)
+	if needsBlob {
+		switch options.Blob.Backend {
+		case BlobBackendSharedVolume:
+			if !options.Blob.SharedVolume {
+				problems = append(problems, "cluster.blob.sharedVolume must be true when cluster.blob.backend=sharedVolume")
+			}
+			markerPath := filepath.Join(options.Blob.Root, options.Blob.Marker)
+			if _, err := os.Stat(markerPath); err != nil {
+				problems = append(problems, fmt.Sprintf(
+					"cluster.blob marker %q is required for sharedVolume backend: %v", markerPath, err))
+			}
+		case BlobBackendObjectStore:
+			problems = append(problems, "cluster.blob.backend=objectStore is not implemented in E1; use sharedVolume for contract validation")
+		default:
+			problems = append(problems, "cluster.blob.backend must be sharedVolume or objectStore for roles media/attachment")
+		}
+	}
+	if options.Blob.Backend == BlobBackendObjectStore {
+		if policy := c.RetentionPolicy(); policy.OrphanFiles.Enabled {
+			problems = append(problems, "retention.orphanFiles.enabled must be false when cluster.blob.backend=objectStore (use bucket lifecycle)")
+		}
+	}
+
+	// 存储：gateway/control 需要共享库。
+	if roles.Has(RoleGateway) || roles.Has(RoleControl) {
+		backend := strings.ToLower(strings.TrimSpace(c.Storage.Type))
+		if backend == "" {
+			backend = "memory"
+		}
+		if backend != "mysql" {
+			problems = append(problems, fmt.Sprintf(
+				"storage.type must be mysql when roles include gateway/control, got %q", backend))
+		}
+	}
+
+	// outbox：control 必须 durable。
+	if roles.Has(RoleControl) {
+		outboxOptions, err := c.ParseCommandOutbox()
+		if err != nil {
+			problems = append(problems, err.Error())
+		} else {
+			backend := strings.ToLower(strings.TrimSpace(c.Storage.Type))
+			if backend == "" {
+				backend = "memory"
+			}
+			resolved := ResolveCommandOutboxMode(outboxOptions.Mode, backend)
+			if resolved != CommandOutboxModeDurable {
+				problems = append(problems, fmt.Sprintf(
+					"commandOutbox.mode must be durable for role control, got %q", resolved))
+			}
+		}
+	}
+
+	// 上行出口：gateway-only 必须 http；同进程走 local，http 指向自身视为回环。
+	sinkOptions, sinkErr := c.ParseUplinkSink()
+	if sinkErr != nil {
+		problems = append(problems, sinkErr.Error())
+	} else if roles.Has(RoleGateway) {
+		if roles.Has(RoleControl) {
+			if sinkOptions.Mode == UplinkSinkHTTP && loopbackToAddr(sinkOptions.HTTP.URL, options.Control.Addr) {
+				problems = append(problems, "uplink.http.url must not point to the local control addr when gateway and control share a process")
+			}
+		} else if sinkOptions.Mode != UplinkSinkHTTP {
+			problems = append(problems, fmt.Sprintf(
+				"uplink.sink must be %s for gateway-only cluster, got %q", UplinkSinkHTTP, sinkOptions.Mode))
+		}
+	}
+	// gateway 发送上行、control 校验：同一方向必须使用同一密钥。
+	if roles.Has(RoleGateway) && sinkOptions.Mode == UplinkSinkHTTP && options.Control.Token != "" {
+		if sinkOptions.HTTP.Token != options.Control.Token {
+			problems = append(problems, "uplink.http.token must equal cluster.control.token")
+		}
+	}
+
+	// media / attachment 端口。
+	if roles.Has(RoleMedia) {
+		mediaOptions, enabled, err := c.ParseMediaServer()
+		if err != nil {
+			problems = append(problems, err.Error())
+		} else if !enabled || (mediaOptions.Port == 0 && mediaOptions.TCPPort == 0) {
+			problems = append(problems, "mediaServer.port or mediaServer.tcpPort is required for role media")
+		}
+	}
+	if roles.Has(RoleAttachment) {
+		alarmOptions, enabled, err := c.ParseAlarmServer()
+		if err != nil {
+			problems = append(problems, err.Error())
+		} else if !enabled || (alarmOptions.Port == 0 && alarmOptions.UDPPort == 0) {
+			problems = append(problems, "alarmServer.port or alarmServer.udpPort is required for role attachment")
+		}
+	}
+
+	if len(problems) > 0 {
+		return options, fmt.Errorf("%s", strings.Join(problems, "; "))
+	}
+	return options, nil
+}
+
+// ValidateServerMode 在 storage.Init 之前做 fail-fast 校验。
+func (c *Config) ValidateServerMode() error {
+	_, err := c.ParseServerMode()
+	return err
+}
+
+// validateListenAddr 校验监听地址 host:port；允许空 host（表示全部网卡）。
+func validateListenAddr(name, addr string) error {
+	_, portText, err := net.SplitHostPort(addr)
+	if err != nil {
+		return fmt.Errorf("%s must be a host:port address, got %q", name, addr)
+	}
+	port, err := strconv.Atoi(portText)
+	if err != nil || port < 1 || port > 65535 {
+		return fmt.Errorf("%s must use a port between 1 and 65535, got %q", name, addr)
+	}
+	return nil
+}
+
+// validateHTTPURL 校验绝对 http(s) 地址。
+func validateHTTPURL(name, raw string) error {
+	parsed, err := neturl.Parse(raw)
+	if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+		return fmt.Errorf("%s must be an absolute http(s) URL, got %q", name, raw)
+	}
+	return nil
+}
+
+// loopbackToAddr 判断 url 是否指向本进程的监听地址。
+// 监听 host 为空、0.0.0.0、:: 时按本机通配处理，只比较端口。
+func loopbackToAddr(rawURL, listenAddr string) bool {
+	parsed, err := neturl.Parse(rawURL)
+	if err != nil || parsed.Host == "" {
+		return false
+	}
+	urlHost, urlPort, err := net.SplitHostPort(parsed.Host)
+	if err != nil {
+		return false
+	}
+	listenHost, listenPort, err := net.SplitHostPort(listenAddr)
+	if err != nil {
+		return false
+	}
+	portEqual := urlPort == listenPort || (urlPort == "80" && listenPort == "80") || (urlPort == "443" && listenPort == "443")
+	if !portEqual {
+		return false
+	}
+	if listenHost == "" || listenHost == "0.0.0.0" || listenHost == "::" {
+		return true
+	}
+	return strings.EqualFold(urlHost, listenHost)
 }
 
 // storageConf 配置持久化后端；type 缺省为 memory。

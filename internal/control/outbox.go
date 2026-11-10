@@ -76,15 +76,15 @@ func (o OutboxOptions) withDefaults() OutboxOptions {
 	return o
 }
 
-// Sender 抽象一次带指定流水号的下行发送，便于测试注入。
-type Sender func(sessionID string, message model.JT808Msg, serial uint16) error
-
 // OutboxDependencies 是内置管控的外部依赖。
 type OutboxDependencies struct {
 	Commands repository.CommandRepository
 	Devices  repository.DeviceRepository
-	Conn     runtime.ConnectionRegistry
-	Send     Sender
+	// Conn 仅在进程内有网关时使用，用于发送前快速判断离线；
+	// control-only 形态为 nil，离线判断交给 DownlinkSender 的返回值。
+	Conn runtime.ConnectionRegistry
+	// Send 是下行传输契约：本地直连与 HTTP 网关实现同一接口。
+	Send contracts.DownlinkSender
 	// Metrics 收集终端应答处理结果；为空时只记日志。
 	Metrics *observability.Metrics
 	// Owner 是租约标识；为空时按主机名 + 进程号 + 随机串生成。
@@ -98,7 +98,7 @@ type Outbox struct {
 	commands repository.CommandRepository
 	devices  repository.DeviceRepository
 	conn     runtime.ConnectionRegistry
-	send     Sender
+	send     contracts.DownlinkSender
 	metrics  *observability.Metrics
 	owner    string
 	clock    func() time.Time
@@ -119,9 +119,6 @@ func NewOutbox(deps OutboxDependencies, options OutboxOptions) (*Outbox, error) 
 		}
 		if deps.Devices == nil {
 			return nil, fmt.Errorf("outbox: device repository is required when enabled")
-		}
-		if deps.Conn == nil {
-			return nil, fmt.Errorf("outbox: connection registry is required when enabled")
 		}
 	}
 	if deps.Send == nil {
@@ -164,13 +161,20 @@ func (o *Outbox) Submit(ctx context.Context, request contracts.DownlinkRequest) 
 	}
 	if !o.Enabled() {
 		// off 模式保持既有行为：直接发送，不落库、不可查、不重投。
-		_ = o.send(request.SessionID, request.Message, request.Serial)
+		if _, err := o.send.Send(ctx, request); err != nil {
+			log.Warn().Err(err).Str("phone", request.Phone).Msg("Direct downlink send failed")
+		}
 		return contracts.DownlinkResult{Accepted: true, Serial: request.Serial}, nil
 	}
 
 	header := request.Message.GetHeader()
 	if header == nil {
 		return contracts.DownlinkResult{}, fmt.Errorf("downlink message header is required")
+	}
+	serial := request.Serial
+	if serial == 0 {
+		// outbox 以 (phone, msgID, serial) 关联终端应答；流水号必须在下发前确定。
+		return contracts.DownlinkResult{}, fmt.Errorf("downlink serial is required when outbox is enabled")
 	}
 	idempotencyKey := strings.TrimSpace(request.IdempotencyKey)
 	if len(idempotencyKey) > 128 {
@@ -184,7 +188,6 @@ func (o *Outbox) Submit(ctx context.Context, request contracts.DownlinkRequest) 
 		idempotencyKey = commandID
 	}
 
-	serial := request.Serial
 	header.SerialNumber = serial
 	encoded, err := request.Message.Encode()
 	if err != nil {
@@ -219,11 +222,34 @@ func (o *Outbox) Submit(ctx context.Context, request contracts.DownlinkRequest) 
 		return result, nil
 	}
 
-	if err := o.send(request.SessionID, request.Message, serial); err != nil {
+	receipt, sendErr := o.send.Send(ctx, request)
+	if sendErr != nil {
 		// 首次下发失败不直接判死：保持 pending 并安排重投，设备重新上线后仍可补发。
 		next := o.clock().Add(o.opts.RetryBase)
-		_, _ = o.commands.ScheduleRetry(ctx, header.PhoneNumber, header.MsgID, serial, next, err.Error())
-		return result, fmt.Errorf("send downlink command: %w", err)
+		_, _ = o.commands.ScheduleRetry(ctx, header.PhoneNumber, header.MsgID, serial, next, sendErr.Error())
+		return result, fmt.Errorf("send downlink command: %w", sendErr)
+	}
+	switch receipt.Status {
+	case contracts.DownlinkStatusOffline:
+		// 设备不在线：保持 pending，等设备上线后由 Tick 重投。
+		log.Info().
+			Str("command_id", commandID).
+			Str("phone", header.PhoneNumber).
+			Msg("Downlink command is waiting for device to come online")
+	case contracts.DownlinkStatusRejected:
+		next := o.clock().Add(o.opts.RetryBase)
+		reason := receipt.Reason
+		if reason == "" {
+			reason = "gateway rejected downlink"
+		}
+		_, _ = o.commands.ScheduleRetry(ctx, header.PhoneNumber, header.MsgID, serial, next, reason)
+		return result, fmt.Errorf("send downlink command: %s", reason)
+	case contracts.DownlinkStatusAcked, contracts.DownlinkStatusFailed:
+		o.handleReceipt(ctx, contracts.DownlinkRequest{
+			Phone:   header.PhoneNumber,
+			Serial:  serial,
+			Message: request.Message,
+		}, receipt)
 	}
 	return result, nil
 }
@@ -314,13 +340,24 @@ func (o *Outbox) Tick(ctx context.Context) error {
 	return nil
 }
 
-// dispatch 把一条已占用租约的命令投给在线会话，并对三种结果做明确落点：
-// 会话不在线 → 释放租约等待；次数超限 → failed；已下发 → 等待应答事件。
+// dispatch 把一条已占用租约的命令交给下行契约，并对回执做明确落点：
+// offline → 释放租约等待；rejected/传输错误 → 退避重投；acked/failed → 推进状态。
 func (o *Outbox) dispatch(ctx context.Context, command *repository.DownlinkCommand) {
-	session, err := o.conn.GetByPhone(ctx, command.Phone)
-	if err != nil || session == nil {
-		o.release(ctx, command, "device offline")
-		return
+	request := contracts.DownlinkRequest{
+		Phone:          command.Phone,
+		SessionID:      "",
+		IdempotencyKey: command.CommandID,
+		Serial:         command.Serial,
+	}
+	// 进程内有网关时先做一次廉价离线判断，减少无意义的 HTTP 调用；
+	// control-only 下 conn 为 nil，交给网关返回 offline/rejected。
+	if o.conn != nil {
+		session, err := o.conn.GetByPhone(ctx, command.Phone)
+		if err != nil || session == nil {
+			o.release(ctx, command, "device offline")
+			return
+		}
+		request.SessionID = session.ID
 	}
 	device, err := o.devices.GetByPhone(ctx, command.Phone)
 	if err != nil {
@@ -345,11 +382,12 @@ func (o *Outbox) dispatch(ctx context.Context, command *repository.DownlinkComma
 		return
 	}
 
-	message := &model.MsgRawBody{
+	request.Message = &model.MsgRawBody{
 		Header: model.GenMsgHeader(device, command.MsgID, command.Serial),
 		Body:   append([]byte(nil), command.Payload...),
 	}
-	if err := o.send(session.ID, message, command.Serial); err != nil {
+	receipt, err := o.send.Send(ctx, request)
+	if err != nil {
 		log.Error().Err(err).
 			Str("command_id", command.CommandID).
 			Str("phone", command.Phone).
@@ -359,6 +397,17 @@ func (o *Outbox) dispatch(ctx context.Context, command *repository.DownlinkComma
 		o.handleFailure(ctx, command.Phone, command.MsgID, command.Serial, err.Error())
 		return
 	}
+	switch receipt.Status {
+	case contracts.DownlinkStatusOffline:
+		o.release(ctx, command, "device offline")
+		return
+	case contracts.DownlinkStatusRejected:
+		o.handleFailure(ctx, command.Phone, command.MsgID, command.Serial, receipt.Reason)
+		return
+	case contracts.DownlinkStatusAcked, contracts.DownlinkStatusFailed:
+		o.handleReceipt(ctx, request, receipt)
+		return
+	}
 	log.Info().
 		Str("command_id", command.CommandID).
 		Str("phone", command.Phone).
@@ -366,6 +415,32 @@ func (o *Outbox) dispatch(ctx context.Context, command *repository.DownlinkComma
 		Uint16("serial", command.Serial).
 		Int("attempt", command.Attempts+1).
 		Msg("Replayed pending downlink command")
+}
+
+// handleReceipt 把网关同步回执转成终端应答，复用统一状态机。
+func (o *Outbox) handleReceipt(ctx context.Context, request contracts.DownlinkRequest, receipt contracts.DownlinkReceipt) {
+	if receipt.Result == nil {
+		return
+	}
+	header := request.Message.GetHeader()
+	if header == nil {
+		return
+	}
+	reply := contracts.TerminalReply{
+		EventID:      fmt.Sprintf("%s|0x%04X|%d", request.Phone, header.MsgID, request.Serial),
+		Phone:        request.Phone,
+		AnswerMsgID:  header.MsgID,
+		AnswerSerial: request.Serial,
+		Result:       *receipt.Result,
+		Source:       "http_receipt",
+	}
+	if _, err := o.HandleTerminalReply(ctx, reply); err != nil {
+		log.Error().Err(err).
+			Str("phone", request.Phone).
+			Uint16("msg_id", header.MsgID).
+			Uint16("serial", request.Serial).
+			Msg("Failed to handle gateway receipt as terminal reply")
+	}
 }
 
 // HandleResult 消费会话的可靠投递结果事件。

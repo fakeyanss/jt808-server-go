@@ -33,5 +33,10 @@ func directSend(serv *server.TCPServer, session *model.Session, msg model.JT808M
 			log.Error().Uint16("msg_id", header.MsgID).Msg("Downlink message is not covered by outbox or exemption list")
 		}
 	}
+	if serv == nil {
+		// control-only 形态没有本地网关会话，直连发送不可用；下发必须走 outbox。
+		log.Error().Msg("Direct downlink send is unavailable without a local gateway")
+		return
+	}
 	serv.Send(session.ID, msg)
 }

@@ -16,7 +16,9 @@ import (
 	"github.com/fakeyanss/jt808-server-go/internal/alarmserver"
 	"github.com/fakeyanss/jt808-server-go/internal/api"
 	"github.com/fakeyanss/jt808-server-go/internal/config"
+	"github.com/fakeyanss/jt808-server-go/internal/contracts"
 	"github.com/fakeyanss/jt808-server-go/internal/control"
+	"github.com/fakeyanss/jt808-server-go/internal/downlinkhttp"
 	"github.com/fakeyanss/jt808-server-go/internal/media"
 	"github.com/fakeyanss/jt808-server-go/internal/mediaupload"
 	"github.com/fakeyanss/jt808-server-go/internal/observability"
@@ -64,25 +66,48 @@ func main() {
 		os.Exit(1)
 	}
 
-	storageCfg := storage.FromConfig(cfg)
-	stores, storageErr := storage.Init(storageCfg)
-	if storageErr != nil {
-		log.Error().Err(storageErr).Msg("Fail to initialize storage backend")
+	// 运行形态必须在 storage.Init 之前 fail-fast：配置矛盾时不要先连数据库。
+	clusterOptions, clusterErr := cfg.ParseServerMode()
+	if clusterErr != nil {
+		log.Error().Err(clusterErr).Msg("Invalid server mode / cluster configuration")
 		os.Exit(1)
 	}
-	log.Info().Str("backend", stores.Backend).Msg("Storage backend initialized")
+	standalone := clusterOptions.IsStandalone()
+	hasGateway := standalone || clusterOptions.Roles.Has(config.RoleGateway)
+	hasControl := standalone || clusterOptions.Roles.Has(config.RoleControl)
+	hasMedia := standalone || clusterOptions.Roles.Has(config.RoleMedia)
+	hasAttachment := standalone || clusterOptions.Roles.Has(config.RoleAttachment)
+	log.Info().
+		Str("mode", clusterOptions.Mode).
+		Strs("roles", clusterOptions.Roles.List()).
+		Msg("Server mode resolved")
+
+	// gateway/control 需要共享库；纯 media/attachment 进程不连业务库。
+	var stores *storage.Stores
+	if hasGateway || hasControl {
+		initialized, err := storage.Init(storage.FromConfig(cfg))
+		if err != nil {
+			log.Error().Err(err).Msg("Fail to initialize storage backend")
+			os.Exit(1)
+		}
+		stores = initialized
+		log.Info().Str("backend", stores.Backend).Msg("Storage backend initialized")
+	}
 
 	// mode 未显式配置时按存储后端归一化：memory 后端默认 memory，SQL 后端默认 durable。
-	outboxOptions.Mode = config.ResolveCommandOutboxMode(outboxOptions.Mode, stores.Backend)
 	var commandRepo repository.CommandRepository
-	switch outboxOptions.Mode {
-	case config.CommandOutboxModeOff:
-	case config.CommandOutboxModeMemory:
-		commandRepo = repository.NewCommandRepository()
-	case config.CommandOutboxModeDurable:
-		commandRepo = stores.Commands
+	outboxMode := config.CommandOutboxModeOff
+	if hasControl {
+		outboxMode = config.ResolveCommandOutboxMode(outboxOptions.Mode, stores.Backend)
+		switch outboxMode {
+		case config.CommandOutboxModeOff:
+		case config.CommandOutboxModeMemory:
+			commandRepo = repository.NewCommandRepository()
+		case config.CommandOutboxModeDurable:
+			commandRepo = stores.Commands
+		}
+		log.Info().Str("mode", outboxMode).Msg("Command outbox mode resolved")
 	}
-	log.Info().Str("mode", outboxOptions.Mode).Msg("Command outbox mode resolved")
 
 	// 上行可靠性：at_least_once 分类先完成落库再应答，落库失败由终端重传。
 	uplinkPolicy := uplink.NewPolicy(uplinkOptions.Default, uplinkOptions.Location,
@@ -156,18 +181,22 @@ func main() {
 	}
 
 	// 0x0801 多媒体文件落盘始终启用；集群模式要求该目录位于共享卷上。
-	mediaUploadOptions, mediaUploadErr := cfg.ParseMediaUpload()
-	if mediaUploadErr != nil {
-		log.Error().Err(mediaUploadErr).Msg("Invalid mediaUpload configuration")
-		os.Exit(1)
+	// 纯 media/attachment 进程不处理 0x0801，也不需要该目录。
+	var mediaUploadStore *mediaupload.Store
+	if hasGateway || hasControl {
+		mediaUploadOptions, mediaUploadErr := cfg.ParseMediaUpload()
+		if mediaUploadErr != nil {
+			log.Error().Err(mediaUploadErr).Msg("Invalid mediaUpload configuration")
+			os.Exit(1)
+		}
+		mediaUploadStore, mediaUploadErr = mediaupload.NewStore(mediaUploadOptions.Dir)
+		if mediaUploadErr != nil {
+			log.Error().Err(mediaUploadErr).Msg("Fail to initialize media upload store")
+			os.Exit(1)
+		}
+		deps.MediaUpload = mediaUploadStore
+		log.Info().Str("dir", mediaUploadStore.Root()).Msg("Media upload store initialized")
 	}
-	mediaUploadStore, mediaUploadErr := mediaupload.NewStore(mediaUploadOptions.Dir)
-	if mediaUploadErr != nil {
-		log.Error().Err(mediaUploadErr).Msg("Fail to initialize media upload store")
-		os.Exit(1)
-	}
-	deps.MediaUpload = mediaUploadStore
-	log.Info().Str("dir", mediaUploadStore.Root()).Msg("Media upload store initialized")
 
 	adminOptions, adminEnabled, adminErr := cfg.ParseAdmin()
 	if adminErr != nil {
@@ -183,40 +212,79 @@ func main() {
 		log.Warn().Msg("Business API authentication is disabled; set api.auth.token in production")
 	}
 
-	serv := server.NewTCPServer()
-	serv.SetDeps(deps)
-	serv.SetReliability(time.Duration(cfg.Server.AckTimeoutMS)*time.Millisecond, cfg.Server.MaxRetransmissions)
 	metrics := observability.NewMetrics()
-	serv.SetMetrics(metrics)
+	var serv *server.TCPServer
+	if hasGateway {
+		serv = server.NewTCPServer()
+		serv.SetDeps(deps)
+		serv.SetReliability(time.Duration(cfg.Server.AckTimeoutMS)*time.Millisecond, cfg.Server.MaxRetransmissions)
+		serv.SetMetrics(metrics)
+	}
 
 	// durable outbox 归内置管控模块所有：幂等、租约、退避、过期与重投都在这里，
-	// 协议层只上报可靠投递结果。off 模式允许命令仓储为空，直接发送。
-	outbox, outboxBuildErr := control.NewOutbox(control.OutboxDependencies{
-		Commands: commandRepo,
-		Devices:  stores.Devices,
-		Conn:     deps.Runtime.Conn,
-		Metrics:  metrics,
-		Send: func(sessionID string, msg model.JT808Msg, serial uint16) error {
-			return serv.Send(sessionID, msg, server.WithSerial(serial))
-		},
-	}, control.OutboxOptions{
-		Enabled:                outboxOptions.Mode != config.CommandOutboxModeOff,
-		InitialWait:            outboxOptions.InitialWait,
-		ExpireAfter:            outboxOptions.ExpireAfter,
-		PollInterval:           outboxOptions.PollInterval,
-		BatchSize:              outboxOptions.BatchSize,
-		MaxAttempts:            outboxOptions.MaxAttempts,
-		LeaseDuration:          outboxOptions.LeaseDuration,
-		RetryBase:              outboxOptions.RetryBase,
-		RetryMax:               outboxOptions.RetryMax,
-		RetryOnTerminalFailure: outboxOptions.RetryOnTerminalFailure,
-	})
-	if outboxBuildErr != nil {
-		log.Error().Err(outboxBuildErr).Msg("Fail to create command outbox")
-		os.Exit(1)
+	// 协议层只上报可靠投递结果。control-only 下 Conn 为 nil，离线判断交给网关回执。
+	var outbox *control.Outbox
+	if hasControl {
+		var downlinkSender contracts.DownlinkSender
+		if hasGateway {
+			sender, senderErr := control.NewLocalSender(control.LocalSenderDependencies{
+				Conn: deps.Runtime.Conn,
+				Send: func(sessionID string, msg model.JT808Msg, serial uint16) error {
+					return serv.Send(sessionID, msg, server.WithSerial(serial))
+				},
+			})
+			if senderErr != nil {
+				log.Error().Err(senderErr).Msg("Fail to create local downlink sender")
+				os.Exit(1)
+			}
+			downlinkSender = sender
+		} else {
+			client, clientErr := downlinkhttp.NewClient(downlinkhttp.ClientOptions{
+				BaseURL: clusterOptions.Gateway.URL,
+				Token:   clusterOptions.Gateway.Token,
+				Timeout: clusterOptions.Downlink.Timeout,
+			})
+			if clientErr != nil {
+				log.Error().Err(clientErr).Msg("Fail to create HTTP downlink client")
+				os.Exit(1)
+			}
+			downlinkSender = client
+			log.Info().Str("gateway_url", clusterOptions.Gateway.URL).Msg("HTTP downlink client enabled")
+		}
+		var conn runtime.ConnectionRegistry
+		if hasGateway {
+			conn = deps.Runtime.Conn
+		}
+		built, buildErr := control.NewOutbox(control.OutboxDependencies{
+			Commands: commandRepo,
+			Devices:  stores.Devices,
+			Conn:     conn,
+			Metrics:  metrics,
+			Send:     downlinkSender,
+		}, control.OutboxOptions{
+			Enabled:                outboxMode != config.CommandOutboxModeOff,
+			InitialWait:            outboxOptions.InitialWait,
+			ExpireAfter:            outboxOptions.ExpireAfter,
+			PollInterval:           outboxOptions.PollInterval,
+			BatchSize:              outboxOptions.BatchSize,
+			MaxAttempts:            outboxOptions.MaxAttempts,
+			LeaseDuration:          outboxOptions.LeaseDuration,
+			RetryBase:              outboxOptions.RetryBase,
+			RetryMax:               outboxOptions.RetryMax,
+			RetryOnTerminalFailure: outboxOptions.RetryOnTerminalFailure,
+		})
+		if buildErr != nil {
+			log.Error().Err(buildErr).Msg("Fail to create command outbox")
+			os.Exit(1)
+		}
+		outbox = built
 	}
+
 	// 鉴权提供者是网关向管控查询设备档案的只读契约；standalone 下为进程内实现。
-	authProvider := control.NewLocalAuthProvider(stores.Devices)
+	var authProvider *control.LocalAuthProvider
+	if hasControl {
+		authProvider = control.NewLocalAuthProvider(stores.Devices)
+	}
 
 	// 历史数据定期清理与孤儿文件扫描：默认关闭，只有显式开启且后端支持时才启动。
 	// memory 后端的数据随进程结束释放，也没有共享库作为孤儿比对依据，两者都跳过。
@@ -229,7 +297,7 @@ func main() {
 		retentionCtx = ctx
 		cancelRetention = cancel
 	}
-	if retentionPolicy.Cleanup.Enabled {
+	if hasControl && retentionPolicy.Cleanup.Enabled {
 		if stores.Retention == nil {
 			log.Warn().Str("backend", stores.Backend).
 				Msg("Retention cleanup is enabled but the storage backend does not support it; skipped")
@@ -256,7 +324,7 @@ func main() {
 				Msg("Retention cleanup enabled")
 		}
 	}
-	if retentionPolicy.OrphanFiles.Enabled {
+	if hasControl && retentionPolicy.OrphanFiles.Enabled {
 		if stores.Retention == nil || mediaUploadStore == nil {
 			log.Warn().Str("backend", stores.Backend).
 				Msg("Orphan media scan is enabled but the storage backend does not support it; skipped")
@@ -279,17 +347,90 @@ func main() {
 		}
 	}
 
+	// 网关侧下行 HTTP 入口只在 cluster 形态创建；standalone 不新增任何监听。
+	var downlinkServer *downlinkhttp.Server
+	if hasGateway && !standalone {
+		srv, srvErr := downlinkhttp.NewServer(downlinkhttp.Dependencies{
+			Token:       clusterOptions.Gateway.Token,
+			Timeout:     clusterOptions.Downlink.Timeout,
+			IDTTL:       clusterOptions.Downlink.IDTTL,
+			MaxInFlight: clusterOptions.Downlink.MaxInFlight,
+			Conn:        deps.Runtime.Conn,
+			Send: func(ctx context.Context, sessionID string, msg model.JT808Msg, serial uint16) error {
+				return serv.Send(sessionID, msg, server.WithSerial(serial))
+			},
+		})
+		if srvErr != nil {
+			log.Error().Err(srvErr).Msg("Fail to create downlink HTTP server")
+			os.Exit(1)
+		}
+		if err := srv.Listen(clusterOptions.Gateway.Addr); err != nil {
+			log.Error().Err(err).Str("addr", clusterOptions.Gateway.Addr).Msg("Fail to listen downlink HTTP addr")
+			os.Exit(1)
+		}
+		downlinkServer = srv
+		log.Info().Str("addr", srv.Addr()).Msg("Downlink HTTP server listening")
+	}
+
+	// 管控侧上行 HTTP 入口：E1 只校验契约，不内置业务 consumer。
+	var uplinkServer *uplink.Server
+	if hasControl && !standalone {
+		srv, srvErr := uplink.NewServer(uplink.ServerOptions{
+			Token:           clusterOptions.Control.Token,
+			DedupTTL:        clusterOptions.Uplink.DedupTTL,
+			DedupMaxEntries: clusterOptions.Uplink.DedupMaxEntries,
+			MaxBodyBytes:    clusterOptions.Uplink.MaxBodyBytes,
+		})
+		if srvErr != nil {
+			log.Error().Err(srvErr).Msg("Fail to create uplink HTTP server")
+			os.Exit(1)
+		}
+		if outbox != nil {
+			srv.SetTerminalReplyHandler(outbox)
+		}
+		// 缺失 confirm-before-ack consumer 时启动失败，并一次性列出缺失项。
+		if err := srv.ValidateCoverage(uplinkPolicy); err != nil {
+			log.Error().Err(err).Msg("Uplink consumer coverage validation failed")
+			os.Exit(1)
+		}
+		if err := srv.Listen(clusterOptions.Control.Addr); err != nil {
+			log.Error().Err(err).Str("addr", clusterOptions.Control.Addr).Msg("Fail to listen uplink HTTP addr")
+			os.Exit(1)
+		}
+		uplinkServer = srv
+		log.Info().Str("addr", srv.Addr()).Msg("Uplink HTTP server listening")
+	}
+
 	// memory/durable 模式启动重投调度：进程重启后把 pending 命令重新投给已上线会话。
 	// off 模式不写 outbox，也不启动重投。
 	cancelOutbox := func() {}
 	var outboxDone <-chan struct{}
-	if outbox.Enabled() {
-		// 由内置管控负责把应答/失败事件落回 outbox，并在失败时决定重试还是终结。
-		serv.SetReliableResultHandler(outbox.HandleResult)
+	if outbox != nil && outbox.Enabled() {
+		// 同一进程内网关的应答/失败事件同时喂给下行在途表与 outbox。
+		if serv != nil {
+			serv.SetReliableResultHandler(func(result model.ReliableResult) {
+				if downlinkServer != nil {
+					downlinkServer.HandleReliableResult(result)
+				}
+				outbox.HandleResult(result)
+			})
+		}
 		outboxCtx, cancel := context.WithCancel(context.Background())
 		cancelOutbox = cancel
 		outboxDone = outbox.Done()
 		routines.GoSafe(func() { outbox.Run(outboxCtx) })
+	} else if serv != nil && downlinkServer != nil {
+		serv.SetReliableResultHandler(downlinkServer.HandleReliableResult)
+	}
+
+	// 两个内部 HTTP 入口在后台接收请求。
+	if downlinkServer != nil {
+		srv := downlinkServer
+		routines.GoSafe(func() { _ = srv.Start() })
+	}
+	if uplinkServer != nil {
+		srv := uplinkServer
+		routines.GoSafe(func() { _ = srv.Start() })
 	}
 	// 上行 HTTP 出口在后台消费 best-effort 队列；confirm-before-ack 由会话 goroutine 同步调用。
 	cancelUplinkSink := func() {}
@@ -305,7 +446,7 @@ func main() {
 		})
 	}
 
-	if alarmOptions.AutoUpload {
+	if hasGateway && hasControl && alarmOptions.AutoUpload {
 		hooks = alarmserver.NewUploadTrigger(hooks, alarmserver.UploadTriggerOptions{
 			IP:      alarmOptions.UploadIP,
 			TCPPort: alarmOptions.Port,
@@ -329,15 +470,16 @@ func main() {
 			Msg("Automatic 0x9208 attachment upload trigger enabled")
 	}
 	serv.SetHooks(hooks)
-	addr := ":" + cfg.Server.Port.TCPPort
-	err := serv.Listen(addr)
-	if err != nil {
-		log.Error().Err(err).Str("addr", addr).Msg("Fail to listen tcp addr")
-		os.Exit(1)
+	if hasGateway {
+		addr := ":" + cfg.Server.Port.TCPPort
+		if err := serv.Listen(addr); err != nil {
+			log.Error().Err(err).Str("addr", addr).Msg("Fail to listen tcp addr")
+			os.Exit(1)
+		}
+		routines.GoSafe(func() { serv.Start() })
 	}
-	routines.GoSafe(func() { serv.Start() })
 	var udpServ *server.UDPServer
-	if cfg.Server.Port.UDPPort != "" {
+	if hasGateway && cfg.Server.Port.UDPPort != "" {
 		udpServ = server.NewUDPServer()
 		udpServ.SetDeps(deps)
 		udpServ.SetHooks(hooks)
@@ -352,7 +494,7 @@ func main() {
 	}
 
 	var alarmServ *alarmserver.Server
-	if alarmEnabled {
+	if hasAttachment && alarmEnabled {
 		alarmServ = alarmserver.NewServer(alarmserver.Config{
 			Dir:           alarmOptions.Dir,
 			MaxFileSize:   alarmOptions.MaxFileSize,
@@ -379,7 +521,7 @@ func main() {
 	}
 
 	var mediaServ *media.Server
-	if mediaEnabled {
+	if hasMedia && mediaEnabled {
 		mediaServ = media.NewServer(media.Config{
 			Dir:           mediaOptions.Dir,
 			MaxConcurrent: mediaOptions.MaxConcurrent,
@@ -405,15 +547,18 @@ func main() {
 
 	// 就绪检查：存储连通、outbox 过期堆积、媒体/附件目录可写。
 	// 未启用的组件不参与判定，避免把“功能关闭”误报成“服务异常”。
-	checks := []observability.Check{{
-		Name: "storage",
-		Fn: func(ctx context.Context) error {
-			ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
-			defer cancel()
-			return stores.Check(ctx)
-		},
-	}}
-	if outbox.Enabled() {
+	checks := []observability.Check{}
+	if stores != nil {
+		checks = append(checks, observability.Check{
+			Name: "storage",
+			Fn: func(ctx context.Context) error {
+				ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+				defer cancel()
+				return stores.Check(ctx)
+			},
+		})
+	}
+	if outbox != nil && outbox.Enabled() {
 		checks = append(checks, observability.Check{
 			Name: "outbox_backlog",
 			Fn: func(ctx context.Context) error {
@@ -421,22 +566,24 @@ func main() {
 			},
 		})
 	}
-	if mediaEnabled {
+	if hasMedia && mediaEnabled {
 		checks = append(checks, observability.Check{
 			Name: "media_disk",
 			Fn:   func(context.Context) error { return observability.CheckWritableDir(mediaOptions.Dir) },
 		})
 	}
-	if alarmEnabled {
+	if hasAttachment && alarmEnabled {
 		checks = append(checks, observability.Check{
 			Name: "attachment_disk",
 			Fn:   func(context.Context) error { return observability.CheckWritableDir(alarmOptions.Dir) },
 		})
 	}
-	checks = append(checks, observability.Check{
-		Name: "media_upload_disk",
-		Fn:   func(context.Context) error { return observability.CheckWritableDir(mediaUploadOptions.Dir) },
-	})
+	if mediaUploadStore != nil {
+		checks = append(checks, observability.Check{
+			Name: "media_upload_disk",
+			Fn:   func(context.Context) error { return observability.CheckWritableDir(mediaUploadStore.Root()) },
+		})
+	}
 	probes := &observability.Provider{
 		Metrics: metrics,
 		Checks:  checks,
@@ -445,7 +592,7 @@ func main() {
 			for _, binding := range deps.Runtime.Conn.ListBindings(ctx) {
 				snapshot.AckPending += binding.Session.PendingCount()
 			}
-			if outbox.Enabled() {
+			if outbox != nil && outbox.Enabled() {
 				pending, expired, err := outbox.Stats(ctx)
 				if err != nil {
 					log.Warn().Err(err).Msg("Fail to collect outbox metrics")
@@ -462,12 +609,14 @@ func main() {
 				snapshot.AttachmentsActive, snapshot.AttachmentsCompleted = reader.Stats()
 			}
 			// 媒体文件存量：数量与总字节数，用于发现磁盘无声膨胀。
-			count, bytes, err := stores.MediaFiles.Stats(ctx)
-			if err != nil {
-				log.Warn().Err(err).Msg("Fail to collect media file metrics")
-			} else {
-				snapshot.MediaFiles = count
-				snapshot.MediaFileBytes = bytes
+			if stores != nil {
+				count, bytes, err := stores.MediaFiles.Stats(ctx)
+				if err != nil {
+					log.Warn().Err(err).Msg("Fail to collect media file metrics")
+				} else {
+					snapshot.MediaFiles = count
+					snapshot.MediaFileBytes = bytes
+				}
 			}
 			if uplinkSink != nil {
 				stats := uplinkSink.Stats()
@@ -486,7 +635,7 @@ func main() {
 	}
 
 	var adminServ *adminapi.Server
-	if adminEnabled {
+	if hasControl && adminEnabled {
 		adminServ = adminapi.NewServer(adminOptions, adminapi.Dependencies{
 			Conn:      deps.Runtime.Conn,
 			Heartbeat: deps.Runtime.Heartbeat,
@@ -504,10 +653,14 @@ func main() {
 
 	apiCtx, cancelAPI := context.WithCancel(context.Background())
 	apiDone := make(chan struct{})
-	routines.GoSafe(func() {
-		defer close(apiDone)
-		api.Run(apiCtx, serv, cfg, apiOptions, alarmServ, outbox, mediaUploadStore)
-	})
+	if hasControl {
+		routines.GoSafe(func() {
+			defer close(apiDone)
+			api.Run(apiCtx, serv, cfg, apiOptions, alarmServ, outbox, mediaUploadStore)
+		})
+	} else {
+		close(apiDone)
+	}
 
 	// 运行时状态只存在于进程内，进程退出即自然归零；数据库无需、也不应被批量重置。
 	quit := make(chan os.Signal, 1)
@@ -524,10 +677,28 @@ func main() {
 		log.Warn().Msg("Timed out waiting for business API to shut down")
 	}
 
-	// 2. 停止接入新终端并关闭存量会话，后续不再产生新的上行写入。
+	// 2. 停止两个内部 HTTP 入口，避免关机过程中继续受理下发/上行。
+	if downlinkServer != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		if err := downlinkServer.Stop(ctx); err != nil {
+			log.Warn().Err(err).Msg("Fail to stop downlink HTTP server")
+		}
+		cancel()
+	}
+	if uplinkServer != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		if err := uplinkServer.Stop(ctx); err != nil {
+			log.Warn().Err(err).Msg("Fail to stop uplink HTTP server")
+		}
+		cancel()
+	}
+
+	// 3. 停止接入新终端并关闭存量会话，后续不再产生新的上行写入。
 	shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), 10*time.Second)
-	if err := serv.Shutdown(shutdownCtx); err != nil {
-		log.Warn().Err(err).Msg("Fail to shutdown TCP server")
+	if serv != nil {
+		if err := serv.Shutdown(shutdownCtx); err != nil {
+			log.Warn().Err(err).Msg("Fail to shutdown TCP server")
+		}
 	}
 	cancelShutdown()
 	if udpServ != nil {
@@ -586,7 +757,9 @@ func main() {
 		}
 		cancel()
 	}
-	if err := storage.Close(); err != nil {
-		log.Warn().Err(err).Msg("Fail to close storage backend")
+	if stores != nil {
+		if err := storage.Close(); err != nil {
+			log.Warn().Err(err).Msg("Fail to close storage backend")
+		}
 	}
 }

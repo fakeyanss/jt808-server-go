@@ -149,12 +149,90 @@ type Downlink interface {
 	Query(ctx context.Context, id string) (DownlinkResult, error)
 }
 
+// DownlinkReceipt 是网关对一次下发请求的即时回执。
+//
+// Status 与 DownlinkResult.Status 语义对齐：
+//   - accepted：已写入连接，结果稍后由应答事件推进；
+//   - acked/failed：同步等到终端应答；
+//   - timeout：同步等待超时，命令已发出；
+//   - offline：设备不在线，未发送；
+//   - rejected：会话在发送前失效，可重试。
+type DownlinkReceipt struct {
+	ID         string
+	Serial     uint16
+	Status     string
+	Duplicated bool
+	Result     *uint8
+	Reason     string
+}
+
+// 下行回执状态。与 outbox 的 acked/failed 保持同名，避免两套词汇。
+const (
+	DownlinkStatusAccepted = "accepted"
+	DownlinkStatusAcked    = "acked"
+	DownlinkStatusFailed   = "failed"
+	DownlinkStatusTimeout  = "timeout"
+	DownlinkStatusOffline  = "offline"
+	DownlinkStatusRejected = "rejected"
+)
+
+// DownlinkSender 是控制侧把一条已编码的下行请求交给网关的传输契约。
+//
+// 本地直连与 HTTP 网关都必须实现同一接口；返回 error 仅表示传输失败，
+// offline/rejected 等业务结果放在 Receipt.Status 中，由 outbox 决定租约收尾。
+type DownlinkSender interface {
+	Send(ctx context.Context, request DownlinkRequest) (DownlinkReceipt, error)
+}
+
 // AuthProvider 是网关向管控查询设备档案与鉴权码的只读契约。
 //
 // 网关不得反向写入设备档案；注册受理属于上行出口的业务结果。
 type AuthProvider interface {
 	Device(ctx context.Context, phone string) (*model.Device, error)
 	AuthCode(ctx context.Context, phone string) (string, error)
+}
+
+// BlobState 是对象在“提级完成、业务元数据落库”之间的状态。
+type BlobState string
+
+const (
+	// BlobStatePending 对象已可见但业务元数据尚未落库，只能等待对账或过期。
+	BlobStatePending BlobState = "pending"
+	// BlobStateCommitted 业务元数据已落库，对象可被引用。
+	BlobStateCommitted BlobState = "committed"
+	// BlobStateMissing 业务元数据存在但对象丢失，保留引用依据供排查。
+	BlobStateMissing BlobState = "missing"
+)
+
+// BlobInfo 描述一次暂存或提级后的对象。
+type BlobInfo struct {
+	Key        string
+	StagingKey string
+	Size       int64
+	MD5        string
+	ETag       string
+	State      BlobState
+}
+
+// BlobOptions 是写入对象的可选属性。
+type BlobOptions struct {
+	ContentType string
+	MD5         string
+	Metadata    map[string]string
+}
+
+// BlobStore 是媒体/附件文件的统一写入契约。
+//
+// Put 只写暂存区，不使最终 key 可见；Promote 负责原子提级；
+// MarkCommitted 只表达业务引用状态，不参与提级。三者分开，
+// 避免“对象已可见”与“业务已提交”两个事实被混为一个 Commit。
+type BlobStore interface {
+	Put(ctx context.Context, key string, r io.Reader, opts BlobOptions) (BlobInfo, error)
+	Promote(ctx context.Context, info BlobInfo) (BlobInfo, error)
+	MarkCommitted(ctx context.Context, key string) error
+	Open(ctx context.Context, key string) (io.ReadCloser, error)
+	Delete(ctx context.Context, key string) error
+	Stat(ctx context.Context, key string) (BlobInfo, error)
 }
 
 // MediaEndpoint 是 1078 媒体节点的可达地址。

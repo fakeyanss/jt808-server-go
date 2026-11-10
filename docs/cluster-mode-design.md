@@ -46,6 +46,8 @@ main ──●──────────────────────
 | E3 | 物理角色拆分、媒体/附件端点分配与粘性 | `dev/cluster_mode` | 允许，按配置启用 |
 | E4 | 集群加固、可观测性、运维手册 | `dev/cluster_mode` | 允许 |
 
+> 实际执行顺序：上行出口可插拔、终端应答 → outbox 回写已先行落地；当前 E1 的剩余部分是**进程角色拆分与两个内部 HTTP 契约**（见 11 节 E1），其 cluster 形态仅用于契约验证，不可上生产。
+
 ### 0.3 最终合入 `main` 的条件
 
 - E0–E4 全部合入 `dev/cluster_mode`；
@@ -466,7 +468,7 @@ Authorization: Bearer <token>
 - 每路流绑定具体节点，不跨节点迁移；
 - SPS/PPS 缓存与流状态保持节点本地，不共享；
 - 节点故障后流中断，终端重新协商、重新建流、重新落文件；
-- 文件落共享卷或对象存储，元数据落共享库，其他节点可读，但不接管活跃流；
+- **文件必须落共享存储**（共享卷或对象存储），元数据落共享库，其他节点可读，但不接管活跃流；具体契约见 5.5；
 - 端点租约必须有 TTL，节点崩溃后租约自动失效，避免“分配了但没人接”。
 
 ### 5.4 808 UDP 的特殊约束
@@ -484,7 +486,53 @@ Authorization: Bearer <token>
 - `0x9208` 由**管控层**申请端点并构造，网关只发字节；
 - 网关不接收附件数据，不感知附件端口，不调用附件角色；
 - 附件组装状态在节点本地，节点故障后本次上传失败，终端重新上传；
-- 附件文件落共享卷，元数据落共享库，其他节点可读，不做跨节点续传。
+- **附件文件必须落共享存储**（共享卷或对象存储），元数据落共享库，其他节点可读，不做跨节点续传；契约与媒体角色共用 5.5。
+
+### 5.5 文件存储契约（BlobStore）
+
+E1 只定义契约与启动校验，**不引入对象存储 SDK**；本地 FS 实现承载 standalone 与过渡期共享卷，对象存储实现放到拆媒体/附件阶段。
+
+```go
+type BlobStore interface {
+    // Put 只写暂存区（本地临时文件 / 对象存储 pending/<txid>/<key>），不使最终 key 可见。
+    Put(ctx context.Context, key string, r io.Reader, opts BlobOptions) (BlobInfo, error)
+    // Promote 把暂存对象提升为最终 key，幂等；本地 FS 是同目录原子 rename，
+    // 对象存储是 multipart complete 或 copy 到最终 key 后删除 pending。
+    Promote(ctx context.Context, info BlobInfo) (BlobInfo, error)
+    // MarkCommitted 在业务元数据写库成功后调用，标记对象可被引用；
+    // standalone 本地 FS 为 no-op，sharedVolume 更新 sidecar，对象存储更新对象标签/元数据。
+    MarkCommitted(ctx context.Context, key string) error
+    Open(ctx context.Context, key string) (io.ReadCloser, error)
+    Delete(ctx context.Context, key string) error
+    Stat(ctx context.Context, key string) (BlobInfo, error)
+}
+```
+
+- **standalone**：现有本地 FS 就是实现，key 等于当前 `RelativePath`，文件布局与“临时文件 + 原子 rename”行为不变；`MarkCommitted` 为 no-op。
+- **cluster**：只允许 `sharedVolume`（过渡期，把本地 FS 指向共享挂载）或 `objectStore`（后续实现）。配置为普通本机目录、或缺少共享标记时启动失败；共享卷必须显式 `sharedVolume: true` 并在根目录存在部署创建的 `.jt808-shared-volume` 标记文件，避免把本机独占路径当成共享存储。
+- **提级与状态分离**：`Put` 返回时最终 key 不可见，只有 `Promote` 成功后才可见；`MarkCommitted` 只表达业务引用状态，绝不参与提级，失败可重试且不影响对象可见性。读取方永远看不到半个对象：本地靠 rename，对象存储靠 pending 前缀 + completion/copy。
+- **校验和**：客户端计算 MD5，`MediaFile.MD5` 是权威值；对象存储 ETag 不能等同于内容 MD5（分片上传是 `md5-of-md5s-N`），只能作为后端标识记录。完整性依赖显式校验和元数据/`Content-MD5`，不靠 ETag 猜测。
+- **key 结构**：仍由 `(phone, 日期, mediaId.ext)` 决定；即使对象存储没有目录，key 也必须做路径穿越与字符校验（段内 `..`、绝对路径、分隔符、长度），因为它同时被本地 FS、数据库和下载地址使用。
+- **流式文件**：1078 流与附件分片先写节点本地有界 scratch（`<key>.part`），完成后再 `Put` + `Promote`；不对远端对象做追加写。
+- **状态落点按后端区分**：
+  - `objectStore`：状态放在对象标签/用户元数据（`jt808-phone`、`jt808-media-id`、`jt808-checksum`、`jt808-state`）。
+  - `sharedVolume`：普通文件系统没有对象标签，状态放同目录 sidecar `<key>.meta.json`；`Promote` 后立刻写 sidecar（`state=pending`），`MarkCommitted` 原子改写为 `committed`。sidecar 只由 control 读取/更新，媒体/附件不解析。
+  - `standalone`：无状态机，不写 sidecar。
+- **对账与失败处理**：对账键是确定性 blob key + checksum，数据库唯一键 `(phone, media_id)`。管控写库成功后 `MarkCommitted`；`MarkCommitted` 失败时数据库行保持 `pending` 并由管控重试。超宽限期**不删行**：把行标为 `missing` 保留引用依据；仅当对象也确认不存在（或显式删除成功）后，才由保留策略在同一操作里同时删对象与行。删行不先于删对象，避免“对象仍在、引用先没”。
+- **孤儿清理归属改变**：对象存储形态下应用不做远端遍历，`retention.orphanFiles` 必须关闭并由存储桶生命周期承担：`pending/` 前缀 24h 过期、`trash/` 前缀 1 天过期；被保留策略删除的正式对象由应用调用 `BlobStore.Delete`，删除失败转 `trash/` 交给生命周期。
+  - `sharedVolume` 过渡形态由 **control** 做单实例 sidecar 巡检：只处理 `state=pending` 且超过宽限期的对象，删除前必须查共享库确认该 key 没有行（含 `pending/missing`）；有行则修复 sidecar 为 `committed` 而不是删除。因此“文件已落、写库失败”只会留下无行的 pending 对象，最终由巡检删除，不会误删仍被引用的文件。
+- **下载**：API 通过 `BlobStore.Open` 读取；对象存储实现落地前，cluster 下文件下载端点明确返回 501，不伪装可用。
+- **为什么 E1 不验证真实对象存储**：E1 不改文件写入路径，只冻结契约与启动校验；此时引入 SDK 会把角色拆分绑死在某个厂商实现上，而流式分段、multipart、对象标签等细节要等媒体/附件真正拆出去才能定。真实对象存储验证是 E3 的退出条件，不是 E1 的。
+
+**已否决方案：把节点地址写进业务数据**
+
+有人提出“cluster 下媒体仍写媒体节点本地盘，库中记录 `file://媒体ip:port/path`，读取时访问该节点”。结论：**否决**。
+
+- 节点地址固化进业务数据后，Pod 重建、扩缩容、迁移都会让 `ip:port` 变成静默死链，只有真正读取时才发现。
+- 多副本下请求必须命中持有文件的节点，需要维护“文件 → 节点”路由表并处理节点下线不可达，复杂度接近自建半个对象存储。
+- k8s 下 Pod 本地盘不持久，仍要挂 PVC；RWO 通常不能多 Pod 共享，能共享的 RWX 基本是 NFS/CephFS，运维成本不低于对象存储。
+
+**保留的结论**：数据里只放 `blob key`，不放节点地址。后端三个枚举：`local`（standalone 现状，零依赖）、`sharedVolume`（单实例验证，共享卷 + 标记文件）、`objectStore`（cluster 正式形态，E3 落地）。“媒体服务提供本地文件读取能力”由 `BlobStore.Open(key)` 承担：单机读本地文件，集群读对象存储，上层代码不变。
 
 ---
 
@@ -714,16 +762,77 @@ cluster:
   - `cmd/jt808-server/main.go` 按角色装配（standalone 仍装全部）。
 - 验收：standalone 行为、应答时机、重投语义完全不变；端口与外部依赖不变；全量测试通过。
 
-### E1：上行出口可插拔
+### E1：角色拆分与两个内部 HTTP 契约（仅契约验证）
 
-- 目标：上行事件可以通过 HTTP hook / MQ 抛出，内置处理仍是默认。
-- 改动面：
-  - 事件信封与幂等键；
-  - `best-effort` / `confirm-before-ack` 两档语义；
-  - 有界队列、背压、丢弃计数；
-  - `0x0100/0x0102` 的请求/响应变体；
-  - 会话目录上报。
-- 验收：standalone 内置路径不变；HTTP 出口在双进程下跑通；出口故障时协议语义正确。
+> **阶段定位（硬约束）**：E1 的 `cluster` 形态只用于验证配置、启动校验与两个契约本身，**不承接生产业务，不得表述为可上生产**。业务可用性从 E2/E3 起算；E1 不提供“跳过 consumer 校验”的开关。
+
+**角色配置**
+
+- `server.mode`：`standalone`（缺省）| `cluster`。`standalone` 隐式等于四个角色全开、全部本地，不初始化任何集群监听或客户端；显式配置 `cluster.roles` 视为矛盾配置，启动失败。
+- `cluster.roles`：`gateway` / `control` / `media` / `attachment` 的非空、去重子集。每个角色只启动自己拥有的监听：gateway → TCP/UDP + 下行入口；control → 业务 API + 上行入口；media/attachment → 各自端口。
+- 密钥：**上下行各一把独立共享密钥，不跨方向复用**。`cluster.gateway.token` 由 control 发送、gateway 校验；`cluster.control.token` 由 gateway 发送、control 校验。同一方向上“客户端凭据”与“服务端校验值”配置成同一密钥是设计选择，不是巧合：gateway 的 `uplink.http.token` 必须等于 control 的 `cluster.control.token`。cluster 下任一所需 token 为空即启动失败。
+- 文件存储：`cluster.blob.backend`（`sharedVolume` | `objectStore`）与 `cluster.blob.sharedVolume`、`cluster.blob.marker`（默认 `.jt808-shared-volume`）。cluster+media/attachment 必填；共享卷必须显式 `sharedVolume: true` 且根目录存在标记文件，否则启动失败；`objectStore` 在 E1 只做字段校验，启动时明确报“E1 未实现”，不静默降级。
+
+**启动校验（fail-fast，一次性列出全部问题）**
+
+- `cluster`：roles 非空、取值合法、无重复；各角色所需监听/地址/token 齐全；media/attachment 端口齐全。
+- 存储：`gateway` 与 `control` 都要求 `storage.type=mysql`（gateway 只读设备档案与鉴权码，control 读写业务与 outbox）；`memory`/`sqlite` 一律拒绝。`media`/`attachment` 不连业务库（见下）。
+- outbox：`control` 要求 `commandOutbox.mode=durable`；`off`/`memory` 拒绝。gateway-only 不构造 outbox，配置忽略并 Warn。
+- 出口：gateway-only 必须 `uplink.sink=http`；gateway+control 同进程允许 `local`；同进程同时配置 `sink=http` 指向自身视为回环，拒绝。
+- **confirm-before-ack 覆盖校验**：出口策略中所有 `at_least_once` 类别，以及被强制为 confirm-before-ack 的 `0x0001`、`0x0801`，启动时必须已经注册能处理它们的 consumer；缺失则启动失败并列出缺失类别/消息。E1 不内置业务 consumer，因此默认配置下 `cluster+control` 无法启动——这是预期行为，契约验证通过测试注入 fake consumer 完成。运行期若 confirm-before-ack 事件仍找不到 consumer，回 503（绝不以 501/200 让终端持续重传或静默丢弃）。
+- best-effort 事件未注册 consumer 时回 202 `{outcome:"unhandled"}`，同时记日志与指标；终端已被网关应答，不产生重传风暴，但丢弃必须可见。
+
+启动矩阵：
+
+| mode | roles | storage | outbox | uplink.sink | 结论 |
+|---|---|---|---|---|---|
+| standalone/缺省 | 任意（忽略） | memory/sqlite/mysql | off/memory/durable | local/http | 允许，行为不变 |
+| standalone | 非空 | — | — | — | 拒绝（矛盾配置） |
+| cluster | gateway | mysql（只读设备档案） | 忽略并 Warn | http | 允许 |
+| cluster | control | mysql | durable | local/http | 允许，需 consumer 覆盖校验通过 |
+| cluster | gateway+control | mysql | durable | local | 允许 |
+| cluster | gateway+media / media+attachment / 三数据面角色 | mysql（gateway）/ media、attachment 不连业务库 | 按角色 | http | 允许，但 media/attachment 必须配 `cluster.blob.backend=sharedVolume`（带共享标记）或 `objectStore`（E1 未实现，启动拒绝） |
+| cluster | media/attachment 配置普通本机目录、或 sharedVolume 缺标记 | — | — | — | 拒绝（文件不在共享存储） |
+| cluster | objectStore + `retention.orphanFiles.enabled=true` | — | — | — | 拒绝（对象存储禁用应用侧孤儿扫描） |
+| cluster | 任意含 gateway/control | memory/sqlite | — | — | 拒绝（共享状态不可用） |
+| cluster | control | mysql | off/memory | — | 拒绝 |
+| cluster | gateway-only | mysql | — | local | 拒绝（事件无人消费） |
+| cluster | gateway+control | mysql | durable | http 指向自身 | 拒绝（同进程回环） |
+| cluster | roles 为空/未知/重复 | — | — | — | 拒绝 |
+| cluster | 任一角色缺端口/地址/token | — | — | — | 拒绝 |
+| cluster | control | mysql | durable | — | 若 confirm-before-ack 类别无 consumer：拒绝并列出缺失项 |
+
+**两个内部 HTTP 契约**
+
+| 方向 | 端点 | 鉴权 | 语义 |
+|---|---|---|---|
+| control → gateway | `POST /internal/v1/downlink`、`GET /internal/v1/downlink/{id}` | `Bearer cluster.gateway.token` | 4xx/5xx=立即失败；202=已受理；200+status=已有终态。`offline`/`rejected` 走 200，便于控制侧保留 pending |
+| gateway → control | `POST /internal/v1/uplink` | `Bearer cluster.control.token` | 2xx=处理完成/幂等命中；503=处理失败，confirm-before-ack 不 ack；413=超限 |
+
+- 下行幂等：`(idempotencyKey)` 命中返回原 `downlinkId/serial`；网关侧为有界内存表（默认 2m），持久幂等仍由管控 outbox 负责。
+- 下行超时：`cluster.downlink.timeoutMs` 缺省 8s，上限 `server.ackTimeoutMs × (maxRetransmissions+1)`，越界 400；`sync_ack` 超时回 200 `status=timeout`，不伪造 5xx。
+- `async_callback` 在 E1 返回 400 `unsupported_mode`，不做半成品。
+- 上行去重：按 `eventId` 有界 TTL 去重（默认 10m / 10 万条），命中直接 2xx；TTL 必须覆盖网关超时×重试窗口。请求体上限默认 4 MiB。
+- 下行查询窗口：网关只保留连接存活期内的在途记录，未知 id 404，TTL 淘汰返回 410，明确区分“已失效”与“从未下发”。权威查询面始终是管控 outbox。
+
+**gateway-only 语义**
+
+- 网关不构造 outbox；`contracts.Downlink.Enabled()` 属于管控侧：control 为 `true` 且 API 暴露命令查询；gateway-only 若包一层 `Downlink` 适配器，`Enabled()` 恒为 `false`（能发、不可持久查），`Query` 返回明确未找到/已失效。
+- 控制侧拿 ack 的主路径是 `0x0001` → 上行 `reply` → `HandleTerminalReply`；网关 `GET` 仅作连接期辅助。
+
+**媒体/附件文件与元数据归属（决策 B：不连业务库，文件走 BlobStore）**
+
+- 媒体/附件角色只写文件，不装配任何 repository、不连 MySQL；文件统一通过 5.5 的 `BlobStore` 写入，cluster 下必须配置共享存储（共享卷过渡或对象存储），普通本机目录启动失败。
+- `media_files` / `media_captures` / `media_capture_items` 等业务表**只由 control 写入**，control 对文件只读。`0x0801` 与附件完成态走同步交接：control 调 media/attachment 的 intake（E3 落地），拿到 `{key,size,md5}` 后写库；**写库成功才向上游 ack**，写库失败则删除刚提交的对象并回 503，由终端重传。
+- 1078 流等异步文件：媒体 `Put` + `Promote` 后，对象状态初始为 `pending`（objectStore 用对象标签，sharedVolume 用同目录 sidecar）；通过 at-least-once 事件交给 control，control 写库成功后调用 `MarkCommitted` 置为 `committed`。对账键是确定性 blob key + checksum，数据库唯一键 `(phone, media_id)`。
+- 失败处理：DB 写失败时对象保持 `pending`，objectStore 由 bucket 生命周期在 24h 后清掉，sharedVolume 由 control 单实例巡检删除（删前查库确认无行）；**不存在“半个文件被当成有效文件”**。`MarkCommitted` 失败由 control 重试，超过宽限期把 DB 行标 `missing` **保留行**，仅当对象也确认不存在或删除成功后才同时删对象与行，删行不先于删对象。sidecar `.meta.json` 只用于 sharedVolume 过渡形态，standalone 不写、objectStore 不用。
+- 孤儿清理：objectStore 形态下 `retention.orphanFiles` 必须关闭，改由 `pending/`、`trash/` 前缀的 bucket 生命周期承担；sharedVolume 过渡形态由 control 依据 sidecar 做单实例 pending 巡检，不再做无差别的 mtime 全量扫描。E1 的 cluster 下文件下载端点返回 501，不伪装可用。
+- **E1 交付后 `cluster` 仍不承接业务**：业务处理（`act.process` 落库路径）仍在网关进程内，媒体/附件文件写入也尚未切到 `BlobStore`；本阶段只交付契约与启动校验，可用性从后续阶段起算。
+
+**回归保证**
+
+- `mode` 缺省 → standalone，装配顺序与参数不变；`uplink.sink=local` 时 `deps.UplinkSink` 仍为 nil；`commandOutbox.mode=off` 仍不构造命令仓储、`Enabled()==false`、API 不暴露查询。
+
 
 ### E2：下行契约与 outbox 上移
 
@@ -745,6 +854,7 @@ cluster:
 - `sink=http` 双来源：网关侧传输层 ack 仍更新本地 outbox（用于停止重投），HTTP 消费方若共用同一 outbox，第二次处理因“终态 + 同结果”归为 `duplicate`，不会污染 `late` 或重复推进；若消费方独立进程，则各自持有 outbox，不存在共享记录。
 - 租约收尾：`acked/failed` 清空 `LeaseOwner/LeaseExpiresAt`，后续 `ClaimPending` 不会再取到；安排重投时清租约并设置 `NextAttemptAt`。`BeginAttempt` 之后、写 socket 之前到达的应答仍可能多写一帧，这是有界的一次 at-least-once 窗口。
 - **终态保留期结论**：本轮不纳入 retention 清理，列为后续项。原因：SQL 后端的 `command_outbox` 在本轮之前已经无界；routing 索引只是 memory 实现的额外映射。纳入清理需要跨后端新增 `PurgeTerminal`、配置与迁移，属于独立改动。后续建议参数：只清终态（`status IN ('acked','failed')`），清理键 `updated_at <= now - terminalRetention`，默认 `24h`，批量按 `batchSize`；pending 仍由 `expireAfter` 兜底。本轮用 `jt808_terminal_reply_total{outcome="late|unmatched"}` 观测误匹配，表体积由数据库侧巡检。
+- **结果查询窗口必须小于等于终态保留期（硬约束）**：调用方按 `commandId`/幂等键查询命令结果的窗口，不能长于终态清理的 `terminalRetention`。否则记录被清理后调用方必然查不到结果；更严重的是，清理不得让查询表现为“从未下发过”——`Query` 必须能区分“已过保留期被清理”与“幂等键从未出现过”，前者返回明确的已清理/过期语义（如 `410 Gone` 或 `status=expired`），后者才返回 `404`。实现清理时需保留覆盖查询窗口的最小 tombstone（幂等键、终态、终结时间），或在清理前把该语义固化到查询契约里；启动校验需联动两者，`terminalRetention` 小于对外承诺的查询窗口时视为非法配置并拒绝启动。本节清理仍未实现，约束先固化，后续实现 `PurgeTerminal` 时必须同时满足。
 
 ### E3：物理角色拆分与端点分配
 

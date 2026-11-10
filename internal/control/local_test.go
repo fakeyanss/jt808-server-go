@@ -13,6 +13,7 @@ import (
 	"github.com/fakeyanss/jt808-server-go/internal/contracts"
 	"github.com/fakeyanss/jt808-server-go/internal/mediaupload"
 	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
+	"github.com/fakeyanss/jt808-server-go/internal/repository"
 	"github.com/fakeyanss/jt808-server-go/internal/storage"
 )
 
@@ -116,9 +117,9 @@ func TestStaticAttachmentAllocatorIsSticky(t *testing.T) {
 func TestSubmitOffModeSendsWithoutPersistence(t *testing.T) {
 	sender := &fakeSender{}
 	outbox, err := NewOutbox(OutboxDependencies{
-		Send: func(sessionID string, msg model.JT808Msg, serial uint16) error {
+		Send: senderFunc(func(sessionID string, msg model.JT808Msg, serial uint16) error {
 			return sender.send(sessionID, msg, serial)
-		},
+		}),
 	}, OutboxOptions{Enabled: false})
 	require.NoError(t, err)
 
@@ -164,4 +165,52 @@ func TestSubmitIsIdempotent(t *testing.T) {
 	stored, err := h.repo.Get(context.Background(), first.ID)
 	require.NoError(t, err)
 	require.Equal(t, testPhone, stored.Phone)
+}
+
+// TestTerminalReplyOutcomeIsTransportIndependent 覆盖 local 与 http 两种来源：
+// Source 只用于日志，不参与状态机，同一应答语义必须得到同一 outcome。
+func TestTerminalReplyOutcomeIsTransportIndependent(t *testing.T) {
+	ctx := context.Background()
+	options := defaultTestOptions()
+	options.InitialWait = time.Second
+	options.ExpireAfter = time.Hour
+	h := newHarness(t, options)
+	h.bindOnline(t)
+	device, err := h.devices.GetByPhone(ctx, testPhone)
+	require.NoError(t, err)
+
+	submit := func(serial uint16, key string) string {
+		msg := &model.Msg8105{Header: model.GenMsgHeader(device, 0x8105, serial), CommandWord: 2}
+		result, err := h.service.Submit(ctx, contracts.DownlinkRequest{
+			SessionID:      testSessionID,
+			IdempotencyKey: key,
+			Serial:         serial,
+			Message:        msg,
+		})
+		require.NoError(t, err)
+		return result.ID
+	}
+	cases := []struct {
+		id     string
+		serial uint16
+		source string
+	}{
+		{id: submit(21, "local-source"), serial: 21, source: "transport"},
+		{id: submit(22, "http-source"), serial: 22, source: "http"},
+	}
+	for _, tc := range cases {
+		outcome, err := h.service.HandleTerminalReply(ctx, contracts.TerminalReply{
+			Phone:        testPhone,
+			AnswerMsgID:  0x8105,
+			AnswerSerial: tc.serial,
+			Result:       0,
+			Source:       tc.source,
+		})
+		require.NoError(t, err)
+		require.Equal(t, contracts.TerminalReplyAcked, outcome)
+
+		stored, err := h.repo.Get(ctx, tc.id)
+		require.NoError(t, err)
+		require.Equal(t, repository.CommandStatusAcked, stored.Status)
+	}
 }
