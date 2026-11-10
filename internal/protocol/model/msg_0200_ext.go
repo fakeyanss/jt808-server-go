@@ -27,13 +27,27 @@ const (
 	ExtDomainBase2019 ExtDomain = "base2019" // JT/T 808-2019（含粤标主动安全扩展）
 )
 
-// 扩展信息类型标识，供回调消费方直接区分 ADAS/DSM/TPMS/BSD 与 raw 兜底项。
+// 扩展信息类型标识，供回调消费方直接区分 ADAS/DSM/TPMS/BSD、基础附加项与 raw 兜底项。
 const (
-	ExtTypeADAS = "adas"
-	ExtTypeDSM  = "dsm"
-	ExtTypeTPMS = "tpms"
-	ExtTypeBSD  = "bsd"
-	ExtTypeRaw  = "raw"
+	ExtTypeADAS           = "adas"
+	ExtTypeDSM            = "dsm"
+	ExtTypeTPMS           = "tpms"
+	ExtTypeBSD            = "bsd"
+	ExtTypeRaw            = "raw"
+	ExtTypeMileage        = "mileage"
+	ExtTypeOil            = "oil"
+	ExtTypeRecordedSpeed  = "recordedSpeed"
+	ExtTypeManualAlarmID  = "manualAlarmId"
+	ExtTypeTirePressure   = "tirePressure"
+	ExtTypeCarTemperature = "carTemperature"
+	ExtTypeOverSpeedAlarm = "overSpeedAlarm"
+	ExtTypeAreaAlarm      = "areaAlarm"
+	ExtTypeRouteTimeAlarm = "routeTimeAlarm"
+	ExtTypeVehicleSignal  = "vehicleSignal"
+	ExtTypeIOStatus       = "ioStatus"
+	ExtTypeAnalog         = "analog"
+	ExtTypeWIFISignal     = "wifiSignal"
+	ExtTypeGNSSSatellites = "gnssSatellites"
 )
 
 // ExtItemMeta 是所有已解析附加信息项共有的元数据。
@@ -141,23 +155,152 @@ type ExtAlarmBSD struct {
 	AlarmIDNumber    AlarmIDNumber `json:"alarmIdNumber"`
 }
 
+// ExtMileage 是 0x01 里程附加信息，单位为 1/10 km。
+type ExtMileage struct {
+	ExtItemMeta
+	Mileage uint32 `json:"mileage"`
+}
+
+// ExtOil 是 0x02 油量附加信息，单位为 1/10 L。
+type ExtOil struct {
+	ExtItemMeta
+	Oil uint16 `json:"oil"`
+}
+
+// ExtRecordedSpeed 是 0x03 行驶记录功能获取的速度，单位为 1/10 km/h。
+type ExtRecordedSpeed struct {
+	ExtItemMeta
+	Speed uint16 `json:"speed"`
+}
+
+// ExtManualAlarmID 是 0x04 需要人工确认报警事件的 ID。
+type ExtManualAlarmID struct {
+	ExtItemMeta
+	AlarmID uint16 `json:"alarmId"`
+}
+
+// ExtTirePressure 是 0x05 胎压附加信息（仅 2019 定义）。
+// Pressures 固定 15 项，单位为 Pa，0xFFFF 表示该轮位无效或未安装。
+type ExtTirePressure struct {
+	ExtItemMeta
+	Pressures []uint16 `json:"pressures"`
+}
+
+// ExtCarTemperature 是 0x06 车厢温度附加信息（仅 2019 定义），单位为 ℃。
+type ExtCarTemperature struct {
+	ExtItemMeta
+	Temperature int16 `json:"temperature"`
+}
+
+// ExtOverSpeedAlarm 是 0x11 超速报警附加信息。
+// 位置类型为 0 时没有区域/路段 ID，此时 HasAreaID 为 false。
+type ExtOverSpeedAlarm struct {
+	ExtItemMeta
+	LocationType uint8  `json:"locationType"` // 0 无特定区域；1 圆形；2 矩形；3 多边形；4 路段
+	AreaID       uint32 `json:"areaId"`
+	HasAreaID    bool   `json:"hasAreaId"`
+}
+
+// ExtAreaAlarm 是 0x12 进出区域/路线报警附加信息。
+type ExtAreaAlarm struct {
+	ExtItemMeta
+	LocationType uint8  `json:"locationType"` // 1 圆形；2 矩形；3 多边形；4 路线
+	AreaID       uint32 `json:"areaId"`
+	Direction    uint8  `json:"direction"` // 0 进；1 出
+}
+
+// ExtRouteTimeAlarm 是 0x13 路段行驶时间不足/过长报警附加信息。
+type ExtRouteTimeAlarm struct {
+	ExtItemMeta
+	RouteID     uint32 `json:"routeId"`
+	DrivingTime uint16 `json:"drivingTime"` // 单位：秒
+	Result      uint8  `json:"result"`      // 0 不足；1 过长
+}
+
+// ExtVehicleSignal 是 0x25 扩展车辆信号状态位。
+type ExtVehicleSignal struct {
+	ExtItemMeta
+	Value          uint32 `json:"value"`
+	LowBeam        bool   `json:"lowBeam"`        // bit0
+	HighBeam       bool   `json:"highBeam"`       // bit1
+	RightTurn      bool   `json:"rightTurn"`      // bit2
+	LeftTurn       bool   `json:"leftTurn"`       // bit3
+	Brake          bool   `json:"brake"`          // bit4
+	ReverseGear    bool   `json:"reverseGear"`    // bit5
+	FogLight       bool   `json:"fogLight"`       // bit6
+	ClearanceLamp  bool   `json:"clearanceLamp"`  // bit7
+	Horn           bool   `json:"horn"`           // bit8
+	AirConditioner bool   `json:"airConditioner"` // bit9
+	Neutral        bool   `json:"neutral"`        // bit10
+	Retarder       bool   `json:"retarder"`       // bit11
+	ABS            bool   `json:"abs"`            // bit12
+	Heater         bool   `json:"heater"`         // bit13
+	Clutch         bool   `json:"clutch"`         // bit14
+}
+
+// ExtIOStatus 是 0x2A IO 状态位。
+type ExtIOStatus struct {
+	ExtItemMeta
+	Value     uint16 `json:"value"`
+	DeepSleep bool   `json:"deepSleep"` // bit0
+	Sleep     bool   `json:"sleep"`     // bit1
+}
+
+// ExtAnalog 是 0x2B 模拟量，低 16 位为 AD0，高 16 位为 AD1。
+type ExtAnalog struct {
+	ExtItemMeta
+	AD0 uint16 `json:"ad0"`
+	AD1 uint16 `json:"ad1"`
+}
+
+// ExtWIFISignal 是 0x30 无线通信网络信号强度。
+type ExtWIFISignal struct {
+	ExtItemMeta
+	Strength uint8 `json:"strength"`
+}
+
+// ExtGNSSSatellites 是 0x31 GNSS 定位卫星数。
+type ExtGNSSSatellites struct {
+	ExtItemMeta
+	Count uint8 `json:"count"`
+}
+
 type extParserFunc func(data []byte) (any, error)
 
-// 已注册 ID 按协议域分表维护：0x64/0x65/0x66/0x67 在两个域中的
-// 报警标识号长度不同，后续若出现同 ID 语义差异也可直接覆盖对应表项。
-var subiaoExtParsers = map[uint8]extParserFunc{
-	0x64: func(data []byte) (any, error) { return parseADAS(data, ExtDomainSubiao) },
-	0x65: func(data []byte) (any, error) { return parseDSM(data, ExtDomainSubiao) },
-	0x66: func(data []byte) (any, error) { return parseTPMS(data, ExtDomainSubiao) },
-	0x67: func(data []byte) (any, error) { return parseBSD(data, ExtDomainSubiao) },
+// 已注册 ID 按协议域分表维护：
+//   - 基础附加项 0x01~0x31 在 2011/2013/2019 之间长度与含义一致，两个域共享；
+//   - 0x05/0x06 仅 2019 有定义，只注册到 base2019 域，避免在旧版本上猜测解析；
+//   - 0x64/0x65/0x66/0x67 的报警标识号长度随域不同。
+func buildExtParsers(domain ExtDomain) map[uint8]extParserFunc {
+	table := map[uint8]extParserFunc{
+		0x01: func(data []byte) (any, error) { return parseMileage(data, domain) },
+		0x02: func(data []byte) (any, error) { return parseOil(data, domain) },
+		0x03: func(data []byte) (any, error) { return parseRecordedSpeed(data, domain) },
+		0x04: func(data []byte) (any, error) { return parseManualAlarmID(data, domain) },
+		0x11: func(data []byte) (any, error) { return parseOverSpeedAlarm(data, domain) },
+		0x12: func(data []byte) (any, error) { return parseAreaAlarm(data, domain) },
+		0x13: func(data []byte) (any, error) { return parseRouteTimeAlarm(data, domain) },
+		0x25: func(data []byte) (any, error) { return parseVehicleSignal(data, domain) },
+		0x2A: func(data []byte) (any, error) { return parseIOStatus(data, domain) },
+		0x2B: func(data []byte) (any, error) { return parseAnalog(data, domain) },
+		0x30: func(data []byte) (any, error) { return parseWIFISignal(data, domain) },
+		0x31: func(data []byte) (any, error) { return parseGNSSSatellites(data, domain) },
+		0x64: func(data []byte) (any, error) { return parseADAS(data, domain) },
+		0x65: func(data []byte) (any, error) { return parseDSM(data, domain) },
+		0x66: func(data []byte) (any, error) { return parseTPMS(data, domain) },
+		0x67: func(data []byte) (any, error) { return parseBSD(data, domain) },
+	}
+	if domain == ExtDomainBase2019 {
+		table[0x05] = func(data []byte) (any, error) { return parseTirePressure(data, domain) }
+		table[0x06] = func(data []byte) (any, error) { return parseCarTemperature(data, domain) }
+	}
+	return table
 }
 
-var base2019ExtParsers = map[uint8]extParserFunc{
-	0x64: func(data []byte) (any, error) { return parseADAS(data, ExtDomainBase2019) },
-	0x65: func(data []byte) (any, error) { return parseDSM(data, ExtDomainBase2019) },
-	0x66: func(data []byte) (any, error) { return parseTPMS(data, ExtDomainBase2019) },
-	0x67: func(data []byte) (any, error) { return parseBSD(data, ExtDomainBase2019) },
-}
+var (
+	subiaoExtParsers   = buildExtParsers(ExtDomainSubiao)
+	base2019ExtParsers = buildExtParsers(ExtDomainBase2019)
+)
 
 var extParserTables = map[ExtDomain]map[uint8]extParserFunc{
 	ExtDomainSubiao:   subiaoExtParsers,
@@ -306,6 +449,197 @@ func parseAlarmIDNumber(data []byte, domain ExtDomain) (AlarmIDNumber, error) {
 		Sequence:        hex.ReadByte(data, &idx),
 		AttachmentCount: hex.ReadByte(data, &idx),
 		Reserved:        append([]byte(nil), hex.ReadBytes(data, &idx, reservedLen)...),
+	}, nil
+}
+
+func parseMileage(data []byte, domain ExtDomain) (any, error) {
+	if len(data) != 4 {
+		return nil, ErrExtItemLength
+	}
+	idx := 0
+	return ExtMileage{
+		ExtItemMeta: extMeta(0x01, ExtTypeMileage, domain),
+		Mileage:     hex.ReadDoubleWord(data, &idx),
+	}, nil
+}
+
+func parseOil(data []byte, domain ExtDomain) (any, error) {
+	if len(data) != 2 {
+		return nil, ErrExtItemLength
+	}
+	idx := 0
+	return ExtOil{
+		ExtItemMeta: extMeta(0x02, ExtTypeOil, domain),
+		Oil:         hex.ReadWord(data, &idx),
+	}, nil
+}
+
+func parseRecordedSpeed(data []byte, domain ExtDomain) (any, error) {
+	if len(data) != 2 {
+		return nil, ErrExtItemLength
+	}
+	idx := 0
+	return ExtRecordedSpeed{
+		ExtItemMeta: extMeta(0x03, ExtTypeRecordedSpeed, domain),
+		Speed:       hex.ReadWord(data, &idx),
+	}, nil
+}
+
+func parseManualAlarmID(data []byte, domain ExtDomain) (any, error) {
+	if len(data) != 2 {
+		return nil, ErrExtItemLength
+	}
+	idx := 0
+	return ExtManualAlarmID{
+		ExtItemMeta: extMeta(0x04, ExtTypeManualAlarmID, domain),
+		AlarmID:     hex.ReadWord(data, &idx),
+	}, nil
+}
+
+func parseTirePressure(data []byte, domain ExtDomain) (any, error) {
+	const wheelCount = 15
+	if len(data) != wheelCount*2 {
+		return nil, ErrExtItemLength
+	}
+	idx := 0
+	pressures := make([]uint16, 0, wheelCount)
+	for i := 0; i < wheelCount; i++ {
+		pressures = append(pressures, hex.ReadWord(data, &idx))
+	}
+	return ExtTirePressure{
+		ExtItemMeta: extMeta(0x05, ExtTypeTirePressure, domain),
+		Pressures:   pressures,
+	}, nil
+}
+
+func parseCarTemperature(data []byte, domain ExtDomain) (any, error) {
+	if len(data) != 2 {
+		return nil, ErrExtItemLength
+	}
+	idx := 0
+	return ExtCarTemperature{
+		ExtItemMeta: extMeta(0x06, ExtTypeCarTemperature, domain),
+		Temperature: int16(hex.ReadWord(data, &idx)),
+	}, nil
+}
+
+// parseOverSpeedAlarm 解析 0x11：位置类型为 0 时长度为 1，否则长度为 5。
+// 对 1 字节报文只读取位置类型，不臆造区域/路段 ID。
+func parseOverSpeedAlarm(data []byte, domain ExtDomain) (any, error) {
+	if len(data) != 1 && len(data) != 5 {
+		return nil, ErrExtItemLength
+	}
+	idx := 0
+	msg := ExtOverSpeedAlarm{
+		ExtItemMeta:  extMeta(0x11, ExtTypeOverSpeedAlarm, domain),
+		LocationType: hex.ReadByte(data, &idx),
+	}
+	if len(data) == 5 {
+		msg.AreaID = hex.ReadDoubleWord(data, &idx)
+		msg.HasAreaID = true
+	}
+	return msg, nil
+}
+
+func parseAreaAlarm(data []byte, domain ExtDomain) (any, error) {
+	if len(data) != 6 {
+		return nil, ErrExtItemLength
+	}
+	idx := 0
+	return ExtAreaAlarm{
+		ExtItemMeta:  extMeta(0x12, ExtTypeAreaAlarm, domain),
+		LocationType: hex.ReadByte(data, &idx),
+		AreaID:       hex.ReadDoubleWord(data, &idx),
+		Direction:    hex.ReadByte(data, &idx),
+	}, nil
+}
+
+func parseRouteTimeAlarm(data []byte, domain ExtDomain) (any, error) {
+	if len(data) != 7 {
+		return nil, ErrExtItemLength
+	}
+	idx := 0
+	return ExtRouteTimeAlarm{
+		ExtItemMeta: extMeta(0x13, ExtTypeRouteTimeAlarm, domain),
+		RouteID:     hex.ReadDoubleWord(data, &idx),
+		DrivingTime: hex.ReadWord(data, &idx),
+		Result:      hex.ReadByte(data, &idx),
+	}, nil
+}
+
+func parseVehicleSignal(data []byte, domain ExtDomain) (any, error) {
+	if len(data) != 4 {
+		return nil, ErrExtItemLength
+	}
+	idx := 0
+	value := hex.ReadDoubleWord(data, &idx)
+	return ExtVehicleSignal{
+		ExtItemMeta:    extMeta(0x25, ExtTypeVehicleSignal, domain),
+		Value:          value,
+		LowBeam:        value&(1<<0) != 0,
+		HighBeam:       value&(1<<1) != 0,
+		RightTurn:      value&(1<<2) != 0,
+		LeftTurn:       value&(1<<3) != 0,
+		Brake:          value&(1<<4) != 0,
+		ReverseGear:    value&(1<<5) != 0,
+		FogLight:       value&(1<<6) != 0,
+		ClearanceLamp:  value&(1<<7) != 0,
+		Horn:           value&(1<<8) != 0,
+		AirConditioner: value&(1<<9) != 0,
+		Neutral:        value&(1<<10) != 0,
+		Retarder:       value&(1<<11) != 0,
+		ABS:            value&(1<<12) != 0,
+		Heater:         value&(1<<13) != 0,
+		Clutch:         value&(1<<14) != 0,
+	}, nil
+}
+
+func parseIOStatus(data []byte, domain ExtDomain) (any, error) {
+	if len(data) != 2 {
+		return nil, ErrExtItemLength
+	}
+	idx := 0
+	value := hex.ReadWord(data, &idx)
+	return ExtIOStatus{
+		ExtItemMeta: extMeta(0x2A, ExtTypeIOStatus, domain),
+		Value:       value,
+		DeepSleep:   value&(1<<0) != 0,
+		Sleep:       value&(1<<1) != 0,
+	}, nil
+}
+
+func parseAnalog(data []byte, domain ExtDomain) (any, error) {
+	if len(data) != 4 {
+		return nil, ErrExtItemLength
+	}
+	idx := 0
+	value := hex.ReadDoubleWord(data, &idx)
+	return ExtAnalog{
+		ExtItemMeta: extMeta(0x2B, ExtTypeAnalog, domain),
+		AD0:         uint16(value & 0xFFFF),
+		AD1:         uint16(value >> 16),
+	}, nil
+}
+
+func parseWIFISignal(data []byte, domain ExtDomain) (any, error) {
+	if len(data) != 1 {
+		return nil, ErrExtItemLength
+	}
+	idx := 0
+	return ExtWIFISignal{
+		ExtItemMeta: extMeta(0x30, ExtTypeWIFISignal, domain),
+		Strength:    hex.ReadByte(data, &idx),
+	}, nil
+}
+
+func parseGNSSSatellites(data []byte, domain ExtDomain) (any, error) {
+	if len(data) != 1 {
+		return nil, ErrExtItemLength
+	}
+	idx := 0
+	return ExtGNSSSatellites{
+		ExtItemMeta: extMeta(0x31, ExtTypeGNSSSatellites, domain),
+		Count:       hex.ReadByte(data, &idx),
 	}, nil
 }
 
