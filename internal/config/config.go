@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"math"
 	"net"
+	neturl "net/url"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -228,8 +230,22 @@ func (c *Config) ParseAPI() (APIOptions, error) {
 // uplinkConf 配置上行可靠性。
 // reliability 按消息分类选择 best_effort / at_least_once；
 // at_least_once 先完成落库再应答，落库失败由终端按协议重传。
+// sink 选择上行出口：local（默认，直连内置处理）或 http（HTTP hook）。
 type uplinkConf struct {
+	Sink        string                 `yaml:"sink"`
+	HTTP        *uplinkHTTPConf        `yaml:"http"`
 	Reliability *uplinkReliabilityConf `yaml:"reliability"`
+}
+
+// uplinkHTTPConf 配置 HTTP 上行出口。仅当 sink=http 时生效。
+type uplinkHTTPConf struct {
+	URL         string `yaml:"url"`
+	Token       string `yaml:"token"`
+	TimeoutMS   int    `yaml:"timeoutMs"`
+	QueueSize   int    `yaml:"queueSize"`
+	Workers     int    `yaml:"workers"`
+	MaxAttempts int    `yaml:"maxAttempts"`
+	GatewayID   string `yaml:"gatewayId"`
 }
 
 type uplinkReliabilityConf struct {
@@ -276,24 +292,162 @@ func (c *Config) ParseUplink() (UplinkOptions, error) {
 		options.Alarm = firstNonEmpty(conf.Alarm, options.Alarm)
 	}
 
-	for name, value := range map[string]string{
-		"default":       options.Default,
-		"location":      options.Location,
-		"batchLocation": options.BatchLocation,
-		"alarm":         options.Alarm,
-	} {
-		normalized := strings.ToLower(strings.TrimSpace(value))
-		if normalized != UplinkReliabilityBestEffort && normalized != UplinkReliabilityAtLeastOnce {
-			return UplinkOptions{}, fmt.Errorf(
-				"uplink.reliability.%s must be best_effort or at_least_once, got %q", name, value)
-		}
+	fields := []struct {
+		name  string
+		value *string
+	}{
+		{"default", &options.Default},
+		{"location", &options.Location},
+		{"batchLocation", &options.BatchLocation},
+		{"alarm", &options.Alarm},
 	}
-	options.Default = strings.ToLower(strings.TrimSpace(options.Default))
-	options.Location = strings.ToLower(strings.TrimSpace(options.Location))
-	options.BatchLocation = strings.ToLower(strings.TrimSpace(options.BatchLocation))
-	options.Alarm = strings.ToLower(strings.TrimSpace(options.Alarm))
+	for _, field := range fields {
+		normalized, ok := normalizeUplinkReliability(*field.value)
+		if !ok {
+			return UplinkOptions{}, fmt.Errorf(
+				"uplink.reliability.%s must be best_effort or at_least_once, got %q", field.name, *field.value)
+		}
+		*field.value = normalized
+	}
 
 	return options, nil
+}
+
+// normalizeUplinkReliability 统一可靠性取值。
+// confirm_before_ack 与 at_least_once 等价，前者是出口契约里的语义名。
+func normalizeUplinkReliability(value string) (string, bool) {
+	switch normalized := strings.ToLower(strings.TrimSpace(value)); normalized {
+	case UplinkReliabilityBestEffort:
+		return UplinkReliabilityBestEffort, true
+	case UplinkReliabilityAtLeastOnce, "confirm_before_ack", "confirm-before-ack":
+		return UplinkReliabilityAtLeastOnce, true
+	default:
+		return "", false
+	}
+}
+
+// 上行出口模式与 HTTP hook 的工程默认值。
+const (
+	UplinkSinkLocal = "local"
+	UplinkSinkHTTP  = "http"
+
+	DefaultUplinkSinkMode    = UplinkSinkLocal
+	DefaultUplinkHTTPTimeout = 3 * time.Second
+	DefaultUplinkHTTPQueue   = 1024
+	DefaultUplinkHTTPWorkers = 4
+	// DefaultUplinkHTTPAttempts 为单条事件的投递次数上限（含首次）。
+	// 默认不重试：confirm-before-ack 的重试会成倍放大应答时延，
+	// 必须严格小于终端重传窗口。
+	DefaultUplinkHTTPAttempts = 1
+)
+
+// UplinkSinkOptions 是上行出口的归一化配置。
+type UplinkSinkOptions struct {
+	Mode string
+	HTTP UplinkHTTPOptions
+}
+
+// UplinkHTTPOptions 是 HTTP 上行出口的归一化配置。
+type UplinkHTTPOptions struct {
+	URL         string
+	Token       string
+	Timeout     time.Duration
+	QueueSize   int
+	Workers     int
+	MaxAttempts int
+	GatewayID   string
+}
+
+// DefaultUplinkSinkOptions 返回默认上行出口：本地直连内置处理，不产生外部依赖。
+func DefaultUplinkSinkOptions() UplinkSinkOptions {
+	return UplinkSinkOptions{
+		Mode: DefaultUplinkSinkMode,
+		HTTP: UplinkHTTPOptions{
+			Timeout:     DefaultUplinkHTTPTimeout,
+			QueueSize:   DefaultUplinkHTTPQueue,
+			Workers:     DefaultUplinkHTTPWorkers,
+			MaxAttempts: DefaultUplinkHTTPAttempts,
+		},
+	}
+}
+
+// ParseUplinkSink 归一化上行出口配置。
+// 未配置时返回 local；非法配置直接报错，不做静默降级。
+func (c *Config) ParseUplinkSink() (UplinkSinkOptions, error) {
+	options := DefaultUplinkSinkOptions()
+	if c == nil || c.Uplink == nil {
+		return options, nil
+	}
+
+	mode := strings.ToLower(strings.TrimSpace(c.Uplink.Sink))
+	if mode == "" {
+		mode = DefaultUplinkSinkMode
+	}
+	if mode != UplinkSinkLocal && mode != UplinkSinkHTTP {
+		return UplinkSinkOptions{}, fmt.Errorf(
+			"uplink.sink must be %s or %s, got %q", UplinkSinkLocal, UplinkSinkHTTP, c.Uplink.Sink)
+	}
+	options.Mode = mode
+	if mode == UplinkSinkLocal {
+		return options, nil
+	}
+
+	conf := c.Uplink.HTTP
+	if conf == nil {
+		return UplinkSinkOptions{}, fmt.Errorf("uplink.http is required when uplink.sink=%s", UplinkSinkHTTP)
+	}
+
+	url := strings.TrimSpace(conf.URL)
+	parsed, err := neturl.Parse(url)
+	if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+		return UplinkSinkOptions{}, fmt.Errorf("uplink.http.url must be an absolute http(s) URL, got %q", conf.URL)
+	}
+	options.HTTP.URL = url
+
+	token := strings.TrimSpace(conf.Token)
+	if token == "" {
+		return UplinkSinkOptions{}, fmt.Errorf("uplink.http.token is required when uplink.sink=%s", UplinkSinkHTTP)
+	}
+	options.HTTP.Token = token
+
+	if conf.TimeoutMS != 0 {
+		if conf.TimeoutMS < 1 || conf.TimeoutMS > 60000 {
+			return UplinkSinkOptions{}, fmt.Errorf("uplink.http.timeoutMs must be in [1, 60000], got %d", conf.TimeoutMS)
+		}
+		options.HTTP.Timeout = time.Duration(conf.TimeoutMS) * time.Millisecond
+	}
+	if conf.QueueSize != 0 {
+		if conf.QueueSize < 1 || conf.QueueSize > 1000000 {
+			return UplinkSinkOptions{}, fmt.Errorf("uplink.http.queueSize must be in [1, 1000000], got %d", conf.QueueSize)
+		}
+		options.HTTP.QueueSize = conf.QueueSize
+	}
+	if conf.Workers != 0 {
+		if conf.Workers < 1 || conf.Workers > 64 {
+			return UplinkSinkOptions{}, fmt.Errorf("uplink.http.workers must be in [1, 64], got %d", conf.Workers)
+		}
+		options.HTTP.Workers = conf.Workers
+	}
+	if conf.MaxAttempts != 0 {
+		if conf.MaxAttempts < 1 || conf.MaxAttempts > 3 {
+			return UplinkSinkOptions{}, fmt.Errorf("uplink.http.maxAttempts must be in [1, 3], got %d", conf.MaxAttempts)
+		}
+		options.HTTP.MaxAttempts = conf.MaxAttempts
+	}
+	options.HTTP.GatewayID = strings.TrimSpace(conf.GatewayID)
+	if options.HTTP.GatewayID == "" {
+		options.HTTP.GatewayID = defaultGatewayID()
+	}
+	return options, nil
+}
+
+// defaultGatewayID 生成进程级网关标识：主机名 + 进程号。
+func defaultGatewayID() string {
+	host, err := os.Hostname()
+	if err != nil || strings.TrimSpace(host) == "" {
+		host = "jt808-gateway"
+	}
+	return fmt.Sprintf("%s-%d", host, os.Getpid())
 }
 
 func firstNonEmpty(value, fallback string) string {

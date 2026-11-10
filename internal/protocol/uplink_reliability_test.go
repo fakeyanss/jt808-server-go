@@ -9,6 +9,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/fakeyanss/jt808-server-go/internal/contracts"
 	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
 	"github.com/fakeyanss/jt808-server-go/internal/repository"
 	"github.com/fakeyanss/jt808-server-go/internal/runtime"
@@ -53,6 +54,17 @@ func (r *recordingLocationRepo) ListPage(context.Context, repository.HistoryQuer
 // peerEnd 上的读取协程只取第一帧（通用应答），用于判断本轮是否应答。
 func runUplinkPipeline(t *testing.T, stores *storage.Stores, policy uplink.Policy, alarmSign uint32) (error, <-chan []byte, func()) {
 	t.Helper()
+	return runUplinkPipelineWithSink(t, stores, policy, alarmSign, nil)
+}
+
+func runUplinkPipelineWithSink(
+	t *testing.T,
+	stores *storage.Stores,
+	policy uplink.Policy,
+	alarmSign uint32,
+	sink contracts.UplinkSink,
+) (error, <-chan []byte, func()) {
+	t.Helper()
 
 	serverEnd, peerEnd := net.Pipe()
 	ackCh := make(chan []byte, 1)
@@ -69,9 +81,11 @@ func runUplinkPipeline(t *testing.T, stores *storage.Stores, policy uplink.Polic
 	require.NoError(t, err)
 
 	pipeline := NewPipeline(serverEnd, WithDeps(ProcessorDeps{
-		Storage: stores,
-		Runtime: runtime.NewStores(),
-		Uplink:  &policy,
+		Storage:    stores,
+		Runtime:    runtime.NewStores(),
+		Uplink:     &policy,
+		UplinkSink: sink,
+		GatewayID:  "gw-test",
 	}))
 	session := &model.Session{ID: "uplink-reliability", Conn: serverEnd, AckTimeout: time.Hour, MaxRetries: 1}
 

@@ -58,6 +58,11 @@ func main() {
 		log.Error().Err(uplinkErr).Msg("Invalid uplink reliability configuration")
 		os.Exit(1)
 	}
+	uplinkSinkOptions, uplinkSinkErr := cfg.ParseUplinkSink()
+	if uplinkSinkErr != nil {
+		log.Error().Err(uplinkSinkErr).Msg("Invalid uplink sink configuration")
+		os.Exit(1)
+	}
 
 	storageCfg := storage.FromConfig(cfg)
 	stores, storageErr := storage.Init(storageCfg)
@@ -90,6 +95,37 @@ func main() {
 		Msg("Uplink reliability configured")
 
 	deps := protocol.ProcessorDeps{Storage: stores, Runtime: runtime.Default(), Uplink: &uplinkPolicy}
+
+	// 上行出口：默认 local 保持进程内直连处理；http 把业务事件投递给管控。
+	// 出口只负责传输，解码、分包与应答仍在协议内核完成。
+	var uplinkSink *uplink.HTTPSink
+	if uplinkSinkOptions.Mode == config.UplinkSinkHTTP {
+		sink, err := uplink.NewHTTPSink(uplink.HTTPSinkOptions{
+			URL:         uplinkSinkOptions.HTTP.URL,
+			Token:       uplinkSinkOptions.HTTP.Token,
+			Timeout:     uplinkSinkOptions.HTTP.Timeout,
+			QueueSize:   uplinkSinkOptions.HTTP.QueueSize,
+			Workers:     uplinkSinkOptions.HTTP.Workers,
+			MaxAttempts: uplinkSinkOptions.HTTP.MaxAttempts,
+		})
+		if err != nil {
+			log.Error().Err(err).Msg("Fail to initialize uplink HTTP sink")
+			os.Exit(1)
+		}
+		uplinkSink = sink
+		deps.UplinkSink = sink
+		deps.GatewayID = uplinkSinkOptions.HTTP.GatewayID
+		log.Info().
+			Str("url", uplinkSinkOptions.HTTP.URL).
+			Dur("timeout", uplinkSinkOptions.HTTP.Timeout).
+			Int("queue_size", uplinkSinkOptions.HTTP.QueueSize).
+			Int("workers", uplinkSinkOptions.HTTP.Workers).
+			Int("max_attempts", uplinkSinkOptions.HTTP.MaxAttempts).
+			Str("gateway_id", uplinkSinkOptions.HTTP.GatewayID).
+			Msg("Uplink HTTP sink enabled")
+	} else {
+		log.Info().Str("mode", uplinkSinkOptions.Mode).Msg("Uplink sink configured")
+	}
 
 	var hooks action.Hooks = action.Noop{}
 	if cfg.Server.Action != nil && cfg.Server.Action.HTTP != nil && cfg.Server.Action.HTTP.URL != "" {
@@ -253,6 +289,20 @@ func main() {
 		outboxDone = outbox.Done()
 		routines.GoSafe(func() { outbox.Run(outboxCtx) })
 	}
+	// 上行 HTTP 出口在后台消费 best-effort 队列；confirm-before-ack 由会话 goroutine 同步调用。
+	cancelUplinkSink := func() {}
+	var uplinkSinkDone <-chan struct{}
+	if uplinkSink != nil {
+		sinkCtx, cancel := context.WithCancel(context.Background())
+		cancelUplinkSink = cancel
+		done := make(chan struct{})
+		uplinkSinkDone = done
+		routines.GoSafe(func() {
+			defer close(done)
+			uplinkSink.Run(sinkCtx)
+		})
+	}
+
 	if alarmOptions.AutoUpload {
 		hooks = alarmserver.NewUploadTrigger(hooks, alarmserver.UploadTriggerOptions{
 			IP:      alarmOptions.UploadIP,
@@ -417,6 +467,18 @@ func main() {
 				snapshot.MediaFiles = count
 				snapshot.MediaFileBytes = bytes
 			}
+			if uplinkSink != nil {
+				stats := uplinkSink.Stats()
+				snapshot.Uplink = observability.UplinkSnapshot{
+					Delivered:  stats.Delivered,
+					Failed:     stats.Failed,
+					Timeouts:   stats.Timeouts,
+					Dropped:    stats.Dropped,
+					Rejected:   stats.Rejected,
+					InFlight:   stats.InFlight,
+					QueueDepth: stats.QueueDepth,
+				}
+			}
 			return snapshot
 		},
 	}
@@ -480,7 +542,17 @@ func main() {
 		}
 	}
 
-	// 4. 停止清理与扫描任务，等待当前批次收尾，避免与存储关闭竞争。
+	// 4. 停止上行出口，给在途投递一个收尾窗口；未完成事件随进程退出丢弃。
+	cancelUplinkSink()
+	if uplinkSinkDone != nil {
+		select {
+		case <-uplinkSinkDone:
+		case <-time.After(5 * time.Second):
+			log.Warn().Msg("Timed out waiting for uplink sink to drain")
+		}
+	}
+
+	// 5. 停止清理与扫描任务，等待当前批次收尾，避免与存储关闭竞争。
 	cancelRetention()
 	if len(retentionDones) > 0 {
 		timer := time.NewTimer(5 * time.Second)
@@ -496,7 +568,7 @@ func main() {
 		timer.Stop()
 	}
 
-	// 5. 关闭媒体与附件写入，确保文件句柄与已收数据落盘。
+	// 6. 关闭媒体与附件写入，确保文件句柄与已收数据落盘。
 	if alarmServ != nil {
 		alarmServ.Stop()
 	}
@@ -504,7 +576,7 @@ func main() {
 		mediaServ.Stop()
 	}
 
-	// 6. 管理面最后停止，尽量延长探针与指标的可用窗口。
+	// 7. 管理面最后停止，尽量延长探针与指标的可用窗口。
 	if adminServ != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		if err := adminServ.Stop(ctx); err != nil {

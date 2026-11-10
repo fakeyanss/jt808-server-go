@@ -28,6 +28,10 @@ func TestWritePrometheusExposesRequiredMetrics(t *testing.T) {
 		AttachmentsCompleted: 9,
 		MediaFiles:           10,
 		MediaFileBytes:       11,
+		Uplink: UplinkSnapshot{
+			Delivered: 12, Failed: 13, Timeouts: 14, Dropped: 15,
+			Rejected: 16, InFlight: 17, QueueDepth: 18,
+		},
 	}
 	require.NoError(t, WritePrometheus(&buf, snapshot))
 
@@ -43,6 +47,13 @@ func TestWritePrometheusExposesRequiredMetrics(t *testing.T) {
 		"jt808_attachments_completed_total 9",
 		"jt808_media_files 10",
 		"jt808_media_file_bytes 11",
+		"jt808_uplink_delivered_total 12",
+		"jt808_uplink_failed_total 13",
+		"jt808_uplink_timeouts_total 14",
+		"jt808_uplink_dropped_total 15",
+		"jt808_uplink_rejected_total 16",
+		"jt808_uplink_in_flight 17",
+		"jt808_uplink_queue_depth 18",
 	} {
 		require.Contains(t, output, want)
 	}

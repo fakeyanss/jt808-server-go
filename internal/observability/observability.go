@@ -216,6 +216,19 @@ type Snapshot struct {
 	Retention RetentionSnapshot
 	// Orphan 是媒体目录孤儿文件扫描的累计指标。
 	Orphan OrphanSnapshot
+	// Uplink 是上行出口的累计投递指标；未启用外部出口时全为 0。
+	Uplink UplinkSnapshot
+}
+
+// UplinkSnapshot 是上行出口的累计计数与当前水位。
+type UplinkSnapshot struct {
+	Delivered  int64
+	Failed     int64
+	Timeouts   int64
+	Dropped    int64
+	Rejected   int64
+	InFlight   int64
+	QueueDepth int
 }
 
 // Check 是一条带名称的就绪检查。
@@ -290,6 +303,13 @@ func WritePrometheus(w io.Writer, snapshot Snapshot) error {
 		{"jt808_attachments_completed_total", "Attachment files completed since process start.", "counter", fmt.Sprint(snapshot.AttachmentsCompleted)},
 		{"jt808_media_files", "Media files persisted from 0x0801 uploads.", "gauge", fmt.Sprint(snapshot.MediaFiles)},
 		{"jt808_media_file_bytes", "Total bytes occupied by persisted 0x0801 media files.", "gauge", fmt.Sprint(snapshot.MediaFileBytes)},
+		{"jt808_uplink_delivered_total", "Uplink events accepted by the configured sink.", "counter", fmt.Sprint(snapshot.Uplink.Delivered)},
+		{"jt808_uplink_failed_total", "Uplink events whose sink delivery failed.", "counter", fmt.Sprint(snapshot.Uplink.Failed)},
+		{"jt808_uplink_timeouts_total", "Uplink events whose sink delivery timed out.", "counter", fmt.Sprint(snapshot.Uplink.Timeouts)},
+		{"jt808_uplink_dropped_total", "Uplink events dropped by the sink queue.", "counter", fmt.Sprint(snapshot.Uplink.Dropped)},
+		{"jt808_uplink_rejected_total", "Confirm-before-ack events rejected due to in-flight limits.", "counter", fmt.Sprint(snapshot.Uplink.Rejected)},
+		{"jt808_uplink_queue_depth", "Uplink events waiting in the sink queue.", "gauge", fmt.Sprint(snapshot.Uplink.QueueDepth)},
+		{"jt808_uplink_in_flight", "Confirm-before-ack uplink deliveries in flight.", "gauge", fmt.Sprint(snapshot.Uplink.InFlight)},
 	}
 	for _, line := range lines {
 		if _, err := fmt.Fprintf(w, "# HELP %s %s\n# TYPE %s %s\n%s %s\n",
