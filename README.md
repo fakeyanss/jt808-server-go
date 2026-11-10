@@ -417,6 +417,7 @@ commandOutbox:
 | GET | `/api/device/:phone/media/files/:mediaId` | 查询单个媒体文件的元数据 |
 | GET | `/api/device/:phone/media/files/:mediaId/content` | 下载媒体文件内容，支持 HTTP Range |
 | GET | `/api/device/:phone/media/captures` | 查询 `0x0805` 拍摄记录及各 mediaId 的文件到达状态 |
+| GET | `/api/device/:phone/media/search-results` | 查询 `0x0802` 存储多媒体检索应答，参数 `limit` |
 
 请求体字段直接复用协议模型，字段级定义见 `internal/protocol/model/`；路由与参数校验见 `internal/api/api.go`。
 
@@ -497,7 +498,7 @@ curl -s http://localhost:8008/api/commands/0f8c2f6d9a1e4b7c8d3e5f60718293a4
 
 **1078 媒体服务**在配置 `mediaServer.port` 后启用独立 UDP 端口接收 RTP 码流：仅支持 UDP 与 H.264，把 PS/ES 还原为 Annex B 裸流并落成 `.h264` 文件，路径为 `<mediaServer.dir>/<手机号>/channel_<通道号>/<时间戳>.h264`。不做转码、分发、播放器索引或回放。已实现的 1078 信令为 `0x9101`、`0x9102`、`0x9105`、`0x9201`、`0x9202`、`0x9205`、`0x9206`、`0x1205`、`0x1206`；`0x1205` 资源列表与 `0x1206/0x9206` 媒体元数据支持持久化。
 
-**0x0801 多媒体落盘**始终启用：完整消息（分包由运行时重组，非分包单包）写入 `<mediaUpload.dir>/<手机号>/<YYYYMMDD>/<媒体ID>.<扩展名>`，日期取位置体 BCD 时间，缺失时用接收日期；扩展名按格式映射为 `jpg/tif/mp3/wav/wmv`，未知格式回退 `bin`。写文件采用临时文件 + 原子 rename，同一 mediaId 重复上报幂等覆盖。元数据（含 MD5、字节数、位置与报警标志位）写入 `media_files` 表；`0x0805` 的 mediaId 列表写入 `media_captures` 与 `media_capture_items`，查询时关联 `media_files` 判断文件是否已到达。文件内容通过 `GET /api/device/:phone/media/files/:mediaId/content` 下载，支持 Range。本批不做保留期清理，请用 `jt808_media_files` 与 `jt808_media_file_bytes` 监控磁盘占用。
+**0x0801 多媒体落盘**始终启用：完整消息（分包由运行时重组，非分包单包）写入 `<mediaUpload.dir>/<手机号>/<YYYYMMDD>/<媒体ID>.<扩展名>`，日期取位置体 BCD 时间，缺失时用接收日期；扩展名按格式映射为 `jpg/tif/mp3/wav/wmv`，未知格式回退 `bin`。写文件采用临时文件 + 原子 rename，同一 mediaId 重复上报幂等覆盖。元数据（含 MD5、字节数、位置与报警标志位）写入 `media_files` 表；`0x0805` 的 mediaId 列表写入 `media_captures` 与 `media_capture_items`，查询时关联 `media_files` 判断文件是否已到达。`0x0802` 检索应答按 `(phone, answerSerial)` 整体覆盖写入 `media_search_results`，记录终端本地仍保留的媒体清单及拍摄起始位置，可通过 `GET /api/device/:phone/media/search-results` 查询。文件内容通过 `GET /api/device/:phone/media/files/:mediaId/content` 下载，支持 Range。本批不做保留期清理，请用 `jt808_media_files` 与 `jt808_media_file_bytes` 监控磁盘占用。
 
 ### 6.6 Action Hook
 

@@ -42,8 +42,16 @@ func newMediaAPITestServer(t *testing.T) (*gin.Engine, repository.MediaFileRepos
 	store, err := mediaupload.NewStore(t.TempDir())
 	require.NoError(t, err)
 
+	searches := repository.NewMediaSearchRepository()
+	require.NoError(t, searches.Replace(context.Background(), phone, 41, []repository.MediaSearchRecord{{
+		MediaID: 8001, MediaType: 0, ChannelID: 1, EventID: 1,
+		Latitude: 30000000, Longitude: 120000000,
+		LocationTime: time.Date(2026, 11, 12, 12, 0, 0, 0, hex.ProtocolTimeZone),
+		ReceivedAt:   time.Date(2026, 11, 12, 12, 0, 1, 0, hex.ProtocolTimeZone),
+	}}))
+
 	router := gin.New()
-	registerMediaRoutes(router.Group("/api"), devices, files, files, store)
+	registerMediaRoutes(router.Group("/api"), devices, files, files, searches, store)
 
 	saveMedia := func(mediaID uint32, channel uint8, alarmSign uint32, bcdTime string, data []byte) {
 		file, saveErr := store.Save(&model.Msg0801{
@@ -173,4 +181,33 @@ func TestMediaCapturesExposeArrivalState(t *testing.T) {
 	require.True(t, payload.Items[0].Items[0].Arrived)
 	require.True(t, payload.Items[0].Items[1].Arrived)
 	require.False(t, payload.Items[0].Items[2].Arrived)
+}
+
+// 0x0802 检索结果查询入口返回最后一次应答的记录。
+func TestMediaSearchResultsEndpoint(t *testing.T) {
+	router, _, _, phone := newMediaAPITestServer(t)
+
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/device/"+phone+"/media/search-results", nil))
+	require.Equal(t, http.StatusOK, recorder.Code)
+
+	var payload struct {
+		Count int                            `json:"count"`
+		Items []repository.MediaSearchRecord `json:"items"`
+	}
+	require.NoError(t, json.Unmarshal(recorder.Body.Bytes(), &payload))
+	require.Equal(t, 1, payload.Count)
+	require.Len(t, payload.Items, 1)
+	require.Equal(t, uint16(41), payload.Items[0].AnswerSerial)
+	require.Equal(t, uint32(8001), payload.Items[0].MediaID)
+	require.Equal(t, uint32(30000000), payload.Items[0].Latitude)
+
+	// 未注册设备与非法 limit 均返回 400。
+	recorder = httptest.NewRecorder()
+	router.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/device/188000000000/media/search-results", nil))
+	require.Equal(t, http.StatusBadRequest, recorder.Code)
+
+	recorder = httptest.NewRecorder()
+	router.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/device/"+phone+"/media/search-results?limit=abc", nil))
+	require.Equal(t, http.StatusBadRequest, recorder.Code)
 }

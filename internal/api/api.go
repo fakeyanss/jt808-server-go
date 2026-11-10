@@ -42,8 +42,8 @@ func Run(ctx context.Context, serv *server.TCPServer, cfg *config.Config, apiOpt
 	connRegistry := runtime.Default().Conn
 	outboxEnabled := outboxOptions.Mode != config.CommandOutboxModeOff && commands != nil
 
-	// 0x0801 媒体文件与 0x0805 拍摄记录查询；文件下载由 mediaUpload 读取共享卷。
-	registerMediaRoutes(api, devices, storage.Default().MediaFiles, storage.Default().MediaCaptures, mediaUpload)
+	// 0x0801 媒体文件、0x0805 拍摄记录与 0x0802 检索结果查询；文件下载由 mediaUpload 读取共享卷。
+	registerMediaRoutes(api, devices, storage.Default().MediaFiles, storage.Default().MediaCaptures, storage.Default().MediaSearches, mediaUpload)
 
 	// 下行命令投递状态查询；命令下发时返回的 commandId 可在此回查。
 	api.GET("/commands/:commandId", func(c *gin.Context) {
@@ -280,18 +280,28 @@ func Run(ctx context.Context, serv *server.TCPServer, cfg *config.Config, apiOpt
 
 	api.POST("/device/:phone/control", func(c *gin.Context) {
 		var request struct {
-			CommandWord  uint8  `json:"commandWord" binding:"required"`
-			CommandParam string `json:"commandParam"`
+			CommandWord  uint8                    `json:"commandWord" binding:"required"`
+			CommandParam string                   `json:"commandParam"`
+			Parameters   []model.CommandParameter `json:"parameters"`
 		}
 		if err := c.ShouldBindJSON(&request); err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
 		}
-		if request.CommandWord != 2 && request.CommandWord != 4 && request.CommandWord != 5 {
-			c.JSON(http.StatusBadRequest, gin.H{"err": "supported commandWord values are 2 (connect server), 4 (reset), and 5 (factory reset)"})
+		if request.CommandWord != 1 && request.CommandWord != 2 && request.CommandWord != 4 && request.CommandWord != 5 {
+			c.JSON(http.StatusBadRequest, gin.H{"err": "supported commandWord values are 1 (upgrade), 2 (connect server), 4 (reset), and 5 (factory reset)"})
 			return
 		}
-		if request.CommandWord != 2 && request.CommandParam != "" {
+		typed := len(request.Parameters) > 0
+		if typed && request.CommandParam != "" {
+			c.JSON(http.StatusBadRequest, gin.H{"err": "commandParam and parameters are mutually exclusive"})
+			return
+		}
+		if typed && request.CommandWord != 1 && request.CommandWord != 2 {
+			c.JSON(http.StatusBadRequest, gin.H{"err": "parameters are only valid for commandWord 1 and 2"})
+			return
+		}
+		if !typed && request.CommandWord != 2 && request.CommandParam != "" {
 			c.JSON(http.StatusBadRequest, gin.H{"err": "commandParam is only valid for commandWord 2"})
 			return
 		}
@@ -306,11 +316,29 @@ func Run(ctx context.Context, serv *server.TCPServer, cfg *config.Config, apiOpt
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
 		}
-		if len(request.CommandParam) > 256 {
+		if !typed && len(request.CommandParam) > 256 {
 			c.JSON(http.StatusBadRequest, gin.H{"err": "commandParam exceeds 256 UTF-8 bytes"})
 			return
 		}
-		msg := &model.Msg8105{Header: model.GenMsgHeader(device, 0x8105, session.GetNextSerialNum()), CommandWord: request.CommandWord, CommandParam: request.CommandParam}
+		if typed {
+			seen := make(map[uint8]struct{}, len(request.Parameters))
+			for _, param := range request.Parameters {
+				if int(param.Length) != len(param.Value) {
+					c.JSON(http.StatusBadRequest, gin.H{"err": fmt.Sprintf("parameter %d length %d does not match value length %d", param.ID, param.Length, len(param.Value))})
+					return
+				}
+				if len(param.Value) > 255 {
+					c.JSON(http.StatusBadRequest, gin.H{"err": fmt.Sprintf("parameter %d exceeds 255 bytes", param.ID)})
+					return
+				}
+				if _, exists := seen[param.ID]; exists {
+					c.JSON(http.StatusBadRequest, gin.H{"err": fmt.Sprintf("duplicate parameter id %d", param.ID)})
+					return
+				}
+				seen[param.ID] = struct{}{}
+			}
+		}
+		msg := &model.Msg8105{Header: model.GenMsgHeader(device, 0x8105, session.GetNextSerialNum()), CommandWord: request.CommandWord, CommandParam: request.CommandParam, Parameters: request.Parameters}
 		command, created, err := dispatchDownlink(c, commands, serv, session, msg, outboxOptions)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"err": err.Error()})
