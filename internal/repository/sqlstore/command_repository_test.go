@@ -231,7 +231,8 @@ func TestSQLiteCommandReleaseOfflineRestoresAttempts(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, begun)
 
-	released, err := commands.ReleaseOffline(ctx, "offline", "node-a", 1, time.Time{}, "device offline")
+	next := now.Add(15 * time.Second)
+	released, err := commands.ReleaseOffline(ctx, "offline", "node-a", 1, time.Time{}, next, "device offline")
 	require.NoError(t, err)
 	require.True(t, released)
 
@@ -242,5 +243,5 @@ func TestSQLiteCommandReleaseOfflineRestoresAttempts(t *testing.T) {
 	require.True(t, stored.LastAttemptAt.IsZero())
 	require.Empty(t, stored.LeaseOwner)
 	require.Equal(t, "device offline", stored.LastError)
-	require.True(t, stored.NextAttemptAt.Equal(now))
+	require.True(t, stored.NextAttemptAt.Equal(next))
 }

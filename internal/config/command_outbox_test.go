@@ -2,6 +2,7 @@ package config
 
 import (
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 )
@@ -39,11 +40,14 @@ func TestParseCommandOutboxRetryOnTerminalFailure(t *testing.T) {
 	options, err := cfg.ParseCommandOutbox()
 	require.NoError(t, err)
 	require.False(t, options.RetryOnTerminalFailure, "terminal failure retry must default to false")
+	require.Equal(t, DefaultCommandOutboxOfflineRetry, options.OfflineRetry)
 
 	cfg.CommandOutbox.RetryOnTerminalFailure = true
+	cfg.CommandOutbox.OfflineRetry = "30s"
 	options, err = cfg.ParseCommandOutbox()
 	require.NoError(t, err)
 	require.True(t, options.RetryOnTerminalFailure)
+	require.Equal(t, 30*time.Second, options.OfflineRetry)
 }
 
 func TestResolveCommandOutboxMode(t *testing.T) {

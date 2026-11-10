@@ -51,7 +51,7 @@ const (
 		WHERE command_id = ? AND status = 'pending' AND lease_owner = ?`
 
 	commandReleaseOfflineSQL = `UPDATE command_outbox
-		SET lease_owner = '', lease_expires_at = 0, attempts = ?, last_attempt_at = ?, last_error = ?, updated_at = ?
+		SET lease_owner = '', lease_expires_at = 0, attempts = ?, last_attempt_at = ?, next_attempt_at = ?, last_error = ?, updated_at = ?
 		WHERE command_id = ? AND status = 'pending' AND lease_owner = ?`
 
 	commandSerialSelectSQL = `SELECT next_serial FROM command_serial WHERE phone = ?`
@@ -306,9 +306,9 @@ func (r *commandRepository) ReleaseAttempt(ctx context.Context, commandID, owner
 	return affected > 0, nil
 }
 
-func (r *commandRepository) ReleaseOffline(ctx context.Context, commandID, owner string, attempts int, lastAttemptAt time.Time, reason string) (bool, error) {
+func (r *commandRepository) ReleaseOffline(ctx context.Context, commandID, owner string, attempts int, lastAttemptAt time.Time, next time.Time, reason string) (bool, error) {
 	result, err := r.store.db.ExecContext(ctx, commandReleaseOfflineSQL,
-		attempts, unixMilliOrZero(lastAttemptAt), reason, time.Now().UnixMilli(), commandID, owner)
+		attempts, unixMilliOrZero(lastAttemptAt), unixMilliOrZero(next), reason, time.Now().UnixMilli(), commandID, owner)
 	if err != nil {
 		return false, fmt.Errorf("release offline command %s: %w", commandID, err)
 	}

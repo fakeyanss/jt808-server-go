@@ -305,6 +305,7 @@ func main() {
 			LeaseDuration:          outboxOptions.LeaseDuration,
 			RetryBase:              outboxOptions.RetryBase,
 			RetryMax:               outboxOptions.RetryMax,
+			OfflineRetry:           outboxOptions.OfflineRetry,
 			RetryOnTerminalFailure: outboxOptions.RetryOnTerminalFailure,
 		})
 		if buildErr != nil {
