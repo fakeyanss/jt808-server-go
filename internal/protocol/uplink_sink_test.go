@@ -148,7 +148,9 @@ func TestBuildUplinkEventIsStableAcrossRetransmission(t *testing.T) {
 	second := buildUplinkEvent(context.Background(), 0x0200, data, contracts.ReliabilityBestEffort, "gw-test")
 	require.Equal(t, first.EventID, second.EventID)
 	require.Equal(t, int64(1793505600000), first.OccurredAt.UnixMilli())
-	require.Equal(t, "188765499021|0x0200|33|1793505600000", first.EventID)
+	// eventId 是内容哈希，重传同一报文必须得到同一值。
+	require.Len(t, first.EventID, 16)
+	require.Regexp(t, "^[0-9a-f]{16}$", first.EventID)
 	require.False(t, first.OccurredAt.IsZero())
 }
 
@@ -171,8 +173,9 @@ func TestBuildUplinkEventTerminalReply(t *testing.T) {
 	require.Equal(t, uint16(77), event.Reply.AnswerSerial)
 	require.Equal(t, uint8(1), event.Reply.Result)
 	require.Equal(t, event.EventID, event.Reply.EventID)
-	// 0x0001 没有协议时间，事件 ID 用报文头流水号保持重传稳定。
-	require.Equal(t, "188765499021|0x0001|44|0", event.EventID)
+	// 0x0001 没有协议时间，事件 ID 仍是内容哈希，重传时保持稳定。
+	require.Len(t, event.EventID, 16)
+	require.Regexp(t, "^[0-9a-f]{16}$", event.EventID)
 }
 
 func TestBuildUplinkEventMediaUsesRawPayload(t *testing.T) {

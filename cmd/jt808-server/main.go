@@ -4,6 +4,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"net/url"
 	"os"
 	"os/signal"
 	"syscall"
@@ -15,6 +16,7 @@ import (
 	"github.com/fakeyanss/jt808-server-go/internal/adminapi"
 	"github.com/fakeyanss/jt808-server-go/internal/alarmserver"
 	"github.com/fakeyanss/jt808-server-go/internal/api"
+	"github.com/fakeyanss/jt808-server-go/internal/blob"
 	"github.com/fakeyanss/jt808-server-go/internal/config"
 	"github.com/fakeyanss/jt808-server-go/internal/contracts"
 	"github.com/fakeyanss/jt808-server-go/internal/control"
@@ -121,6 +123,9 @@ func main() {
 
 	deps := protocol.ProcessorDeps{Storage: stores, Runtime: runtime.Default(), Uplink: &uplinkPolicy}
 
+	// 指标在出口之前创建：409 丢弃、超限丢弃等事件需要在网关侧计数。
+	metrics := observability.NewMetrics()
+
 	// 上行出口：默认 local 保持进程内直连处理；http 把业务事件投递给管控。
 	// 出口只负责传输，解码、分包与应答仍在协议内核完成。
 	var uplinkSink *uplink.HTTPSink
@@ -132,6 +137,9 @@ func main() {
 			QueueSize:   uplinkSinkOptions.HTTP.QueueSize,
 			Workers:     uplinkSinkOptions.HTTP.Workers,
 			MaxAttempts: uplinkSinkOptions.HTTP.MaxAttempts,
+			OnUnknownDeviceDropped: func(phone string) {
+				metrics.IncUplinkUnknownDropped()
+			},
 		})
 		if err != nil {
 			log.Error().Err(err).Msg("Fail to initialize uplink HTTP sink")
@@ -198,6 +206,37 @@ func main() {
 		log.Info().Str("dir", mediaUploadStore.Root()).Msg("Media upload store initialized")
 	}
 
+	// 鉴权提供者是网关只读查询设备档案的契约：gateway+control 同进程直接读本地库，
+	// gateway-only 通过管控内部入口查询（与 uplink 出口同源）。
+	var authProvider contracts.AuthProvider
+	switch {
+	case hasControl:
+		authProvider = control.NewLocalAuthProvider(stores.Devices)
+	case hasGateway && uplinkSinkOptions.Mode == config.UplinkSinkHTTP:
+		parsed, parseErr := url.Parse(uplinkSinkOptions.HTTP.URL)
+		if parseErr != nil || parsed.Scheme == "" || parsed.Host == "" {
+			log.Error().Str("url", uplinkSinkOptions.HTTP.URL).Msg("Invalid uplink.http.url for device lookup")
+			os.Exit(1)
+		}
+		provider, providerErr := control.NewHTTPAuthProvider(
+			parsed.Scheme+"://"+parsed.Host, uplinkSinkOptions.HTTP.Token,
+			uplinkSinkOptions.HTTP.Timeout, 5*time.Minute)
+		if providerErr != nil {
+			log.Error().Err(providerErr).Msg("Fail to create HTTP auth provider")
+			os.Exit(1)
+		}
+		authProvider = provider
+	}
+	deps.AuthProvider = authProvider
+	if uplinkSink != nil {
+		// 网关出口才需要本地注册缓存与消息体上限；standalone/local 不走事件出口。
+		deps.RegisterCache = protocol.NewRegisterCache(5 * time.Minute)
+		deps.UplinkMaxBodyBytes = clusterOptions.Uplink.MaxBodyBytes
+		deps.OnOversized = func(msgID uint16, phone string, size int) {
+			metrics.IncUplinkOversized()
+		}
+	}
+
 	adminOptions, adminEnabled, adminErr := cfg.ParseAdmin()
 	if adminErr != nil {
 		log.Error().Err(adminErr).Msg("Invalid admin configuration")
@@ -212,7 +251,6 @@ func main() {
 		log.Warn().Msg("Business API authentication is disabled; set api.auth.token in production")
 	}
 
-	metrics := observability.NewMetrics()
 	var serv *server.TCPServer
 	if hasGateway {
 		serv = server.NewTCPServer()
@@ -224,6 +262,7 @@ func main() {
 	// durable outbox 归内置管控模块所有：幂等、租约、退避、过期与重投都在这里，
 	// 协议层只上报可靠投递结果。control-only 下 Conn 为 nil，离线判断交给网关回执。
 	var outbox *control.Outbox
+	var controlDownlink contracts.DownlinkSender
 	if hasControl {
 		var downlinkSender contracts.DownlinkSender
 		if hasGateway {
@@ -278,12 +317,7 @@ func main() {
 			os.Exit(1)
 		}
 		outbox = built
-	}
-
-	// 鉴权提供者是网关向管控查询设备档案的只读契约；standalone 下为进程内实现。
-	var authProvider *control.LocalAuthProvider
-	if hasControl {
-		authProvider = control.NewLocalAuthProvider(stores.Devices)
+		controlDownlink = downlinkSender
 	}
 
 	// 历史数据定期清理与孤儿文件扫描：默认关闭，只有显式开启且后端支持时才启动。
@@ -369,17 +403,38 @@ func main() {
 			os.Exit(1)
 		}
 		downlinkServer = srv
+		// 查询应答（0x0104/0x0107/0x0201/0x0608）在网关侧回填等待表，
+		// 由控制面通过下行契约取回消息体。
+		deps.QueryResponse = srv.HandleQueryResponse
+		if serv != nil {
+			serv.SetDeps(deps)
+		}
 		log.Info().Str("addr", srv.Addr()).Msg("Downlink HTTP server listening")
 	}
 
-	// 管控侧上行 HTTP 入口：E1 只校验契约，不内置业务 consumer。
+	// 管控侧上行 HTTP 入口：E2 把业务处理内置到控制面，网关只投事件。
+	// E2 约束 control 单副本：按 phone 串行的 mailbox 只在进程内成立。
 	var uplinkServer *uplink.Server
+	var controlBlob contracts.BlobStore
+	var businessExecutor *control.BusinessExecutor
+	cancelSweep := func() {}
 	if hasControl && !standalone {
+		log.Warn().Msg("control singleton mode (E2): replicas must be 1; phone-ordered processing is process-local")
+		if clusterOptions.Blob.Backend == config.BlobBackendSharedVolume {
+			shared, blobErr := blob.NewSharedVolume(clusterOptions.Blob.Root, true)
+			if blobErr != nil {
+				log.Error().Err(blobErr).Str("root", clusterOptions.Blob.Root).Msg("Fail to initialize shared volume blob store")
+				os.Exit(1)
+			}
+			controlBlob = shared
+			log.Info().Str("root", clusterOptions.Blob.Root).Msg("Shared volume blob store initialized")
+		}
 		srv, srvErr := uplink.NewServer(uplink.ServerOptions{
-			Token:           clusterOptions.Control.Token,
-			DedupTTL:        clusterOptions.Uplink.DedupTTL,
-			DedupMaxEntries: clusterOptions.Uplink.DedupMaxEntries,
-			MaxBodyBytes:    clusterOptions.Uplink.MaxBodyBytes,
+			Token:               clusterOptions.Control.Token,
+			DedupTTL:            clusterOptions.Uplink.DedupTTL,
+			DedupMaxEntries:     clusterOptions.Uplink.DedupMaxEntries,
+			MaxRequestBytes:     clusterOptions.Uplink.MaxRequestBytes,
+			MaxDecodedBodyBytes: clusterOptions.Uplink.MaxDecodedBodyBytes,
 		})
 		if srvErr != nil {
 			log.Error().Err(srvErr).Msg("Fail to create uplink HTTP server")
@@ -388,6 +443,31 @@ func main() {
 		if outbox != nil {
 			srv.SetTerminalReplyHandler(outbox)
 		}
+		executor := control.NewBusinessExecutor(control.BusinessOptions{
+			ProcessorDeps: deps,
+			Devices:       stores.Devices,
+			Files:         stores.MediaFiles,
+			Blob:          controlBlob,
+			MediaUpload:   mediaUploadStore,
+			OnUnknownDevice: func(phone string) {
+				log.Error().Str("phone", phone).Msg("Uplink event rejected: device is not registered")
+			},
+			OnMediaTypeRejected: func(phone string, mediaType uint8) {
+				metrics.IncMediaTypeRejected()
+			},
+			OnBlobCommitFailed: func(phone string, mediaID uint32) {
+				metrics.IncBlobCommitFailed()
+			},
+		})
+		businessExecutor = executor
+		srv.RegisterDefaultConsumer(executor)
+		// 0x0200/0x0704 默认 at_least_once；0x0801 强制同步确认。
+		srv.RegisterConsumer(0x0200, executor)
+		srv.RegisterConsumer(0x0704, executor)
+		srv.RegisterConsumer(0x0801, executor)
+		srv.SetDeviceLookup(func(ctx context.Context, phone string) (*model.Device, error) {
+			return stores.Devices.GetByPhone(ctx, phone)
+		})
 		// 缺失 confirm-before-ack consumer 时启动失败，并一次性列出缺失项。
 		if err := srv.ValidateCoverage(uplinkPolicy); err != nil {
 			log.Error().Err(err).Msg("Uplink consumer coverage validation failed")
@@ -399,6 +479,24 @@ func main() {
 		}
 		uplinkServer = srv
 		log.Info().Str("addr", srv.Addr()).Msg("Uplink HTTP server listening")
+	}
+
+	// 共享卷 pending 对象巡检：写文件与写库之间中断时，无元数据引用的对象会被清理。
+	if controlBlob != nil && businessExecutor != nil {
+		sweepCtx, cancel := context.WithCancel(context.Background())
+		cancelSweep = cancel
+		routines.GoSafe(func() {
+			ticker := time.NewTicker(10 * time.Minute)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-sweepCtx.Done():
+					return
+				case <-ticker.C:
+					businessExecutor.SweepPending(sweepCtx, 30*time.Minute)
+				}
+			}
+		})
 	}
 
 	// memory/durable 模式启动重投调度：进程重启后把 pending 命令重新投给已上线会话。
@@ -469,7 +567,9 @@ func main() {
 			Uint16("udp_port", alarmOptions.UDPPort).
 			Msg("Automatic 0x9208 attachment upload trigger enabled")
 	}
-	serv.SetHooks(hooks)
+	if serv != nil {
+		serv.SetHooks(hooks)
+	}
 	if hasGateway {
 		addr := ":" + cfg.Server.Port.TCPPort
 		if err := serv.Listen(addr); err != nil {
@@ -654,9 +754,15 @@ func main() {
 	apiCtx, cancelAPI := context.WithCancel(context.Background())
 	apiDone := make(chan struct{})
 	if hasControl {
+		// control-only 没有本地会话，查询 broker 通过下行契约交给网关等待终端应答；
+		// gateway+control 同进程继续使用进程内 broker。
+		var queryer api.Queryer
+		if !hasGateway && controlDownlink != nil {
+			queryer = &control.DownlinkQueryer{Sender: controlDownlink}
+		}
 		routines.GoSafe(func() {
 			defer close(apiDone)
-			api.Run(apiCtx, serv, cfg, apiOptions, alarmServ, outbox, mediaUploadStore)
+			api.Run(apiCtx, serv, cfg, apiOptions, alarmServ, outbox, mediaUploadStore, queryer)
 		})
 	} else {
 		close(apiDone)
@@ -706,6 +812,7 @@ func main() {
 	}
 
 	// 3. 取消重投循环并等待当前 tick 收尾；未投递的命令留在 outbox 等下次启动。
+	cancelSweep()
 	cancelOutbox()
 	if outboxDone != nil {
 		select {

@@ -75,13 +75,21 @@ func (c *Client) Send(ctx context.Context, request contracts.DownlinkRequest) (c
 	if err != nil {
 		return contracts.DownlinkReceipt{}, fmt.Errorf("encode downlink message: %w", err)
 	}
+	mode := ModeAsync
+	responseTimeoutMS := int64(0)
+	if request.ExpectResponseMsgID != 0 {
+		mode = ModeSyncAck
+		responseTimeoutMS = request.ResponseTimeout.Milliseconds()
+	}
 	body, err := json.Marshal(downlinkRequest{
-		Phone:          request.Phone,
-		SessionID:      request.SessionID,
-		IdempotencyKey: request.IdempotencyKey,
-		Serial:         request.Serial,
-		Mode:           ModeAsync,
-		MessageBase64:  base64.StdEncoding.EncodeToString(encoded),
+		Phone:               request.Phone,
+		SessionID:           request.SessionID,
+		IdempotencyKey:      request.IdempotencyKey,
+		Serial:              request.Serial,
+		Mode:                mode,
+		MessageBase64:       base64.StdEncoding.EncodeToString(encoded),
+		ExpectResponseMsgID: request.ExpectResponseMsgID,
+		ResponseTimeoutMS:   responseTimeoutMS,
 	})
 	if err != nil {
 		return contracts.DownlinkReceipt{}, fmt.Errorf("marshal downlink request: %w", err)
@@ -97,7 +105,13 @@ func (c *Client) Send(ctx context.Context, request contracts.DownlinkRequest) (c
 		httpRequest.Header.Set("Idempotency-Key", request.IdempotencyKey)
 	}
 
-	response, err := c.client.Do(httpRequest)
+	client := c.client
+	if timeout := request.ResponseTimeout; timeout > 0 && (client.Timeout == 0 || client.Timeout < timeout) {
+		clone := *client
+		clone.Timeout = timeout + 3*time.Second
+		client = &clone
+	}
+	response, err := client.Do(httpRequest)
 	if err != nil {
 		return contracts.DownlinkReceipt{}, fmt.Errorf("call gateway downlink: %w", err)
 	}
@@ -111,13 +125,22 @@ func (c *Client) Send(ctx context.Context, request contracts.DownlinkRequest) (c
 	if err := json.Unmarshal(payload, &parsed); err != nil {
 		return contracts.DownlinkReceipt{}, fmt.Errorf("decode gateway downlink response: %w", err)
 	}
+	var responseBody []byte
+	if parsed.ResponseBodyBase64 != "" {
+		responseBody, err = base64.StdEncoding.DecodeString(parsed.ResponseBodyBase64)
+		if err != nil {
+			return contracts.DownlinkReceipt{}, fmt.Errorf("decode gateway response body: %w", err)
+		}
+	}
 	return contracts.DownlinkReceipt{
-		ID:         parsed.DownlinkID,
-		Serial:     parsed.Serial,
-		Status:     parsed.Status,
-		Duplicated: parsed.Duplicated,
-		Result:     parsed.Result,
-		Reason:     parsed.Reason,
+		ID:            parsed.DownlinkID,
+		Serial:        parsed.Serial,
+		Status:        parsed.Status,
+		Duplicated:    parsed.Duplicated,
+		Result:        parsed.Result,
+		Reason:        parsed.Reason,
+		ResponseMsgID: parsed.ResponseMsgID,
+		ResponseBody:  responseBody,
 	}, nil
 }
 

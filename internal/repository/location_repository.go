@@ -21,6 +21,8 @@ type LocationRecord struct {
 	ExtItems   []model.LocationExtItem `json:"extItems,omitempty"`
 	OccurredAt string                  `json:"occurredAt"`
 	ReceivedAt time.Time               `json:"receivedAt"`
+	// DedupKey 是可空幂等键：hash(eventId + itemIndex)，老数据与 standalone 为 NULL。
+	DedupKey string `json:"dedupKey,omitempty"`
 }
 
 // LocationRepository 定位历史仓储（B 类）。

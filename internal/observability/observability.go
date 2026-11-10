@@ -67,6 +67,11 @@ type Metrics struct {
 	terminalReplyLate           atomic.Int64
 	terminalReplyUnmatched      atomic.Int64
 	terminalReplyIgnored        atomic.Int64
+	// 上行事件在控制面的终态计数：409 丢弃、超限丢弃、非图片 0x0801、提交标记失败。
+	uplinkUnknownDropped atomic.Int64
+	uplinkOversized      atomic.Int64
+	mediaTypeRejected    atomic.Int64
+	blobCommitFailed     atomic.Int64
 }
 
 // NewMetrics 创建进程级计数器。
@@ -136,6 +141,59 @@ func (m *Metrics) TerminalReplySnapshot() TerminalReplySnapshot {
 		Late:           m.terminalReplyLate.Load(),
 		Unmatched:      m.terminalReplyUnmatched.Load(),
 		Ignored:        m.terminalReplyIgnored.Load(),
+	}
+}
+
+// UplinkEventSnapshot 是上行事件在控制面的终态计数。
+type UplinkEventSnapshot struct {
+	UnknownDeviceDropped int64
+	Oversized            int64
+	MediaTypeRejected    int64
+	BlobCommitFailed     int64
+}
+
+// IncUplinkUnknownDropped 记录一次 409 unknown_device 重投后仍失败的丢弃。
+func (m *Metrics) IncUplinkUnknownDropped() {
+	if m == nil {
+		return
+	}
+	m.uplinkUnknownDropped.Add(1)
+}
+
+// IncUplinkOversized 记录一次超过 maxBodyBytes 的消息体丢弃（仍会应答）。
+func (m *Metrics) IncUplinkOversized() {
+	if m == nil {
+		return
+	}
+	m.uplinkOversized.Add(1)
+}
+
+// IncMediaTypeRejected 记录一次 0x0801 携带非图片类型的拒收（仍会应答）。
+func (m *Metrics) IncMediaTypeRejected() {
+	if m == nil {
+		return
+	}
+	m.mediaTypeRejected.Add(1)
+}
+
+// IncBlobCommitFailed 记录一次文件已落库但提交标记失败的告警。
+func (m *Metrics) IncBlobCommitFailed() {
+	if m == nil {
+		return
+	}
+	m.blobCommitFailed.Add(1)
+}
+
+// UplinkEventSnapshot 返回上行事件终态计数副本。
+func (m *Metrics) UplinkEventSnapshot() UplinkEventSnapshot {
+	if m == nil {
+		return UplinkEventSnapshot{}
+	}
+	return UplinkEventSnapshot{
+		UnknownDeviceDropped: m.uplinkUnknownDropped.Load(),
+		Oversized:            m.uplinkOversized.Load(),
+		MediaTypeRejected:    m.mediaTypeRejected.Load(),
+		BlobCommitFailed:     m.blobCommitFailed.Load(),
 	}
 }
 
@@ -279,6 +337,8 @@ type Snapshot struct {
 	Uplink UplinkSnapshot
 	// TerminalReply 是终端应答处理结果的累计指标。
 	TerminalReply TerminalReplySnapshot
+	// UplinkEvent 是上行事件在控制面被丢弃/拒收的累计指标。
+	UplinkEvent UplinkEventSnapshot
 }
 
 // UplinkSnapshot 是上行出口的累计计数与当前水位。
@@ -344,6 +404,7 @@ func (p *Provider) Snapshot(ctx context.Context) Snapshot {
 	snapshot.Retention = p.Metrics.RetentionSnapshot()
 	snapshot.Orphan = p.Metrics.OrphanSnapshot()
 	snapshot.TerminalReply = p.Metrics.TerminalReplySnapshot()
+	snapshot.UplinkEvent = p.Metrics.UplinkEventSnapshot()
 	return snapshot
 }
 
@@ -372,6 +433,10 @@ func WritePrometheus(w io.Writer, snapshot Snapshot) error {
 		{"jt808_uplink_rejected_total", "Confirm-before-ack events rejected due to in-flight limits.", "counter", fmt.Sprint(snapshot.Uplink.Rejected)},
 		{"jt808_uplink_queue_depth", "Uplink events waiting in the sink queue.", "gauge", fmt.Sprint(snapshot.Uplink.QueueDepth)},
 		{"jt808_uplink_in_flight", "Confirm-before-ack uplink deliveries in flight.", "gauge", fmt.Sprint(snapshot.Uplink.InFlight)},
+		{"jt808_uplink_unknown_device_dropped_total", "Uplink events dropped after a 409 unknown_device redelivery.", "counter", fmt.Sprint(snapshot.UplinkEvent.UnknownDeviceDropped)},
+		{"jt808_uplink_oversized_total", "Uplink events dropped because the message body exceeded maxBodyBytes.", "counter", fmt.Sprint(snapshot.UplinkEvent.Oversized)},
+		{"jt808_media_type_rejected_total", "0x0801 uploads rejected because the media type is not an image.", "counter", fmt.Sprint(snapshot.UplinkEvent.MediaTypeRejected)},
+		{"jt808_blob_commit_failed_total", "Media files written but not confirmed as committed.", "counter", fmt.Sprint(snapshot.UplinkEvent.BlobCommitFailed)},
 	}
 	for _, line := range lines {
 		if _, err := fmt.Fprintf(w, "# HELP %s %s\n# TYPE %s %s\n%s %s\n",

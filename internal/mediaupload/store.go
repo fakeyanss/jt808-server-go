@@ -71,12 +71,10 @@ func (s *Store) Save(upload *model.Msg0801) (*repository.MediaFile, error) {
 	}
 
 	location := decodeLocation(upload.GeoAlarmBody)
-	date := time.Now().Format("20060102")
-	if !location.locationTime.IsZero() {
-		date = location.locationTime.Format("20060102")
+	relativePath, err := MediaKey(upload)
+	if err != nil {
+		return nil, fmt.Errorf("save media upload %s/%d: %w", phone, upload.MultiMediaID, err)
 	}
-	relativePath := filepath.Join(phone, date,
-		fmt.Sprintf("%d.%s", upload.MultiMediaID, extension(upload.MultiMediaContainer)))
 	finalPath, err := s.resolve(relativePath)
 	if err != nil {
 		return nil, fmt.Errorf("save media upload %s/%d: %w", phone, upload.MultiMediaID, err)
@@ -85,8 +83,33 @@ func (s *Store) Save(upload *model.Msg0801) (*repository.MediaFile, error) {
 		return nil, fmt.Errorf("save media upload %s/%d: %w", phone, upload.MultiMediaID, err)
 	}
 	sum := md5.Sum(upload.FragmentData)
+	return buildMediaFile(upload, relativePath, int64(len(upload.FragmentData)), fmt.Sprintf("%x", sum), location), nil
+}
+
+// MediaKey 返回 0x0801 文件在媒体根目录下的相对路径。
+// 同一 (phone, mediaId) 重复上报得到同一个 key，天然幂等覆盖。
+// 位置体内没有时间时使用固定日期段，保证同一报文的重传不会因跨天得到不同 key。
+func MediaKey(upload *model.Msg0801) (string, error) {
+	if upload == nil || upload.Header == nil {
+		return "", fmt.Errorf("media key: nil message or header")
+	}
+	phone := upload.Header.PhoneNumber
+	if err := validateSegment(phone); err != nil {
+		return "", fmt.Errorf("media key: %w", err)
+	}
+	location := decodeLocation(upload.GeoAlarmBody)
+	date := "00000000"
+	if !location.locationTime.IsZero() {
+		date = location.locationTime.Format("20060102")
+	}
+	return filepath.ToSlash(filepath.Join(phone, date,
+		fmt.Sprintf("%d.%s", upload.MultiMediaID, extension(upload.MultiMediaContainer)))), nil
+}
+
+// buildMediaFile 把已写入的文件组装成仓储元数据。
+func buildMediaFile(upload *model.Msg0801, relativePath string, size int64, md5Hex string, location mediaLocation) *repository.MediaFile {
 	return &repository.MediaFile{
-		Phone:        phone,
+		Phone:        upload.Header.PhoneNumber,
 		MediaID:      upload.MultiMediaID,
 		MediaType:    upload.MultiMediaType,
 		MediaFormat:  upload.MultiMediaContainer,
@@ -101,10 +124,15 @@ func (s *Store) Save(upload *model.Msg0801) (*repository.MediaFile, error) {
 		Direction:    location.direction,
 		LocationTime: location.locationTime,
 		RelativePath: relativePath,
-		FileSize:     int64(len(upload.FragmentData)),
-		MD5:          fmt.Sprintf("%x", sum),
+		FileSize:     size,
+		MD5:          md5Hex,
 		ReceivedAt:   time.Now(),
-	}, nil
+	}
+}
+
+// Metadata 返回一条 0x0801 对应的仓储元数据，不写文件。
+func Metadata(upload *model.Msg0801, relativePath string, size int64, md5Hex string) *repository.MediaFile {
+	return buildMediaFile(upload, relativePath, size, md5Hex, decodeLocation(upload.GeoAlarmBody))
 }
 
 // Open 打开相对路径对应的媒体文件，供下载接口读取。

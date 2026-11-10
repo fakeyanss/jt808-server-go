@@ -1305,7 +1305,9 @@ const (
 	DefaultClusterDownlinkMaxInFly = 256
 	DefaultClusterUplinkDedupTTL   = 10 * time.Minute
 	DefaultClusterUplinkDedupMax   = 100000
-	DefaultClusterUplinkMaxBody    = 4 * 1024 * 1024
+	DefaultClusterUplinkMaxBody    = 8 * 1024 * 1024
+	DefaultClusterUplinkMaxRequest = 12 * 1024 * 1024
+	DefaultClusterUplinkMaxDecoded = 8 * 1024 * 1024
 	DefaultClusterBlobRoot         = "./data/blobs"
 	DefaultClusterBlobMarker       = ".jt808-shared-volume"
 )
@@ -1346,7 +1348,12 @@ type clusterDownlinkConf struct {
 type clusterUplinkConf struct {
 	DedupTTL        string `yaml:"dedupTTL"`
 	DedupMaxEntries int    `yaml:"dedupMaxEntries"`
-	MaxBodyBytes    int    `yaml:"maxBodyBytes"`
+	// MaxBodyBytes 限制解码后的原始消息体（网关投递前、管控解码后各校验一次）。
+	MaxBodyBytes int `yaml:"maxBodyBytes"`
+	// MaxRequestBytes 限制 HTTP 请求体（含 bodyBase64 的 4/3 膨胀），是 413 的判定依据。
+	MaxRequestBytes int `yaml:"maxRequestBytes"`
+	// MaxDecodedBodyBytes 是管控解码后的二次校验上限。
+	MaxDecodedBodyBytes int `yaml:"maxDecodedBodyBytes"`
 }
 
 type clusterBlobConf struct {
@@ -1394,9 +1401,11 @@ type ClusterOptions struct {
 		MaxInFlight int
 	}
 	Uplink struct {
-		DedupTTL        time.Duration
-		DedupMaxEntries int
-		MaxBodyBytes    int64
+		DedupTTL            time.Duration
+		DedupMaxEntries     int
+		MaxBodyBytes        int64
+		MaxRequestBytes     int64
+		MaxDecodedBodyBytes int64
 	}
 	Blob struct {
 		Backend      string
@@ -1422,6 +1431,8 @@ func (c *Config) ParseServerMode() (ClusterOptions, error) {
 	options.Uplink.DedupTTL = DefaultClusterUplinkDedupTTL
 	options.Uplink.DedupMaxEntries = DefaultClusterUplinkDedupMax
 	options.Uplink.MaxBodyBytes = DefaultClusterUplinkMaxBody
+	options.Uplink.MaxRequestBytes = DefaultClusterUplinkMaxRequest
+	options.Uplink.MaxDecodedBodyBytes = DefaultClusterUplinkMaxDecoded
 	options.Blob.Root = DefaultClusterBlobRoot
 	options.Blob.Marker = DefaultClusterBlobMarker
 
@@ -1575,6 +1586,30 @@ func (c *Config) ParseServerMode() (ClusterOptions, error) {
 			}
 			options.Uplink.MaxBodyBytes = int64(up.MaxBodyBytes)
 		}
+		if up.MaxRequestBytes != 0 {
+			if up.MaxRequestBytes < 1024 || up.MaxRequestBytes > 96*1024*1024 {
+				problems = append(problems, fmt.Sprintf("cluster.uplink.maxRequestBytes must be in [1024, 100663296], got %d", up.MaxRequestBytes))
+			}
+			options.Uplink.MaxRequestBytes = int64(up.MaxRequestBytes)
+		}
+		if up.MaxDecodedBodyBytes != 0 {
+			if up.MaxDecodedBodyBytes < 1024 || up.MaxDecodedBodyBytes > 64*1024*1024 {
+				problems = append(problems, fmt.Sprintf("cluster.uplink.maxDecodedBodyBytes must be in [1024, 67108864], got %d", up.MaxDecodedBodyBytes))
+			}
+			options.Uplink.MaxDecodedBodyBytes = int64(up.MaxDecodedBodyBytes)
+		}
+		// base64 膨胀 4/3，再加 64 KiB 给信封字段留余量；请求体上限必须容纳最大消息体。
+		minRequestBytes := (options.Uplink.MaxBodyBytes*4+2)/3 + 64*1024
+		if options.Uplink.MaxRequestBytes < minRequestBytes {
+			problems = append(problems, fmt.Sprintf(
+				"cluster.uplink.maxRequestBytes (%d) must be >= ceil(maxBodyBytes*4/3)+64KiB (%d)",
+				options.Uplink.MaxRequestBytes, minRequestBytes))
+		}
+		if options.Uplink.MaxDecodedBodyBytes < options.Uplink.MaxBodyBytes {
+			problems = append(problems, fmt.Sprintf(
+				"cluster.uplink.maxDecodedBodyBytes (%d) must be >= maxBodyBytes (%d)",
+				options.Uplink.MaxDecodedBodyBytes, options.Uplink.MaxBodyBytes))
+		}
 	}
 
 	// 文件存储。
@@ -1609,6 +1644,37 @@ func (c *Config) ParseServerMode() (ClusterOptions, error) {
 	if options.Blob.Backend == BlobBackendObjectStore {
 		if policy := c.RetentionPolicy(); policy.OrphanFiles.Enabled {
 			problems = append(problems, "retention.orphanFiles.enabled must be false when cluster.blob.backend=objectStore (use bucket lifecycle)")
+		}
+	}
+
+	// control 在 E2 用 sharedVolume 承接 0x0801 落盘。共享卷根必须等于媒体下载目录，
+	// 下载接口才能按同一相对路径打开文件；标记文件必须已存在且可写。
+	if roles.Has(RoleControl) && options.Blob.Backend == BlobBackendSharedVolume {
+		mediaUploadOptions, _ := c.ParseMediaUpload()
+		uploadRoot, err := filepath.Abs(mediaUploadOptions.Dir)
+		if err != nil {
+			problems = append(problems, fmt.Sprintf("mediaUpload.dir is invalid for role control: %v", err))
+		}
+		if conf.Blob == nil || strings.TrimSpace(conf.Blob.Root) == "" {
+			options.Blob.Root = mediaUploadOptions.Dir
+		}
+		blobRoot, err := filepath.Abs(options.Blob.Root)
+		if err != nil {
+			problems = append(problems, fmt.Sprintf("cluster.blob.root is invalid for role control: %v", err))
+		} else if uploadRoot != blobRoot {
+			problems = append(problems, fmt.Sprintf(
+				"cluster.blob.root (%s) must equal mediaUpload.dir (%s) for role control", blobRoot, uploadRoot))
+		}
+		if !options.Blob.SharedVolume {
+			problems = append(problems, "cluster.blob.sharedVolume must be true when cluster.blob.backend=sharedVolume")
+		}
+		markerPath := filepath.Join(options.Blob.Root, options.Blob.Marker)
+		file, err := os.OpenFile(markerPath, os.O_RDWR, 0)
+		if err != nil {
+			problems = append(problems, fmt.Sprintf(
+				"cluster.blob marker %q must exist and be writable for role control: %v", markerPath, err))
+		} else {
+			_ = file.Close()
 		}
 	}
 

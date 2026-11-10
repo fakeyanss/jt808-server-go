@@ -57,6 +57,18 @@ type ProcessorDeps struct {
 	GatewayID string
 	// MediaUpload 为空表示 0x0801 只保留行业内存快照，不落盘也不写媒体文件仓储。
 	MediaUpload *mediaupload.Store
+	// AuthProvider 是 cluster 下网关的只读鉴权来源；为空时回退本地档案。
+	AuthProvider contracts.AuthProvider
+	// RegisterCache 是网关本地的注册缓存，保存 0x0100 计算出的鉴权码。
+	RegisterCache *RegisterCache
+	// UplinkMaxBodyBytes 限制交给出口的原始消息体；超限仍应答但记账并告警。
+	UplinkMaxBodyBytes int64
+	// OnOversized 是超限事件的旁路回调，用于指标与日志。
+	OnOversized func(msgID uint16, phone string, size int)
+	// QueryResponse 把网关收到的查询应答体交给下行等待表。
+	QueryResponse func(msgID uint16, header *model.MsgHeader, body []byte)
+	// Blob 是管控侧 0x0801 的文件写入契约；为空时回退 mediaUpload。
+	Blob contracts.BlobStore
 }
 
 // ProcessorOption 配置消息处理器。
@@ -590,13 +602,16 @@ func (mp *JT808MsgProcessor) Decode(ctx context.Context, pkt *model.PacketData) 
 
 	if log.Logger.GetLevel() == zerolog.DebugLevel {
 		// print log of msg content
-		session := ctx.Value(model.SessionCtxKey{}).(*model.Session)
+		sessionID := ""
+		if session, ok := ctx.Value(model.SessionCtxKey{}).(*model.Session); ok && session != nil {
+			sessionID = session.ID
+		}
 		inJSON, err := json.Marshal(redactIncomingForLog(in))
 		if err != nil {
 			return nil, errors.Wrap(err, "Fail to serialize incoming msg to json")
 		}
 		// for debug
-		log.Debug().Str("id", session.ID).Str("RawMsgID", fmt.Sprintf("0x%04x", in.GetHeader().MsgID)).RawJSON("incoming", inJSON).Msg("Received jt808 msg.")
+		log.Debug().Str("id", sessionID).Str("RawMsgID", fmt.Sprintf("0x%04x", in.GetHeader().MsgID)).RawJSON("incoming", inJSON).Msg("Received jt808 msg.")
 	}
 
 	// 生成待回复的消息
@@ -614,9 +629,12 @@ func (mp *JT808MsgProcessor) Decode(ctx context.Context, pkt *model.PacketData) 
 			}
 
 			outJSON, _ := json.Marshal(out)
-			session := ctx.Value(model.SessionCtxKey{}).(*model.Session)
+			sessionID := ""
+			if session, ok := ctx.Value(model.SessionCtxKey{}).(*model.Session); ok && session != nil {
+				sessionID = session.ID
+			}
 			// for debug
-			log.Debug().Str("id", session.ID).Str("RawMsgID", fmt.Sprintf("0x%04x", out.GetHeader().MsgID)).RawJSON("outgoing", outJSON).
+			log.Debug().Str("id", sessionID).Str("RawMsgID", fmt.Sprintf("0x%04x", out.GetHeader().MsgID)).RawJSON("outgoing", outJSON).
 				Msg("Generating jt808 outgoing msg.")
 		}()
 	}
@@ -633,21 +651,109 @@ func (mp *JT808MsgProcessor) ApplyBusiness(ctx context.Context, msgID uint16, da
 	}
 	var businessErr error
 	act, hasAction := mp.options[msgID]
-	if mp.deps.UplinkSink != nil && hasAction && act.process != nil {
-		reliability := uplinkReliability(mp.deps.Uplink, msgID, data.Incoming)
-		event := buildUplinkEvent(ctx, msgID, data, reliability, mp.deps.GatewayID)
-		result, err := mp.deps.UplinkSink.Deliver(ctx, event)
-		switch {
-		case err != nil:
-			businessErr = err
-		case !result.Accepted:
-			businessErr = fmt.Errorf("uplink sink rejected event %s: %s", event.EventID, result.Reason)
+	if mp.deps.UplinkSink != nil && hasAction {
+		owner, _ := OwnershipOf(msgID)
+		switch owner {
+		case OwnerGateway:
+			// 会话内的协议处理（查询 broker、补传等）仍在本进程完成。
+			if act.process != nil {
+				businessErr = act.process(ctx, data)
+			}
+			if businessErr == nil && mp.deps.QueryResponse != nil && isQueryResponse(msgID) {
+				if packet, ok := ctx.Value(model.PacketDecodeCtxKey{}).(*model.PacketData); ok && packet != nil {
+					mp.deps.QueryResponse(msgID, data.Incoming.GetHeader(), packet.Body)
+				}
+			}
+		case OwnerBoth:
+			if half := mp.protocolHalf(msgID); half != nil {
+				businessErr = half(ctx, data)
+			}
+			if businessErr == nil {
+				businessErr = mp.deliverUplink(ctx, msgID, data)
+			}
+		default:
+			businessErr = mp.deliverUplink(ctx, msgID, data)
 		}
 	} else if hasAction && act.process != nil {
 		businessErr = act.process(ctx, data)
 	}
 	mp.dispatchHooks(ctx, data)
 	return businessErr
+}
+
+// deliverUplink 把业务事件交给出口，并对超限消息体做可见的例外处理。
+func (mp *JT808MsgProcessor) deliverUplink(ctx context.Context, msgID uint16, data *model.ProcessData) error {
+	if mp.deps.UplinkMaxBodyBytes > 0 {
+		size := 0
+		if packet, ok := ctx.Value(model.PacketDecodeCtxKey{}).(*model.PacketData); ok && packet != nil {
+			size = len(packet.Body)
+		}
+		if int64(size) > mp.deps.UplinkMaxBodyBytes {
+			phone := ""
+			if header := data.Incoming.GetHeader(); header != nil {
+				phone = header.PhoneNumber
+			}
+			// 超限不投递，但仍让网关按协议应答终止终端重传；必须记账与告警，不得静默。
+			if mp.deps.OnOversized != nil {
+				mp.deps.OnOversized(msgID, phone, size)
+			}
+			log.Error().
+				Str("phone", phone).
+				Str("msg_id", fmt.Sprintf("0x%04X", msgID)).
+				Int("body_bytes", size).
+				Int64("limit_bytes", mp.deps.UplinkMaxBodyBytes).
+				Msg("Uplink body exceeds limit; dropped after ack")
+			return nil
+		}
+	}
+	reliability := uplinkReliability(mp.deps.Uplink, msgID, data.Incoming)
+	event := buildUplinkEvent(ctx, msgID, data, reliability, mp.deps.GatewayID)
+	result, err := mp.deps.UplinkSink.Deliver(ctx, event)
+	switch {
+	case err != nil:
+		return err
+	case !result.Accepted:
+		return fmt.Errorf("uplink sink rejected event %s: %s", event.EventID, result.Reason)
+	}
+	return nil
+}
+
+// protocolHalf 返回“两边都要”消息在网关侧的协议半边。
+func (mp *JT808MsgProcessor) protocolHalf(msgID uint16) func(context.Context, *model.ProcessData) error {
+	switch msgID {
+	case 0x0100:
+		return mp.processRegisterProtocol
+	case 0x0102:
+		return mp.processAuthProtocol
+	default:
+		return nil
+	}
+}
+
+// ApplyControlBusiness 是管控侧的业务入口：注册/鉴权只跑业务半边，
+// 其余控制面消息复用同一套 handler。
+func (mp *JT808MsgProcessor) ApplyControlBusiness(ctx context.Context, msgID uint16, data *model.ProcessData) error {
+	switch msgID {
+	case 0x0100:
+		return mp.processRegisterBusiness(ctx, data)
+	case 0x0102:
+		return mp.processAuthBusiness(ctx, data)
+	}
+	act, ok := mp.options[msgID]
+	if !ok || act.process == nil {
+		return nil
+	}
+	return act.process(ctx, data)
+}
+
+// isQueryResponse 判断是否为四类查询的终端应答。
+func isQueryResponse(msgID uint16) bool {
+	switch msgID {
+	case 0x0104, 0x0107, 0x0201, 0x0608:
+		return true
+	default:
+		return false
+	}
 }
 
 // Process 是 Decode 与 ApplyBusiness 的组合入口，保持既有调用方语义：
@@ -1084,7 +1190,8 @@ func (mp *JT808MsgProcessor) recordLocationHistory(ctx context.Context, msgID ui
 		return nil
 	}
 	records := make([]repository.LocationRecord, 0, len(locs))
-	for _, loc := range locs {
+	event := UplinkEventFromContext(ctx)
+	for index, loc := range locs {
 		if loc.Header == nil {
 			continue
 		}
@@ -1101,6 +1208,7 @@ func (mp *JT808MsgProcessor) recordLocationHistory(ctx context.Context, msgID ui
 			ExtItems:   loc.ExtItems,
 			OccurredAt: loc.Time,
 			ReceivedAt: time.Now(),
+			DedupKey:   locationDedupKey(event.EventID, index),
 		})
 	}
 	if len(records) == 0 {

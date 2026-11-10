@@ -216,6 +216,73 @@ func TestParseServerModeMatrix(t *testing.T) {
 			},
 			wantErr: "mediaServer.port or mediaServer.tcpPort is required",
 		},
+		{
+			name: "control sharedVolume 根目录必须对齐 mediaUpload",
+			mutate: func(t *testing.T, cfg *Config) {
+				*cfg = *controlOnlyBase()
+				cfg.MediaUpload = &mediaUploadConf{Dir: t.TempDir()}
+				root := t.TempDir()
+				if err := os.WriteFile(filepath.Join(root, DefaultClusterBlobMarker), []byte{}, 0o644); err != nil {
+					t.Fatalf("write marker: %v", err)
+				}
+				cfg.Cluster.Blob = &clusterBlobConf{
+					Backend:      BlobBackendSharedVolume,
+					SharedVolume: true,
+					Root:         root,
+				}
+			},
+			wantErr: "must equal mediaUpload.dir",
+		},
+		{
+			name: "control sharedVolume 缺标记拒绝",
+			mutate: func(t *testing.T, cfg *Config) {
+				*cfg = *controlOnlyBase()
+				root := t.TempDir()
+				cfg.MediaUpload = &mediaUploadConf{Dir: root}
+				cfg.Cluster.Blob = &clusterBlobConf{
+					Backend:      BlobBackendSharedVolume,
+					SharedVolume: true,
+					Root:         root,
+				}
+			},
+			wantErr: "cluster.blob marker",
+		},
+		{
+			name: "control sharedVolume 对齐且带标记通过",
+			mutate: func(t *testing.T, cfg *Config) {
+				*cfg = *controlOnlyBase()
+				root := t.TempDir()
+				if err := os.WriteFile(filepath.Join(root, DefaultClusterBlobMarker), []byte{}, 0o644); err != nil {
+					t.Fatalf("write marker: %v", err)
+				}
+				cfg.MediaUpload = &mediaUploadConf{Dir: root}
+				cfg.Cluster.Blob = &clusterBlobConf{
+					Backend:      BlobBackendSharedVolume,
+					SharedVolume: true,
+					Root:         root,
+				}
+			},
+		},
+		{
+			name: "maxRequestBytes 必须覆盖 base64 膨胀",
+			mutate: func(t *testing.T, cfg *Config) {
+				cfg.Cluster.Uplink = &clusterUplinkConf{
+					MaxBodyBytes:    8 << 20,
+					MaxRequestBytes: 8 << 20,
+				}
+			},
+			wantErr: "maxRequestBytes",
+		},
+		{
+			name: "maxDecodedBodyBytes 不得小于 maxBodyBytes",
+			mutate: func(t *testing.T, cfg *Config) {
+				cfg.Cluster.Uplink = &clusterUplinkConf{
+					MaxBodyBytes:        8 << 20,
+					MaxDecodedBodyBytes: 4 << 20,
+				}
+			},
+			wantErr: "maxDecodedBodyBytes",
+		},
 	}
 
 	for _, tt := range tests {

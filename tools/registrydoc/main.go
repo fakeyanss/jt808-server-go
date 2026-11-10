@@ -14,6 +14,7 @@ import (
 	"go/parser"
 	"go/token"
 	"os"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strconv"
@@ -35,6 +36,7 @@ type registryEntry struct {
 
 func main() {
 	sourcePath := flag.String("source", "internal/protocol/msg_processor.go", "注册表源文件")
+	ownershipPath := flag.String("ownership", "internal/protocol/ownership.go", "消息归属表源文件")
 	docPath := flag.String("doc", "docs/JT808-2019-coverage.md", "覆盖矩阵文档")
 	write := flag.Bool("write", false, "把生成的表格写回文档")
 	check := flag.Bool("check", false, "校验文档与注册表是否一致（默认行为）")
@@ -47,9 +49,20 @@ func main() {
 		*check = true
 	}
 
-	entries, err := parseRegistry(*sourcePath)
+	entries, functions, err := parseRegistry(*sourcePath)
 	if err != nil {
 		fatalf("解析注册表失败: %v", err)
+	}
+	ownership, err := parseOwnership(*ownershipPath)
+	if err != nil {
+		fatalf("解析消息归属表失败: %v", err)
+	}
+	if problems := checkOwnership(entries, functions, ownership); len(problems) > 0 {
+		fmt.Fprintln(os.Stderr, "消息归属表与注册表不一致：")
+		for _, p := range problems {
+			fmt.Fprintf(os.Stderr, "  - %s\n", p)
+		}
+		os.Exit(1)
 	}
 	table := renderTable(entries)
 	doc, err := os.ReadFile(*docPath)
@@ -86,22 +99,25 @@ func fatalf(format string, args ...any) {
 
 // parseRegistry 解析 options[0xXXXX] = &action{...} 以及
 // for _, messageID := range []uint16{...} { options[messageID] = &action{...} } 两种注册形式。
-func parseRegistry(path string) ([]registryEntry, error) {
+// 同时返回源文件中声明的方法名集合，供归属表校验业务半边是否存在。
+func parseRegistry(path string) ([]registryEntry, map[string]bool, error) {
 	fset := token.NewFileSet()
 	file, err := parser.ParseFile(fset, path, nil, parser.ParseComments)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	raw, err := os.ReadFile(path)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	lines := strings.Split(string(raw), "\n")
 
 	byID := make(map[uint16]registryEntry)
-
+	functions := make(map[string]bool)
 	ast.Inspect(file, func(n ast.Node) bool {
 		switch node := n.(type) {
+		case *ast.FuncDecl:
+			functions[node.Name.Name] = true
 		case *ast.RangeStmt:
 			ids := compositeUint16IDs(node.X)
 			if len(ids) == 0 {
@@ -139,8 +155,41 @@ func parseRegistry(path string) ([]registryEntry, error) {
 	for _, e := range byID {
 		entries = append(entries, e)
 	}
+	// 业务半边可能声明在注册表以外的文件；扫描同目录收集所有方法名。
+	dirFunctions, err := parsePackageFunctions(filepath.Dir(path))
+	if err != nil {
+		return nil, nil, err
+	}
+	for name := range dirFunctions {
+		functions[name] = true
+	}
 	sort.Slice(entries, func(i, j int) bool { return entries[i].id < entries[j].id })
-	return entries, nil
+	return entries, functions, nil
+}
+
+// parsePackageFunctions 收集目录下所有 Go 文件的函数/方法名。
+func parsePackageFunctions(dir string) (map[string]bool, error) {
+	paths, err := filepath.Glob(filepath.Join(dir, "*.go"))
+	if err != nil {
+		return nil, err
+	}
+	names := make(map[string]bool)
+	fset := token.NewFileSet()
+	for _, path := range paths {
+		if strings.HasSuffix(path, "_test.go") {
+			continue
+		}
+		file, err := parser.ParseFile(fset, path, nil, 0)
+		if err != nil {
+			return nil, err
+		}
+		for _, decl := range file.Decls {
+			if fn, ok := decl.(*ast.FuncDecl); ok {
+				names[fn.Name.Name] = true
+			}
+		}
+	}
+	return names, nil
 }
 
 func literalOptionsID(assign *ast.AssignStmt) (uint16, bool) {
@@ -294,6 +343,86 @@ func trailingComment(line string) string {
 		return strings.TrimSpace(line[idx+2:])
 	}
 	return ""
+}
+
+// ownershipTable 是 ownership.go 中两份映射的解析结果。
+type ownershipTable struct {
+	owners         map[uint16]string
+	businessHalves map[uint16]string
+}
+
+var (
+	ownerLinePattern  = regexp.MustCompile(`(?m)^\s*(0x[0-9A-Fa-f]{4}):\s*(Owner[A-Za-z]+)\s*,`)
+	halfLinePattern   = regexp.MustCompile(`(?m)^\s*(0x[0-9A-Fa-f]{4}):\s*"([A-Za-z0-9_]+)"\s*,`)
+	businessHalfBlock = regexp.MustCompile(`(?s)var\s+BusinessHalves\s*=\s*map\[uint16\]string\s*\{(.*?)\n\}`)
+)
+
+// parseOwnership 解析 Ownership 与 BusinessHalves 两份映射。
+func parseOwnership(path string) (ownershipTable, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return ownershipTable{}, err
+	}
+	table := ownershipTable{
+		owners:         map[uint16]string{},
+		businessHalves: map[uint16]string{},
+	}
+	for _, match := range ownerLinePattern.FindAllStringSubmatch(string(raw), -1) {
+		id, err := strconv.ParseUint(strings.TrimPrefix(match[1], "0x"), 16, 16)
+		if err != nil {
+			continue
+		}
+		table.owners[uint16(id)] = match[2]
+	}
+	block := businessHalfBlock.FindStringSubmatch(string(raw))
+	if block != nil {
+		for _, match := range halfLinePattern.FindAllStringSubmatch(block[1], -1) {
+			id, err := strconv.ParseUint(strings.TrimPrefix(match[1], "0x"), 16, 16)
+			if err != nil {
+				continue
+			}
+			table.businessHalves[uint16(id)] = match[2]
+		}
+	}
+	return table, nil
+}
+
+// checkOwnership 校验注册表的每个消息 ID 都有明确归属，
+// 且归属与业务半边一致：控制面必须有业务实现，网关项不得声明业务半边。
+func checkOwnership(entries []registryEntry, functions map[string]bool, ownership ownershipTable) []string {
+	var problems []string
+	for _, entry := range entries {
+		owner, ok := ownership.owners[entry.id]
+		if !ok {
+			problems = append(problems, fmt.Sprintf("`0x%04X` 已在注册表但 ownership.go 未声明归属", entry.id))
+			continue
+		}
+		switch owner {
+		case "OwnerGateway":
+			if half, ok := ownership.businessHalves[entry.id]; ok {
+				problems = append(problems, fmt.Sprintf("`0x%04X` 归属网关，不应声明业务半边 `%s`", entry.id, half))
+			}
+		case "OwnerControl":
+			if entry.process == "" {
+				problems = append(problems, fmt.Sprintf("`0x%04X` 归属管控，但注册项没有 process 业务实现", entry.id))
+			}
+		case "OwnerBoth":
+			if entry.process == "" {
+				problems = append(problems, fmt.Sprintf("`0x%04X` 归属双方，但注册项没有网关协议半边 process", entry.id))
+			}
+			half, ok := ownership.businessHalves[entry.id]
+			if !ok {
+				problems = append(problems, fmt.Sprintf("`0x%04X` 归属双方，但 BusinessHalves 未声明业务半边", entry.id))
+				continue
+			}
+			if !functions[half] {
+				problems = append(problems, fmt.Sprintf("`0x%04X` 的业务半边 `%s` 在处理器中不存在", entry.id, half))
+			}
+		default:
+			problems = append(problems, fmt.Sprintf("`0x%04X` 归属值 `%s` 不是 OwnerGateway/OwnerControl/OwnerBoth", entry.id, owner))
+		}
+	}
+	return problems
 }
 
 // uplinkOverrides 记录无法按 MsgID 段判断方向的 1078 上行消息。

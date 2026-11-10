@@ -29,19 +29,31 @@ const (
 )
 
 // UplinkEvent 是网关交给管控的一条上行事件。
+//
+// Body 是已解码的原始消息体，管控用 DecodeMessageBody 单次解码，避免与网关
+// 形成两套解码实现；Payload/PayloadRaw 只作为诊断快照保留。
 type UplinkEvent struct {
 	EventID     string
 	Phone       string
 	MsgID       uint16
+	RawMsgID    uint16
 	Serial      uint16
 	OccurredAt  time.Time
 	GatewayID   string
 	SessionID   string
 	Transport   string
 	Reliability Reliability
-	Payload     any
-	PayloadRaw  []byte
-	Meta        map[string]any
+
+	// 协议头信息，供管控重建报文头并解码消息体。
+	ProtocolVersion     string
+	HeaderAttr          uint16
+	FragmentReassembled bool
+	FragmentTotal       uint16
+
+	Body       []byte
+	Payload    any
+	PayloadRaw []byte
+	Meta       map[string]any
 
 	// Reply 仅在终端通用应答（0x0001）时非空，是给管控应答入口的归一化字段。
 	Reply *TerminalReply
@@ -113,6 +125,11 @@ type DownlinkRequest struct {
 	IdempotencyKey string
 	Serial         uint16
 	Message        model.JT808Msg
+	// ExpectResponseMsgID 非零表示这次下发要同步等待终端的查询应答
+	// （0x0104/0x0107/0x0201/0x0608），回执里带回该应答的消息体。
+	ExpectResponseMsgID uint16
+	// ResponseTimeout 是等待查询应答的上限；为零时使用网关默认值。
+	ResponseTimeout time.Duration
 }
 
 // DownlinkResult 描述一次下发的受理结果，同时也是命令状态的快照。
@@ -164,6 +181,10 @@ type DownlinkReceipt struct {
 	Duplicated bool
 	Result     *uint8
 	Reason     string
+	// ResponseMsgID/ResponseBody 仅在请求声明 ExpectResponseMsgID 且拿到应答时填充。
+	ResponseMsgID  uint16
+	ResponseBody   []byte
+	ResponseHeader *model.MsgHeader
 }
 
 // 下行回执状态。与 outbox 的 acked/failed 保持同名，避免两套词汇。

@@ -827,14 +827,16 @@ cluster:
 - 1078 流等异步文件：媒体 `Put` + `Promote` 后，对象状态初始为 `pending`（objectStore 用对象标签，sharedVolume 用同目录 sidecar）；通过 at-least-once 事件交给 control，control 写库成功后调用 `MarkCommitted` 置为 `committed`。对账键是确定性 blob key + checksum，数据库唯一键 `(phone, media_id)`。
 - 失败处理：DB 写失败时对象保持 `pending`，objectStore 由 bucket 生命周期在 24h 后清掉，sharedVolume 由 control 单实例巡检删除（删前查库确认无行）；**不存在“半个文件被当成有效文件”**。`MarkCommitted` 失败由 control 重试，超过宽限期把 DB 行标 `missing` **保留行**，仅当对象也确认不存在或删除成功后才同时删对象与行，删行不先于删对象。sidecar `.meta.json` 只用于 sharedVolume 过渡形态，standalone 不写、objectStore 不用。
 - 孤儿清理：objectStore 形态下 `retention.orphanFiles` 必须关闭，改由 `pending/`、`trash/` 前缀的 bucket 生命周期承担；sharedVolume 过渡形态由 control 依据 sidecar 做单实例 pending 巡检，不再做无差别的 mtime 全量扫描。E1 的 cluster 下文件下载端点返回 501，不伪装可用。
-- **E1 交付后 `cluster` 仍不承接业务**：业务处理（`act.process` 落库路径）仍在网关进程内，媒体/附件文件写入也尚未切到 `BlobStore`；本阶段只交付契约与启动校验，可用性从后续阶段起算。
+- **阶段边界**：E1 的 `cluster` 不承接业务，业务处理仍在网关进程内；**自 E2 起 `cluster` 承接业务**，控制面 handler 在管控进程执行，但媒体/附件角色与 `objectStore` 仍在 E3，因此 E2 的 `cluster` 仍不等于全量生产形态。
 
 **回归保证**
 
 - `mode` 缺省 → standalone，装配顺序与参数不变；`uplink.sink=local` 时 `deps.UplinkSink` 仍为 nil；`commandOutbox.mode=off` 仍不构造命令仓储、`Enabled()==false`、API 不暴露查询。
 
 
-### E2：下行契约与 outbox 上移
+### 前置交付：下行契约与 outbox 上移（已完成）
+
+> 本节原编号为 E2，内容已随 E1 一并交付，编号顺延后保留在此供追溯。E2 起编号重新定义，见下一节。
 
 - 目标：管控通过下行契约操作网关；durable outbox 归管控。
 - 改动面：
@@ -856,6 +858,162 @@ cluster:
 - **终态保留期结论**：本轮不纳入 retention 清理，列为后续项。原因：SQL 后端的 `command_outbox` 在本轮之前已经无界；routing 索引只是 memory 实现的额外映射。纳入清理需要跨后端新增 `PurgeTerminal`、配置与迁移，属于独立改动。后续建议参数：只清终态（`status IN ('acked','failed')`），清理键 `updated_at <= now - terminalRetention`，默认 `24h`，批量按 `batchSize`；pending 仍由 `expireAfter` 兜底。本轮用 `jt808_terminal_reply_total{outcome="late|unmatched"}` 观测误匹配，表体积由数据库侧巡检。
 - **结果查询窗口必须小于等于终态保留期（硬约束）**：调用方按 `commandId`/幂等键查询命令结果的窗口，不能长于终态清理的 `terminalRetention`。否则记录被清理后调用方必然查不到结果；更严重的是，清理不得让查询表现为“从未下发过”——`Query` 必须能区分“已过保留期被清理”与“幂等键从未出现过”，前者返回明确的已清理/过期语义（如 `410 Gone` 或 `status=expired`），后者才返回 `404`。实现清理时需保留覆盖查询窗口的最小 tombstone（幂等键、终态、终结时间），或在清理前把该语义固化到查询契约里；启动校验需联动两者，`terminalRetention` 小于对外承诺的查询窗口时视为非法配置并拒绝启动。本节清理仍未实现，约束先固化，后续实现 `PurgeTerminal` 时必须同时满足。
 
+### E2：业务处理迁移到管控
+
+> **阶段定位**：从 E2 起 `cluster` 承接业务：定位、报警、参数、属性、行业上报、媒体资源列表、`0x0801` 文件落库全部由**管控进程**执行并写共享 MySQL/共享存储。网关只保留协议层职责。1078 数据面与媒体/附件角色仍在 E3 拆分。
+
+#### E2.1 处理器归属
+
+归属是**显式表**（`protocol.Ownership`），`tools/registrydoc` 校验三条不变量：每个注册项必须有归属；控制面归属必须有业务半边；网关归属不得有业务半边。缺一条覆盖矩阵校验失败。
+
+| 归属 | 消息 | 说明 |
+|---|---|---|
+| 只在管控 | `0x0200`、`0x0704`、`0x0108`、`0x0301`、`0x0302`、`0x0303`、`0x0500`、`0x0700`、`0x0701`、`0x0702`、`0x0705`、`0x0800`、`0x0801`、`0x0802`、`0x0805`、`0x0900`、`0x0901`、`0x1205` | 纯落库/落对象，无会话依赖 |
+| 只在网关 | `0x0001`、`0x8001`、`0x8003`、`0x8800`、`0x0104`、`0x0107`、`0x0201`、`0x0608`、`0x1206`、`0x1210`、`0x1211`、`0x1212`、`0x9105`，以及全部下行类注册项 | 会话、分包、待应答、查询 broker、媒体信令 |
+| 两边都要 | `0x0100`、`0x0102` | 网关负责应答与会话，管控负责档案落库 |
+
+- 下行类注册项（`0x8103`、`0x8104`、`0x8106`、`0x8107`、`0x8201`-`0x8204`、`0x8300`-`0x8304`、`0x8400`、`0x8500`、`0x8600`-`0x8608`、`0x8700`-`0x8702`、`0x8801`-`0x8805`、`0x8900`、`0x9101`、`0x9102`、`0x9201`、`0x9202`、`0x9205`、`0x9206`）是“平台→终端”，真实网关收不到，仅服务内置模拟器，标记为网关归属且不参与集群业务迁移。
+- 执行方式：网关按归属跑“协议半边”，并向管控投事件；管控按归属跑“业务半边”。`standalone` 下两个半边在同一进程顺序执行，行为与现状一致；`cluster` 单进程同时含 gateway+control 时同样进程内直调，不产生 HTTP 往返。
+- **不复制业务逻辑**：只有 `0x0100`/`0x0102` 需要拆成两个半边函数（同一 `JT808MsgProcessor` 上是两个方法），其余控制面 handler 整体搬到管控执行，不做二次实现。
+
+#### E2.2 事件载荷
+
+| 字段 | 说明 |
+|---|---|
+| `rawMsgId` | 线上原始消息 ID（`Decode` 可能改写 ID，必须保留原值） |
+| `msgId` | 生效消息 ID，管控据此解码 |
+| `phone` / `serial` | 报文头字段 |
+| `protocolVersion` | `2013` / `2019`，决定头部与部分消息体布局 |
+| `headerAttr` | 版本描述、加密位等原始属性 |
+| `fragmentReassembled` / `fragmentTotal` | 仅 `true` 的事件可处理；未重组完成的消息不得投递 |
+| `bodyBase64` | 去头、反转义、已重组的完整消息体 |
+| `payload` / `payloadBase64` | 降级为诊断快照，管控不再据此执行业务 |
+
+- **单次解码**：新增 `protocol.DecodeMessageBody(rawMsgID, header, body)`，网关 `Decode` 与管控执行器共用它。管控从 `bodyBase64` 解出与网关同一个 `model` 结构体，禁止第二套字段解析。
+- **eventId 改为内容派生**：`sha256(phone|msgId|serial|body)[:16]`。不再使用 `occurredAt`（`0x0801`/`0x0707` 无协议时间字段时它退化为 0，导致重连后复用流水号撞键）。同一报文重传得到同一 ID，同流水号不同内容得到不同 ID。
+- **Debug 日志 nil 保护**：`Decode` 内的调试日志对 `SessionCtxKey` 做无保护断言，管控侧无会话会 panic；E2 必须改为 nil 安全。
+
+#### E2.3 幂等
+
+`eventId` 去重（TTL 10 分钟）是进程内快路径，跨重启与多副本必须靠表唯一键：
+
+| 表 | 唯一键 | 重放结果 |
+|---|---|---|
+| `devices`、`device_params`、`terminal_properties`、`media_resource_lists` | `phone` | 覆盖 |
+| `terminal_catalogs` | `(phone, catalog_type, item_key)` | 覆盖 |
+| `upgrade_results`、`media_upload_tasks`、`media_upload_notices` | `(phone, serial)` | 覆盖 |
+| `media_files` | `(phone, media_id)` | 覆盖 |
+| `media_captures` | `(phone, record_id=answerSerial)` | 覆盖 |
+| `media_search_results` | `(phone, answer_serial, item_index)` | 覆盖 |
+| `alarms` | `(phone, message_serial, received_at_ms)`，另有 30 分钟 `(phone,serial)` 去重窗口 | 窗口内 UPDATE，窗口外追加 |
+| `locations` | `(phone, record_id)` | **E2 唯一 DDL**：新增可空列 `dedup_key` + `UNIQUE (phone, dedup_key)`，值为 `hash(eventId + itemIndex)`，写入改 `INSERT IGNORE`（MySQL）/ `INSERT OR IGNORE`（SQLite）。`record_id` 保持进程内单调递增，不动分页稳定键；老数据 `dedup_key=NULL`，唯一索引允许多 NULL |
+| `command_outbox` | `command_id` / `idempotency_key` | 幂等 |
+
+去重记录**只在业务成功后写入**：失败返回 503 时不落去重表，保证网关重试还能重新处理（同 E1 上行入口的既有语义）。
+
+#### E2.4 失败语义
+
+| 场景 | 管控返回 | 网关（confirm-before-ack） | 网关（best-effort） |
+|---|---|---|---|
+| 成功 | 200 | 发送应答 | 已应答 |
+| 业务失败 | 503 | 不应答，终端重传 | 已应答，记 `dropped` |
+| 档案不存在 | 409 `unknown_device` | 重投 1 次注册事件后仍失败 → 不 ack，事件终结 | 丢弃 + 指标 |
+| 无业务半边 | 202 `unhandled` | 发送应答 | 已应答 |
+| 请求体/消息体超限 | 413 | 见 E2.4.2 | 丢弃 + 指标 |
+| 鉴权失败 | 401 | 停止投递并告警 | 同左 |
+
+##### E2.4.1 `409 unknown_device` 的重投边界
+
+- 每条入站事件**最多重投注册事件 1 次**，重投复用**同一 `eventId`**（幂等，不会重复建档），不生成新 ID。
+- 重投后仍 409 → `uplink_unknown_device_dropped` +1、ERROR 日志（`phone`/`msgId`/`eventId`/`gatewayId`），该事件在网关**终结**，不再重投。
+- 熔断：该 phone 在注册缓存里记 `unknownSince`，30 秒内不再重投，防止伪造手机号把网关变成对管控的放大器。
+- confirm 类不 ack，事件终结后由**终端自己的重传窗口**再次带来新入站事件（每条最多再触发 1 次重投）。因此不存在“事件在网关与管控之间反复弹”的路径；最坏结果是终端重传耗尽后放弃，设备保持离线，这是正确的失败姿态。
+- 计费口径：这次失败**计入终端重传窗口**（消耗终端重传次数），不计入服务端重试预算。
+
+##### E2.4.2 `maxBodyBytes` 与 `maxRequestBytes` 拆开
+
+| 配置项 | 约束对象 | 默认 | 判定位置 |
+|---|---|---|---|
+| `cluster.uplink.maxBodyBytes` | 解码后的消息体（重组、去头后） | 8 MiB | 网关出口；超限走 0x0801 例外 |
+| `cluster.uplink.maxRequestBytes` | HTTP 请求体（`bodyBase64` 的 JSON 信封） | 12 MiB | 管控入口 `MaxBytesReader`，超限 413 |
+| `cluster.uplink.maxDecodedBodyBytes` | 管控解 base64 后的长度二次校验 | 8 MiB | 管控入口，超限 413 |
+
+- 关系式：`maxRequestBytes ≥ ceil(maxBodyBytes × 4/3) + 64 KiB`，启动校验不满足直接失败，避免“网关能发、管控必拒”。
+- 8 MiB 原始报文 → base64 约 10.7 MiB → 12 MiB 请求上限可容纳，`0x0801` 链路成立。
+- 413 判定依据：网关侧只看 `maxBodyBytes`；管控侧只看 `maxRequestBytes`；管控解出后再用 `maxDecodedBodyBytes` 兜底。
+
+##### E2.4.3 报文超限的唯一 ack 例外
+
+超过 `maxBodyBytes` 属于**本地永久失败**，重传不会变小。网关记 `uplink_oversized` + ERROR 日志 + 计数器，并且**仍然应答**（`0x8800`），避免终端无限重传。这是唯一允许“没有事件也 ack”的情况，必须有日志与指标，不得静默。
+
+#### E2.5 `0x0801` 在 E2
+
+顺序固定为：**重组 → 写文件 → 写库 → 才应答**。
+
+1. 网关重组 → confirm-before-ack 事件（`bodyBase64` + 内容派生 `eventId`）
+2. 管控解码 → 确定性 key：`media/<phone>/<multiMediaId>.<fmt>`（同一条重传必须得到同一 key，否则每次重传留一个孤儿）
+3. `Put(key)` 写暂存
+4. `Promote(info)` 原子提级 → 最终 key 可见，sidecar `state=pending`
+5. `media_files.Save(key, md5, size)` 建立业务引用
+6. `MarkCommitted(key)` → sidecar `committed`
+7. 返回 200 → 网关发 `0x8800`
+
+补偿：
+
+- 3/4 失败 → 503，不 ack，终端重传；同 key 的 `Put`/`Promote` 幂等。
+- 4 成功、5 失败 → 503，重传后重走 3-5；sidecar 停留 `pending`。
+- 5 成功、6 失败 → **返回 200**（引用已建立，不需要终端重传），记 `blob_commit_failed`，由巡检补 `committed`。
+- 终端放弃重传 → sidecar `pending` 超 TTL（默认 30 分钟）→ 巡检查库：无 `media_files` 行才删对象；有行则补 `committed`。**绝不删除有引用的对象。**
+- E2 只实现 `sharedVolume`（共享卷 + 标记文件 + sidecar）；`objectStore` 仍在启动校验处明确拒绝并提示 E3。
+- 读取统一走 `BlobStore.Open(key)`，对上层暴露的 URL 不变。
+
+#### E2.6 注册鉴权边界
+
+1. 终端 `0x0100`。
+2. 网关：`AuthProvider` **只读**检查车牌/手机号是否已注册 → 本地计算 `genAuthCode` → 写**网关本地注册缓存**（`sessionID` + `device` + `authCode`，TTL 5 分钟，容量有界）→ 立即回 `0x8100`（不等管控）→ 注册事件 **best-effort** 投管控。
+3. 管控：`devices.Upsert`。
+4. 终端 `0x0102`。
+5. 网关：缓存命中 → 本地校验；缓存未命中 → `AuthProvider.AuthCode` 读库；两者都无 → 回 `0x8001 Result=1`，终端重新注册；通过 → 绑定会话 + Keepalive → 回成功 → 鉴权事件 **confirm-before-ack** 投管控。
+6. 管控：`devices.status=online` + `LastestComTime`。
+
+窗口处理：
+
+- 注册缓存覆盖“注册完立刻鉴权”的常见路径。
+- 同一 phone 的事件在管控侧串行处理（分片 mailbox），保证 `0x0100` 业务先于 `0x0102` 业务。
+- 业务事件找不到档案 → 409，网关按 E2.4.1 重投注册事件；confirm 类继续不 ack，由终端重传兜住毫秒级窗口。
+
+鉴权失败删除收紧：现网“鉴权码不匹配就删档案”在 cluster 里等于任何伪造报文都能删掉真实档案。E2 改为**仅当注册缓存命中且 `sessionID` 与注册会话一致时才删**，其余只记指标并拒绝连接。
+
+#### E2.7 查询 broker
+
+四类查询接口（终端参数、属性、位置、区域）依赖本网关分配的流水号与本地等待表，因此 broker **留在网关**，控制面通过下行契约取回响应体：
+
+- `DownlinkRequest` 增 `ExpectResponseMsgID`、`ResponseTimeout`；
+- `DownlinkReceipt` 增 `ResponseMsgID`、`ResponseBody []byte`；
+- 网关发送后按 `(phone, serial)` 登记期望，`0x0104`/`0x0107`/`0x0201`/`0x0608` 到达时回填消息体并唤醒；
+- 控制面 API 以 `serial=0` 调 `DownlinkSender`，由网关分配并回传；拿到 body 后用同一个 `DecodeMessageBody` 解码后返回原 HTTP 响应；
+- 超时回 504，未知会话回 409（不伪造 5xx）。
+
+#### E2.8 控制面单副本（E2 硬约束）
+
+**E2 明确要求 `control` 单副本运行。** 理由：
+
+- 按 phone 哈希到固定副本（方案 B）需要状态化路由或协调组件，且故障转移后内存去重表与在途状态仍需重建，成本不属于 E2 量级，留到 E4。
+- 承认顺序无保证（方案 C）不只是延迟问题：`devices.Upsert` 从两个副本并发写，注册写 offline、鉴权写 online，顺序颠倒会把在线状态写回 offline，重试无法自愈。
+- 方案 A 可验证、可运维：启动日志打印 `control singleton mode (E2): replicas must be 1`，部署文档写死副本数 1；E2.4.1 的有界重投是“有人违反约束时”的兜底，保证不会无限弹。
+
+E4 再引入状态化路由与分片再平衡；在 E2 不引入协调组件。
+
+#### E2.9 回归与启动校验增量
+
+- `standalone`：两个半边顺序执行，业务仍在原地；不创建任何 cluster 监听。
+- `uplink.sink: local` / `commandOutbox.mode: off`：行为不变。
+- 新增校验：`maxRequestBytes` 与 `maxBodyBytes` 的关系式；`cluster` 含 control 时归属表必须覆盖全部控制面注册项；含 control 且 `blob.backend=sharedVolume` 时标记文件必须可读写；`objectStore` 在 E2 仍拒绝。
+
+#### E2.10 E2 不做
+
+`objectStore` SDK、媒体/附件角色独立进程、1078 数据面迁移、控制面多副本、按 phone 的状态化路由。
+
 ### E3：物理角色拆分与端点分配
 
 - 目标：media、attachment 可独立部署；`0x9101/0x9201/0x9208` 由管控构造。
@@ -864,8 +1022,9 @@ cluster:
   - 管控申请端点、构造信令、下发、释放；
   - 媒体/附件粘性与共享卷；
   - 网关角色不加载媒体/附件代码路径；
-  - `0x0801` 按方案 A 接入上行出口与媒体文件接入。
-- 验收：信令经网关、数据面直达媒体/附件；网关无媒体依赖；端点粘性与故障回收正确；`0x0801` 可在媒体落盘并可查询。
+  - `0x0801` 的 intake 改由媒体角色接收，control 只写业务引用（E2 已在 control 内用 `sharedVolume` 跑通写入与补偿）；
+  - `objectStore` 后端与对象标签、`pending/`/`trash/` 生命周期落地。
+- 验收：信令经网关、数据面直达媒体/附件；网关无媒体依赖；端点粘性与故障回收正确；`0x0801` 可在媒体落盘并可查询；`objectStore` 与 `sharedVolume` 行为一致。
 
 ### E4：集群加固与运维
 
@@ -874,7 +1033,8 @@ cluster:
   - 指标：上行出口成功率/丢弃、下行契约延迟/超时、会话目录命中、端点租约、`0x0801` 交接时延；
   - 运行手册：扩缩容、角色排水、故障切换、共享卷检查；
   - 混沌测试：杀网关、杀管控、杀媒体、网络分区；
-  - 性能压测：`0x0801` 图片交接的端到端时延与出口背压表现。
+  - 性能压测：`0x0801` 图片交接的端到端时延与出口背压表现；
+  - 控制面多副本：按 phone 哈希到固定副本（状态化路由 / 一致性哈希 + 再平衡），解除 E2 的单副本硬约束；故障转移时重建内存去重表与在途状态。
 - 验收：故障场景可复现；指标可定位；standalone 回归全绿。
 
 依赖关系：

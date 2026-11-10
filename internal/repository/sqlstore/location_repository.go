@@ -79,14 +79,14 @@ func (r *locationRepository) Record(ctx context.Context, records []repository.Lo
 
 func (r *locationRepository) insertChunk(ctx context.Context, records []repository.LocationRecord) error {
 	placeholders := make([]string, 0, len(records))
-	args := make([]interface{}, 0, len(records)*13)
+	args := make([]interface{}, 0, len(records)*14)
 	for i := range records {
 		record := records[i]
 		payload, err := json.Marshal(record)
 		if err != nil {
 			return fmt.Errorf("encode location %s: %w", record.Phone, err)
 		}
-		placeholders = append(placeholders, "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+		placeholders = append(placeholders, "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
 		args = append(args,
 			record.Phone,
 			r.nextRecordID(),
@@ -101,16 +101,30 @@ func (r *locationRepository) insertChunk(ctx context.Context, records []reposito
 			int64(record.Speed),
 			int64(record.Direction),
 			string(payload),
+			nullString(record.DedupKey),
 		)
 	}
 	stmt := `INSERT INTO locations
 		(phone, record_id, msg_id, report_time_ms, received_at_ms,
-		 alarm_sign, status_sign, latitude, longitude, altitude, speed, direction, payload_json)
+		 alarm_sign, status_sign, latitude, longitude, altitude, speed, direction, payload_json, dedup_key)
 		VALUES ` + strings.Join(placeholders, ", ")
+	if r.store.backend == BackendMySQL {
+		stmt = "INSERT IGNORE INTO locations" + strings.TrimPrefix(stmt, "INSERT INTO locations")
+	} else {
+		stmt = "INSERT OR IGNORE INTO locations" + strings.TrimPrefix(stmt, "INSERT INTO locations")
+	}
 	if _, err := r.store.db.ExecContext(ctx, stmt, args...); err != nil {
 		return fmt.Errorf("insert %d locations: %w", len(records), err)
 	}
 	return nil
+}
+
+// nullString 把空串写成 NULL，让老数据与 standalone 不参与 (phone, dedup_key) 唯一约束。
+func nullString(value string) interface{} {
+	if value == "" {
+		return nil
+	}
+	return value
 }
 
 func (r *locationRepository) List(ctx context.Context, phone string, limit int) ([]repository.LocationRecord, error) {
