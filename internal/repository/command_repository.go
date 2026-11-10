@@ -326,8 +326,12 @@ func (r *memoryCommandRepository) finish(phone string, msgID, serial uint16, sta
 		return false, nil
 	}
 	stored := r.byID[id]
-	if stored == nil || stored.Status != CommandStatusPending {
+	if stored == nil {
 		delete(r.routing, key)
+		return false, nil
+	}
+	if stored.Status != CommandStatusPending {
+		// 已被并发推进为终态：保留 routing 索引供迟到/重复应答分类。
 		return false, nil
 	}
 	stored.Status = status
@@ -335,7 +339,8 @@ func (r *memoryCommandRepository) finish(phone string, msgID, serial uint16, sta
 	stored.LeaseOwner = ""
 	stored.LeaseExpiresAt = time.Time{}
 	stored.UpdatedAt = time.Now()
-	delete(r.routing, key)
+	// 保留 routing 索引：迟到/重复应答仍需按 (phone, msgID, serial) 找到终态记录，
+	// 才能区分 duplicate 与 unmatched，而不是把迟到应答误报为无匹配。
 	return true, nil
 }
 

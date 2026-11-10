@@ -59,6 +59,14 @@ type Metrics struct {
 	orphanFailures     atomic.Int64
 	orphanLastRun      atomic.Int64
 	orphanLastDuration atomic.Int64
+	// 终端应答处理结果，按 outcome 分别计数。
+	terminalReplyAcked          atomic.Int64
+	terminalReplyFailed         atomic.Int64
+	terminalReplyRetryScheduled atomic.Int64
+	terminalReplyDuplicate      atomic.Int64
+	terminalReplyLate           atomic.Int64
+	terminalReplyUnmatched      atomic.Int64
+	terminalReplyIgnored        atomic.Int64
 }
 
 // NewMetrics 创建进程级计数器。
@@ -78,6 +86,57 @@ func (m *Metrics) AckTimeouts() int64 {
 		return 0
 	}
 	return m.ackTimeouts.Load()
+}
+
+// TerminalReplySnapshot 是终端应答处理结果的累计计数。
+type TerminalReplySnapshot struct {
+	Acked          int64
+	Failed         int64
+	RetryScheduled int64
+	Duplicate      int64
+	Late           int64
+	Unmatched      int64
+	Ignored        int64
+}
+
+// IncTerminalReply 记录一次终端应答处理结果。
+// 只有真正推进状态或明确分类的终态才计数，仓储错误不计入。
+func (m *Metrics) IncTerminalReply(outcome string) {
+	if m == nil {
+		return
+	}
+	switch outcome {
+	case "acked":
+		m.terminalReplyAcked.Add(1)
+	case "failed":
+		m.terminalReplyFailed.Add(1)
+	case "retry_scheduled":
+		m.terminalReplyRetryScheduled.Add(1)
+	case "duplicate":
+		m.terminalReplyDuplicate.Add(1)
+	case "late":
+		m.terminalReplyLate.Add(1)
+	case "unmatched":
+		m.terminalReplyUnmatched.Add(1)
+	case "ignored":
+		m.terminalReplyIgnored.Add(1)
+	}
+}
+
+// TerminalReplySnapshot 返回终端应答指标副本。
+func (m *Metrics) TerminalReplySnapshot() TerminalReplySnapshot {
+	if m == nil {
+		return TerminalReplySnapshot{}
+	}
+	return TerminalReplySnapshot{
+		Acked:          m.terminalReplyAcked.Load(),
+		Failed:         m.terminalReplyFailed.Load(),
+		RetryScheduled: m.terminalReplyRetryScheduled.Load(),
+		Duplicate:      m.terminalReplyDuplicate.Load(),
+		Late:           m.terminalReplyLate.Load(),
+		Unmatched:      m.terminalReplyUnmatched.Load(),
+		Ignored:        m.terminalReplyIgnored.Load(),
+	}
 }
 
 // retentionCounterFor 返回类别对应的计数器，调用方需持有 retentionMu。
@@ -218,6 +277,8 @@ type Snapshot struct {
 	Orphan OrphanSnapshot
 	// Uplink 是上行出口的累计投递指标；未启用外部出口时全为 0。
 	Uplink UplinkSnapshot
+	// TerminalReply 是终端应答处理结果的累计指标。
+	TerminalReply TerminalReplySnapshot
 }
 
 // UplinkSnapshot 是上行出口的累计计数与当前水位。
@@ -282,6 +343,7 @@ func (p *Provider) Snapshot(ctx context.Context) Snapshot {
 	snapshot.AckTimeouts = p.Metrics.AckTimeouts()
 	snapshot.Retention = p.Metrics.RetentionSnapshot()
 	snapshot.Orphan = p.Metrics.OrphanSnapshot()
+	snapshot.TerminalReply = p.Metrics.TerminalReplySnapshot()
 	return snapshot
 }
 
@@ -320,7 +382,38 @@ func WritePrometheus(w io.Writer, snapshot Snapshot) error {
 	if err := writeRetentionPrometheus(w, snapshot.Retention); err != nil {
 		return err
 	}
+	if err := writeTerminalReplyPrometheus(w, snapshot.TerminalReply); err != nil {
+		return err
+	}
 	return writeOrphanPrometheus(w, snapshot.Orphan)
+}
+
+// writeTerminalReplyPrometheus 输出终端应答处理结果的累计计数。
+// duplicate 表示与终态一致的重复应答；late 表示迟到或与终态矛盾的应答。
+func writeTerminalReplyPrometheus(w io.Writer, snapshot TerminalReplySnapshot) error {
+	lines := []struct {
+		outcome string
+		value   int64
+	}{
+		{"acked", snapshot.Acked},
+		{"failed", snapshot.Failed},
+		{"retry_scheduled", snapshot.RetryScheduled},
+		{"duplicate", snapshot.Duplicate},
+		{"late", snapshot.Late},
+		{"unmatched", snapshot.Unmatched},
+		{"ignored", snapshot.Ignored},
+	}
+	if _, err := fmt.Fprintf(w,
+		"# HELP jt808_terminal_reply_total Terminal replies handled by outcome.\n"+
+			"# TYPE jt808_terminal_reply_total counter\n"); err != nil {
+		return err
+	}
+	for _, line := range lines {
+		if _, err := fmt.Fprintf(w, "jt808_terminal_reply_total{outcome=%q} %d\n", line.outcome, line.value); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // writeOrphanPrometheus 输出孤儿文件扫描的累计指标与最近一次运行信息。

@@ -47,18 +47,19 @@ type HTTPSinkStats struct {
 
 // HTTPEnvelope 是上行出口的 JSON 信封，字段与设计文档第 4 节一致。
 type HTTPEnvelope struct {
-	EventID       string          `json:"eventId"`
-	Phone         string          `json:"phone"`
-	MsgID         uint16          `json:"msgId"`
-	Serial        uint16          `json:"serial"`
-	OccurredAtMS  int64           `json:"occurredAtMs"`
-	GatewayID     string          `json:"gatewayId"`
-	SessionID     string          `json:"sessionId"`
-	Transport     string          `json:"transport"`
-	Reliability   string          `json:"reliability"`
-	Payload       json.RawMessage `json:"payload,omitempty"`
-	PayloadBase64 string          `json:"payloadBase64,omitempty"`
-	Meta          map[string]any  `json:"meta,omitempty"`
+	EventID       string                   `json:"eventId"`
+	Phone         string                   `json:"phone"`
+	MsgID         uint16                   `json:"msgId"`
+	Serial        uint16                   `json:"serial"`
+	OccurredAtMS  int64                    `json:"occurredAtMs"`
+	GatewayID     string                   `json:"gatewayId"`
+	SessionID     string                   `json:"sessionId"`
+	Transport     string                   `json:"transport"`
+	Reliability   string                   `json:"reliability"`
+	Payload       json.RawMessage          `json:"payload,omitempty"`
+	PayloadBase64 string                   `json:"payloadBase64,omitempty"`
+	Meta          map[string]any           `json:"meta,omitempty"`
+	Reply         *contracts.TerminalReply `json:"reply,omitempty"`
 }
 
 // HTTPSink 把上行事件通过 HTTP hook 投递给管控。
@@ -370,6 +371,7 @@ func BuildHTTPEnvelope(event contracts.UplinkEvent) (HTTPEnvelope, error) {
 		Transport:   event.Transport,
 		Reliability: string(event.Reliability),
 		Meta:        event.Meta,
+		Reply:       event.Reply,
 	}
 	if !event.OccurredAt.IsZero() {
 		envelope.OccurredAtMS = event.OccurredAt.UnixMilli()

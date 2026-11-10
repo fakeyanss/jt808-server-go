@@ -195,19 +195,21 @@ func main() {
 		Commands: commandRepo,
 		Devices:  stores.Devices,
 		Conn:     deps.Runtime.Conn,
+		Metrics:  metrics,
 		Send: func(sessionID string, msg model.JT808Msg, serial uint16) error {
 			return serv.Send(sessionID, msg, server.WithSerial(serial))
 		},
 	}, control.OutboxOptions{
-		Enabled:       outboxOptions.Mode != config.CommandOutboxModeOff,
-		InitialWait:   outboxOptions.InitialWait,
-		ExpireAfter:   outboxOptions.ExpireAfter,
-		PollInterval:  outboxOptions.PollInterval,
-		BatchSize:     outboxOptions.BatchSize,
-		MaxAttempts:   outboxOptions.MaxAttempts,
-		LeaseDuration: outboxOptions.LeaseDuration,
-		RetryBase:     outboxOptions.RetryBase,
-		RetryMax:      outboxOptions.RetryMax,
+		Enabled:                outboxOptions.Mode != config.CommandOutboxModeOff,
+		InitialWait:            outboxOptions.InitialWait,
+		ExpireAfter:            outboxOptions.ExpireAfter,
+		PollInterval:           outboxOptions.PollInterval,
+		BatchSize:              outboxOptions.BatchSize,
+		MaxAttempts:            outboxOptions.MaxAttempts,
+		LeaseDuration:          outboxOptions.LeaseDuration,
+		RetryBase:              outboxOptions.RetryBase,
+		RetryMax:               outboxOptions.RetryMax,
+		RetryOnTerminalFailure: outboxOptions.RetryOnTerminalFailure,
 	})
 	if outboxBuildErr != nil {
 		log.Error().Err(outboxBuildErr).Msg("Fail to create command outbox")

@@ -9,6 +9,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/fakeyanss/jt808-server-go/internal/observability"
 	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
 	"github.com/fakeyanss/jt808-server-go/internal/repository"
 	"github.com/fakeyanss/jt808-server-go/internal/runtime"
@@ -75,6 +76,7 @@ type harness struct {
 	conn    runtime.ConnectionRegistry
 	sender  *fakeSender
 	clock   *fakeClock
+	metrics *observability.Metrics
 	options OutboxOptions
 }
 
@@ -85,6 +87,7 @@ func newHarness(t *testing.T, options OutboxOptions) *harness {
 	devices := repository.NewDeviceRepository()
 	conn := runtime.NewConnectionRegistry()
 	sender := &fakeSender{}
+	metrics := observability.NewMetrics()
 	clock := &fakeClock{now: time.Date(2026, 11, 8, 12, 0, 0, 0, time.UTC)}
 	require.NoError(t, devices.Upsert(ctx, &model.Device{
 		Phone:           testPhone,
@@ -96,6 +99,7 @@ func newHarness(t *testing.T, options OutboxOptions) *harness {
 		Commands: repo,
 		Devices:  devices,
 		Conn:     conn,
+		Metrics:  metrics,
 		Send: func(sessionID string, msg model.JT808Msg, serial uint16) error {
 			return sender.send(sessionID, msg, serial)
 		},
@@ -110,6 +114,7 @@ func newHarness(t *testing.T, options OutboxOptions) *harness {
 		conn:    conn,
 		sender:  sender,
 		clock:   clock,
+		metrics: metrics,
 		options: options,
 	}
 }

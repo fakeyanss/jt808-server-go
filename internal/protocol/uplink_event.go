@@ -76,6 +76,20 @@ func buildUplinkEvent(
 		event.Meta["mediaId"] = media.MultiMediaID
 		event.Meta["multiMediaType"] = media.MultiMediaType
 	}
+	if reply, ok := in.(*model.Msg0001); ok && reply != nil {
+		// 0x0001 是终端对下行命令的应答，消费方据此调用管控的应答入口。
+		event.Reply = &contracts.TerminalReply{
+			EventID:      event.EventID,
+			Phone:        phone,
+			AnswerMsgID:  reply.AnswerMessageID,
+			AnswerSerial: reply.AnswerSerialNumber,
+			Result:       reply.Result,
+			GatewayID:    gatewayID,
+			SessionID:    sessionID,
+			ReceivedAt:   time.Now(),
+			Source:       "http",
+		}
+	}
 	return event
 }
 

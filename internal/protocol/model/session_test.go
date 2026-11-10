@@ -89,6 +89,32 @@ func TestSessionAcknowledgeSerialIgnoresMismatchedResponse(t *testing.T) {
 	require.Equal(t, 1, session.PendingCount())
 }
 
+// 0x0001 的终端结果必须原样透传给 outbox，失败应答不能被当成成功。
+func TestSessionAcknowledgeSerialWithResultPropagatesTerminalResult(t *testing.T) {
+	left, _ := net.Pipe()
+	defer left.Close()
+	const phone = "18800000000"
+	session := &Session{Conn: left, AckTimeout: time.Hour, MaxRetries: 1}
+	defer session.ClosePending()
+
+	var results []ReliableResult
+	session.OnReliableResult = func(result ReliableResult) {
+		results = append(results, result)
+	}
+	session.TrackReliable(0x8105, 31, phone, []byte("frame"))
+
+	require.True(t, session.AcknowledgeSerialWithResult(31, phone, 1))
+	require.Len(t, results, 1)
+	require.Equal(t, ReliableStatusAcked, results[0].Status)
+	require.NotNil(t, results[0].TerminalResult)
+	require.Equal(t, uint8(1), *results[0].TerminalResult)
+
+	// 重复应答不再触发回调，也不会重复清算。
+	require.False(t, session.AcknowledgeSerialWithResult(31, phone, 1))
+	require.Len(t, results, 1)
+	require.Equal(t, 0, session.PendingCount())
+}
+
 // 协议体不含流水号的应答（0x0608/0x0702/0x8800）仅在唯一候选时清算。
 func TestSessionAcknowledgeTypedResponseRequiresUniquePending(t *testing.T) {
 	left, _ := net.Pipe()

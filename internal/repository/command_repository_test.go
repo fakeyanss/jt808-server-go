@@ -75,6 +75,46 @@ func TestCommandRepositoryMemoryIdempotencyAndResult(t *testing.T) {
 	require.ErrorIs(t, err, ErrCommandNotFound)
 }
 
+func TestCommandRepositoryMemoryKeepsRoutingForTerminalCommands(t *testing.T) {
+	ctx := context.Background()
+	repo := NewCommandRepository()
+	const phone = "188765470003"
+
+	_, created, err := repo.Enqueue(ctx, &DownlinkCommand{
+		CommandID:      "cmd-terminal",
+		IdempotencyKey: "idem-terminal",
+		Phone:          phone,
+		MsgID:          0x8105,
+		Serial:         31,
+		Payload:        []byte{0x02},
+		ExpiresAt:      time.Now().Add(time.Hour),
+	})
+	require.NoError(t, err)
+	require.True(t, created)
+
+	updated, err := repo.MarkAcked(ctx, phone, 0x8105, 31)
+	require.NoError(t, err)
+	require.True(t, updated)
+
+	// 终态记录仍需可被 routing 命中，供迟到/重复应答分类。
+	stored, err := repo.FindByRouting(ctx, phone, 0x8105, 31)
+	require.NoError(t, err)
+	require.Equal(t, "cmd-terminal", stored.CommandID)
+	require.Equal(t, CommandStatusAcked, stored.Status)
+
+	// 已终结后重复推进返回 false，且不改变状态。
+	updated, err = repo.MarkAcked(ctx, phone, 0x8105, 31)
+	require.NoError(t, err)
+	require.False(t, updated)
+	updated, err = repo.MarkFailed(ctx, phone, 0x8105, 31, "late failure")
+	require.NoError(t, err)
+	require.False(t, updated)
+
+	stored, err = repo.FindByRouting(ctx, phone, 0x8105, 31)
+	require.NoError(t, err)
+	require.Equal(t, CommandStatusAcked, stored.Status)
+}
+
 func TestCommandRepositoryMemoryPendingScanAndLease(t *testing.T) {
 	ctx := context.Background()
 	repo := NewCommandRepository()

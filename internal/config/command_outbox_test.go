@@ -34,6 +34,18 @@ func TestParseCommandOutboxMode(t *testing.T) {
 	}
 }
 
+func TestParseCommandOutboxRetryOnTerminalFailure(t *testing.T) {
+	cfg := &Config{CommandOutbox: &commandOutboxConf{}}
+	options, err := cfg.ParseCommandOutbox()
+	require.NoError(t, err)
+	require.False(t, options.RetryOnTerminalFailure, "terminal failure retry must default to false")
+
+	cfg.CommandOutbox.RetryOnTerminalFailure = true
+	options, err = cfg.ParseCommandOutbox()
+	require.NoError(t, err)
+	require.True(t, options.RetryOnTerminalFailure)
+}
+
 func TestResolveCommandOutboxMode(t *testing.T) {
 	tests := []struct {
 		name    string

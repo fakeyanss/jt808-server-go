@@ -1121,7 +1121,14 @@ func acknowledgeResponse(session *model.Session, in model.JT808Msg) {
 	}
 	header := in.GetHeader()
 	if serial, ok := model.AnswerSerial(in); ok {
-		if !session.AcknowledgeSerial(serial, header.PhoneNumber) {
+		matched := false
+		if reply, isTerminalReply := in.(*model.Msg0001); isTerminalReply && reply != nil {
+			// 0x0001 携带终端执行结果，必须透传给 outbox，避免把失败应答当成成功。
+			matched = session.AcknowledgeSerialWithResult(serial, header.PhoneNumber, reply.Result)
+		} else {
+			matched = session.AcknowledgeSerial(serial, header.PhoneNumber)
+		}
+		if !matched {
 			log.Warn().Str("session", session.ID).Uint16("msg_id", header.MsgID).Uint16("answer_serial", serial).
 				Msg("Received response without matching pending message")
 		}

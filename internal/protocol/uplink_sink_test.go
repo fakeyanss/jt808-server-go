@@ -152,6 +152,29 @@ func TestBuildUplinkEventIsStableAcrossRetransmission(t *testing.T) {
 	require.False(t, first.OccurredAt.IsZero())
 }
 
+func TestBuildUplinkEventTerminalReply(t *testing.T) {
+	header := &model.MsgHeader{
+		MsgID: 0x0001, SerialNumber: 44, PhoneNumber: "188765499021", Attr: &model.MsgBodyAttr{},
+	}
+	reply := &model.Msg0001{
+		Header:             header,
+		AnswerSerialNumber: 77,
+		AnswerMessageID:    0x8105,
+		Result:             1,
+	}
+	event := buildUplinkEvent(context.Background(), 0x0001, &model.ProcessData{Incoming: reply},
+		contracts.ReliabilityBestEffort, "gw-test")
+
+	require.NotNil(t, event.Reply)
+	require.Equal(t, "188765499021", event.Reply.Phone)
+	require.Equal(t, uint16(0x8105), event.Reply.AnswerMsgID)
+	require.Equal(t, uint16(77), event.Reply.AnswerSerial)
+	require.Equal(t, uint8(1), event.Reply.Result)
+	require.Equal(t, event.EventID, event.Reply.EventID)
+	// 0x0001 没有协议时间，事件 ID 用报文头流水号保持重传稳定。
+	require.Equal(t, "188765499021|0x0001|44|0", event.EventID)
+}
+
 func TestBuildUplinkEventMediaUsesRawPayload(t *testing.T) {
 	header := &model.MsgHeader{
 		MsgID: 0x0801, SerialNumber: 5, PhoneNumber: "188765499021", Attr: &model.MsgBodyAttr{},

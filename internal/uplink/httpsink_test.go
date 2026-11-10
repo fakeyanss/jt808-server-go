@@ -30,6 +30,33 @@ func testEvent(reliability contracts.Reliability) contracts.UplinkEvent {
 	}
 }
 
+func TestBuildHTTPEnvelopeCarriesTerminalReply(t *testing.T) {
+	event := testEvent(contracts.ReliabilityBestEffort)
+	event.MsgID = 0x0001
+	event.Serial = 44
+	event.Reply = &contracts.TerminalReply{
+		EventID:      event.EventID,
+		Phone:        event.Phone,
+		AnswerMsgID:  0x8105,
+		AnswerSerial: 77,
+		Result:       1,
+		GatewayID:    event.GatewayID,
+		SessionID:    event.SessionID,
+		Source:       "http",
+	}
+
+	envelope, err := BuildHTTPEnvelope(event)
+	require.NoError(t, err)
+	require.NotNil(t, envelope.Reply)
+
+	raw, err := json.Marshal(envelope)
+	require.NoError(t, err)
+	require.Contains(t, string(raw), `"reply":{`)
+	require.Contains(t, string(raw), `"answerMsgId":33029`)
+	require.Contains(t, string(raw), `"answerSerial":77`)
+	require.Contains(t, string(raw), `"result":1`)
+}
+
 func newTestSink(t *testing.T, url string, mutate func(*HTTPSinkOptions)) *HTTPSink {
 	t.Helper()
 	options := HTTPSinkOptions{

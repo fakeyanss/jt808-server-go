@@ -9,6 +9,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -45,6 +46,9 @@ type OutboxOptions struct {
 	LeaseDuration time.Duration
 	RetryBase     time.Duration
 	RetryMax      time.Duration
+	// RetryOnTerminalFailure 决定终端明确执行失败（Result=1）后是否重投。
+	// 默认 false；Result=2/3 始终终结，不受该开关影响。
+	RetryOnTerminalFailure bool
 }
 
 func (o OutboxOptions) withDefaults() OutboxOptions {
@@ -81,6 +85,8 @@ type OutboxDependencies struct {
 	Devices  repository.DeviceRepository
 	Conn     runtime.ConnectionRegistry
 	Send     Sender
+	// Metrics 收集终端应答处理结果；为空时只记日志。
+	Metrics *observability.Metrics
 	// Owner 是租约标识；为空时按主机名 + 进程号 + 随机串生成。
 	Owner string
 	// Clock 便于测试控制时间；为空时使用 time.Now。
@@ -93,12 +99,15 @@ type Outbox struct {
 	devices  repository.DeviceRepository
 	conn     runtime.ConnectionRegistry
 	send     Sender
+	metrics  *observability.Metrics
 	owner    string
 	clock    func() time.Time
 	opts     OutboxOptions
 	// done 在 Run 退出后关闭，供关机流程等待当前 tick 收尾。
 	done chan struct{}
 }
+
+var _ contracts.TerminalReplyHandler = (*Outbox)(nil)
 
 // NewOutbox 校验依赖并创建 outbox。
 // Enabled=false 时允许 Commands 为空，此时 Submit 直接发送、不落库。
@@ -131,6 +140,7 @@ func NewOutbox(deps OutboxDependencies, options OutboxOptions) (*Outbox, error) 
 		devices:  deps.Devices,
 		conn:     deps.Conn,
 		send:     deps.Send,
+		metrics:  deps.Metrics,
 		owner:    owner,
 		clock:    clock,
 		opts:     options,
@@ -358,7 +368,10 @@ func (o *Outbox) dispatch(ctx context.Context, command *repository.DownlinkComma
 		Msg("Replayed pending downlink command")
 }
 
-// HandleResult 消费会话的可靠投递结果事件：成功终结，失败按次数安排重投或转 failed。
+// HandleResult 消费会话的可靠投递结果事件。
+//
+// 这是 local 出口的适配器：成功应答（含 0x0001 的失败结果）转交统一入口
+// HandleTerminalReply；写失败/重传耗尽仍走传输层重投逻辑。
 func (o *Outbox) HandleResult(result model.ReliableResult) {
 	if !o.Enabled() {
 		return
@@ -367,24 +380,201 @@ func (o *Outbox) HandleResult(result model.ReliableResult) {
 	defer cancel()
 	switch result.Status {
 	case model.ReliableStatusAcked:
-		updated, err := o.commands.MarkAcked(ctx, result.Phone, result.MsgID, result.Serial)
-		if err != nil {
+		terminalResult := uint8(0)
+		if result.TerminalResult != nil {
+			terminalResult = *result.TerminalResult
+		}
+		reply := contracts.TerminalReply{
+			EventID:      fmt.Sprintf("%s|0x%04X|%d", result.Phone, result.MsgID, result.Serial),
+			Phone:        result.Phone,
+			AnswerMsgID:  result.MsgID,
+			AnswerSerial: result.Serial,
+			Result:       terminalResult,
+			Source:       "transport",
+		}
+		if _, err := o.HandleTerminalReply(ctx, reply); err != nil {
 			log.Error().Err(err).
 				Str("phone", result.Phone).
 				Uint16("msg_id", result.MsgID).
 				Uint16("serial", result.Serial).
-				Msg("Failed to mark command acked")
-			return
-		}
-		if !updated {
-			log.Debug().
-				Str("phone", result.Phone).
-				Uint16("msg_id", result.MsgID).
-				Uint16("serial", result.Serial).
-				Msg("Acknowledgement did not match a pending command")
+				Msg("Failed to handle terminal reply from transport")
 		}
 	case model.ReliableStatusFailed:
 		o.handleFailure(ctx, result.Phone, result.MsgID, result.Serial, result.Reason)
+	}
+}
+
+// HandleTerminalReply 是终端应答的统一入口。
+//
+// local 会话回调与 http 事件消费方都调用这里；状态推进、幂等、迟到与
+// 无匹配分类只有一份实现。匹配键为 (phone, answerMsgID, answerSerial)。
+func (o *Outbox) HandleTerminalReply(ctx context.Context, reply contracts.TerminalReply) (contracts.TerminalReplyOutcome, error) {
+	if !o.Enabled() {
+		return contracts.TerminalReplyIgnored, nil
+	}
+	if reply.Phone == "" || reply.AnswerMsgID == 0 {
+		o.observeTerminalReply(contracts.TerminalReplyUnmatched)
+		log.Warn().
+			Str("event_id", reply.EventID).
+			Str("source", reply.Source).
+			Str("phone", reply.Phone).
+			Uint16("answer_msg_id", reply.AnswerMsgID).
+			Uint16("answer_serial", reply.AnswerSerial).
+			Msg("Terminal reply is missing phone or answer message id")
+		return contracts.TerminalReplyUnmatched, nil
+	}
+
+	command, err := o.commands.FindByRouting(ctx, reply.Phone, reply.AnswerMsgID, reply.AnswerSerial)
+	if err != nil {
+		if errors.Is(err, repository.ErrCommandNotFound) {
+			o.observeTerminalReply(contracts.TerminalReplyUnmatched)
+			log.Warn().
+				Str("event_id", reply.EventID).
+				Str("source", reply.Source).
+				Str("phone", reply.Phone).
+				Uint16("answer_msg_id", reply.AnswerMsgID).
+				Uint16("answer_serial", reply.AnswerSerial).
+				Uint8("result", reply.Result).
+				Msg("Terminal reply has no matching outbox command")
+			return contracts.TerminalReplyUnmatched, nil
+		}
+		return "", fmt.Errorf("look up terminal reply command: %w", err)
+	}
+	if command.Status != repository.CommandStatusPending {
+		outcome := classifyTerminalReply(command.Status, reply.Result)
+		o.observeTerminalReply(outcome)
+		log.Info().
+			Str("event_id", reply.EventID).
+			Str("source", reply.Source).
+			Str("command_id", command.CommandID).
+			Str("phone", reply.Phone).
+			Uint16("answer_msg_id", reply.AnswerMsgID).
+			Uint16("answer_serial", reply.AnswerSerial).
+			Uint8("result", reply.Result).
+			Str("status", string(command.Status)).
+			Str("outcome", string(outcome)).
+			Msg("Ignored terminal reply for terminal command")
+		return outcome, nil
+	}
+
+	// 命令已过 ExpiresAt 但 Tick 尚未清理：按迟到处理，先终结为 failed，绝不改回 acked。
+	if !command.ExpiresAt.IsZero() && !command.ExpiresAt.After(o.clock()) {
+		if _, err := o.commands.MarkFailed(ctx, reply.Phone, reply.AnswerMsgID, reply.AnswerSerial, "expired before reply"); err != nil {
+			return "", fmt.Errorf("mark expired command failed: %w", err)
+		}
+		o.observeTerminalReply(contracts.TerminalReplyLate)
+		log.Info().
+			Str("command_id", command.CommandID).
+			Str("phone", reply.Phone).
+			Uint16("msg_id", reply.AnswerMsgID).
+			Uint16("serial", reply.AnswerSerial).
+			Msg("Ignored late terminal reply for expired command")
+		return contracts.TerminalReplyLate, nil
+	}
+
+	if reply.Result == 0 {
+		updated, err := o.commands.MarkAcked(ctx, reply.Phone, reply.AnswerMsgID, reply.AnswerSerial)
+		if err != nil {
+			return "", fmt.Errorf("mark command acked: %w", err)
+		}
+		if !updated {
+			return o.classifyTerminalReplyRace(ctx, reply)
+		}
+		o.observeTerminalReply(contracts.TerminalReplyAcked)
+		log.Info().
+			Str("command_id", command.CommandID).
+			Str("phone", reply.Phone).
+			Uint16("msg_id", reply.AnswerMsgID).
+			Uint16("serial", reply.AnswerSerial).
+			Msg("Terminal reply acknowledged downlink command")
+		return contracts.TerminalReplyAcked, nil
+	}
+
+	// 终端明确执行失败：默认终结，不重投；仅 Result=1 且显式开启开关时重投。
+	if o.opts.RetryOnTerminalFailure && reply.Result == 1 && command.Attempts < o.opts.MaxAttempts {
+		next := o.clock().Add(o.retryDelay(command.Attempts))
+		updated, err := o.commands.ScheduleRetry(ctx, reply.Phone, reply.AnswerMsgID, reply.AnswerSerial, next, terminalFailureReason(reply.Result))
+		if err != nil {
+			return "", fmt.Errorf("schedule retry after terminal failure: %w", err)
+		}
+		if !updated {
+			return o.classifyTerminalReplyRace(ctx, reply)
+		}
+		o.observeTerminalReply(contracts.TerminalReplyRetryScheduled)
+		log.Info().
+			Str("command_id", command.CommandID).
+			Str("phone", reply.Phone).
+			Uint16("msg_id", reply.AnswerMsgID).
+			Uint16("serial", reply.AnswerSerial).
+			Uint8("result", reply.Result).
+			Int("attempts", command.Attempts).
+			Time("next_attempt_at", next).
+			Msg("Scheduled retry after terminal failure reply")
+		return contracts.TerminalReplyRetryScheduled, nil
+	}
+
+	updated, err := o.commands.MarkFailed(ctx, reply.Phone, reply.AnswerMsgID, reply.AnswerSerial, terminalFailureReason(reply.Result))
+	if err != nil {
+		return "", fmt.Errorf("mark command failed after terminal reply: %w", err)
+	}
+	if !updated {
+		return o.classifyTerminalReplyRace(ctx, reply)
+	}
+	o.observeTerminalReply(contracts.TerminalReplyFailed)
+	log.Warn().
+		Str("command_id", command.CommandID).
+		Str("phone", reply.Phone).
+		Uint16("msg_id", reply.AnswerMsgID).
+		Uint16("serial", reply.AnswerSerial).
+		Uint8("result", reply.Result).
+		Msg("Terminal failure reply marked command failed")
+	return contracts.TerminalReplyFailed, nil
+}
+
+// classifyTerminalReplyRace 在并发推进后重新读取命令，明确属于重复还是迟到。
+func (o *Outbox) classifyTerminalReplyRace(ctx context.Context, reply contracts.TerminalReply) (contracts.TerminalReplyOutcome, error) {
+	command, err := o.commands.FindByRouting(ctx, reply.Phone, reply.AnswerMsgID, reply.AnswerSerial)
+	if err != nil {
+		if errors.Is(err, repository.ErrCommandNotFound) {
+			o.observeTerminalReply(contracts.TerminalReplyUnmatched)
+			return contracts.TerminalReplyUnmatched, nil
+		}
+		return "", fmt.Errorf("re-read command after reply race: %w", err)
+	}
+	outcome := classifyTerminalReply(command.Status, reply.Result)
+	o.observeTerminalReply(outcome)
+	return outcome, nil
+}
+
+// classifyTerminalReply 把终态命令与应答结果对比：
+// 结果与终态一致视为重复应答；结果矛盾或迟到视为 late。
+func classifyTerminalReply(status repository.CommandStatus, result uint8) contracts.TerminalReplyOutcome {
+	switch {
+	case status == repository.CommandStatusAcked && result == 0:
+		return contracts.TerminalReplyDuplicate
+	case status == repository.CommandStatusFailed && result != 0:
+		return contracts.TerminalReplyDuplicate
+	default:
+		return contracts.TerminalReplyLate
+	}
+}
+
+func (o *Outbox) observeTerminalReply(outcome contracts.TerminalReplyOutcome) {
+	if o.metrics != nil {
+		o.metrics.IncTerminalReply(string(outcome))
+	}
+}
+
+func terminalFailureReason(result uint8) string {
+	switch result {
+	case 1:
+		return "terminal execution failed"
+	case 2:
+		return "terminal reported malformed message"
+	case 3:
+		return "terminal reported unsupported command"
+	default:
+		return fmt.Sprintf("terminal reply result %d", result)
 	}
 }
 

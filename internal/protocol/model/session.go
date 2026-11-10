@@ -46,6 +46,9 @@ type ReliableResult struct {
 	Phone  string
 	Status ReliableStatus
 	Reason string
+	// TerminalResult 来自 0x0001 报文体：0 成功、1 失败、2 消息有误、3 不支持。
+	// 非 0x0001 应答与超时事件为 nil，语义按成功或传输失败处理。
+	TerminalResult *uint8
 }
 
 const (
@@ -213,6 +216,16 @@ func (s *Session) Acknowledge(msgID, serial uint16) bool {
 // 流水号在单个会话内唯一，无需再区分被应答的消息 ID；
 // 同时校验报文头手机号，避免同号多会话场景下错清其它会话的等待项。
 func (s *Session) AcknowledgeSerial(serial uint16, phone string) bool {
+	return s.acknowledgeSerial(serial, phone, nil)
+}
+
+// AcknowledgeSerialWithResult 与 AcknowledgeSerial 相同，但把 0x0001 的
+// 应答结果一并带给 outbox，用于区分成功、终端执行失败与协议错误。
+func (s *Session) AcknowledgeSerialWithResult(serial uint16, phone string, result uint8) bool {
+	return s.acknowledgeSerial(serial, phone, &result)
+}
+
+func (s *Session) acknowledgeSerial(serial uint16, phone string, terminalResult *uint8) bool {
 	var (
 		msgID     uint16
 		serialHit uint16
@@ -232,7 +245,13 @@ func (s *Session) AcknowledgeSerial(serial uint16, phone string) bool {
 	}
 	s.pendingMu.Unlock()
 	if matched {
-		s.notifyReliable(ReliableResult{MsgID: msgID, Serial: serialHit, Phone: phone, Status: ReliableStatusAcked})
+		s.notifyReliable(ReliableResult{
+			MsgID:          msgID,
+			Serial:         serialHit,
+			Phone:          phone,
+			Status:         ReliableStatusAcked,
+			TerminalResult: terminalResult,
+		})
 	}
 	return matched
 }
