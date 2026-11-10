@@ -171,6 +171,9 @@ commandOutbox:
   expireAfter: "24h"
   # 首次下发后等待应答/会话重传的窗口，到期前不重投。
   initialWait: "1m"
+  # 终端明确执行失败（0x0001 Result=1）后是否重投。默认 false：
+  # 终端已经执行过，重投可能造成重复副作用；Result=2/3 始终终结，不受此开关影响。
+  retryOnTerminalFailure: false
 
 # 上行可靠性：按消息分类选择 best_effort / at_least_once。
 # best_effort：先应答后落库；落库失败只记日志，不等终端重传。

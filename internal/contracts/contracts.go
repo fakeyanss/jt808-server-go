@@ -42,6 +42,9 @@ type UplinkEvent struct {
 	Payload     any
 	PayloadRaw  []byte
 	Meta        map[string]any
+
+	// Reply 仅在终端通用应答（0x0001）时非空，是给管控应答入口的归一化字段。
+	Reply *TerminalReply
 }
 
 // UplinkResult 是管控对一次上行投递的受理结果。
@@ -54,6 +57,50 @@ type UplinkResult struct {
 // UplinkSink 是网关向上的统一出口。
 type UplinkSink interface {
 	Deliver(ctx context.Context, event UplinkEvent) (UplinkResult, error)
+}
+
+// TerminalReply 是终端对下行命令的通用应答（0x0001）归一化结果。
+//
+// 匹配键是 (Phone, AnswerMsgID, AnswerSerial)：AnswerMsgID/AnswerSerial
+// 来自 0x0001 报文体，指向被应答的下行消息；Phone 来自报文头。
+type TerminalReply struct {
+	EventID      string `json:"eventId"`
+	Phone        string `json:"phone"`
+	AnswerMsgID  uint16 `json:"answerMsgId"`
+	AnswerSerial uint16 `json:"answerSerial"`
+	// Result 为 0 表示成功；1 执行失败；2 消息有误；3 不支持。
+	Result     uint8     `json:"result"`
+	GatewayID  string    `json:"gatewayId,omitempty"`
+	SessionID  string    `json:"sessionId,omitempty"`
+	ReceivedAt time.Time `json:"receivedAt,omitempty"`
+	// Source 标记来源（transport / http），仅用于日志与排查。
+	Source string `json:"source,omitempty"`
+}
+
+// TerminalReplyOutcome 是一次应答处理对 outbox 的实际影响。
+type TerminalReplyOutcome string
+
+const (
+	// TerminalReplyAcked 命令由 pending 推进为 acked。
+	TerminalReplyAcked TerminalReplyOutcome = "acked"
+	// TerminalReplyFailed 命令由 pending 推进为 failed。
+	TerminalReplyFailed TerminalReplyOutcome = "failed"
+	// TerminalReplyRetryScheduled 命令保持 pending 并安排了退避重投。
+	TerminalReplyRetryScheduled TerminalReplyOutcome = "retry_scheduled"
+	// TerminalReplyDuplicate 应答与终态一致，未改变状态、未重复计数。
+	TerminalReplyDuplicate TerminalReplyOutcome = "duplicate"
+	// TerminalReplyLate 应答迟到或与终态矛盾，未改变状态。
+	TerminalReplyLate TerminalReplyOutcome = "late"
+	// TerminalReplyUnmatched 找不到对应的 outbox 记录。
+	TerminalReplyUnmatched TerminalReplyOutcome = "unmatched"
+	// TerminalReplyIgnored outbox 未启用，应答不参与状态推进。
+	TerminalReplyIgnored TerminalReplyOutcome = "ignored"
+)
+
+// TerminalReplyHandler 是终端应答的统一处理入口。
+// 本地直连与会话回调、HTTP 事件消费方都必须走这一入口。
+type TerminalReplyHandler interface {
+	HandleTerminalReply(ctx context.Context, reply TerminalReply) (TerminalReplyOutcome, error)
 }
 
 // DownlinkRequest 是一次下行下发请求。

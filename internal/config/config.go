@@ -1165,19 +1165,23 @@ type commandOutboxConf struct {
 	RetryMax      string `yaml:"retryMax"`
 	ExpireAfter   string `yaml:"expireAfter"`
 	InitialWait   string `yaml:"initialWait"`
+	// RetryOnTerminalFailure 决定终端明确执行失败（Result=1）后是否重投。
+	// 默认 false：终端已执行过，重投可能重复副作用；Result=2/3 始终不重投。
+	RetryOnTerminalFailure bool `yaml:"retryOnTerminalFailure"`
 }
 
 // CommandOutboxOptions 是重投调度的归一化配置。
 type CommandOutboxOptions struct {
-	Mode          string
-	PollInterval  time.Duration
-	BatchSize     int
-	MaxAttempts   int
-	LeaseDuration time.Duration
-	RetryBase     time.Duration
-	RetryMax      time.Duration
-	ExpireAfter   time.Duration
-	InitialWait   time.Duration
+	Mode                   string
+	PollInterval           time.Duration
+	BatchSize              int
+	MaxAttempts            int
+	LeaseDuration          time.Duration
+	RetryBase              time.Duration
+	RetryMax               time.Duration
+	ExpireAfter            time.Duration
+	InitialWait            time.Duration
+	RetryOnTerminalFailure bool
 }
 
 // ResolveCommandOutboxMode 把未显式配置的 mode 按存储后端归一化。
@@ -1267,6 +1271,7 @@ func (c *Config) ParseCommandOutbox() (CommandOutboxOptions, error) {
 		return CommandOutboxOptions{}, fmt.Errorf("commandOutbox.retryMax must be >= retryBase, got %q < %q",
 			options.RetryMax, options.RetryBase)
 	}
+	options.RetryOnTerminalFailure = conf.RetryOnTerminalFailure
 	return options, nil
 }
 

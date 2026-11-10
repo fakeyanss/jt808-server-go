@@ -736,6 +736,16 @@ cluster:
   - 查询类应答经结果返回。
 - 验收：standalone 行为不变；管控/网关分进程时命令、查询、回调、重试全部通过。
 
+#### E2 补充：终端应答 → outbox 状态回写（同进程先行）
+
+- 统一入口：`control.Outbox.HandleTerminalReply`。本地会话回调 `HandleResult` 是传输层适配器，HTTP 事件消费方从信封 `reply` 字段还原后调用同一入口；状态推进、幂等、迟到与无匹配分类只有一份实现。
+- 匹配键：`(phone, answerMsgId, answerSerial)`。`answerMsgId/answerSerial` 来自 `0x0001` 报文体，`phone` 来自报文头；重投复用原流水号，迟到应答仍能命中同一命令。
+- 状态机：`pending` 收到 `Result=0` → `acked`；收到 `Result=1/2/3` → 默认 `failed`；`Result=1` 在 `retryOnTerminalFailure=true` 且未达 `maxAttempts` 时可重投，`Result=2/3` 始终终结。终态命令不会被迟到成功应答改回 `acked`。
+- 幂等与分类：终态命令再次收到同结果应答归为 `duplicate`；结果矛盾或已过期归为 `late`；找不到记录归为 `unmatched`，并输出 Warn 日志与 `jt808_terminal_reply_total{outcome=...}`。`acked/failed/retry_scheduled` 只在真正推进状态时计数。
+- `sink=http` 双来源：网关侧传输层 ack 仍更新本地 outbox（用于停止重投），HTTP 消费方若共用同一 outbox，第二次处理因“终态 + 同结果”归为 `duplicate`，不会污染 `late` 或重复推进；若消费方独立进程，则各自持有 outbox，不存在共享记录。
+- 租约收尾：`acked/failed` 清空 `LeaseOwner/LeaseExpiresAt`，后续 `ClaimPending` 不会再取到；安排重投时清租约并设置 `NextAttemptAt`。`BeginAttempt` 之后、写 socket 之前到达的应答仍可能多写一帧，这是有界的一次 at-least-once 窗口。
+- **终态保留期结论**：本轮不纳入 retention 清理，列为后续项。原因：SQL 后端的 `command_outbox` 在本轮之前已经无界；routing 索引只是 memory 实现的额外映射。纳入清理需要跨后端新增 `PurgeTerminal`、配置与迁移，属于独立改动。后续建议参数：只清终态（`status IN ('acked','failed')`），清理键 `updated_at <= now - terminalRetention`，默认 `24h`，批量按 `batchSize`；pending 仍由 `expireAfter` 兜底。本轮用 `jt808_terminal_reply_total{outcome="late|unmatched"}` 观测误匹配，表体积由数据库侧巡检。
+
 ### E3：物理角色拆分与端点分配
 
 - 目标：media、attachment 可独立部署；`0x9101/0x9201/0x9208` 由管控构造。
