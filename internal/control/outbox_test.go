@@ -100,9 +100,9 @@ func newHarness(t *testing.T, options OutboxOptions) *harness {
 		Devices:  devices,
 		Conn:     conn,
 		Metrics:  metrics,
-		Send: func(sessionID string, msg model.JT808Msg, serial uint16) error {
+		Send: senderFunc(func(sessionID string, msg model.JT808Msg, serial uint16) error {
 			return sender.send(sessionID, msg, serial)
-		},
+		}),
 		Owner: "test-node",
 		Clock: clock.Now,
 	}, options)
@@ -264,9 +264,9 @@ func TestReplayIsIdempotentAcrossInstances(t *testing.T) {
 		Commands: h.repo,
 		Devices:  h.devices,
 		Conn:     h.conn,
-		Send: func(sessionID string, msg model.JT808Msg, serial uint16) error {
+		Send: senderFunc(func(sessionID string, msg model.JT808Msg, serial uint16) error {
 			return h.sender.send(sessionID, msg, serial)
-		},
+		}),
 		Owner: "other-node",
 		Clock: h.clock.Now,
 	}, options)

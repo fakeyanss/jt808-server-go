@@ -11,6 +11,9 @@ log:
 
 server:
   name: "jt808-server-go"
+  # standalone（缺省）：四角色同进程，零外部依赖，行为与旧版本一致。
+  # cluster：按 cluster.roles 拆进程；E1 仅用于验证两个内部 HTTP 契约，不承接业务，不可上生产。
+  mode: "standalone"
   ackTimeoutMs: 5000
   maxRetransmissions: 3
   # 设备运行时状态（session/在线态/最后通信时间）只存在于进程内，不落库，
@@ -205,6 +208,47 @@ uplink:
     location: "best_effort"
     batchLocation: "at_least_once"
     alarm: "at_least_once"
+
+# 集群角色拆分。仅当 server.mode=cluster 时生效；standalone 下本段必须为空。
+# 四个角色：gateway（808 接入）、control（管控/API）、media（1078）、attachment（苏标附件）。
+# E1 只交付 gateway/control 的两个内部 HTTP 契约与启动校验；media/attachment 只校验配置，
+# cluster 不承接业务，业务处理仍在网关进程内，可用性从后续阶段起算。
+cluster:
+  roles: []
+  gateway:
+    # 网关侧下行 HTTP 入口监听地址；role=gateway 必填。
+    addr: ""
+    # 管控侧调用下行入口的基址；role=control 必填。
+    url: ""
+    # control -> gateway 共享密钥（Authorization: Bearer）。role=gateway 必填。
+    token: ""
+  control:
+    # 管控侧上行 HTTP 入口监听地址；role=control 必填。
+    addr: ""
+    # gateway -> control 共享密钥。role=control 必填，且必须与 uplink.http.token 一致。
+    token: ""
+  downlink:
+    # sync_ack 等待上限；默认 8s，不得超过 ackTimeoutMs × (maxRetransmissions+1)。
+    timeoutMs: 8000
+    # 网关在途记录保留时长，也是幂等窗口；未知 id 返回 404，过期返回 410。
+    idempotencyTTL: "2m"
+    # 并发 sync_ack 等待上限，超出返回 429。
+    maxInFlight: 256
+  uplink:
+    # eventId 去重窗口，必须覆盖网关超时与重试窗口。
+    dedupTTL: "10m"
+    dedupMaxEntries: 100000
+    # 单个上行请求体上限；超出返回 413。
+    maxBodyBytes: 4194304
+  blob:
+    # local | sharedVolume | objectStore。
+    # media/attachment 角色必须使用 sharedVolume（带标记）或 objectStore（E1 未实现，启动拒绝）。
+    backend: "local"
+    # sharedVolume 必须显式为 true，避免把本机独占目录误当成共享卷。
+    sharedVolume: false
+    # 共享卷根目录下由部署创建的标记文件。
+    marker: ".jt808-shared-volume"
+    root: "./data/blobs"
 
 # 持久化后端：memory | sqlite | mysql，缺省 memory（行为与旧版本一致）
 storage:
