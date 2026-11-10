@@ -68,17 +68,36 @@ type DownlinkRequest struct {
 	Message        model.JT808Msg
 }
 
-// DownlinkResult 描述一次下发的受理结果或终态。
+// DownlinkResult 描述一次下发的受理结果，同时也是命令状态的快照。
+//
+// Submit 只填 ID、Serial、Status、Duplicated、Accepted；
+// Query 额外填 Phone、MsgID、Attempts、LastError 与各时间戳，
+// 供命令状态查询接口展示重投进度。
 type DownlinkResult struct {
 	ID         string
 	Serial     uint16
 	Status     string
 	Duplicated bool
 	Accepted   bool
+
+	Phone     string
+	MsgID     uint16
+	Attempts  int
+	LastError string
+
+	CreatedAt     time.Time
+	UpdatedAt     time.Time
+	LastAttemptAt time.Time
+	NextAttemptAt time.Time
+	ExpiresAt     time.Time
 }
 
 // Downlink 是管控调用网关下发的契约。
 type Downlink interface {
+	// Enabled 表示实现是否提供持久化下发与命令状态查询。
+	// 关闭时 Submit 直接发送且不落库，Query 返回未找到；
+	// 调用方据此决定流水号归属与是否暴露状态查询接口。
+	Enabled() bool
 	Submit(ctx context.Context, request DownlinkRequest) (DownlinkResult, error)
 	Query(ctx context.Context, id string) (DownlinkResult, error)
 }
