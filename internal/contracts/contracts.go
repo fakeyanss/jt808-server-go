@@ -12,6 +12,8 @@ package contracts
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"io"
 	"time"
 
@@ -118,7 +120,8 @@ type TerminalReplyHandler interface {
 // DownlinkRequest 是一次下行下发请求。
 //
 // IdempotencyKey 由调用方生成并保持稳定；Serial 为调用方期望使用的流水号，
-// 为 0 时由网关在发送时分配（集群形态）。Message 必须已带报文头。
+// 为 0 时由 Downlink 实现分配（outbox 启用），off 模式则留给网关在发送时分配。
+// Message 必须已带报文头。
 type DownlinkRequest struct {
 	Phone          string
 	SessionID      string
@@ -201,8 +204,76 @@ const (
 //
 // 本地直连与 HTTP 网关都必须实现同一接口；返回 error 仅表示传输失败，
 // offline/rejected 等业务结果放在 Receipt.Status 中，由 outbox 决定租约收尾。
+// 传输错误应尽量包装成 *DownlinkError，让 outbox 区分确定性失败与可重试失败。
 type DownlinkSender interface {
 	Send(ctx context.Context, request DownlinkRequest) (DownlinkReceipt, error)
+}
+
+// DownlinkErrorKind 是下发传输失败的分类。
+type DownlinkErrorKind string
+
+const (
+	// DownlinkErrorTransient 表示网络抖动、超时、429 或 5xx，重投可能成功。
+	DownlinkErrorTransient DownlinkErrorKind = "transient"
+	// DownlinkErrorPermanent 表示 400/401/403/413 等确定性拒绝，重投必然同样失败。
+	DownlinkErrorPermanent DownlinkErrorKind = "permanent"
+)
+
+// DownlinkError 是 DownlinkSender 的类型化传输错误。
+//
+// StatusCode/Code 用于日志与错误信息，RetryAfter 来自网关的 Retry-After 头，
+// 供 outbox 在 429 时尊重对方的限流窗口而不是按本地退避硬打。
+type DownlinkError struct {
+	Kind       DownlinkErrorKind
+	StatusCode int
+	Code       string
+	RetryAfter time.Duration
+	Message    string
+}
+
+func (e *DownlinkError) Error() string {
+	if e == nil {
+		return ""
+	}
+	message := e.Message
+	if message == "" {
+		message = "downlink request failed"
+	}
+	if e.StatusCode != 0 {
+		return fmt.Sprintf("%s (status=%d code=%s)", message, e.StatusCode, e.Code)
+	}
+	if e.Code != "" {
+		return fmt.Sprintf("%s (code=%s)", message, e.Code)
+	}
+	return message
+}
+
+// IsPermanent 表示该错误是否为确定性失败，调用方应直接终结而不是退避重投。
+func (e *DownlinkError) IsPermanent() bool {
+	return e != nil && e.Kind == DownlinkErrorPermanent
+}
+
+// ClassifyDownlinkError 提取类型化错误；未包装的传输错误按可重试处理。
+func ClassifyDownlinkError(err error) *DownlinkError {
+	var downlinkErr *DownlinkError
+	if errors.As(err, &downlinkErr) {
+		if downlinkErr.Kind == "" {
+			downlinkErr.Kind = DownlinkErrorTransient
+		}
+		return downlinkErr
+	}
+	return &DownlinkError{Kind: DownlinkErrorTransient, Message: err.Error()}
+}
+
+// ClassifyDownlinkStatus 把网关 HTTP 状态码映射为错误分类。
+// 400/401/403/413 是确定性拒绝；408/429/5xx 与其余传输失败按可重试处理。
+func ClassifyDownlinkStatus(statusCode int) DownlinkErrorKind {
+	switch statusCode {
+	case 400, 401, 403, 413:
+		return DownlinkErrorPermanent
+	default:
+		return DownlinkErrorTransient
+	}
 }
 
 // AuthProvider 是网关向管控查询设备档案与鉴权码的只读契约。

@@ -290,14 +290,9 @@ func main() {
 			downlinkSender = client
 			log.Info().Str("gateway_url", clusterOptions.Gateway.URL).Msg("HTTP downlink client enabled")
 		}
-		var conn runtime.ConnectionRegistry
-		if hasGateway {
-			conn = deps.Runtime.Conn
-		}
 		built, buildErr := control.NewOutbox(control.OutboxDependencies{
 			Commands: commandRepo,
 			Devices:  stores.Devices,
-			Conn:     conn,
 			Metrics:  metrics,
 			Send:     downlinkSender,
 		}, control.OutboxOptions{
@@ -413,13 +408,14 @@ func main() {
 	}
 
 	// 管控侧上行 HTTP 入口：E2 把业务处理内置到控制面，网关只投事件。
-	// E2 约束 control 单副本：按 phone 串行的 mailbox 只在进程内成立。
+	// 部署建议：E2 默认单副本（同 phone 串行 mailbox 是进程内实现），但多副本在
+	// 字段所有权隔离 + 409 有界重投 + eventId 去重下是安全的；程序无法检测副本数。
 	var uplinkServer *uplink.Server
 	var controlBlob contracts.BlobStore
 	var businessExecutor *control.BusinessExecutor
 	cancelSweep := func() {}
 	if hasControl && !standalone {
-		log.Warn().Msg("control singleton mode (E2): replicas must be 1; phone-ordered processing is process-local")
+		log.Info().Msg("control uplink enabled: phone-ordered mailbox is process-local; single replica recommended, multiple replicas supported with per-field ownership")
 		if clusterOptions.Blob.Backend == config.BlobBackendSharedVolume {
 			shared, blobErr := blob.NewSharedVolume(clusterOptions.Blob.Root, true)
 			if blobErr != nil {
@@ -762,7 +758,7 @@ func main() {
 		}
 		routines.GoSafe(func() {
 			defer close(apiDone)
-			api.Run(apiCtx, serv, cfg, apiOptions, alarmServ, outbox, mediaUploadStore, queryer)
+			api.Run(apiCtx, serv, cfg, apiOptions, alarmServ, outbox, controlDownlink, mediaUploadStore, queryer)
 		})
 	} else {
 		close(apiDone)

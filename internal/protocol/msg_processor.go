@@ -721,6 +721,10 @@ func (mp *JT808MsgProcessor) deliverUplink(ctx context.Context, msgID uint16, da
 // protocolHalf 返回“两边都要”消息在网关侧的协议半边。
 func (mp *JT808MsgProcessor) protocolHalf(msgID uint16) func(context.Context, *model.ProcessData) error {
 	switch msgID {
+	case 0x0001:
+		// 网关半边继续处理协议层语义（查询 broker、可靠投递配对）；
+		// 管控半边通过 deliverUplink 收到归一化后的 TerminalReply。
+		return mp.processMsg0001
 	case 0x0100:
 		return mp.processRegisterProtocol
 	case 0x0102:
@@ -734,6 +738,8 @@ func (mp *JT808MsgProcessor) protocolHalf(msgID uint16) func(context.Context, *m
 // 其余控制面消息复用同一套 handler。
 func (mp *JT808MsgProcessor) ApplyControlBusiness(ctx context.Context, msgID uint16, data *model.ProcessData) error {
 	switch msgID {
+	case 0x0001:
+		return mp.processTerminalReplyBusiness(ctx, data)
 	case 0x0100:
 		return mp.processRegisterBusiness(ctx, data)
 	case 0x0102:

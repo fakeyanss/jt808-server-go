@@ -36,8 +36,10 @@ func (o Owner) String() string {
 // 归属只按“是否依赖活连接”划分，不按业务语义划分：需要会话、分包、
 // 待应答配对的留在网关；纯业务落库的搬到管控；注册/鉴权拆成两半。
 var Ownership = map[uint16]Owner{
-	// 会话与传输：心跳、注销、通用应答、补传、重传与下行模拟。
-	0x0001: OwnerGateway,
+	// 会话与传输：心跳、注销、补传、重传与下行模拟。
+	// 0x0001 必须同时投递给管控：outbox 依赖它收尾下行命令；网关半边继续
+	// 负责协议层的应答配对（查询 broker、重传确认），两边各取所需。
+	0x0001: OwnerBoth,
 	0x0002: OwnerGateway,
 	0x0003: OwnerGateway,
 	0x0004: OwnerGateway,
@@ -133,6 +135,9 @@ var Ownership = map[uint16]Owner{
 // BusinessHalves 是“两边都要”的消息在管控侧的业务半边函数名。
 // registrydoc 用它校验控制面归属确实有业务半边。
 var BusinessHalves = map[uint16]string{
+	// 0x0001 的业务半边不落库：应答由管控的 uplink 入口直接交给
+	// TerminalReplyHandler（outbox）收尾，这里只保留归属声明。
+	0x0001: "processTerminalReplyBusiness",
 	0x0100: "processRegisterBusiness",
 	0x0102: "processAuthBusiness",
 }

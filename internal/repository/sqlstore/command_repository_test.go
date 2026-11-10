@@ -157,3 +157,90 @@ func TestSQLiteCommandOutboxReplayLifecycle(t *testing.T) {
 	require.Equal(t, repository.CommandStatusFailed, expiredCommand.Status)
 	require.Equal(t, "expired before delivery", expiredCommand.LastError)
 }
+
+// TestSQLiteCommandNextSerialSkipsInFlightAfterWrap 覆盖回绕：
+// 游标自增跨越 65535 后回到 1，必须跳过同 msgId 仍未终结的组合；
+// 不同 msgId 复用同一 serial 是安全的。
+func TestSQLiteCommandNextSerialSkipsInFlightAfterWrap(t *testing.T) {
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "jt808-serial.db")
+	migrateSQLite(t, dbPath)
+	store, err := Open(Config{Backend: BackendSQLite, Path: dbPath})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() })
+	commands := store.CommandRepository()
+
+	const phone = "188765477003"
+	first, err := commands.NextSerial(ctx, phone, 0x8105)
+	require.NoError(t, err)
+	require.Equal(t, uint16(1), first)
+
+	// 同 msgId 的 serial=1 仍在途。
+	_, created, err := commands.Enqueue(ctx, &repository.DownlinkCommand{
+		CommandID: "wrap-in-flight", IdempotencyKey: "wrap-in-flight",
+		Phone: phone, MsgID: 0x8105, Serial: 1, Payload: []byte{0x02},
+	})
+	require.NoError(t, err)
+	require.True(t, created)
+
+	// 把游标拨到 65535，模拟长时间运行后的回绕。
+	_, err = store.db.ExecContext(ctx, `UPDATE command_serial SET next_serial = 65535 WHERE phone = ?`, phone)
+	require.NoError(t, err)
+	wrapped, err := commands.NextSerial(ctx, phone, 0x8105)
+	require.NoError(t, err)
+	require.Equal(t, uint16(65535), wrapped)
+
+	afterWrap, err := commands.NextSerial(ctx, phone, 0x8105)
+	require.NoError(t, err)
+	require.Equal(t, uint16(2), afterWrap, "回绕后必须跳过同 msgId 的在途 serial")
+
+	// 不同 msgId 复用 serial=1 安全。
+	_, err = store.db.ExecContext(ctx, `UPDATE command_serial SET next_serial = 1 WHERE phone = ?`, phone)
+	require.NoError(t, err)
+	reused, err := commands.NextSerial(ctx, phone, 0x8608)
+	require.NoError(t, err)
+	require.Equal(t, uint16(1), reused)
+}
+
+// TestSQLiteCommandReleaseOfflineRestoresAttempts 覆盖离线释放：
+// 租约清空、attempts 与 last_attempt_at 回到占用前快照，NextAttemptAt 不变。
+func TestSQLiteCommandReleaseOfflineRestoresAttempts(t *testing.T) {
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "jt808-offline.db")
+	migrateSQLite(t, dbPath)
+	store, err := Open(Config{Backend: BackendSQLite, Path: dbPath})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() })
+	commands := store.CommandRepository()
+
+	const phone = "188765477004"
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	_, created, err := commands.Enqueue(ctx, &repository.DownlinkCommand{
+		CommandID: "offline", IdempotencyKey: "offline", Phone: phone,
+		MsgID: 0x8105, Serial: 7, Payload: []byte{0x02},
+		NextAttemptAt: now, ExpiresAt: now.Add(time.Hour),
+	})
+	require.NoError(t, err)
+	require.True(t, created)
+
+	_, err = commands.ClaimPending(ctx, repository.CommandClaim{
+		Owner: "node-a", Now: now, Limit: 1, Lease: time.Minute,
+	})
+	require.NoError(t, err)
+	begun, err := commands.BeginAttempt(ctx, "offline", "node-a", now)
+	require.NoError(t, err)
+	require.True(t, begun)
+
+	released, err := commands.ReleaseOffline(ctx, "offline", "node-a", 1, time.Time{}, "device offline")
+	require.NoError(t, err)
+	require.True(t, released)
+
+	stored, err := commands.Get(ctx, "offline")
+	require.NoError(t, err)
+	require.Equal(t, repository.CommandStatusPending, stored.Status)
+	require.Equal(t, 1, stored.Attempts)
+	require.True(t, stored.LastAttemptAt.IsZero())
+	require.Empty(t, stored.LeaseOwner)
+	require.Equal(t, "device offline", stored.LastError)
+	require.True(t, stored.NextAttemptAt.Equal(now))
+}

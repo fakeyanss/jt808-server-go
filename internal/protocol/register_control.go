@@ -136,19 +136,20 @@ func (mp *JT808MsgProcessor) processRegisterProtocol(ctx context.Context, data *
 }
 
 // processRegisterBusiness 是 0x0100 的管控半边：把注册信息与鉴权码落库。
+//
+// 只写注册拥有的静态字段，不做整行覆盖：多副本下 0x0100 可能晚于 0x0102
+// 到达，整行写回会冲掉鉴权刚置上的在线状态、会话与最后通信时间。
 func (mp *JT808MsgProcessor) processRegisterBusiness(ctx context.Context, data *model.ProcessData) error {
 	in, ok := data.Incoming.(*model.Msg0100)
 	if !ok || in == nil {
 		return nil
 	}
 	devices := mp.deps.Storage.Devices
-	event := UplinkEventFromContext(ctx)
 
 	existing, err := devices.GetByPhone(ctx, in.Header.PhoneNumber)
 	if err != nil && !errors.Is(err, repository.ErrDeviceNotFound) {
 		return err
 	}
-	now := time.Now()
 	device := existing
 	if device == nil {
 		device = &model.Device{
@@ -156,7 +157,6 @@ func (mp *JT808MsgProcessor) processRegisterBusiness(ctx context.Context, data *
 			Plate:           in.PlateNumber,
 			Phone:           in.Header.PhoneNumber,
 			Keepalive:       time.Minute,
-			LastestComTime:  now,
 			Status:          model.DeviceStatusOffline,
 			VersionDesc:     in.Header.Attr.VersionDesc,
 			ProtocolVersion: in.Header.ProtocolVersion,
@@ -168,10 +168,7 @@ func (mp *JT808MsgProcessor) processRegisterBusiness(ctx context.Context, data *
 		device.ProtocolVersion = in.Header.ProtocolVersion
 	}
 	device.AuthCode = registerAuthCode(in)
-	if event.SessionID != "" {
-		device.SessionID = event.SessionID
-	}
-	return devices.Upsert(ctx, device)
+	return devices.SaveRegistration(ctx, device)
 }
 
 // processAuthProtocol 是 0x0102 的网关半边：本地校验鉴权码并回 0x8001。
@@ -253,7 +250,15 @@ func (mp *JT808MsgProcessor) processAuthBusiness(ctx context.Context, data *mode
 	device.LastestComTime = time.Now()
 	device.IMEI = in.IMEI
 	device.SoftwareVersion = in.SoftwareVersion
-	return devices.Upsert(ctx, device)
+	return devices.SaveAuthState(ctx, device)
+}
+
+// processTerminalReplyBusiness 是 0x0001 的管控半边占位实现。
+//
+// 应答不在这里落库：管控的 uplink HTTP 入口在解析出 TerminalReply 后直接调用
+// TerminalReplyHandler（outbox），此处只用于归属声明与注册表一致性校验。
+func (mp *JT808MsgProcessor) processTerminalReplyBusiness(context.Context, *model.ProcessData) error {
+	return nil
 }
 
 // registerAuthCode 计算注册鉴权码；standalone 与网关半边共用同一算法。

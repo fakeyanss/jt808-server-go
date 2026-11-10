@@ -92,14 +92,23 @@ type CommandRepository interface {
 	ClaimPending(ctx context.Context, claim CommandClaim) ([]*DownlinkCommand, error)
 	// BeginAttempt 记录一次实际下发尝试（attempts+1、last_attempt_at），仅租约持有者有效。
 	BeginAttempt(ctx context.Context, commandID, owner string, now time.Time) (bool, error)
-	// ReleaseAttempt 释放租约并安排下一次可投时刻，用于设备离线或同步写失败。
+	// ReleaseAttempt 释放租约并安排下一次可投时刻，用于真实下发失败（传输错误、网关 rejected）
+	// 后的退避。attempts 已由 BeginAttempt 递增，这里只写退避时刻与 last_error。
 	ReleaseAttempt(ctx context.Context, commandID, owner string, next time.Time, reason string) (bool, error)
+	// ReleaseOffline 释放租约但保持 pending，用于设备离线或档案未就绪等“未真正下发”的场景：
+	// attempts 与 last_attempt_at 回退到调用前的快照，不消耗也不清零重投次数，
+	// 并保留原 NextAttemptAt，使设备上线后下一轮即可重投。
+	ReleaseOffline(ctx context.Context, commandID, owner string, attempts int, lastAttemptAt time.Time, reason string) (bool, error)
 	// ScheduleRetry 按路由键安排重投，不要求租约归属；用于异步失败事件回填。
 	ScheduleRetry(ctx context.Context, phone string, msgID, serial uint16, next time.Time, reason string) (bool, error)
 	// ExpirePending 把已过期且仍为 pending 的命令转 failed，返回处理条数。
 	ExpirePending(ctx context.Context, now time.Time, reason string) (int, error)
 	MarkAcked(ctx context.Context, phone string, msgID, serial uint16) (bool, error)
 	MarkFailed(ctx context.Context, phone string, msgID, serial uint16, reason string) (bool, error)
+	// NextSerial 为 (phone, msgID) 分配下一个下行流水号。
+	// 实现必须在 1..65535 间循环、跳过 0，并跳过该 phone 下同 msgID 仍在途（pending）
+	// 的流水号：回绕后复用同一 serial 只有在旧命令已终结时才安全。
+	NextSerial(ctx context.Context, phone string, msgID uint16) (uint16, error)
 }
 
 // memoryCommandRepository 是 CommandRepository 的内存实现。
@@ -108,6 +117,8 @@ type memoryCommandRepository struct {
 	byID    map[string]*DownlinkCommand
 	byIdem  map[commandIdempotencyKey]string
 	routing map[commandRoutingKey]string
+	// nextSerial 是 per-phone 的流水号游标，只在 outbox 启用时使用。
+	nextSerial map[string]uint16
 }
 
 type commandIdempotencyKey struct {
@@ -124,9 +135,10 @@ type commandRoutingKey struct {
 // NewCommandRepository 创建独立的内存下行命令仓储。
 func NewCommandRepository() CommandRepository {
 	return &memoryCommandRepository{
-		byID:    map[string]*DownlinkCommand{},
-		byIdem:  map[commandIdempotencyKey]string{},
-		routing: map[commandRoutingKey]string{},
+		byID:       map[string]*DownlinkCommand{},
+		byIdem:     map[commandIdempotencyKey]string{},
+		routing:    map[commandRoutingKey]string{},
+		nextSerial: map[string]uint16{},
 	}
 }
 
@@ -270,6 +282,70 @@ func (r *memoryCommandRepository) ReleaseAttempt(_ context.Context, commandID, o
 	stored.LastError = reason
 	stored.UpdatedAt = time.Now()
 	return true, nil
+}
+
+func (r *memoryCommandRepository) ReleaseOffline(_ context.Context, commandID, owner string, attempts int, lastAttemptAt time.Time, reason string) (bool, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	stored := r.byID[commandID]
+	if stored == nil || stored.Status != CommandStatusPending || stored.LeaseOwner != owner {
+		return false, nil
+	}
+	stored.LeaseOwner = ""
+	stored.LeaseExpiresAt = time.Time{}
+	// 离线不是一次真实下发：恢复占用前的尝试次数与时间，避免反复离线把
+	// MaxAttempts 这道闸刷掉；NextAttemptAt 保持原值，设备上线后即可重投。
+	stored.Attempts = attempts
+	stored.LastAttemptAt = lastAttemptAt
+	stored.LastError = reason
+	stored.UpdatedAt = time.Now()
+	return true, nil
+}
+
+// NextSerial 在内存中原子分配流水号：per-phone 游标自增，跳过 0 与同 msgID 的在途组合。
+func (r *memoryCommandRepository) NextSerial(_ context.Context, phone string, msgID uint16) (uint16, error) {
+	if phone == "" {
+		return 0, fmt.Errorf("next serial: empty phone")
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	next, ok := r.nextSerial[phone]
+	if !ok || next == 0 {
+		// 首次分配从该 phone 已存在的最大流水号之后开始，避免与重启前的记录绕回。
+		for key := range r.routing {
+			if key.phone == phone && key.serial > next {
+				next = key.serial
+			}
+		}
+		next = wrapSerial(next + 1)
+	}
+	for i := 0; i < 65535; i++ {
+		if !r.serialInFlight(phone, msgID, next) {
+			r.nextSerial[phone] = wrapSerial(next + 1)
+			return next, nil
+		}
+		next = wrapSerial(next + 1)
+	}
+	return 0, fmt.Errorf("next serial: no free serial for %s/%04X", phone, msgID)
+}
+
+// serialInFlight 判断同一 phone 下同 msgID 的 serial 是否仍有 pending 命令。
+func (r *memoryCommandRepository) serialInFlight(phone string, msgID, serial uint16) bool {
+	for _, stored := range r.byID {
+		if stored.Status == CommandStatusPending && stored.Phone == phone &&
+			stored.MsgID == msgID && stored.Serial == serial {
+			return true
+		}
+	}
+	return false
+}
+
+// wrapSerial 在 1..65535 间循环，跳过协议保留的 0。
+func wrapSerial(value uint16) uint16 {
+	if value == 0 {
+		return 1
+	}
+	return value
 }
 
 func (r *memoryCommandRepository) ScheduleRetry(_ context.Context, phone string, msgID, serial uint16, next time.Time, reason string) (bool, error) {
