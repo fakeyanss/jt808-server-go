@@ -500,6 +500,16 @@ func resultFromCommand(command *repository.DownlinkCommand, duplicated bool) con
 		Status:     string(command.Status),
 		Duplicated: duplicated,
 		Accepted:   true,
+
+		Phone:         command.Phone,
+		MsgID:         command.MsgID,
+		Attempts:      command.Attempts,
+		LastError:     command.LastError,
+		CreatedAt:     command.CreatedAt,
+		UpdatedAt:     command.UpdatedAt,
+		LastAttemptAt: command.LastAttemptAt,
+		NextAttemptAt: command.NextAttemptAt,
+		ExpiresAt:     command.ExpiresAt,
 	}
 }
 
