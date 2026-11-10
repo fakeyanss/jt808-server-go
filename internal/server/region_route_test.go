@@ -87,7 +87,8 @@ func TestRegionRouteSetQueryDeleteRoundTrip(t *testing.T) {
 		require.Equal(t, uint32(1), resp.Count)
 		require.Len(t, resp.Circles, 1)
 		require.Equal(t, uint32(101), resp.Circles[0].ID)
-		require.Equal(t, "测试圆", resp.Circles[0].Name)
+		// 2011/2013 标准没有区域名称字段，名称不应上线。
+		require.Empty(t, resp.Circles[0].Name)
 		require.Equal(t, uint32(500), resp.Circles[0].Radius)
 	case <-time.After(2 * time.Second):
 		t.Fatal("simulator did not answer circle query")
@@ -110,12 +111,11 @@ func TestRegionRouteSetQueryDeleteRoundTrip(t *testing.T) {
 		Routes: []model.Route{{
 			ID: 401, Attr: model.AreaAttrTime,
 			StartTime: "261028000000", EndTime: "261028120000",
-			Segments: []model.RouteSegment{{
-				ID: 1, Attr: 0, Length: 1000,
-				Vertices: []model.PolygonVertex{
-					{Latitude: 31000000, Longitude: 121000000},
-					{Latitude: 31000010, Longitude: 121000010},
-				},
+			// 2011/2013 版本路线使用标准拐点项，而不是 2019 的路段+顶点列表。
+			Inflections: []model.RouteInflection{{
+				ID: 1, SectionID: 2,
+				Latitude: 31000000, Longitude: 121000000,
+				Width: 10,
 			}},
 			Name: "路线1",
 		}},
@@ -134,7 +134,8 @@ func TestRegionRouteSetQueryDeleteRoundTrip(t *testing.T) {
 	})
 	respRoute := catalog.Query(device.Phone, 4, nil)
 	require.Equal(t, uint32(401), respRoute.Routes[0].ID)
-	require.Len(t, respRoute.Routes[0].Segments, 1)
+	require.Len(t, respRoute.Routes[0].Inflections, 1)
+	require.Empty(t, respRoute.Routes[0].Name)
 
 	// --- Set a polygon, query it back, then delete ---
 	setPolygon := &model.MsgRegionRouteSet{
@@ -158,7 +159,7 @@ func TestRegionRouteSetQueryDeleteRoundTrip(t *testing.T) {
 	})
 	respPoly := catalog.Query(device.Phone, 3, nil)
 	require.Equal(t, uint32(301), respPoly.Polygons[0].ID)
-	require.Equal(t, "多边形1", respPoly.Polygons[0].Name)
+	require.Empty(t, respPoly.Polygons[0].Name)
 	require.Len(t, respPoly.Polygons[0].Vertices, 3)
 
 	server.Send(session.ID, &model.Msg860Delete{Header: model.GenMsgHeader(device, 0x8605, session.GetNextSerialNum()), IDs: []uint32{301}})
