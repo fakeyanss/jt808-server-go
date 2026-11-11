@@ -258,6 +258,7 @@ func (p *rtmpPublisher) signal() {
 // run 持续重连并写队列；后台协程是唯一持有网络连接的地方。
 func (p *rtmpPublisher) run() {
 	backoff := time.Second
+	connectedOnce := false
 	for {
 		select {
 		case <-p.done:
@@ -277,9 +278,14 @@ func (p *rtmpPublisher) run() {
 		}
 		backoff = time.Second
 		p.setState(StatePublishing)
-		p.mu.Lock()
-		p.desync = true
-		p.mu.Unlock()
+		if connectedOnce {
+			// 重连后必须以“配置帧 + 关键帧”重新开流：旧连接排队中的帧要丢弃，
+			// 且音频配置要在新实例上重新下发，否则新 SRS 实例拿不到 AAC 序列头。
+			p.resetForReconnect()
+		}
+		// 首次连接不重置任何状态：Start 已把 desync 置为 true，
+		// 且连接建立前入队的配置帧/关键帧本来就是新连接需要的。
+		connectedOnce = true
 		p.writeLoop(conn)
 		_ = conn.Close()
 		if !p.wait(time.Second) {
@@ -296,6 +302,26 @@ func (p *rtmpPublisher) wait(d time.Duration) bool {
 		return false
 	case <-timer.C:
 		return true
+	}
+}
+
+// resetForReconnect 清空残留队列并强制等待新的关键帧。
+//
+// 旧连接未发完的帧对新连接没有意义：直接把 P 帧/音频写在流首会让观众
+// 先看到不可解码的数据。这里同时清空音频配置缓存，保证新实例重新收到
+// AudioSpecificConfig。
+func (p *rtmpPublisher) resetForReconnect() {
+	p.mu.Lock()
+	p.desync = true
+	p.audioCfg = nil
+	queue := p.queue
+	p.mu.Unlock()
+	for {
+		select {
+		case <-queue:
+		default:
+			return
+		}
 	}
 }
 
@@ -358,7 +384,7 @@ func (p *rtmpPublisher) connect() (net.Conn, error) {
 	}
 	// 整个连接只用一个 bufio.Reader：读到 _result 时可能已把下一条消息读进缓冲，
 	// 每次新建 reader 会丢掉缓冲区里的字节。
-	reader := bufio.NewReader(conn)
+	reader := newRTMPReader(bufio.NewReader(conn))
 	app := strings.Trim(parsed.Path, "/")
 	// 设置 chunk size，后续音视频分块按 4096 发送。
 	if err := writeRTMPMessage(conn, 2, 1, 0, 0, []byte{0x00, 0x00, 0x10, 0x00}, defaultRTMPChunkSize); err != nil {
@@ -424,11 +450,11 @@ func rtmpHandshake(conn net.Conn) error {
 }
 
 // readUntil 读取 RTMP 消息直到 payload 含指定子串或超时。
-func readUntil(conn net.Conn, reader *bufio.Reader, needle string, timeout time.Duration) bool {
+func readUntil(conn net.Conn, reader *rtmpReader, needle string, timeout time.Duration) bool {
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
 		_ = conn.SetReadDeadline(deadline)
-		payload, err := readRTMPMessage(reader, defaultRTMPChunkSize)
+		_, payload, err := reader.readMessage()
 		if err != nil {
 			return false
 		}
@@ -488,85 +514,153 @@ func writeRTMPMessage(w io.Writer, csid byte, typ byte, streamID uint32, ts uint
 }
 
 type chunkState struct {
-	ts       uint32
-	length   int
-	typ      byte
-	streamID uint32
-	buffer   []byte
+	ts        uint32
+	tsDelta   uint32
+	length    int
+	typ       byte
+	streamID  uint32
+	extended  bool
+	buffer    []byte
+	delivered bool
 }
 
-// readRTMPMessage 读取一条完整消息，只支持 fmt0/3 与小于 64 的 csid。
-func readRTMPMessage(r *bufio.Reader, chunkSize int) ([]byte, error) {
-	states := map[byte]*chunkState{}
+// rtmpReader 读取对端消息。
+//
+// 入站 chunk 大小由对端决定：规范默认 128，对端可以用 Set Chunk Size 改写。
+// SRS 的应答大小不受我们发出的 Set Chunk Size 影响，因此必须按对端声明
+// 动态调整，否则跨多个 chunk 的控制消息会被错切。
+type rtmpReader struct {
+	r         *bufio.Reader
+	chunkSize int
+	states    map[uint32]*chunkState
+}
+
+func newRTMPReader(r *bufio.Reader) *rtmpReader {
+	return &rtmpReader{r: r, chunkSize: 128, states: map[uint32]*chunkState{}}
+}
+
+// readMessage 读取一条完整消息，返回消息类型与负载。
+func (rr *rtmpReader) readMessage() (byte, []byte, error) {
 	for {
-		basic, err := r.ReadByte()
+		basic, err := rr.r.ReadByte()
 		if err != nil {
-			return nil, err
+			return 0, nil, err
 		}
 		format := basic >> 6
-		csid := basic & 0x3f
-		state := states[csid]
+		csid := uint32(basic & 0x3f)
+		switch csid {
+		case 0:
+			extra, err := rr.r.ReadByte()
+			if err != nil {
+				return 0, nil, err
+			}
+			csid = 64 + uint32(extra)
+		case 1:
+			var extra [2]byte
+			if _, err := io.ReadFull(rr.r, extra[:]); err != nil {
+				return 0, nil, err
+			}
+			csid = 64 + uint32(extra[0]) + uint32(extra[1])*256
+		}
+		state := rr.states[csid]
 		if state == nil {
 			state = &chunkState{}
-			states[csid] = state
+			rr.states[csid] = state
 		}
-		var ts uint32
 		switch format {
 		case 0:
-			header := make([]byte, 11)
-			if _, err := io.ReadFull(r, header); err != nil {
-				return nil, err
+			var header [11]byte
+			if _, err := io.ReadFull(rr.r, header[:]); err != nil {
+				return 0, nil, err
 			}
-			ts = uint32(header[0])<<16 | uint32(header[1])<<8 | uint32(header[2])
+			tsField := uint32(header[0])<<16 | uint32(header[1])<<8 | uint32(header[2])
 			state.length = int(header[3])<<16 | int(header[4])<<8 | int(header[5])
 			state.typ = header[6]
 			state.streamID = binary.LittleEndian.Uint32(header[7:11])
-			state.ts = ts
-			state.buffer = nil
-			if ts == 0xFFFFFF {
+			state.ts = tsField
+			state.tsDelta = 0
+			state.extended = tsField == 0xFFFFFF
+			if state.extended {
 				var ext [4]byte
-				if _, err := io.ReadFull(r, ext[:]); err != nil {
-					return nil, err
+				if _, err := io.ReadFull(rr.r, ext[:]); err != nil {
+					return 0, nil, err
 				}
 				state.ts = binary.BigEndian.Uint32(ext[:])
 			}
+			state.buffer = nil
+			state.delivered = false
 		case 1:
-			header := make([]byte, 7)
-			if _, err := io.ReadFull(r, header); err != nil {
-				return nil, err
+			var header [7]byte
+			if _, err := io.ReadFull(rr.r, header[:]); err != nil {
+				return 0, nil, err
 			}
+			state.tsDelta = uint32(header[0])<<16 | uint32(header[1])<<8 | uint32(header[2])
+			state.ts += state.tsDelta
 			state.length = int(header[3])<<16 | int(header[4])<<8 | int(header[5])
 			state.typ = header[6]
-			state.buffer = nil
-		case 2:
-			header := make([]byte, 3)
-			if _, err := io.ReadFull(r, header); err != nil {
-				return nil, err
+			state.extended = state.tsDelta == 0xFFFFFF
+			if state.extended {
+				var ext [4]byte
+				if _, err := io.ReadFull(rr.r, ext[:]); err != nil {
+					return 0, nil, err
+				}
+				state.ts = binary.BigEndian.Uint32(ext[:])
 			}
 			state.buffer = nil
+			state.delivered = false
+		case 2:
+			var header [3]byte
+			if _, err := io.ReadFull(rr.r, header[:]); err != nil {
+				return 0, nil, err
+			}
+			state.tsDelta = uint32(header[0])<<16 | uint32(header[1])<<8 | uint32(header[2])
+			state.ts += state.tsDelta
+			state.buffer = nil
+			state.delivered = false
 		case 3:
 			if state.length == 0 {
-				return nil, errors.New("rtmp: unexpected continuation chunk")
+				return 0, nil, errors.New("rtmp: unexpected continuation chunk")
+			}
+			if state.delivered {
+				// 上一条消息已交付：这条 fmt3 开启新消息，沿用上一条消息头。
+				state.buffer = nil
+				state.delivered = false
+				state.ts += state.tsDelta
+				if state.extended {
+					var ext [4]byte
+					if _, err := io.ReadFull(rr.r, ext[:]); err != nil {
+						return 0, nil, err
+					}
+					state.ts = binary.BigEndian.Uint32(ext[:])
+				}
 			}
 		}
 		remaining := state.length - len(state.buffer)
 		n := remaining
-		if n > chunkSize {
-			n = chunkSize
+		if n > rr.chunkSize {
+			n = rr.chunkSize
 		}
 		if n < 0 {
 			n = 0
 		}
 		buf := make([]byte, n)
-		if _, err := io.ReadFull(r, buf); err != nil {
-			return nil, err
+		if _, err := io.ReadFull(rr.r, buf); err != nil {
+			return 0, nil, err
 		}
 		state.buffer = append(state.buffer, buf...)
-		if len(state.buffer) >= state.length {
-			payload := state.buffer
-			state.buffer = nil
-			return payload, nil
+		if len(state.buffer) < state.length {
+			continue
 		}
+		payload := state.buffer
+		state.buffer = nil
+		state.delivered = true
+		// Set Chunk Size 作用于该消息之后的入站分块。
+		if csid == 2 && state.typ == 1 && len(payload) >= 4 {
+			if size := int(binary.BigEndian.Uint32(payload[:4])) & 0x7FFFFFFF; size >= 1 {
+				rr.chunkSize = size
+			}
+		}
+		return state.typ, payload, nil
 	}
 }
 
@@ -598,7 +692,9 @@ func amf0Null() []byte { return []byte{0x05} }
 func amf0Object(values map[string]any) []byte {
 	out := []byte{0x03}
 	for key, value := range values {
-		out = append(out, amf0String(key)...)
+		// AMF0 对象属性名是裸 UTF-8（只有 2 字节长度，没有 0x02 字符串标记）。
+		out = append(out, byte(len(key)>>8), byte(len(key)))
+		out = append(out, key...)
 		switch v := value.(type) {
 		case string:
 			out = append(out, amf0String(v)...)
