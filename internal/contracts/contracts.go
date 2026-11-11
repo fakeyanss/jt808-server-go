@@ -468,6 +468,9 @@ func (e *PlaybackSessionConflictError) Error() string {
 type PlaybackSessionManager interface {
 	CreatePlaybackSession(ctx context.Context, request PlaybackSessionRequest) (PlaybackSession, error)
 	ReleasePlaybackSession(ctx context.Context, sessionID string) error
+	// PlaybackSession 返回会话快照，found=false 表示会话已释放或不存在。
+	// 停机路径需要在释放前拿到手机号、通道号与会话类型，用于选择 0x9102/0x9202。
+	PlaybackSession(ctx context.Context, sessionID string) (PlaybackSession, bool)
 }
 
 // AttachmentEndpoint 是苏标附件节点的可达地址。

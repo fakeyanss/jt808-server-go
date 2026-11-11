@@ -1385,12 +1385,25 @@ func dispatchDownlink(
 	session *model.Session,
 	msg model.JT808Msg,
 ) (*contracts.DownlinkResult, bool, error) {
-	if downlink == nil {
-		return nil, false, errors.New("command outbox is not configured")
-	}
 	idempotencyKey := strings.TrimSpace(c.GetHeader("Idempotency-Key"))
 	if len(idempotencyKey) > 128 {
 		return nil, false, errors.New("Idempotency-Key must not exceed 128 characters")
+	}
+	return dispatchDownlinkWithKey(c, downlink, session, msg, idempotencyKey)
+}
+
+// dispatchDownlinkWithKey 与 dispatchDownlink 相同，但幂等键由调用方指定。
+// 停机等“同一资源只能下发一次”的场景需要按会话生成确定性幂等键，
+// 不能依赖客户端请求头，否则重复请求会各自生成新命令。
+func dispatchDownlinkWithKey(
+	c *gin.Context,
+	downlink contracts.Downlink,
+	session *model.Session,
+	msg model.JT808Msg,
+	idempotencyKey string,
+) (*contracts.DownlinkResult, bool, error) {
+	if downlink == nil {
+		return nil, false, errors.New("command outbox is not configured")
 	}
 	serial := uint16(0)
 	sessionID := ""

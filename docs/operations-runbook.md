@@ -96,6 +96,8 @@ mediaServer:
 - `both`：两路并联，单路异常不影响另一路。
 - `rtmp`/`both` 必须配置 `rtmp.url`，且协议前缀必须是 `rtmp://`；协议不支持、缺少 URL 或超时/队列为负数都会导致**启动失败**，不是运行期降级。
 - 播放会话按 `(手机号, 逻辑通道号)` 唯一。同一通道已有会话时新请求返回 `409 session_conflict`，并在响应体里带现有会话 ID、类型与过期时间；不会顶替也不会排队。`DELETE /api/playback/:sessionId` 释放后可重新创建。
+- `DELETE /api/playback/:sessionId` 会尽力下发停止指令：实时会话发 `0x9102`（关闭音视频传输），终端回放会话发 `0x9202`（结束回放）。无论下发是否成功，本地会话都会释放；响应里的 `stopCommand` 区分三种结果：`notified=true` 表示直发模式已写入终端连接，`queued=true` 表示 outbox 已受理（异步投递，凭 `commandId` 在 `GET /api/commands/<commandId>` 回查 `0x0001` 结果），`notified/queued` 都为 false 时 `reason` 给出未下发原因。重复 `DELETE` 同一会话返回 `alreadyReleased=true`，不会重复下发。
+- 会话因 30 秒无媒体包被空闲回收时**不下发**停止指令：该回收只发生在媒体侧确实收不到包时，且媒体角色不反向调用 808 信令。
 
 > **部署注意（务必遵守）：`rtmp` / `both` 模式下必须保持 SRS 的 `gop_cache` 开启（默认值），不要关闭。**
 >

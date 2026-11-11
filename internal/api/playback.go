@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -181,16 +182,45 @@ func registerPlaybackRoutes(api *gin.RouterGroup, devices repository.DeviceRepos
 		writeCommandAccepted(c, command, commandCreated, fields)
 	})
 
+	// DELETE 同一会话必须幂等：先同步串行化，避免并发 DELETE 各发一次停止指令。
+	var stopMu sync.Mutex
 	api.DELETE("/playback/:sessionId", func(c *gin.Context) {
 		if playback == nil {
 			c.JSON(http.StatusServiceUnavailable, gin.H{"err": "media playback is not available on this role"})
 			return
 		}
-		if err := playback.ReleasePlaybackSession(c.Request.Context(), c.Param("sessionId")); err != nil {
-			c.JSON(http.StatusNotFound, gin.H{"code": "session_not_found", "message": err.Error()})
+		stopMu.Lock()
+		defer stopMu.Unlock()
+
+		ctx := c.Request.Context()
+		sessionID := c.Param("sessionId")
+		session, found := playback.PlaybackSession(ctx, sessionID)
+		if !found {
+			// 已释放或从未存在：按幂等删除返回 200，不再下发停止指令。
+			c.JSON(http.StatusOK, gin.H{
+				"sessionId":       sessionID,
+				"released":        true,
+				"alreadyReleased": true,
+				"stopCommand": playbackStopOutcome{
+					Reason: "session already released or unknown; stop command not sent",
+				},
+			})
 			return
 		}
-		c.Status(http.StatusNoContent)
+		// 先尽力下发停止指令，再无条件释放本地会话：下发失败不能把会话挂住。
+		stop := sendPlaybackStop(c, devices, conn, downlink, outboxEnabled, session)
+		releaseErr := playback.ReleasePlaybackSession(ctx, sessionID)
+		fields := gin.H{
+			"sessionId":       sessionID,
+			"released":        true,
+			"alreadyReleased": false,
+			"stopCommand":     stop,
+		}
+		if releaseErr != nil {
+			// 会话已从媒体侧摘除，但出口或观众清理报错；如实返回便于排查。
+			fields["releaseError"] = releaseErr.Error()
+		}
+		c.JSON(http.StatusOK, fields)
 	})
 
 	api.GET("/device/:phone/recordings/coverage", func(c *gin.Context) {
@@ -268,6 +298,85 @@ func registerPlaybackRoutes(api *gin.RouterGroup, devices repository.DeviceRepos
 		}
 		_, _ = io.Copy(c.Writer, io.LimitReader(reader, length))
 	})
+}
+
+// playbackStopOutcome 描述停止指令的下发结果。
+//
+// notified 只表示直发模式已把报文写入终端连接；outbox 模式下命令仅完成入队，
+// 由重投服务异步投递，因此 queued=true 且 notified=false。终端的 0x0001 应答
+// 通过 (phone, msgId, serial) 回填命令状态，调用方用 commandId 在
+// GET /api/commands/<commandId> 回查是否确认送达。
+type playbackStopOutcome struct {
+	MessageID string `json:"messageId,omitempty"`
+	Notified  bool   `json:"notified"`
+	Queued    bool   `json:"queued"`
+	Serial    uint16 `json:"serial,omitempty"`
+	CommandID string `json:"commandId,omitempty"`
+	Reason    string `json:"reason,omitempty"`
+}
+
+// sendPlaybackStop 按会话类型下发停止指令：实时会话用 0x9102，终端回放用 0x9202。
+//
+// 控制字：0x9102 的 ControlCmd=0（关闭音视频传输）、CloseMediaType=0（音视频）、
+// StreamType=0（该字段仅在切换码流时有效）；0x9202 的 PlayControl=2（结束回放），
+// PlaySpeed/DragPosition 不适用，按规范填 0。依据见 msg_9102.go / msg_9202.go
+// 与 JT/T 1078-2016 对应表项。
+func sendPlaybackStop(
+	c *gin.Context,
+	devices repository.DeviceRepository,
+	conn runtime.ConnectionRegistry,
+	downlink contracts.Downlink,
+	outboxEnabled bool,
+	session contracts.PlaybackSession,
+) playbackStopOutcome {
+	messageID := "0x9102"
+	terminalPlayback := session.Kind == playbackKindTerminal
+	if terminalPlayback {
+		messageID = "0x9202"
+	}
+	if downlink == nil {
+		return playbackStopOutcome{MessageID: messageID, Reason: "downlink is not configured"}
+	}
+	ctx := c.Request.Context()
+	device, err := devices.GetByPhone(ctx, session.Phone)
+	if err != nil {
+		return playbackStopOutcome{MessageID: messageID, Reason: "device record not found: " + err.Error()}
+	}
+	liveSession, err := downlinkSession(ctx, conn, device, outboxEnabled)
+	if err != nil {
+		return playbackStopOutcome{MessageID: messageID, Reason: err.Error()}
+	}
+	serial := nextDownlinkSerial(liveSession)
+	var msg model.JT808Msg
+	if terminalPlayback {
+		msg = &model.Msg9202{
+			Header:         model.GenMsgHeader(device, 0x9202, serial),
+			LogicChannelID: session.Channel,
+			PlayControl:    2,
+		}
+	} else {
+		msg = &model.Msg9102{
+			Header:         model.GenMsgHeader(device, 0x9102, serial),
+			LogicChannelID: session.Channel,
+			ControlCmd:     0,
+			CloseMediaType: 0,
+			StreamType:     0,
+		}
+	}
+	// 幂等键按会话固定：重复 DELETE 命中同一条命令，不会重复下发。
+	command, _, err := dispatchDownlinkWithKey(c, downlink, liveSession, msg, "playback-stop:"+session.ID)
+	if err != nil {
+		return playbackStopOutcome{MessageID: messageID, Reason: err.Error()}
+	}
+	if command == nil {
+		return playbackStopOutcome{MessageID: messageID, Notified: true, Serial: serial}
+	}
+	return playbackStopOutcome{
+		MessageID: messageID,
+		Queued:    true,
+		Serial:    command.Serial,
+		CommandID: command.ID,
+	}
 }
 
 // parseByteRange 解析单段 Range；只支持 bytes=start-end 与 bytes=start-。
