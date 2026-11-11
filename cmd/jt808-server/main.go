@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -22,6 +23,7 @@ import (
 	"github.com/fakeyanss/jt808-server-go/internal/control"
 	"github.com/fakeyanss/jt808-server-go/internal/downlinkhttp"
 	"github.com/fakeyanss/jt808-server-go/internal/media"
+	"github.com/fakeyanss/jt808-server-go/internal/media/playback"
 	"github.com/fakeyanss/jt808-server-go/internal/mediaupload"
 	"github.com/fakeyanss/jt808-server-go/internal/observability"
 	"github.com/fakeyanss/jt808-server-go/internal/protocol"
@@ -425,6 +427,25 @@ func main() {
 			}
 			controlBlob = shared
 			log.Info().Str("root", clusterOptions.Blob.Root).Msg("Shared volume blob store initialized")
+		} else if clusterOptions.Blob.Backend == config.BlobBackendObjectStore {
+			store := clusterOptions.Blob.ObjectStore
+			objectStore, blobErr := blob.NewObjectStore(blob.ObjectStoreConfig{
+				Endpoint:  store.Endpoint,
+				Region:    store.Region,
+				Bucket:    store.Bucket,
+				AccessKey: store.AccessKey,
+				SecretKey: store.SecretKey,
+				PathStyle: store.PathStyle,
+				Prefix:    store.Prefix,
+				Retries:   store.Retries,
+			})
+			if blobErr != nil {
+				log.Error().Err(blobErr).Str("endpoint", store.Endpoint).Msg("Fail to initialize object store blob backend")
+				os.Exit(1)
+			}
+			controlBlob = objectStore
+			log.Info().Str("endpoint", store.Endpoint).Str("bucket", store.Bucket).Str("prefix", store.Prefix).
+				Msg("Object store blob backend initialized")
 		}
 		srv, srvErr := uplink.NewServer(uplink.ServerOptions{
 			Token:               clusterOptions.Control.Token,
@@ -619,25 +640,70 @@ func main() {
 
 	var mediaServ *media.Server
 	if hasMedia && mediaEnabled {
-		mediaServ = media.NewServer(media.Config{
-			Dir:           mediaOptions.Dir,
-			MaxConcurrent: mediaOptions.MaxConcurrent,
-			MaxTCPConns:   mediaOptions.MaxTCPConns,
-			Retention:     mediaOptions.Retention,
-		})
-		if mediaOptions.Port != 0 {
-			mediaUDPAddr := fmt.Sprintf(":%d", mediaOptions.Port)
-			if err := mediaServ.Listen(mediaUDPAddr); err != nil {
-				log.Error().Err(err).Str("addr", mediaUDPAddr).Msg("Fail to listen media udp addr")
-				os.Exit(1)
+		// cluster 默认不录制（实时流只进内存帧环），standalone 保持旧行为；
+		// 需要转存时显式配置 record.mode=segmented。
+		recordMode := mediaOptions.RecordMode
+		if !mediaOptions.RecordModeExplicit {
+			if strings.EqualFold(cfg.Server.Mode, "cluster") {
+				recordMode = string(media.RecordModeOff)
+			} else {
+				recordMode = string(media.RecordModeLegacy)
 			}
 		}
-		if mediaOptions.TCPPort != 0 {
-			mediaTCPAddr := fmt.Sprintf(":%d", mediaOptions.TCPPort)
-			if err := mediaServ.ListenTCP(mediaTCPAddr); err != nil {
-				log.Error().Err(err).Str("addr", mediaTCPAddr).Msg("Fail to listen media tcp addr")
-				os.Exit(1)
-			}
+		if recordMode == string(media.RecordModeOff) {
+			log.Info().Msg("Media recording is disabled (record.mode=off): live frames stay in the in-memory ring")
+		}
+		playbackOpts := mediaOptions.Playback
+		advertiseIP := mediaOptions.AdvertiseIP
+		if advertiseIP == "" {
+			advertiseIP = "127.0.0.1"
+		}
+		playbackConfig := playback.Config{
+			Output: playback.OutputMode(playbackOpts.Output),
+			FLV: playback.FLVHTTPOptions{
+				BaseURL: fmt.Sprintf("http://%s:%d", advertiseIP, mediaOptions.HTTPPort),
+			},
+			RTMP: playback.RTMPConfig{
+				URL:           playbackOpts.RTMPURL,
+				StreamPrefix:  playbackOpts.StreamPrefix,
+				PlayURLPrefix: playbackOpts.PlayURLPrefix,
+				DialTimeout:   playbackOpts.DialTimeout,
+				WriteTimeout:  playbackOpts.WriteTimeout,
+				QueueFrames:   playbackOpts.QueueFrames,
+			},
+		}
+		if playbackConfig.Output != playback.OutputRTMP {
+			log.Info().Str("output", string(playbackConfig.Output)).
+				Str("flvBaseUrl", playbackConfig.FLV.BaseURL).Msg("Media playback output configured")
+		}
+		if playbackConfig.Output == playback.OutputRTMP || playbackConfig.Output == playback.OutputBoth {
+			// 桥接模式下观众直连 SRS，平台无法替观众做 GOP 对齐；
+			// 必须保持 SRS 的 gop_cache 开启（默认值），否则新观众会黑屏/卡住。
+			log.Info().Str("rtmp", playbackOpts.RTMPURL).
+				Msg("RTMP playback output enabled; keep SRS gop_cache ON (default) for new viewers")
+		}
+		mediaServ = media.NewServer(media.Config{
+			Dir:             mediaOptions.Dir,
+			MaxConcurrent:   mediaOptions.MaxConcurrent,
+			MaxTCPConns:     mediaOptions.MaxTCPConns,
+			Retention:       mediaOptions.Retention,
+			RecordMode:      media.RecordMode(recordMode),
+			SegmentDuration: mediaOptions.SegmentDuration,
+			RingBytes:       mediaOptions.RingBytes,
+			RingDuration:    mediaOptions.RingDuration,
+			Blob:            controlBlob,
+			AdvertiseIP:     advertiseIP,
+			Playback:        playbackConfig,
+		})
+		mediaAddr := fmt.Sprintf(":%d", mediaOptions.Port)
+		if err := mediaServ.Listen(mediaAddr); err != nil {
+			log.Error().Err(err).Str("addr", mediaAddr).Msg("Fail to listen media addr")
+			os.Exit(1)
+		}
+		httpAddr := fmt.Sprintf(":%d", mediaOptions.HTTPPort)
+		if err := mediaServ.ListenHTTP(httpAddr); err != nil {
+			log.Error().Err(err).Str("addr", httpAddr).Msg("Fail to listen media http addr")
+			os.Exit(1)
 		}
 		routines.GoSafe(func() { mediaServ.Start() })
 	}
@@ -759,7 +825,12 @@ func main() {
 		}
 		routines.GoSafe(func() {
 			defer close(apiDone)
-			api.Run(apiCtx, serv, cfg, apiOptions, alarmServ, outbox, controlDownlink, mediaUploadStore, queryer)
+			// control-only 角色没有本地媒体节点，播放/录像 API 会明确返回 503。
+			var playbackLibrary contracts.PlaybackLibrary
+			if mediaServ != nil {
+				playbackLibrary = mediaServ
+			}
+			api.Run(apiCtx, serv, cfg, apiOptions, alarmServ, outbox, controlDownlink, mediaUploadStore, queryer, playbackLibrary)
 		})
 	} else {
 		close(apiDone)

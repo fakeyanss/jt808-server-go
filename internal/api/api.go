@@ -38,7 +38,7 @@ type Queryer interface {
 // Run 启动业务 API。downlink 为下行契约实现；sender 是豁免清单（查询/只读/幂等）
 // 的单发通道，二者在 control-only 下均可跨进程工作。未启用 outbox 时下行入口
 // 直接发送，不提供命令状态查询。
-func Run(ctx context.Context, serv *server.TCPServer, cfg *config.Config, apiOptions config.APIOptions, alarmServ *alarmserver.Server, downlink contracts.Downlink, sender contracts.DownlinkSender, mediaUpload *mediaupload.Store, queryer Queryer) {
+func Run(ctx context.Context, serv *server.TCPServer, cfg *config.Config, apiOptions config.APIOptions, alarmServ *alarmserver.Server, downlink contracts.Downlink, sender contracts.DownlinkSender, mediaUpload *mediaupload.Store, queryer Queryer, playback contracts.PlaybackLibrary) {
 	// web server structure
 	gin.SetMode(gin.ReleaseMode)
 	router := gin.Default()
@@ -52,6 +52,9 @@ func Run(ctx context.Context, serv *server.TCPServer, cfg *config.Config, apiOpt
 
 	// 0x0801 媒体文件、0x0805 拍摄记录与 0x0802 检索结果查询；文件下载由 mediaUpload 读取共享卷。
 	registerMediaRoutes(api, devices, storage.Default().MediaFiles, storage.Default().MediaCaptures, storage.Default().MediaSearches, mediaUpload)
+
+	// 播放会话（实时/终端回放）与平台录像覆盖查询；媒体节点返回播放地址。
+	registerPlaybackRoutes(api, devices, connRegistry, downlink, playback)
 
 	// 下行命令投递状态查询；命令下发时返回的 commandId 可在此回查。
 	api.GET("/commands/:commandId", func(c *gin.Context) {

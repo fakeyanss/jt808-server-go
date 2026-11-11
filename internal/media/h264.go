@@ -144,6 +144,17 @@ func nextAnnexBStart(data []byte, from int) (pos, length int) {
 	return -1, 0
 }
 
+// isKeyframe 判断 Annex B 帧内是否含 IDR。
+func isKeyframe(frame []byte) bool {
+	for _, nal := range splitAnnexB(frame) {
+		if nal.typ == nalTypeIDR {
+			return true
+		}
+	}
+	return false
+}
+
+// equalBytes 比较两段字节是否相同。
 func equalBytes(a, b []byte) bool {
 	if len(a) != len(b) {
 		return false

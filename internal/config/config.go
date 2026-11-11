@@ -609,23 +609,80 @@ const (
 // mediaServerConf 配置 1078 音视频接入服务器。
 // port 为 UDP 端口，tcpPort 为 TCP 端口；任一非空即启用，可同时监听。
 type mediaServerConf struct {
-	Port          string `yaml:"port"`
-	TCPPort       string `yaml:"tcpPort"`
+	Port    string `yaml:"port"`
+	TCPPort string `yaml:"tcpPort"`
+	// HTTPPort 是媒体节点内部 HTTP（会话管理 + FLV 播放）端口；
+	// 未配置时取 UDP 端口 +1。
+	HTTPPort string `yaml:"httpPort"`
+	// AdvertiseIP 是下行信令与播放地址里填写的媒体节点地址；为空时用 127.0.0.1。
+	AdvertiseIP   string `yaml:"advertiseIp"`
 	Dir           string `yaml:"dir"`
 	MaxConcurrent int    `yaml:"maxConcurrent"`
 	MaxTCPConns   int    `yaml:"maxTCPConns"`
 	// RetentionDays 是音视频文件的落盘保留天数；显式 0 表示不清理。
-	RetentionDays *int `yaml:"retentionDays"`
+	RetentionDays *int               `yaml:"retentionDays"`
+	Record        *mediaRecordConf   `yaml:"record"`
+	Playback      *mediaPlaybackConf `yaml:"playback"`
+	RingBytes     int64              `yaml:"ringBytes"`
+	RingSeconds   int                `yaml:"ringSeconds"`
+}
+
+// mediaPlaybackConf 配置播放出口。
+//
+// output=flv 使用进程内 HTTP-FLV（轻量默认）；rtmp 转推 SRS/lal 由其分发；
+// both 两种出口并联，互不阻塞。桥接模式下必须保持 SRS 的 gop_cache 开启。
+type mediaPlaybackConf struct {
+	Output string         `yaml:"output"`
+	RTMP   *mediaRTMPConf `yaml:"rtmp"`
+}
+
+type mediaRTMPConf struct {
+	URL           string `yaml:"url"`
+	StreamPrefix  string `yaml:"streamPrefix"`
+	PlayURLPrefix string `yaml:"playUrlPrefix"`
+	DialTimeout   int    `yaml:"dialTimeoutSeconds"`
+	WriteTimeout  int    `yaml:"writeTimeoutSeconds"`
+	QueueFrames   int    `yaml:"queueFrames"`
+}
+
+// mediaRecordConf 配置录制行为。
+//
+// 直播本身不落盘；record.mode=off 关闭录制，legacy 保持旧的持续落盘，
+// segmented 按周期切片后上传对象存储。
+type mediaRecordConf struct {
+	Mode           string `yaml:"mode"`
+	SegmentMinutes int    `yaml:"segmentMinutes"`
 }
 
 // MediaServerOptions 是媒体接入服务器的归一化配置。
 type MediaServerOptions struct {
-	Port          uint16 // UDP 端口，0 表示不启用
-	TCPPort       uint16 // TCP 端口，0 表示不启用
+	Port          uint16 // UDP/TCP 端口，0 表示不启用
+	HTTPPort      uint16 // 媒体节点 HTTP 端口
+	AdvertiseIP   string
 	Dir           string
 	MaxConcurrent int
 	MaxTCPConns   int
 	Retention     time.Duration
+	RecordMode    string
+	// RecordModeExplicit 表示配置里显式写了 record.mode，用于 cluster/standalone
+	// 默认值差异的告警。
+	RecordModeExplicit bool
+	SegmentDuration    time.Duration
+	RingBytes          int64
+	RingDuration       time.Duration
+	// Playback 是播放出口配置；Output 默认 flv。
+	Playback PlaybackOptions
+}
+
+// PlaybackOptions 是播放输出的归一化配置。
+type PlaybackOptions struct {
+	Output        string // flv | rtmp | both
+	RTMPURL       string
+	StreamPrefix  string
+	PlayURLPrefix string
+	DialTimeout   time.Duration
+	WriteTimeout  time.Duration
+	QueueFrames   int
 }
 
 // ParseMediaServer 解析并校验 mediaServer 配置。
@@ -645,6 +702,24 @@ func (c *Config) ParseMediaServer() (options MediaServerOptions, enabled bool, e
 	}
 	if udpPort == 0 && tcpPort == 0 {
 		return MediaServerOptions{}, false, nil
+	}
+	if udpPort != 0 && tcpPort != 0 && udpPort != tcpPort {
+		return MediaServerOptions{}, false, fmt.Errorf(
+			"mediaServer.port and mediaServer.tcpPort must be the same value (single-port mode), got %d and %d",
+			udpPort, tcpPort)
+	}
+	port := udpPort
+	if port == 0 {
+		port = tcpPort
+	}
+	httpPort, err := parseMediaPort("mediaServer.httpPort", conf.HTTPPort, "HTTP")
+	if err != nil {
+		return MediaServerOptions{}, false, err
+	}
+	if httpPort == 0 {
+		if port < 65535 {
+			httpPort = port + 1
+		}
 	}
 	dir := strings.TrimSpace(conf.Dir)
 	if dir == "" {
@@ -671,14 +746,103 @@ func (c *Config) ParseMediaServer() (options MediaServerOptions, enabled bool, e
 		}
 		retentionDays = *conf.RetentionDays
 	}
+	recordMode := "legacy"
+	explicit := false
+	segmentMinutes := 10
+	if conf.Record != nil {
+		if mode := strings.ToLower(strings.TrimSpace(conf.Record.Mode)); mode != "" {
+			switch mode {
+			case "off", "legacy", "segmented":
+				recordMode = mode
+				explicit = true
+			default:
+				return MediaServerOptions{}, false, fmt.Errorf("mediaServer.record.mode must be off, legacy or segmented, got %q", mode)
+			}
+		}
+		if conf.Record.SegmentMinutes < 0 {
+			return MediaServerOptions{}, false, fmt.Errorf("mediaServer.record.segmentMinutes must be >= 0, got %d", conf.Record.SegmentMinutes)
+		}
+		if conf.Record.SegmentMinutes > 0 {
+			segmentMinutes = conf.Record.SegmentMinutes
+		}
+	}
+	if conf.RingBytes < 0 {
+		return MediaServerOptions{}, false, fmt.Errorf("mediaServer.ringBytes must be >= 0, got %d", conf.RingBytes)
+	}
+	if conf.RingSeconds < 0 {
+		return MediaServerOptions{}, false, fmt.Errorf("mediaServer.ringSeconds must be >= 0, got %d", conf.RingSeconds)
+	}
+	ringBytes := conf.RingBytes
+	if ringBytes == 0 {
+		ringBytes = 32 * 1024 * 1024
+	}
+	ringSeconds := conf.RingSeconds
+	if ringSeconds == 0 {
+		ringSeconds = 60
+	}
+	playback, err := parsePlaybackOptions(conf.Playback)
+	if err != nil {
+		return MediaServerOptions{}, false, err
+	}
 	return MediaServerOptions{
-		Port:          udpPort,
-		TCPPort:       tcpPort,
-		Dir:           dir,
-		MaxConcurrent: maxConcurrent,
-		MaxTCPConns:   maxTCPConns,
-		Retention:     time.Duration(retentionDays) * 24 * time.Hour,
+		Port:               port,
+		HTTPPort:           httpPort,
+		AdvertiseIP:        strings.TrimSpace(conf.AdvertiseIP),
+		Dir:                dir,
+		MaxConcurrent:      maxConcurrent,
+		MaxTCPConns:        maxTCPConns,
+		Retention:          time.Duration(retentionDays) * 24 * time.Hour,
+		RecordMode:         recordMode,
+		RecordModeExplicit: explicit,
+		SegmentDuration:    time.Duration(segmentMinutes) * time.Minute,
+		RingBytes:          ringBytes,
+		RingDuration:       time.Duration(ringSeconds) * time.Second,
+		Playback:           playback,
 	}, true, nil
+}
+
+// parsePlaybackOptions 解析播放输出配置并做组合校验。
+func parsePlaybackOptions(conf *mediaPlaybackConf) (PlaybackOptions, error) {
+	options := PlaybackOptions{Output: "flv"}
+	if conf == nil {
+		return options, nil
+	}
+	if mode := strings.ToLower(strings.TrimSpace(conf.Output)); mode != "" {
+		switch mode {
+		case "flv", "rtmp", "both":
+			options.Output = mode
+		default:
+			return options, fmt.Errorf("mediaServer.playback.output must be flv, rtmp or both, got %q", mode)
+		}
+	}
+	if conf.RTMP == nil {
+		if options.Output == "rtmp" || options.Output == "both" {
+			return options, fmt.Errorf("mediaServer.playback.rtmp is required when playback.output=%s", options.Output)
+		}
+		return options, nil
+	}
+	rtmp := conf.RTMP
+	options.RTMPURL = strings.TrimSpace(rtmp.URL)
+	options.StreamPrefix = strings.TrimSpace(rtmp.StreamPrefix)
+	options.PlayURLPrefix = strings.TrimRight(strings.TrimSpace(rtmp.PlayURLPrefix), "/")
+	if options.Output == "rtmp" || options.Output == "both" {
+		if options.RTMPURL == "" {
+			return options, fmt.Errorf("mediaServer.playback.rtmp.url is required when playback.output=%s", options.Output)
+		}
+		if !strings.HasPrefix(options.RTMPURL, "rtmp://") {
+			return options, fmt.Errorf("mediaServer.playback.rtmp.url must start with rtmp://, got %q", options.RTMPURL)
+		}
+	}
+	if rtmp.DialTimeout < 0 || rtmp.WriteTimeout < 0 {
+		return options, fmt.Errorf("mediaServer.playback.rtmp timeouts must be >= 0")
+	}
+	options.DialTimeout = time.Duration(rtmp.DialTimeout) * time.Second
+	options.WriteTimeout = time.Duration(rtmp.WriteTimeout) * time.Second
+	if rtmp.QueueFrames < 0 {
+		return options, fmt.Errorf("mediaServer.playback.rtmp.queueFrames must be >= 0, got %d", rtmp.QueueFrames)
+	}
+	options.QueueFrames = rtmp.QueueFrames
+	return options, nil
 }
 
 // parseMediaPort 解析可选的监听端口；空值返回 0。
@@ -1367,9 +1531,23 @@ type clusterUplinkConf struct {
 type clusterBlobConf struct {
 	Backend string `yaml:"backend"`
 	// SharedVolume 必须显式为 true，避免把本机独占目录误当成共享卷。
-	SharedVolume bool   `yaml:"sharedVolume"`
-	Marker       string `yaml:"marker"`
-	Root         string `yaml:"root"`
+	SharedVolume bool                    `yaml:"sharedVolume"`
+	Marker       string                  `yaml:"marker"`
+	Root         string                  `yaml:"root"`
+	ObjectStore  *clusterObjectStoreConf `yaml:"objectStore"`
+}
+
+// clusterObjectStoreConf 配置 S3 兼容对象存储；不绑定厂商。
+type clusterObjectStoreConf struct {
+	Endpoint  string `yaml:"endpoint"`
+	Region    string `yaml:"region"`
+	Bucket    string `yaml:"bucket"`
+	AccessKey string `yaml:"accessKey"`
+	SecretKey string `yaml:"secretKey"`
+	// PathStyle 缺省 true，兼容 MinIO 等自建存储。
+	PathStyle *bool  `yaml:"pathStyle"`
+	Prefix    string `yaml:"prefix"`
+	Retries   int    `yaml:"retries"`
 }
 
 // RoleSet 是角色集合。
@@ -1420,7 +1598,20 @@ type ClusterOptions struct {
 		SharedVolume bool
 		Marker       string
 		Root         string
+		ObjectStore  ObjectStoreOptions
 	}
+}
+
+// ObjectStoreOptions 是 S3 兼容后端的归一化配置。
+type ObjectStoreOptions struct {
+	Endpoint  string
+	Region    string
+	Bucket    string
+	AccessKey string
+	SecretKey string
+	PathStyle bool
+	Prefix    string
+	Retries   int
 }
 
 // IsStandalone 表示进程是否运行在 standalone 形态。
@@ -1630,8 +1821,27 @@ func (c *Config) ParseServerMode() (ClusterOptions, error) {
 		if root := strings.TrimSpace(blob.Root); root != "" {
 			options.Blob.Root = root
 		}
+		if store := blob.ObjectStore; store != nil {
+			options.Blob.ObjectStore = ObjectStoreOptions{
+				Endpoint:  strings.TrimSpace(store.Endpoint),
+				Region:    strings.TrimSpace(store.Region),
+				Bucket:    strings.TrimSpace(store.Bucket),
+				AccessKey: strings.TrimSpace(store.AccessKey),
+				SecretKey: store.SecretKey,
+				PathStyle: true,
+				Prefix:    strings.Trim(strings.TrimSpace(store.Prefix), "/"),
+				Retries:   store.Retries,
+			}
+			if store.PathStyle != nil {
+				options.Blob.ObjectStore.PathStyle = *store.PathStyle
+			}
+			if options.Blob.ObjectStore.Region == "" {
+				options.Blob.ObjectStore.Region = "us-east-1"
+			}
+		}
 	}
-	needsBlob := roles.Has(RoleMedia) || roles.Has(RoleAttachment)
+	needsBlob := roles.Has(RoleMedia) || roles.Has(RoleAttachment) ||
+		(roles.Has(RoleControl) && options.Blob.Backend == BlobBackendObjectStore)
 	if needsBlob {
 		switch options.Blob.Backend {
 		case BlobBackendSharedVolume:
@@ -1644,7 +1854,19 @@ func (c *Config) ParseServerMode() (ClusterOptions, error) {
 					"cluster.blob marker %q is required for sharedVolume backend: %v", markerPath, err))
 			}
 		case BlobBackendObjectStore:
-			problems = append(problems, "cluster.blob.backend=objectStore is not implemented in E1; use sharedVolume for contract validation")
+			store := options.Blob.ObjectStore
+			if store.Endpoint == "" {
+				problems = append(problems, "cluster.blob.objectStore.endpoint is required when backend=objectStore")
+			}
+			if store.Bucket == "" {
+				problems = append(problems, "cluster.blob.objectStore.bucket is required when backend=objectStore")
+			}
+			if store.AccessKey == "" || store.SecretKey == "" {
+				problems = append(problems, "cluster.blob.objectStore.accessKey and secretKey are required when backend=objectStore")
+			}
+			if store.Retries < 0 || store.Retries > 10 {
+				problems = append(problems, fmt.Sprintf("cluster.blob.objectStore.retries must be in [0,10], got %d", store.Retries))
+			}
 		default:
 			problems = append(problems, "cluster.blob.backend must be sharedVolume or objectStore for roles media/attachment")
 		}
@@ -1742,8 +1964,8 @@ func (c *Config) ParseServerMode() (ClusterOptions, error) {
 		mediaOptions, enabled, err := c.ParseMediaServer()
 		if err != nil {
 			problems = append(problems, err.Error())
-		} else if !enabled || (mediaOptions.Port == 0 && mediaOptions.TCPPort == 0) {
-			problems = append(problems, "mediaServer.port or mediaServer.tcpPort is required for role media")
+		} else if !enabled || mediaOptions.Port == 0 {
+			problems = append(problems, "mediaServer.port is required for role media")
 		}
 	}
 	if roles.Has(RoleAttachment) {
