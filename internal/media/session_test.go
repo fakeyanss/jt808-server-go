@@ -5,6 +5,8 @@ import (
 	"errors"
 	"testing"
 	"time"
+
+	"github.com/fakeyanss/jt808-server-go/internal/media/playback"
 )
 
 func TestAcquireConflictThenReleaseAndRecreate(t *testing.T) {
@@ -51,6 +53,36 @@ func TestAcquireConflictThenReleaseAndRecreate(t *testing.T) {
 	}
 	if second.Kind != StreamKindTerminalPlayback {
 		t.Fatalf("recreated kind = %s", second.Kind)
+	}
+}
+
+func TestSessionConflictAppliesToRTMPAndBothOutputs(t *testing.T) {
+	for _, mode := range []playback.OutputMode{playback.OutputRTMP, playback.OutputBoth} {
+		t.Run(string(mode), func(t *testing.T) {
+			server := NewServer(Config{
+				Dir:        t.TempDir(),
+				RecordMode: RecordModeOff,
+				Playback: playback.Config{
+					Output: mode,
+					FLV:    playback.FLVHTTPOptions{BaseURL: "http://127.0.0.1:7001"},
+					RTMP:   playback.RTMPConfig{URL: "rtmp://127.0.0.1:1935/live"},
+				},
+			})
+			t.Cleanup(server.Stop)
+
+			first, err := server.Acquire(SessionRequest{Phone: "13800138000", Channel: 1, Kind: StreamKindLive, TTL: time.Minute})
+			if err != nil {
+				t.Fatalf("first acquire: %v", err)
+			}
+			_, err = server.Acquire(SessionRequest{Phone: "13800138000", Channel: 1, Kind: StreamKindTerminalPlayback, TTL: time.Minute})
+			var conflict *SessionConflictError
+			if !errors.As(err, &conflict) {
+				t.Fatalf("second acquire error = %v, want SessionConflictError", err)
+			}
+			if conflict.ExistingSessionID != first.ID {
+				t.Fatalf("conflict existing = %s, want %s", conflict.ExistingSessionID, first.ID)
+			}
+		})
 	}
 }
 

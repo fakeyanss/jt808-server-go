@@ -143,7 +143,6 @@ func (p *rtmpPublisher) PushVideo(pts uint64, annexB []byte, keyframe bool, para
 		return nil
 	}
 	if keyframe {
-		p.desync = false
 		if !p.params.Complete() {
 			return nil
 		}
@@ -154,7 +153,11 @@ func (p *rtmpPublisher) PushVideo(pts uint64, annexB []byte, keyframe bool, para
 		config := make([]byte, 0, 5+len(record))
 		config = append(config, 0x17, 0x00, 0x00, 0x00, 0x00)
 		config = append(config, record...)
-		p.enqueueLocked(rtmpMessage{typ: 9, ts: 0, body: config})
+		if !p.enqueueLocked(rtmpMessage{typ: 9, ts: 0, body: config}) {
+			return nil
+		}
+		// 只有配置真正入队后才解除 desync，否则后续帧会缺参数集。
+		p.desync = false
 	}
 	body, err := VideoTagBody(annexB, keyframe)
 	if err != nil || len(body) == 0 {
@@ -189,15 +192,17 @@ func (p *rtmpPublisher) PushAudio(pts uint64, codec AudioCodec, frame []byte, co
 }
 
 // enqueueLocked 投递消息；队列满时丢弃当前帧并等待下一个关键帧。
-func (p *rtmpPublisher) enqueueLocked(msg rtmpMessage) {
+func (p *rtmpPublisher) enqueueLocked(msg rtmpMessage) bool {
 	if p.queue == nil {
-		return
+		return false
 	}
 	select {
 	case p.queue <- msg:
 		p.signal()
+		return true
 	default:
 		p.desync = true
+		return false
 	}
 }
 
@@ -351,6 +356,9 @@ func (p *rtmpPublisher) connect() (net.Conn, error) {
 		_ = conn.Close()
 		return nil, err
 	}
+	// 整个连接只用一个 bufio.Reader：读到 _result 时可能已把下一条消息读进缓冲，
+	// 每次新建 reader 会丢掉缓冲区里的字节。
+	reader := bufio.NewReader(conn)
 	app := strings.Trim(parsed.Path, "/")
 	// 设置 chunk size，后续音视频分块按 4096 发送。
 	if err := writeRTMPMessage(conn, 2, 1, 0, 0, []byte{0x00, 0x00, 0x10, 0x00}, defaultRTMPChunkSize); err != nil {
@@ -369,7 +377,7 @@ func (p *rtmpPublisher) connect() (net.Conn, error) {
 		_ = conn.Close()
 		return nil, err
 	}
-	if !readUntil(conn, "_result", 5*time.Second) {
+	if !readUntil(conn, reader, "_result", 5*time.Second) {
 		_ = conn.Close()
 		return nil, errors.New("rtmp connect: no _result")
 	}
@@ -378,13 +386,13 @@ func (p *rtmpPublisher) connect() (net.Conn, error) {
 		_ = conn.Close()
 		return nil, err
 	}
-	_ = readUntil(conn, "_result", 5*time.Second)
+	_ = readUntil(conn, reader, "_result", 5*time.Second)
 	publish := amf0Command("publish", 3, amf0Null(), amf0String(p.stream), amf0String("live"))
 	if err := writeRTMPMessage(conn, 3, 20, 1, 0, publish, defaultRTMPChunkSize); err != nil {
 		_ = conn.Close()
 		return nil, err
 	}
-	if !readUntil(conn, "NetStream.Publish.Start", 5*time.Second) {
+	if !readUntil(conn, reader, "NetStream.Publish.Start", 5*time.Second) {
 		_ = conn.Close()
 		return nil, errors.New("rtmp publish: not started")
 	}
@@ -416,9 +424,8 @@ func rtmpHandshake(conn net.Conn) error {
 }
 
 // readUntil 读取 RTMP 消息直到 payload 含指定子串或超时。
-func readUntil(conn net.Conn, needle string, timeout time.Duration) bool {
+func readUntil(conn net.Conn, reader *bufio.Reader, needle string, timeout time.Duration) bool {
 	deadline := time.Now().Add(timeout)
-	reader := bufio.NewReader(conn)
 	for time.Now().Before(deadline) {
 		_ = conn.SetReadDeadline(deadline)
 		payload, err := readRTMPMessage(reader, defaultRTMPChunkSize)
@@ -436,9 +443,14 @@ func readUntil(conn net.Conn, needle string, timeout time.Duration) bool {
 func writeRTMPMessage(w io.Writer, csid byte, typ byte, streamID uint32, ts uint32, payload []byte, chunkSize int) error {
 	header := make([]byte, 12)
 	header[0] = csid // fmt=0
-	header[1] = byte(ts >> 16)
-	header[2] = byte(ts >> 8)
-	header[3] = byte(ts)
+	// 时间戳 >= 0xFFFFFF 时字段本身填 0xFFFFFF，真实值放到扩展字段。
+	tsField := ts
+	if tsField >= 0xFFFFFF {
+		tsField = 0xFFFFFF
+	}
+	header[1] = byte(tsField >> 16)
+	header[2] = byte(tsField >> 8)
+	header[3] = byte(tsField)
 	header[4] = byte(len(payload) >> 16)
 	header[5] = byte(len(payload) >> 8)
 	header[6] = byte(len(payload))
