@@ -417,8 +417,10 @@ func main() {
 	var controlBlob contracts.BlobStore
 	var businessExecutor *control.BusinessExecutor
 	cancelSweep := func() {}
-	if hasControl && !standalone {
-		log.Info().Msg("control uplink enabled: phone-ordered mailbox is process-local; single replica recommended, multiple replicas supported with per-field ownership")
+	// 集群文件后端：控制面用它承接 0x0801，媒体角色用它上传 segmented 录像。
+	// standalone 只用本地目录，不初始化远端后端。
+	if !standalone && clusterOptions.Blob.Backend != "" &&
+		(clusterOptions.Roles.Has(config.RoleControl) || clusterOptions.Roles.Has(config.RoleMedia)) {
 		if clusterOptions.Blob.Backend == config.BlobBackendSharedVolume {
 			shared, blobErr := blob.NewSharedVolume(clusterOptions.Blob.Root, true)
 			if blobErr != nil {
@@ -447,6 +449,9 @@ func main() {
 			log.Info().Str("endpoint", store.Endpoint).Str("bucket", store.Bucket).Str("prefix", store.Prefix).
 				Msg("Object store blob backend initialized")
 		}
+	}
+	if hasControl && !standalone {
+		log.Info().Msg("control uplink enabled: phone-ordered mailbox is process-local; single replica recommended, multiple replicas supported with per-field ownership")
 		srv, srvErr := uplink.NewServer(uplink.ServerOptions{
 			Token:               clusterOptions.Control.Token,
 			DedupTTL:            clusterOptions.Uplink.DedupTTL,
