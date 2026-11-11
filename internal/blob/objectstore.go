@@ -3,11 +3,13 @@
 // 设计边界：
 //   - 只依赖标准库，按 S3 REST API 直接实现 SigV4、multipart 与区间读取，
 //     不绑定任何厂商 SDK；
-//   - Put 写入 `_staging/<txid>/<key>`，Promote 用服务端复制把对象提级到
-//     最终 key，并写 `x-amz-meta-jt808-state=pending`；
-//   - MarkCommitted 只改对象元数据，不移动数据；
-//   - 应用侧不做远端全量遍历，孤儿对象交给桶生命周期；这里只提供
-//     `SweepPending` 作为生命周期未配置时的兜底。
+//   - Put 写入 `_staging/<txid>/<key>`，并写 `_pending/<key>` 标记对象；
+//     Promote 用服务端复制把对象提级到最终 key，并写
+//     `x-amz-meta-jt808-state=pending`；
+//   - MarkCommitted 改写对象元数据为 committed 并删除标记；
+//   - 标记前缀可 List，`SweepPending` 据此回收“对象已提级但业务表未写入”
+//     的窗口，不依赖对象元数据列举；
+//   - 应用侧不做远端全量遍历，标记以外的孤儿对象交给桶生命周期。
 package blob
 
 import (
@@ -18,6 +20,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"encoding/xml"
 	"errors"
 	"fmt"
@@ -38,6 +41,12 @@ import (
 const (
 	// objectStoreStagingPrefix 是暂存对象前缀，与最终 key 隔离。
 	objectStoreStagingPrefix = "_staging/"
+	// objectStorePendingPrefix 是可列举的 pending 标记前缀。
+	//
+	// 对象元数据无法被 List，而 Promote 之后、业务表写入之前崩溃会留下
+	// “正式前缀有对象、业务表无行”的孤儿。因此每个对象在 Put/Promote 时
+	// 额外写一个 `_pending/<key>` 标记对象，扫描侧只列举这个前缀。
+	objectStorePendingPrefix = "_pending/"
 	// objectStoreStateMeta 是对象状态元数据键。
 	objectStoreStateMeta = "jt808-state"
 	// objectStorePartSize 是 multipart 分片大小；超过单次 PUT 阈值才启用。
@@ -155,14 +164,21 @@ func (s *ObjectStore) Put(ctx context.Context, key string, r io.Reader, opts con
 		return contracts.BlobInfo{}, err
 	}
 	sum := hex.EncodeToString(hasher.Sum(nil))
-	return contracts.BlobInfo{
+	info := contracts.BlobInfo{
 		Key:        clean,
 		StagingKey: staging,
 		Size:       size,
 		MD5:        sum,
 		ETag:       strings.Trim(etag, `"`),
 		State:      contracts.BlobStatePending,
-	}, nil
+	}
+	// 标记先于任何提级动作落盘：宁可有标记无对象（空标记可安全删），
+	// 也不能出现无法列举的孤儿对象。
+	if err := s.writePendingMarker(ctx, info); err != nil {
+		_ = s.deleteObject(ctx, staging)
+		return contracts.BlobInfo{}, err
+	}
+	return info, nil
 }
 
 // Promote 用服务端复制把暂存对象提级到最终 key，并写入 pending 元数据。
@@ -175,6 +191,11 @@ func (s *ObjectStore) Promote(ctx context.Context, info contracts.BlobInfo) (con
 	if err != nil {
 		return contracts.BlobInfo{}, err
 	}
+	// 再次写入标记（幂等）：Put 与 Promote 之间也可能崩溃，Promote 前
+	// 保证标记存在，顺序仍是“先标记、后 CopyObject”。
+	if err := s.writePendingMarker(ctx, contracts.BlobInfo{Key: key, StagingKey: staging}); err != nil {
+		return contracts.BlobInfo{}, err
+	}
 	if err := s.copyObject(ctx, staging, key, contracts.BlobStatePending, info.ETag); err != nil {
 		return contracts.BlobInfo{}, err
 	}
@@ -183,13 +204,16 @@ func (s *ObjectStore) Promote(ctx context.Context, info contracts.BlobInfo) (con
 	return info, nil
 }
 
-// MarkCommitted 只改写对象状态元数据。
+// MarkCommitted 把对象状态改为 committed，并删除 pending 标记。
 func (s *ObjectStore) MarkCommitted(ctx context.Context, key string) error {
 	clean, err := cleanKey(key)
 	if err != nil {
 		return err
 	}
-	return s.copyObject(ctx, clean, clean, contracts.BlobStateCommitted, "")
+	if err := s.copyObject(ctx, clean, clean, contracts.BlobStateCommitted, ""); err != nil {
+		return err
+	}
+	return s.deletePendingMarker(ctx, clean)
 }
 
 // Open 读取完整对象。
@@ -217,8 +241,22 @@ func (s *ObjectStore) OpenRange(ctx context.Context, key string, offset, length 
 	return s.get(ctx, clean, header)
 }
 
-// Delete 删除对象。
+// Delete 删除对象及其 pending 标记。
 func (s *ObjectStore) Delete(ctx context.Context, key string) error {
+	clean, err := cleanKey(key)
+	if err != nil {
+		return err
+	}
+	if err := s.deleteObject(ctx, clean); err != nil {
+		return err
+	}
+	// 标记删除失败不影响对象删除结果；悬挂标记会被扫描侧当作“无对象”回收。
+	_ = s.deleteObject(ctx, s.markerKey(clean))
+	return nil
+}
+
+// deleteObject 删除单个对象，404 视为已删除。
+func (s *ObjectStore) deleteObject(ctx context.Context, key string) error {
 	clean, err := cleanKey(key)
 	if err != nil {
 		return err
@@ -228,10 +266,60 @@ func (s *ObjectStore) Delete(ctx context.Context, key string) error {
 		return err
 	}
 	defer drainClose(resp)
+	if resp.StatusCode == http.StatusNotFound {
+		return nil
+	}
 	if resp.StatusCode != http.StatusNoContent && resp.StatusCode != http.StatusOK {
 		return s.responseError(resp)
 	}
 	return nil
+}
+
+// pendingMarker 是 `_pending/<key>` 标记对象的内容。
+type pendingMarker struct {
+	Key        string `json:"key"`
+	StagingKey string `json:"stagingKey"`
+	CreatedAt  int64  `json:"createdAt"`
+}
+
+func (s *ObjectStore) markerKey(key string) string {
+	return objectStorePendingPrefix + key
+}
+
+// writePendingMarker 写/覆盖 pending 标记。必须在 CopyObject 之前调用。
+func (s *ObjectStore) writePendingMarker(ctx context.Context, info contracts.BlobInfo) error {
+	key, err := cleanKey(info.Key)
+	if err != nil {
+		return err
+	}
+	staging := strings.TrimPrefix(info.StagingKey, "/")
+	marker := pendingMarker{Key: key, StagingKey: staging, CreatedAt: time.Now().UnixMilli()}
+	body, err := json.Marshal(marker)
+	if err != nil {
+		return err
+	}
+	headers := http.Header{}
+	headers.Set("Content-Type", "application/json")
+	_, err = s.putSingle(ctx, s.markerKey(key), bytes.NewReader(body), int64(len(body)), headers)
+	return err
+}
+
+// readPendingMarker 读取标记内容；标记缺失或损坏时返回零值。
+func (s *ObjectStore) readPendingMarker(ctx context.Context, key string) (pendingMarker, error) {
+	reader, err := s.get(ctx, s.markerKey(key), "")
+	if err != nil {
+		return pendingMarker{}, err
+	}
+	defer reader.Close()
+	var marker pendingMarker
+	if err := json.NewDecoder(io.LimitReader(reader, 64<<10)).Decode(&marker); err != nil {
+		return pendingMarker{}, err
+	}
+	return marker, nil
+}
+
+func (s *ObjectStore) deletePendingMarker(ctx context.Context, key string) error {
+	return s.deleteObject(ctx, s.markerKey(key))
 }
 
 // Stat 返回对象大小、ETag 与业务状态。
@@ -285,23 +373,34 @@ func (s *ObjectStore) head(ctx context.Context, key string) (headResult, error) 
 	}, nil
 }
 
-// PendingBefore 返回暂存区中超过给定年龄的对象 key。
+// PendingBefore 返回 `_pending/` 下超过给定年龄的标记对应的最终 key。
 func (s *ObjectStore) PendingBefore(ctx context.Context, olderThan time.Duration) ([]string, error) {
 	cutoff := time.Now().Add(-olderThan)
-	objects, err := s.list(ctx, objectStoreStagingPrefix, 1000)
+	objects, err := s.list(ctx, objectStorePendingPrefix, 1000)
 	if err != nil {
 		return nil, err
 	}
+	prefix := objectStorePendingPrefix
+	if s.cfg.Prefix != "" {
+		prefix = s.cfg.Prefix + "/" + objectStorePendingPrefix
+	}
 	keys := make([]string, 0, len(objects))
 	for _, object := range objects {
-		if object.LastModified.Before(cutoff) {
-			keys = append(keys, object.Key)
+		modified := object.Modified()
+		if modified.IsZero() || !modified.Before(cutoff) {
+			// 时间缺失时按“不超龄”处理，避免误删刚写入的标记。
+			continue
 		}
+		keys = append(keys, strings.TrimPrefix(object.Key, prefix))
 	}
 	return keys, nil
 }
 
-// SweepPending 删除超龄且未被业务引用的暂存对象；作为桶生命周期的兜底。
+// SweepPending 回收“标记存在 + 无业务行 + 超过宽限期”的对象。
+//
+// 有业务行或对象已是 committed 时只删标记（保留数据）；否则删除正式对象、
+// 暂存对象与标记。暂存对象 key 从标记内容读取，标记损坏时只回收正式
+// 前缀，暂存对象交给桶生命周期兜底。
 func (s *ObjectStore) SweepPending(ctx context.Context, olderThan time.Duration, referenced func(key string) bool) {
 	keys, err := s.PendingBefore(ctx, olderThan)
 	if err != nil {
@@ -309,9 +408,21 @@ func (s *ObjectStore) SweepPending(ctx context.Context, olderThan time.Duration,
 	}
 	for _, key := range keys {
 		if referenced != nil && referenced(key) {
+			_ = s.deletePendingMarker(ctx, key)
 			continue
 		}
-		_ = s.Delete(ctx, key)
+		// 标记删除失败可能让已提交对象留下标记：以对象状态兜底，
+		// 避免把 committed 的录像当作孤儿删除。
+		if stat, err := s.Stat(ctx, key); err == nil && stat.State == contracts.BlobStateCommitted {
+			_ = s.deletePendingMarker(ctx, key)
+			continue
+		}
+		marker, _ := s.readPendingMarker(ctx, key)
+		_ = s.deleteObject(ctx, key)
+		if marker.StagingKey != "" {
+			_ = s.deleteObject(ctx, marker.StagingKey)
+		}
+		_ = s.deletePendingMarker(ctx, key)
 	}
 }
 
@@ -496,8 +607,18 @@ func (s *ObjectStore) get(ctx context.Context, key, rangeHeader string) (io.Read
 }
 
 type listObject struct {
-	Key          string    `xml:"Key"`
-	LastModified time.Time `xml:"LastModified"`
+	Key string `xml:"Key"`
+	// LastModified 用字符串接收：encoding/xml 不支持直接反序列化 time.Time。
+	LastModified string `xml:"LastModified"`
+}
+
+// Modified 解析 S3 返回的 RFC3339 时间；解析失败返回零值。
+func (o listObject) Modified() time.Time {
+	parsed, err := time.Parse(time.RFC3339, o.LastModified)
+	if err != nil {
+		return time.Time{}
+	}
+	return parsed
 }
 
 type listResult struct {

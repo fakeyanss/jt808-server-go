@@ -575,7 +575,7 @@ type BlobStore interface {
   - `sharedVolume`：普通文件系统没有对象标签，状态放同目录 sidecar `<key>.meta.json`；`Promote` 后立刻写 sidecar（`state=pending`），`MarkCommitted` 原子改写为 `committed`。sidecar 只由 control 读取/更新，媒体/附件不解析。
   - `standalone`：无状态机，不写 sidecar。
 - **对账与失败处理**：对账键是确定性 blob key + checksum，数据库唯一键 `(phone, media_id)`。管控写库成功后 `MarkCommitted`；`MarkCommitted` 失败时数据库行保持 `pending` 并由管控重试。超宽限期**不删行**：把行标为 `missing` 保留引用依据；仅当对象也确认不存在（或显式删除成功）后，才由保留策略在同一操作里同时删对象与行。删行不先于删对象，避免“对象仍在、引用先没”。
-- **孤儿清理归属改变**：对象存储形态下应用不做远端遍历，`retention.orphanFiles` 必须关闭并由存储桶生命周期承担：`pending/` 前缀 24h 过期、`trash/` 前缀 1 天过期；被保留策略删除的正式对象由应用调用 `BlobStore.Delete`，删除失败转 `trash/` 交给生命周期。
+- **孤儿清理归属改变**：对象存储形态下应用不做正式前缀的远端遍历，`retention.orphanFiles` 必须关闭，`trash/` 前缀交给桶生命周期。可列举的 pending 窗口由应用自己的标记承担：`Put`/`Promote` 先写 `_pending/<key>` 标记对象（不依赖对象元数据列举），`MarkCommitted` 成功后删除标记；`SweepPending` 只列举 `_pending/`，按“标记存在 + 无业务行 + 超宽限期”回收正式对象、`_staging/` 暂存对象与标记。对象已是 `committed` 或业务行存在时只删标记，不删数据。顺序固定为“先标记、后 CopyObject”：崩溃最多留下可安全删除的空标记，不会留下无法发现的对象。
   - `sharedVolume` 过渡形态由 **control** 做单实例 sidecar 巡检：只处理 `state=pending` 且超过宽限期的对象，删除前必须查共享库确认该 key 没有行（含 `pending/missing`）；有行则修复 sidecar 为 `committed` 而不是删除。因此“文件已落、写库失败”只会留下无行的 pending 对象，最终由巡检删除，不会误删仍被引用的文件。
 - **下载**：API 通过 `BlobStore.Open` 读取；对象存储实现落地前，cluster 下文件下载端点明确返回 501，不伪装可用。
 - **为什么 E1 不验证真实对象存储**：E1 不改文件写入路径，只冻结契约与启动校验；此时引入 SDK 会把角色拆分绑死在某个厂商实现上，而流式分段、multipart、对象标签等细节要等媒体/附件真正拆出去才能定。真实对象存储验证是 E3 的退出条件，不是 E1 的。
