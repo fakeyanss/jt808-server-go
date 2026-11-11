@@ -4,15 +4,19 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/rs/zerolog/log"
 
+	"github.com/fakeyanss/jt808-server-go/internal/contracts"
+	"github.com/fakeyanss/jt808-server-go/internal/media/playback"
 	"github.com/fakeyanss/jt808-server-go/pkg/routines"
 )
 
@@ -36,6 +40,23 @@ type Config struct {
 	MaxTCPConns   int           // TCP 连接数上限
 	IdleTimeout   time.Duration // 空闲回收时长
 	Retention     time.Duration // 落盘文件保留时长；<=0 表示不清理
+
+	// RecordMode 控制录制：off 只进内存帧环，legacy 保持旧的持续落盘，
+	// segmented 按周期切片后上传对象存储。
+	RecordMode RecordMode
+	// SegmentDuration 是切片时长，默认 10 分钟。
+	SegmentDuration time.Duration
+	// RingBytes/RingDuration 是单路帧环的容量与时间跨度上限。
+	RingBytes    int64
+	RingDuration time.Duration
+	// Blob 是切片完成后的上传后端；为空时切片保留在本地目录。
+	Blob contracts.BlobStore
+	// SegmentSink 接收切片完成事件；为空时只记日志。
+	SegmentSink SegmentSink
+	// AdvertiseIP 是下行信令里填写的媒体节点地址；为空时用 127.0.0.1。
+	AdvertiseIP string
+	// Playback 是播放输出配置；Output 为空表示不启用播放输出。
+	Playback playback.Config
 }
 
 func (c Config) normalize() Config {
@@ -50,6 +71,18 @@ func (c Config) normalize() Config {
 	}
 	if c.IdleTimeout <= 0 {
 		c.IdleTimeout = DefaultIdleTimeout
+	}
+	if c.RecordMode == "" {
+		c.RecordMode = RecordModeLegacy
+	}
+	if c.SegmentDuration <= 0 {
+		c.SegmentDuration = DefaultSegmentDuration
+	}
+	if c.RingBytes <= 0 {
+		c.RingBytes = DefaultRingBytes
+	}
+	if c.RingDuration <= 0 {
+		c.RingDuration = DefaultRingDuration
 	}
 	return c
 }
@@ -85,43 +118,60 @@ func (s packetSource) key() string {
 // Server 接收终端按 0x9101 建立的 1078 音视频流。
 //
 // 支持范围：
-//   - UDP 与 TCP 承载，两者独立监听；
+//   - UDP 与 TCP 在同一端口承载，按 RTP 负载头里的 SIM 与逻辑通道分流；
 //   - H.264 视频、G.711A/U 与 ADTS AAC 音频；
 //   - 视频还原为 Annex B H.264 并按 IDR 前置 SPS/PPS；
-//   - 不做转码、不做分发、不写播放器索引。
+//   - 内存帧环供 FLV 播放；录制由 record.mode 单独控制。
 type Server struct {
 	cfg Config
 
 	udpConn *net.UDPConn
 	tcpLn   *net.TCPListener
+	udpPort uint16
+	tcpPort uint16
+	httpLn  net.Listener
+	httpSrv *http.Server
 	done    chan struct{}
 	close   sync.Once
 	cleanup sync.WaitGroup
 	serve   sync.WaitGroup
 
-	mu         sync.Mutex
-	streams    map[string]*streamState
-	lastLimit  time.Time
-	conns      map[uint64]*tcpConn
-	nextConnID uint64
+	mu          sync.Mutex
+	streams     map[string]*streamState
+	lastLimit   time.Time
+	conns       map[uint64]*tcpConn
+	nextConnID  uint64
+	nextSession uint64
 
 	paramMu    sync.Mutex
 	lastParams map[string]cachedParamSet
 
 	lastAACWarn atomic.Int64
+
+	playback *playback.Hub
+	segments *segmentIndex
 }
 
-// streamState 是一路“手机号 + 通道 + 来源”的音视频状态。
-// 视频与音频各有独立文件，共用同一个文件名主幹。
+// streamState 是一路“手机号 + 通道”的播放会话状态。
+//
+// 视频与音频各有独立文件（legacy 模式），共用同一个文件名主幹。
+// 会话表按 (phone, channel) 唯一：同一通道同时只允许一个播放会话。
 type streamState struct {
-	source  packetSource
-	phone   string
-	channel uint8
-	dir     string
-	stem    string
+	id        string
+	kind      StreamKind
+	leaseTTL  time.Duration
+	expiresAt atomic.Int64
+	source    packetSource
+	phone     string
+	channel   uint8
+	dir       string
+	stem      string
 
-	assemble *frameAssembler
-	params   paramSetCache
+	assemble   *frameAssembler
+	params     paramSetCache
+	ring       *gopRing
+	recorder   *recorder
+	recordMode RecordMode
 
 	mu        sync.Mutex
 	videoSink *fileSink
@@ -129,18 +179,30 @@ type streamState struct {
 	audioExt  string
 
 	lastSeen atomic.Int64
+
+	// publisher 是播放输出（flv/rtmp/both）。帧环与录制不依赖它：
+	// 输出模式切换只影响这里，录制管线与对象存储上传保持不变。
+	publisher playback.Publisher
+	endpoints []playback.Endpoint
 }
 
 func (st *streamState) touch() {
-	st.lastSeen.Store(time.Now().UnixNano())
+	now := time.Now()
+	st.lastSeen.Store(now.UnixNano())
+	if st.leaseTTL > 0 {
+		st.expiresAt.Store(now.Add(st.leaseTTL).UnixNano())
+	}
 }
 
 func (st *streamState) idleFor(now time.Time) time.Duration {
 	return now.Sub(time.Unix(0, st.lastSeen.Load()))
 }
 
-// writeVideo 应用参数集缓存后写入视频文件；文件按需延迟创建。
-func (st *streamState) writeVideo(frame []byte) error {
+// processVideo 应用参数集缓存、写入帧环，并按录制模式落盘。
+//
+// 直播不落盘：帧进内存环即可播放。legacy 保持旧行为；segmented 交给
+// recorder 按周期切片。
+func (st *streamState) processVideo(frame []byte, pts uint64, key bool) error {
 	st.mu.Lock()
 	defer st.mu.Unlock()
 
@@ -149,14 +211,44 @@ func (st *streamState) writeVideo(frame []byte) error {
 		log.Info().Str("phone", st.phone).Uint8("channel", st.channel).
 			Msg("H.264 parameter sets updated")
 	}
-	if st.videoSink == nil {
-		sink, err := newSink(st.dir, st.phone, st.channel, st.stem, ".h264")
-		if err != nil {
-			return err
-		}
-		st.videoSink = sink
+	if st.ring != nil {
+		st.ring.push(pts, key, out)
 	}
-	return st.videoSink.Write(out)
+	if st.publisher != nil {
+		// 关键帧总是附带当前参数集：转推实现据此在首帧前下发解码配置；
+		// 参数集变化时同样走这条路径，避免播放器按旧参数解码。
+		var params *playback.ParamSets
+		if changed || key {
+			sps, pps := st.params.snapshot()
+			if len(sps) > 0 && len(pps) > 0 {
+				params = &playback.ParamSets{SPS: sps, PPS: pps}
+			}
+		}
+		if err := st.publisher.PushVideo(pts, out, key, params); err != nil {
+			log.Debug().Err(err).Str("session", st.id).Msg("Fail to push media frame to playback output")
+		}
+	}
+	switch st.recordMode {
+	case RecordModeLegacy:
+		if st.videoSink == nil {
+			sink, err := newSink(st.dir, st.phone, st.channel, st.stem, ".h264")
+			if err != nil {
+				return err
+			}
+			st.videoSink = sink
+		}
+		return st.videoSink.Write(out)
+	case RecordModeSegmented:
+		if st.recorder != nil {
+			return st.recorder.WriteVideo(pts, key, out)
+		}
+	}
+	return nil
+}
+
+// writeVideo 保留给测试与旧调用点：按帧内容推断关键帧。
+func (st *streamState) writeVideo(frame []byte) error {
+	return st.processVideo(frame, 0, isKeyframe(frame))
 }
 
 // writeAudio 按编码扩展名写入音频文件；编码变化时关闭旧文件并新建。
@@ -205,27 +297,57 @@ func (st *streamState) close() error {
 		}
 		st.audioSink = nil
 	}
+	if st.recorder != nil {
+		if err := st.recorder.Close(); err != nil {
+			errs = append(errs, err)
+		}
+		st.recorder = nil
+	}
+	if st.ring != nil {
+		st.ring.close()
+	}
+	if st.publisher != nil {
+		if err := st.publisher.Close("session closed"); err != nil {
+			errs = append(errs, err)
+		}
+		st.publisher = nil
+	}
 	return errors.Join(errs...)
 }
 
 // NewServer 创建 1078 音视频接入服务器。
 func NewServer(cfg Config) *Server {
+	cfg = cfg.normalize()
 	s := &Server{
-		cfg:        cfg.normalize(),
+		cfg:        cfg,
 		done:       make(chan struct{}),
 		streams:    map[string]*streamState{},
 		conns:      map[uint64]*tcpConn{},
 		lastParams: map[string]cachedParamSet{},
+		segments:   newSegmentIndex(),
+	}
+	if cfg.Playback.Output != "" {
+		hub, err := playback.NewHub(cfg.Playback)
+		if err != nil {
+			log.Error().Err(err).Msg("Fail to initialize playback output")
+		} else {
+			s.playback = hub
+			log.Info().Str("output", string(hub.Output())).Msg("Playback output initialized")
+		}
 	}
 	s.cleanup.Add(1)
 	routines.GoSafe(func() {
 		defer s.cleanup.Done()
 		s.cleanupLoop()
 	})
+	cleanupPartFiles(s.cfg.Dir)
 	return s
 }
 
-// Listen 绑定 UDP 端口。
+// Listen 在同一端口上同时绑定 UDP 与 TCP。
+//
+// 1078 的 0x9101/0x9201 下行信令里 TCP/UDP 端口字段填同一个值，终端按自身
+// 能力择一建链；平台侧不做端口池，也不为每个会话分配独立端口。
 func (s *Server) Listen(addr string) error {
 	if err := os.MkdirAll(s.cfg.Dir, 0o755); err != nil {
 		return fmt.Errorf("create media dir %s: %w", s.cfg.Dir, err)
@@ -240,8 +362,21 @@ func (s *Server) Listen(addr string) error {
 	}
 	_ = conn.SetReadBuffer(udpReadBuffer)
 	s.udpConn = conn
-	log.Info().Str("addr", conn.LocalAddr().String()).Str("transport", "udp").Str("dir", s.cfg.Dir).
-		Int("maxConcurrent", s.cfg.MaxConcurrent).Dur("retention", s.cfg.Retention).Msg("Media server listening")
+	s.udpPort = uint16(conn.LocalAddr().(*net.UDPAddr).Port)
+
+	// TCP 复用 UDP 实际拿到的端口；请求端口为 0 时以此为准。
+	tcpAddr := &net.TCPAddr{IP: udpAddr.IP, Port: conn.LocalAddr().(*net.UDPAddr).Port}
+	ln, err := net.ListenTCP("tcp", tcpAddr)
+	if err != nil {
+		_ = conn.Close()
+		s.udpConn = nil
+		return fmt.Errorf("listen media tcp addr %s: %w", tcpAddr.String(), err)
+	}
+	s.tcpLn = ln
+	s.tcpPort = uint16(ln.Addr().(*net.TCPAddr).Port)
+	log.Info().Str("addr", conn.LocalAddr().String()).Str("transport", "udp+tcp").Str("dir", s.cfg.Dir).
+		Int("maxConcurrent", s.cfg.MaxConcurrent).Dur("retention", s.cfg.Retention).
+		Str("recordMode", string(s.cfg.RecordMode)).Msg("Media server listening")
 	return nil
 }
 
@@ -259,6 +394,7 @@ func (s *Server) ListenTCP(addr string) error {
 		return fmt.Errorf("listen media tcp addr %s: %w", addr, err)
 	}
 	s.tcpLn = ln
+	s.tcpPort = uint16(ln.Addr().(*net.TCPAddr).Port)
 	log.Info().Str("addr", ln.Addr().String()).Str("transport", "tcp").Str("dir", s.cfg.Dir).
 		Int("maxTCPConns", s.cfg.MaxTCPConns).Dur("retention", s.cfg.Retention).Msg("Media server listening")
 	return nil
@@ -314,6 +450,9 @@ func (s *Server) Start() {
 func (s *Server) Stop() {
 	s.close.Do(func() {
 		close(s.done)
+		if s.httpSrv != nil {
+			_ = s.httpSrv.Close()
+		}
 		if s.udpConn != nil {
 			_ = s.udpConn.Close()
 		}
@@ -413,8 +552,20 @@ func (s *Server) handlePacket(raw []byte, source packetSource) {
 			s.warnAACWithoutADTS(pkt.Phone, pkt.LogicChannel)
 			return
 		}
-		if err := st.writeAudio(audioExt, audio); err != nil {
-			log.Warn().Err(err).Str("path", st.stem).Msg("Fail to write media audio frame")
+		if audioExt == ".aac" && st.ring != nil {
+			if raw, config, ok := playback.ParseADTS(audio); ok {
+				st.ring.pushAudio(pkt.Timestamp, raw, config)
+				if st.publisher != nil {
+					if err := st.publisher.PushAudio(pkt.Timestamp, playback.AudioAAC, raw, config); err != nil {
+						log.Debug().Err(err).Str("session", st.id).Msg("Fail to push audio frame to playback output")
+					}
+				}
+			}
+		}
+		if s.cfg.RecordMode == RecordModeLegacy {
+			if err := st.writeAudio(audioExt, audio); err != nil {
+				log.Warn().Err(err).Str("path", st.stem).Msg("Fail to write media audio frame")
+			}
 		}
 		return
 	}
@@ -430,18 +581,31 @@ func (s *Server) handlePacket(raw []byte, source packetSource) {
 		// PS 正常结束且无 ES，不是错误。
 		return
 	}
-	if err := st.writeVideo(h264); err != nil {
+	if err := st.processVideo(h264, pkt.Timestamp, isKeyframe(h264)); err != nil {
 		log.Warn().Err(err).Str("stem", st.stem).Msg("Fail to write media frame")
 	}
 }
 
+// streamFor 按 (phone, channel) 定位会话；不存在时自动建一个实时会话。
+//
+// 单端口模式下没有“哪个端口对应哪路流”的信息，唯一可用的分流键是 RTP
+// 负载头里的 SIM 与逻辑通道。同一键只允许一个会话，因此这里不会顶替已有
+// 会话；显式申请冲突由 Acquire 拒绝。
 func (s *Server) streamFor(pkt *Packet, source packetSource) *streamState {
-	key := streamKey(pkt.Phone, pkt.LogicChannel, source)
+	key := streamKeyBase(pkt.Phone, pkt.LogicChannel)
 
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if st, ok := s.streams[key]; ok {
-		return st
+		if st.expired(time.Now()) {
+			delete(s.streams, key)
+			s.mu.Unlock()
+			_ = st.close()
+			s.mu.Lock()
+		} else {
+			st.source = source
+			s.mu.Unlock()
+			return st
+		}
 	}
 	if len(s.streams) >= s.cfg.MaxConcurrent {
 		now := time.Now()
@@ -450,24 +614,193 @@ func (s *Server) streamFor(pkt *Packet, source packetSource) *streamState {
 			log.Warn().Str("phone", pkt.Phone).Uint8("channel", pkt.LogicChannel).
 				Int("maxConcurrent", s.cfg.MaxConcurrent).Msg("Media stream limit reached, drop packet")
 		}
+		s.mu.Unlock()
 		return nil
 	}
 
-	sps, pps := s.loadLastParams(pkt.Phone, pkt.LogicChannel)
+	st := s.newStreamLocked(pkt.Phone, pkt.LogicChannel, StreamKindLive, source, 0)
+	s.mu.Unlock()
+	log.Info().Str("phone", pkt.Phone).Uint8("channel", pkt.LogicChannel).
+		Str("transport", source.key()).Str("session", st.id).Msg("Media stream started")
+	return st
+}
+
+// newStreamLocked 创建会话状态；调用方必须持有 s.mu。
+func (s *Server) newStreamLocked(phone string, channel uint8, kind StreamKind, source packetSource, leaseTTL time.Duration) *streamState {
+	s.nextSession++
+	sps, pps := s.loadLastParams(phone, channel)
 	st := &streamState{
-		source:   source,
-		phone:    pkt.Phone,
-		channel:  pkt.LogicChannel,
-		dir:      s.cfg.Dir,
-		stem:     strconv.FormatInt(time.Now().UnixNano(), 10),
-		assemble: newFrameAssembler(maxFrameBytes),
-		params:   paramSetCache{sps: sps, pps: pps},
+		id:         fmt.Sprintf("ms-%d", s.nextSession),
+		kind:       kind,
+		leaseTTL:   leaseTTL,
+		source:     source,
+		phone:      phone,
+		channel:    channel,
+		dir:        s.cfg.Dir,
+		stem:       strconv.FormatInt(time.Now().UnixNano(), 10),
+		assemble:   newFrameAssembler(maxFrameBytes),
+		params:     paramSetCache{sps: sps, pps: pps},
+		ring:       newGOPRing(s.cfg.RingBytes, s.cfg.RingDuration),
+		recordMode: s.cfg.RecordMode,
+	}
+	if leaseTTL > 0 {
+		st.expiresAt.Store(time.Now().Add(leaseTTL).UnixNano())
+	}
+	if s.cfg.RecordMode == RecordModeSegmented {
+		st.recorder = newRecorder(recorderConfig{
+			dir:      s.cfg.Dir,
+			phone:    phone,
+			channel:  channel,
+			stem:     st.stem,
+			duration: s.cfg.SegmentDuration,
+			blob:     s.cfg.Blob,
+			sink:     s.cfg.SegmentSink,
+			kind:     kind,
+		})
+	}
+	if s.playback != nil {
+		publisher := s.playback.NewPublisher()
+		endpoints, err := publisher.Start(playback.Session{
+			ID:      st.id,
+			Phone:   phone,
+			Channel: channel,
+			Kind:    string(kind),
+		}, playback.ParamSets{SPS: st.params.sps, PPS: st.params.pps}, ringSource{ring: st.ring})
+		if err != nil {
+			log.Warn().Err(err).Str("session", st.id).Msg("Fail to start playback output")
+		} else {
+			st.publisher = publisher
+			st.endpoints = endpoints
+		}
 	}
 	st.touch()
-	s.streams[key] = st
-	log.Info().Str("phone", pkt.Phone).Uint8("channel", pkt.LogicChannel).
-		Str("transport", source.key()).Msg("Media stream started")
+	s.streams[streamKeyBase(phone, channel)] = st
 	return st
+}
+
+// Acquire 显式创建播放会话；冲突时返回结构化错误，不顶替、不排队。
+func (s *Server) Acquire(req SessionRequest) (SessionInfo, error) {
+	if strings.TrimSpace(req.Phone) == "" {
+		return SessionInfo{}, fmt.Errorf("phone is required")
+	}
+	kind, err := NormalizeStreamKind(req.Kind)
+	if err != nil {
+		return SessionInfo{}, err
+	}
+	ttl := req.TTL
+	if ttl <= 0 {
+		ttl = 5 * time.Minute
+	}
+	now := time.Now()
+
+	s.mu.Lock()
+	key := streamKeyBase(req.Phone, req.Channel)
+	if st, ok := s.streams[key]; ok {
+		if !st.expired(now) {
+			info := s.infoLocked(st)
+			s.mu.Unlock()
+			return SessionInfo{}, &SessionConflictError{
+				Phone:             req.Phone,
+				Channel:           req.Channel,
+				ExistingSessionID: info.ID,
+				ExistingKind:      info.Kind,
+				ExistingExpiresAt: info.ExpiresAt,
+			}
+		}
+		delete(s.streams, key)
+		s.mu.Unlock()
+		_ = st.close()
+		s.mu.Lock()
+	}
+	if len(s.streams) >= s.cfg.MaxConcurrent {
+		s.mu.Unlock()
+		return SessionInfo{}, fmt.Errorf("media session limit reached (%d)", s.cfg.MaxConcurrent)
+	}
+	st := s.newStreamLocked(req.Phone, req.Channel, kind, packetSource{}, ttl)
+	info := s.infoLocked(st)
+	s.mu.Unlock()
+	return info, nil
+}
+
+// Release 释放会话；不存在时返回 SessionNotFoundError。
+func (s *Server) Release(sessionID string) error {
+	s.mu.Lock()
+	var target *streamState
+	for key, st := range s.streams {
+		if st.id == sessionID {
+			target = st
+			delete(s.streams, key)
+			break
+		}
+	}
+	s.mu.Unlock()
+	if target == nil {
+		return &SessionNotFoundError{SessionID: sessionID}
+	}
+	return target.close()
+}
+
+// Session 返回会话状态快照与控制句柄；第二个返回值表示是否存在。
+func (s *Server) Session(sessionID string) (SessionInfo, *streamState, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, st := range s.streams {
+		if st.id == sessionID {
+			return s.infoLocked(st), st, true
+		}
+	}
+	return SessionInfo{}, nil, false
+}
+
+// Sessions 返回所有会话快照。
+func (s *Server) Sessions() []SessionInfo {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]SessionInfo, 0, len(s.streams))
+	for _, st := range s.streams {
+		out = append(out, s.infoLocked(st))
+	}
+	return out
+}
+
+func (st *streamState) expired(now time.Time) bool {
+	expiry := st.expiresAt.Load()
+	return expiry > 0 && now.After(time.Unix(0, expiry))
+}
+
+// infoLocked 生成会话快照；调用方必须持有 s.mu。
+//
+// 播放地址由媒体节点生成并返回，管控层只透传：flv 模式是
+// http://<node>/media/<session>.flv，rtmp 模式是外部媒体服务器的流地址。
+func (s *Server) infoLocked(st *streamState) SessionInfo {
+	var expiresAt time.Time
+	if expiry := st.expiresAt.Load(); expiry > 0 {
+		expiresAt = time.Unix(0, expiry)
+	}
+	host := s.cfg.AdvertiseIP
+	if host == "" {
+		host = "127.0.0.1"
+	}
+	info := SessionInfo{
+		ID:        st.id,
+		Phone:     st.phone,
+		Channel:   st.channel,
+		Kind:      st.kind,
+		ExpiresAt: expiresAt,
+		FLVPath:   "/media/" + st.id + ".flv",
+		Active:    true,
+		ServerIP:  host,
+		TCPPort:   s.tcpPort,
+		UDPPort:   s.udpPort,
+		Endpoints: append([]playback.Endpoint(nil), st.endpoints...),
+	}
+	if s.playback != nil {
+		info.Output = string(s.playback.Output())
+	}
+	if len(info.Endpoints) > 0 {
+		info.PlaybackURL = info.Endpoints[0].URL
+	}
+	return info
 }
 
 func (s *Server) cleanupLoop() {
@@ -574,7 +907,7 @@ func (s *Server) evictIdle(now time.Time) {
 	s.mu.Lock()
 	expired := make([]*streamState, 0, len(s.streams))
 	for key, st := range s.streams {
-		if st.idleFor(now) >= s.cfg.IdleTimeout {
+		if st.expired(now) || st.idleFor(now) >= s.cfg.IdleTimeout {
 			expired = append(expired, st)
 			delete(s.streams, key)
 		}
@@ -699,8 +1032,12 @@ func streamKeyBase(phone string, channel uint8) string {
 	return fmt.Sprintf("%s/%d", phone, channel)
 }
 
-func streamKey(phone string, channel uint8, source packetSource) string {
-	return streamKeyBase(phone, channel) + "/" + source.key()
+// streamKey 是会话表键：单端口下只看 (phone, channel)。
+//
+// source 参数保留给调用点兼容；承载方式不再参与分流，同一通道的 UDP/TCP
+// 视为同一个播放会话。
+func streamKey(phone string, channel uint8, _ packetSource) string {
+	return streamKeyBase(phone, channel)
 }
 
 // fileSink 把音视频数据追加到单个文件。

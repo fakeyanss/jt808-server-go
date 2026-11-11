@@ -258,6 +258,62 @@ API 管控 ──落库/查询──> 共享存储
 
 一句话：**协议里带目标地址的（1078、苏标附件），网关只协商、不碰数据面；数据随 808 消息上来的，必须有明确的交接通道。**
 
+### 3.4 1078 媒体播放输出层
+
+#### 会话与流键
+
+- `0x9101/0x9102`（实时）与 `0x9201/0x9202`（终端本地回放）的数据面完全一致：终端都按平台下发的 IP+端口建立 1078 连接、推 RTP，回放流复用实时流的 RTP 负载格式（JT/T 1078-2016 §5.6.3）。
+- 媒体角色只保留一条管线：**收流 → 内存帧环 → 播放输出**。API 统一为“播放会话”，`kind=live|terminal_playback` 只影响下行信令与展示，不影响媒体处理。
+- 单一固定端口（方案 A）：`0x9101/0x9201` 的 TCP/UDP 端口字段填同一个值，媒体角色在同一端口同时监听 UDP 与 TCP；按 RTP 负载头的 **SIM 卡号 BCD[6] + 逻辑通道号** 定位会话。
+- RTP 负载头**没有任何字段标识实时/回放**（§5.5.3 表 19），因此同一 `(phone, channel)` **同时只允许一个播放会话**。新请求返回结构化冲突（`session_conflict` + 现有会话 ID/kind/过期时间），不静默顶替、不排队；释放后可再次创建。
+- `source` 仲裁按会话隔离，不做跨流类型仲裁；帧环键就是会话，不存在实时帧与回放帧混环的问题。
+
+#### 时间戳
+
+- 1078 时间戳字段宽度是 **8 字节**，但大量终端实际只填 32 位毫秒（49.7 天回绕）。输出层统一接收 `uint64` 原始时间戳，经 `playback.Timeline` 归一化为“相对会话起点的单调毫秒”再写入 FLV/RTMP/TS。
+- 归一化显式处理回绕：`0xFFFFFFF8 -> 0x00000010` 按回绕补齐 2^32；真实倒退样本被丢弃、不推进基准，保证输出时间戳单调不减。测试覆盖模拟回绕并断言单调递增。
+- FLV/RTMP 音视频共用一条毫秒时间轴；TS 切片维护 `(PTS, 字节偏移)` 关键帧索引，平台录像的 `Range` 回放靠它定位。
+
+#### 输出接口与两种模式
+
+接口切在“帧 + 参数集”层，**不切在 HTTP 响应层**；签名中不出现 `http.ResponseWriter`，桥接模式才能复用同一抽象：
+
+```
+Publisher.Start(session, paramSets, frameSource) ([]Endpoint, error)
+Publisher.PushVideo(pts uint64, annexB, keyframe, *ParamSets)
+Publisher.PushAudio(pts uint64, codec, frame, config)
+Publisher.Close(reason)
+Publisher.State() / Endpoints()
+```
+
+| 模式 | 实现 | 播放地址来源 | GOP 对齐 |
+|---|---|---|---|
+| `flv`（轻量默认） | 进程内 FLV 封装 + HTTP-FLV 长连接，新观众从帧环最近关键帧开始 | 媒体节点：`http://<node>/media/<session>.flv` | 平台帧环负责整 GOP 淘汰与游标失效 |
+| `rtmp`（高需求） | 推 RTMP 到 SRS/lal，由其分发 FLV/HLS/WebRTC | 外部媒体服务器流地址（`rtmp.url` / `playUrlPrefix`） | **由 SRS 的 `gop_cache` 负责** |
+| `both` | 两种出口并联 | 两者端点都返回 | 各自由上述机制负责 |
+
+- `mediaServer.playback.output: flv | rtmp | both`；`rtmp`/`both` 必须配置 `mediaServer.playback.rtmp.url`，非法组合启动即失败。
+- “参数集转换 + FLV tag/RTMP 消息体编码”抽成 `playback/mux` 共用层：AVCC（`AVCDecoderConfigurationRecord`）、AAC `AudioSpecificConfig`、AVCC 长度前缀。两种实现不各写一份。
+- 播放地址由媒体节点返回，管控层只透传，不按模式硬拼 URL。
+- 队列满策略：输出侧有界队列，**丢 P 帧并进入 desync，直到下一个关键帧**；绝不阻塞 RTP 收流协程。桥接断开时按退避重连，重连后重新下发解码配置。
+- 参数集中途变化（切分辨率/码流）必须重发 `AVCDecoderConfigurationRecord`，否则播放器按旧参数解码会花屏；复用参数集缓存做变化检测。
+- **不变量**：帧环、GOP 锚点与淘汰、`(phone, channel)` 单会话、录制管线、对象存储上传，全部与输出模式无关。桥接模式下不重复实现平台侧 GOP 缓存，仍保留帧环（录制与统计需要）。
+
+> **部署注意（必须）**：`rtmp`/`both` 模式下观众直连 SRS，平台不参与观众接入，无法替观众做 GOP 对齐。**必须保持 SRS 的 `gop_cache` 开启（默认值），不要关闭**，否则新观众会黑屏、卡住或反复重连。平台侧帧环对齐只对自研 `flv` 生效。
+
+#### 录制
+
+- 实时流默认不落盘：帧只进内存帧环，有人播放直接读内存。需要转存时 `record.mode=segmented`，按周期切 TS 片，切完上传对象存储后再删本地片。
+- `record.mode=off|legacy|segmented`：cluster 默认 `off`，standalone 默认 `legacy` 并在启动日志提示；终端回放流与实时流一视同仁。
+- `_pending/` 对账、本地片残留清理与对象存储提级规则见第 8 节。
+
+#### 回放语义澄清
+
+- `0x9201` 的数据源是**终端本地存储**（JT/T 1078-2016 §5.6.1、表 24 的存储器类型），不是平台录像。它让终端把本地录像以 1078 流推上来，媒体层按播放会话处理。
+- **平台录像回放**走平台私有 API：按 `recording_segments` 索引 + `Range` 直接读对象存储，完全不经过 `0x9201`。协议里没有对应消息。
+- `0x9205/0x1205` 是终端录像文件列表查询/应答，属于文件元数据通道；`0x9206/0x9207` 的 FTP 上传链路本轮不实现。若将来补齐，参考做法是“每次下发 0x9206 前签发任务级一次性 FTP 凭据、绑定流水号，下发失败与收到 0x1206 时立即吊销”，可同时解决凭据共用与任务对账。
+- 平台录像覆盖查询不完整**不是错误**：返回 200 + `requested/available/missing/playable/segments` 结构化区间，调用方按数据判断；只有时间倒置、通道非法等参数错误才返回 4xx。
+
 ---
 
 ## 4. 808 网关

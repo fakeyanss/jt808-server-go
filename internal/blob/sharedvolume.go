@@ -149,6 +149,44 @@ func (s *SharedVolume) Open(ctx context.Context, key string) (io.ReadCloser, err
 	return os.Open(filepath.Join(s.root, clean))
 }
 
+// OpenRange 打开对象的 [offset, offset+length) 区间。
+// length<=0 表示读到对象末尾；offset 越界返回错误。
+func (s *SharedVolume) OpenRange(ctx context.Context, key string, offset, length int64) (io.ReadCloser, error) {
+	if offset < 0 {
+		return nil, fmt.Errorf("blob range offset must be >= 0, got %d", offset)
+	}
+	clean, err := cleanKey(key)
+	if err != nil {
+		return nil, err
+	}
+	file, err := os.Open(filepath.Join(s.root, clean))
+	if err != nil {
+		return nil, err
+	}
+	info, err := file.Stat()
+	if err != nil {
+		_ = file.Close()
+		return nil, err
+	}
+	if offset > info.Size() {
+		_ = file.Close()
+		return nil, fmt.Errorf("blob range offset %d exceeds object size %d", offset, info.Size())
+	}
+	available := info.Size() - offset
+	if length <= 0 || length > available {
+		length = available
+	}
+	return &sectionReadCloser{Reader: io.NewSectionReader(file, offset, length), closer: file}, nil
+}
+
+// sectionReadCloser 让区间读取与普通对象读取一样可关闭。
+type sectionReadCloser struct {
+	io.Reader
+	closer io.Closer
+}
+
+func (r *sectionReadCloser) Close() error { return r.closer.Close() }
+
 // Delete 删除对象与 sidecar；不存在时返回错误。
 func (s *SharedVolume) Delete(ctx context.Context, key string) error {
 	clean, err := cleanKey(key)

@@ -68,6 +68,52 @@ docker exec jt808 sh -c 'wget -qO- --header="Authorization: Bearer $ADMIN_TOKEN"
 
 如需从宿主机访问管理面，把配置改为 `admin.addr: "0.0.0.0:9000"`、设置强 token，再在 compose 中发布端口并限制来源。
 
+### 1.4 1078 媒体播放输出（可选）
+
+媒体角色把收到的 1078 流按 `mediaServer.playback.output` 转成播放输出，播放地址由媒体节点在创建播放会话时返回，调用方不要自行拼接。
+
+```yaml
+mediaServer:
+  port: 7000            # 同一端口同时监听 UDP 与 TCP，0x9101/0x9201 两个端口字段填同一值
+  httpPort: 7001        # 会话管理 + HTTP-FLV 播放；未配置时取 port + 1
+  advertiseIp: 10.0.0.12
+  record:
+    mode: off           # off | legacy | segmented
+    segmentMinutes: 10
+  playback:
+    output: flv         # flv | rtmp | both
+    rtmp:
+      url: rtmp://10.0.0.20/live      # 只写到 app，不含流名
+      streamPrefix: jt                 # 推流名前缀，最终流名 <prefix>_<phone>_<channel>
+      playUrlPrefix: http://10.0.0.20:8080/live   # 可选，观众播放地址前缀
+      dialTimeoutSeconds: 5
+      writeTimeoutSeconds: 10
+      queueFrames: 120
+```
+
+- `flv`（默认）：平台内置 HTTP-FLV，观众直接向媒体节点 `GET /media/<sessionId>.flv`；平台按关键帧对齐，新观众从最近的 GOP 头开始。
+- `rtmp`：平台把流推给 SRS 等流媒体服务器，观众从流媒体服务器播放；播放地址取 `rtmp.playUrlPrefix`，未配置时只返回推流地址。
+- `both`：两路并联，单路异常不影响另一路。
+- `rtmp`/`both` 必须配置 `rtmp.url`，且协议前缀必须是 `rtmp://`；协议不支持、缺少 URL 或超时/队列为负数都会导致**启动失败**，不是运行期降级。
+- 播放会话按 `(手机号, 逻辑通道号)` 唯一。同一通道已有会话时新请求返回 `409 session_conflict`，并在响应体里带现有会话 ID、类型与过期时间；不会顶替也不会排队。`DELETE /api/playback/:sessionId` 释放后可重新创建。
+
+> **部署注意（务必遵守）：`rtmp` / `both` 模式下必须保持 SRS 的 `gop_cache` 开启（默认值），不要关闭。**
+>
+> 桥接模式下观众直连 SRS，平台不参与观众接入，无法替观众做 GOP 对齐。SRS 的 `gop_cache` 正是缓存 GOP 头、给新观众补发 SPS/PPS 与关键帧的机制；关掉后新观众会黑屏或长时间等待下一个关键帧。
+>
+> 平台侧的帧环对齐（从最近 GOP 头起播）**只对自研 `flv` 模式生效**，不能替代 SRS 的 `gop_cache`。若历史上按“由平台做对齐”的建议关闭过，请恢复为默认值：
+
+```conf
+# srs.conf
+vhost __defaultVhost__ {
+    gop_cache       on;      # 保持开启
+    gop_cache_max_frames 2500;
+}
+```
+
+- `record.mode` 控制是否落盘：`off`（集群默认，只保留内存帧环）、`legacy`（持续写 `.h264/.g711`）、`segmented`（按周期切 MPEG-TS 片并上传对象存储）。终端回放流（`kind=terminal_playback`）默认**不录制**，需要留档时显式配置 `segmented`。
+- `0x9201` 拉的是**终端本地存储**上的录像，不是平台录像。平台录像回放走业务 API：先查覆盖区间，再按 `Range` 读取对象存储中的片段，不经过 `0x9201`。覆盖查询不完整时返回 `200` 与 `{requested, available, missing, playable, segments}`，**不是 409**；只有参数错误才返回 4xx。
+
 ---
 
 ## 2. 数据库迁移

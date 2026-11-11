@@ -166,7 +166,7 @@ func TestParseServerModeMatrix(t *testing.T) {
 				cfg.Cluster.Blob = &clusterBlobConf{Backend: BlobBackendObjectStore}
 				cfg.MediaServer = &mediaServerConf{Port: "7100"}
 			},
-			wantErr: "objectStore is not implemented in E1",
+			wantErr: "cluster.blob.objectStore.endpoint is required",
 		},
 		{
 			name: "sharedVolume 缺标记拒绝",
@@ -214,7 +214,7 @@ func TestParseServerModeMatrix(t *testing.T) {
 					Root:         root,
 				}
 			},
-			wantErr: "mediaServer.port or mediaServer.tcpPort is required",
+			wantErr: "mediaServer.port is required",
 		},
 		{
 			name: "control sharedVolume 根目录必须对齐 mediaUpload",
