@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -20,7 +21,8 @@ type fakeRTMPServer struct {
 	addr      string
 	published chan string
 	media     chan rtmpMessage
-	errc      chan error
+	mu        sync.Mutex
+	conn      net.Conn
 }
 
 func newFakeRTMPServer(t *testing.T) *fakeRTMPServer {
@@ -32,67 +34,79 @@ func newFakeRTMPServer(t *testing.T) *fakeRTMPServer {
 	server := &fakeRTMPServer{
 		ln:        ln,
 		addr:      ln.Addr().String(),
-		published: make(chan string, 1),
-		media:     make(chan rtmpMessage, 16),
-		errc:      make(chan error, 1),
+		published: make(chan string, 8),
+		media:     make(chan rtmpMessage, 64),
 	}
 	t.Cleanup(func() { _ = ln.Close() })
 	go server.serve()
 	return server
 }
 
+// serve 接受多次连接：重连测试需要第二次 publish。
 func (s *fakeRTMPServer) serve() {
-	conn, err := s.ln.Accept()
-	if err != nil {
-		s.errc <- err
-		return
+	for {
+		conn, err := s.ln.Accept()
+		if err != nil {
+			return
+		}
+		s.mu.Lock()
+		s.conn = conn
+		s.mu.Unlock()
+		// 单条连接的失败（含测试主动断连）不终止监听，继续接受下一次连接。
+		_ = s.handleConn(conn)
 	}
+}
+
+// dropConnection 模拟媒体服务器断连。
+func (s *fakeRTMPServer) dropConnection() {
+	s.mu.Lock()
+	conn := s.conn
+	s.mu.Unlock()
+	if conn != nil {
+		_ = conn.Close()
+	}
+}
+
+func (s *fakeRTMPServer) handleConn(conn net.Conn) error {
 	defer conn.Close()
 	_ = conn.SetDeadline(time.Now().Add(10 * time.Second))
 
 	// C0+C1。
 	c0c1 := make([]byte, 1+1536)
 	if _, err := io.ReadFull(conn, c0c1); err != nil {
-		s.errc <- err
-		return
+		return err
 	}
 	if c0c1[0] != 0x03 {
-		s.errc <- io.ErrUnexpectedEOF
-		return
+		return io.ErrUnexpectedEOF
 	}
 	reply := make([]byte, 1+1536+1536)
 	reply[0] = 0x03
 	copy(reply[1+1536:], c0c1[1:]) // S2 回显 C1
 	if _, err := conn.Write(reply); err != nil {
-		s.errc <- err
-		return
+		return err
 	}
 	// C2 回显 S1。
 	c2 := make([]byte, 1536)
 	if _, err := io.ReadFull(conn, c2); err != nil {
-		s.errc <- err
-		return
+		return err
 	}
 
 	reader := bufio.NewReader(conn)
 	for {
 		typ, ts, payload, err := readTestMessage(reader)
 		if err != nil {
-			s.errc <- err
-			return
+			return err
 		}
 		switch {
 		case typ == 1: // Set Chunk Size
 			continue
 		case bytes.Contains(payload, []byte("connect")):
 			if err := writeRTMPMessage(conn, 3, 20, 0, 0, amf0Command("_result", 1, amf0Null()), 4096); err != nil {
-				s.errc <- err
-				return
+				return err
 			}
 		case bytes.Contains(payload, []byte("createStream")):
 			if err := writeRTMPMessage(conn, 3, 20, 0, 0, amf0Command("_result", 2, amf0Null()), 4096); err != nil {
-				s.errc <- err
-				return
+				return err
 			}
 		case bytes.Contains(payload, []byte("publish")):
 			name := ""
@@ -102,8 +116,7 @@ func (s *fakeRTMPServer) serve() {
 			s.published <- name
 			if err := writeRTMPMessage(conn, 5, 20, 1, 0,
 				amf0Command("onStatus", 0, amf0String("NetStream.Publish.Start")), 4096); err != nil {
-				s.errc <- err
-				return
+				return err
 			}
 		default:
 			s.media <- rtmpMessage{typ: typ, ts: ts, body: payload}
@@ -149,8 +162,6 @@ func (s *fakeRTMPServer) nextMedia(t *testing.T) rtmpMessage {
 	select {
 	case msg := <-s.media:
 		return msg
-	case err := <-s.errc:
-		t.Fatalf("fake rtmp server: %v", err)
 	case <-time.After(5 * time.Second):
 		t.Fatal("timeout waiting for media message")
 	}
@@ -162,8 +173,6 @@ func (s *fakeRTMPServer) waitPublished(t *testing.T) string {
 	select {
 	case name := <-s.published:
 		return name
-	case err := <-s.errc:
-		t.Fatalf("fake rtmp server: %v", err)
 	case <-time.After(5 * time.Second):
 		t.Fatal("timeout waiting for publish")
 	}
@@ -248,6 +257,67 @@ func TestRTMPPublishesConfigKeyframeAndAudio(t *testing.T) {
 	}
 	if audio.typ != 8 || audio.ts != 1050 || audio.body[0] != 0xAF || audio.body[1] != 0x01 {
 		t.Fatalf("audio = type %d ts %d body %x", audio.typ, audio.ts, audio.body[:2])
+	}
+}
+
+func TestRTMPReconnectStartsWithConfigAndKeyframe(t *testing.T) {
+	server := newFakeRTMPServer(t)
+	factory, err := NewRTMPFactory(RTMPConfig{URL: "rtmp://" + server.addr + "/live"})
+	if err != nil {
+		t.Fatalf("factory: %v", err)
+	}
+	publisher := factory.NewPublisher()
+	defer publisher.Close("test done")
+
+	params := ParamSets{SPS: testSPS, PPS: testPPS}
+	if _, err := publisher.Start(Session{ID: "sess3"}, params, nil); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	server.waitPublished(t)
+
+	idr := append(append([]byte{}, testSPS...), testPPS...)
+	idr = append(idr, 0x00, 0x00, 0x00, 0x01, 0x65, 0x88, 0x84, 0x00)
+	pFrame := []byte{0x00, 0x00, 0x00, 0x01, 0x41, 0x9a, 0x00}
+	if err := publisher.PushVideo(1000, idr, true, &params); err != nil {
+		t.Fatalf("push keyframe: %v", err)
+	}
+	if msg := server.nextMedia(t); msg.body[1] != 0x00 {
+		t.Fatalf("first = %x, want avc config", msg.body[:2])
+	}
+	if msg := server.nextMedia(t); msg.body[1] != 0x01 {
+		t.Fatalf("second = %x, want keyframe", msg.body[:2])
+	}
+
+	// 断连后自动重连：写失败才会发现对端已断开，持续推帧触发。
+	server.dropConnection()
+	stop := make(chan struct{})
+	defer close(stop)
+	go func() {
+		pts := uint64(2000)
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			pts += 40
+			_ = publisher.PushVideo(pts, pFrame, false, nil)
+			time.Sleep(20 * time.Millisecond)
+		}
+	}()
+	server.waitPublished(t)
+	time.Sleep(200 * time.Millisecond)
+	// 重连后、关键帧之前的 P 帧必须被丢弃，不能让新连接以 P 帧开流。
+	if err := publisher.PushVideo(3000, idr, true, &params); err != nil {
+		t.Fatalf("push keyframe after reconnect: %v", err)
+	}
+	first := server.nextMedia(t)
+	second := server.nextMedia(t)
+	if first.typ != 9 || first.body[1] != 0x00 {
+		t.Fatalf("first after reconnect = type %d body %x, want avc config", first.typ, first.body[:2])
+	}
+	if second.typ != 9 || second.body[1] != 0x01 {
+		t.Fatalf("second after reconnect = type %d body %x, want keyframe", second.typ, second.body[:2])
 	}
 }
 
