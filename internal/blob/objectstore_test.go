@@ -12,10 +12,12 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 
@@ -34,10 +36,11 @@ type fakeS3Request struct {
 }
 
 type fakeS3Object struct {
-	Data        []byte
-	ETag        string
-	Meta        map[string]string
-	ContentType string
+	Data         []byte
+	ETag         string
+	Meta         map[string]string
+	ContentType  string
+	LastModified time.Time
 }
 
 // fakeS3 是最小 S3 兼容服务，按方法 + 查询参数严格分派；未知请求返回 400。
@@ -98,8 +101,17 @@ func (f *fakeS3) handle(w http.ResponseWriter, r *http.Request) {
 	})
 	f.mu.Unlock()
 
-	key, ok := strings.CutPrefix(r.URL.Path, "/"+f.bucket+"/")
-	if !ok || key == "" {
+	key, ok := strings.CutPrefix(r.URL.Path, "/"+f.bucket)
+	if !ok {
+		f.reject(w, "unexpected path %q", r.URL.Path)
+		return
+	}
+	key = strings.TrimPrefix(key, "/")
+	if r.Method == http.MethodGet && key == "" && r.URL.Query().Has("list-type") {
+		f.handleList(w, r)
+		return
+	}
+	if key == "" {
 		f.reject(w, "unexpected path %q", r.URL.Path)
 		return
 	}
@@ -132,10 +144,11 @@ func (f *fakeS3) handlePut(w http.ResponseWriter, r *http.Request, key string, b
 	etag := `"` + fakeHexMD5(body) + `"`
 	f.mu.Lock()
 	f.objects[key] = &fakeS3Object{
-		Data:        append([]byte(nil), body...),
-		ETag:        etag,
-		Meta:        fakeMetaFromHeader(r.Header),
-		ContentType: r.Header.Get("Content-Type"),
+		Data:         append([]byte(nil), body...),
+		ETag:         etag,
+		Meta:         fakeMetaFromHeader(r.Header),
+		ContentType:  r.Header.Get("Content-Type"),
+		LastModified: time.Now().UTC(),
 	}
 	f.mu.Unlock()
 	w.Header().Set("ETag", etag)
@@ -206,7 +219,7 @@ func (f *fakeS3) handleCompleteUpload(w http.ResponseWriter, key, uploadID strin
 	}
 	delete(f.parts, uploadID)
 	etag := `"` + fakeHexMD5(assembled) + `"`
-	f.objects[key] = &fakeS3Object{Data: assembled, ETag: etag, Meta: map[string]string{}}
+	f.objects[key] = &fakeS3Object{Data: assembled, ETag: etag, Meta: map[string]string{}, LastModified: time.Now().UTC()}
 	f.mu.Unlock()
 	w.Header().Set("Content-Type", "application/xml")
 	fmt.Fprintf(w, `<CompleteMultipartUploadResult><ETag>%s</ETag></CompleteMultipartUploadResult>`, etag)
@@ -231,10 +244,11 @@ func (f *fakeS3) handleCopy(w http.ResponseWriter, r *http.Request, source, targ
 		return
 	}
 	copied := &fakeS3Object{
-		Data:        append([]byte(nil), sourceObject.Data...),
-		ETag:        sourceObject.ETag,
-		Meta:        make(map[string]string),
-		ContentType: sourceObject.ContentType,
+		Data:         append([]byte(nil), sourceObject.Data...),
+		ETag:         sourceObject.ETag,
+		Meta:         make(map[string]string),
+		ContentType:  sourceObject.ContentType,
+		LastModified: time.Now().UTC(),
 	}
 	if strings.EqualFold(r.Header.Get("x-amz-metadata-directive"), "REPLACE") {
 		copied.Meta = fakeMetaFromHeader(r.Header)
@@ -317,9 +331,10 @@ func (f *fakeS3) seed(key string, data []byte) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.objects[key] = &fakeS3Object{
-		Data: append([]byte(nil), data...),
-		ETag: `"` + fakeHexMD5(data) + `"`,
-		Meta: map[string]string{"jt808-state": "committed"},
+		Data:         append([]byte(nil), data...),
+		ETag:         `"` + fakeHexMD5(data) + `"`,
+		Meta:         map[string]string{"jt808-state": "committed"},
+		LastModified: time.Now().UTC(),
 	}
 }
 
@@ -359,6 +374,63 @@ func (f *fakeS3) getRequests(key string) []fakeS3Request {
 		}
 	}
 	return gets
+}
+
+// handleList 实现 ListObjectsV2，仅返回前缀匹配的 Contents。
+func (f *fakeS3) handleList(w http.ResponseWriter, r *http.Request) {
+	prefix := r.URL.Query().Get("prefix")
+	type content struct {
+		Key          string `xml:"Key"`
+		Size         int64  `xml:"Size"`
+		LastModified string `xml:"LastModified"`
+	}
+	type result struct {
+		XMLName     xml.Name  `xml:"ListBucketResult"`
+		IsTruncated bool      `xml:"IsTruncated"`
+		Contents    []content `xml:"Contents"`
+	}
+	f.mu.Lock()
+	keys := make([]string, 0, len(f.objects))
+	for key := range f.objects {
+		if strings.HasPrefix(key, prefix) {
+			keys = append(keys, key)
+		}
+	}
+	sort.Strings(keys)
+	listed := result{IsTruncated: false}
+	for _, key := range keys {
+		object := f.objects[key]
+		listed.Contents = append(listed.Contents, content{
+			Key:          key,
+			Size:         int64(len(object.Data)),
+			LastModified: object.LastModified.Format("2006-01-02T15:04:05.000Z"),
+		})
+	}
+	f.mu.Unlock()
+	payload, err := xml.Marshal(listed)
+	if err != nil {
+		f.reject(w, "marshal list: %v", err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/xml")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(payload)
+}
+
+func (f *fakeS3) hasObject(key string) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	_, ok := f.objects[key]
+	return ok
+}
+
+func (f *fakeS3) setLastModified(t *testing.T, key string, modified time.Time) {
+	t.Helper()
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	object, ok := f.objects[key]
+	require.True(t, ok, "object %q was not stored", key)
+	object.LastModified = modified.UTC()
 }
 
 func fakeMetaFromHeader(header http.Header) map[string]string {
@@ -419,9 +491,17 @@ func TestObjectStorePutWritesStagingObject(t *testing.T) {
 	require.NoError(t, err)
 
 	requests := fake.recorded()
-	require.Len(t, requests, 1)
+	require.Len(t, requests, 2, "Put must upload staging object then pending marker")
 	put := requests[0]
 	require.Equal(t, http.MethodPut, put.Method)
+
+	marker := requests[1]
+	require.Equal(t, http.MethodPut, marker.Method)
+	require.Equal(t, "/"+fakeS3Bucket+"/_pending/188765432105/20261112/1.jpg", marker.Path,
+		"pending marker must live under the listable _pending/ prefix")
+	require.Equal(t, "application/json", marker.Header.Get("Content-Type"))
+	require.Contains(t, string(marker.Body), `"key":"188765432105/20261112/1.jpg"`)
+	require.Contains(t, string(marker.Body), `"stagingKey":"`+info.StagingKey+`"`)
 
 	sum := md5.Sum(content)
 	require.True(t, strings.HasPrefix(info.StagingKey, objectStoreStagingPrefix),
@@ -462,6 +542,7 @@ func TestObjectStorePromoteAndMarkCommitted(t *testing.T) {
 	require.Equal(t, "/"+fakeS3Bucket+"/"+info.StagingKey, promoteCopy.Header.Get("x-amz-copy-source"))
 	require.Equal(t, "pending", promoteCopy.Header.Get("x-amz-meta-jt808-state"))
 	require.Equal(t, content, fake.objectData(t, key), "final key must carry the uploaded bytes")
+	require.True(t, fake.hasObject("_pending/"+key), "promote must leave a listable pending marker")
 
 	require.NoError(t, store.MarkCommitted(ctx, key))
 	copies = fake.copyRequests(key)
@@ -469,6 +550,7 @@ func TestObjectStorePromoteAndMarkCommitted(t *testing.T) {
 	commitCopy := copies[1]
 	require.Equal(t, "/"+fakeS3Bucket+"/"+key, commitCopy.Header.Get("x-amz-copy-source"))
 	require.Equal(t, "committed", commitCopy.Header.Get("x-amz-meta-jt808-state"))
+	require.False(t, fake.hasObject("_pending/"+key), "committed object must not keep a pending marker")
 
 	stat, err := store.Stat(ctx, key)
 	require.NoError(t, err)
@@ -555,4 +637,95 @@ func TestObjectStorePutMultipart(t *testing.T) {
 	require.Contains(t, string(complete.Body), "<PartNumber>1</PartNumber>")
 
 	require.Equal(t, content, fake.objectData(t, key), "completed object must equal uploaded bytes")
+}
+
+// Promote 成功但业务表未写入：宽限期内不回收，超期后回收正式对象、暂存对象与标记。
+func TestObjectStoreSweepReclaimsExpiredPendingWithoutBusinessRow(t *testing.T) {
+	fake := newFakeS3(t)
+	store := fake.newStore(t)
+	ctx := context.Background()
+
+	key := "recordings/13800138000/1_1700000000000.ts"
+	content := []byte("segment-bytes")
+	info, err := store.Put(ctx, key, bytes.NewReader(content), contracts.BlobOptions{ContentType: "video/mp2t"})
+	require.NoError(t, err)
+	_, err = store.Promote(ctx, info)
+	require.NoError(t, err)
+	require.True(t, fake.hasObject(key))
+	require.True(t, fake.hasObject("_pending/"+key))
+
+	// 标记只有 30 分钟，宽限期 1 小时：不回收。
+	fake.setLastModified(t, "_pending/"+key, time.Now().Add(-30*time.Minute))
+	store.SweepPending(ctx, time.Hour, func(string) bool { return false })
+	require.True(t, fake.hasObject(key), "fresh pending object must not be reclaimed")
+	require.True(t, fake.hasObject("_pending/"+key))
+
+	// 标记超过 2 小时且业务侧查不到：对象、暂存对象、标记都应清掉。
+	fake.setLastModified(t, "_pending/"+key, time.Now().Add(-2*time.Hour))
+	store.SweepPending(ctx, time.Hour, func(string) bool { return false })
+	require.False(t, fake.hasObject(key), "expired pending object must be reclaimed")
+	require.False(t, fake.hasObject(info.StagingKey), "staging object must be reclaimed")
+	require.False(t, fake.hasObject("_pending/"+key), "marker must be removed after reclaim")
+}
+
+// 业务行存在时只清标记，不删对象。
+func TestObjectStoreSweepRemovesStaleMarkerButKeepsReferencedObject(t *testing.T) {
+	fake := newFakeS3(t)
+	store := fake.newStore(t)
+	ctx := context.Background()
+
+	key := "media/188765432105/20261112/1.jpg"
+	info, err := store.Put(ctx, key, bytes.NewReader([]byte("jpeg")), contracts.BlobOptions{ContentType: "image/jpeg"})
+	require.NoError(t, err)
+	_, err = store.Promote(ctx, info)
+	require.NoError(t, err)
+	fake.setLastModified(t, "_pending/"+key, time.Now().Add(-2*time.Hour))
+
+	store.SweepPending(ctx, time.Hour, func(candidate string) bool { return candidate == key })
+	require.True(t, fake.hasObject(key), "referenced object must be kept")
+	require.False(t, fake.hasObject("_pending/"+key), "stale marker for referenced object must be removed")
+}
+
+// 标记误留但对象已 committed：不能当孤儿删除。
+func TestObjectStoreSweepKeepsCommittedObjectWithStaleMarker(t *testing.T) {
+	fake := newFakeS3(t)
+	store := fake.newStore(t)
+	ctx := context.Background()
+
+	key := "recordings/13800138000/1_1700000000002.ts"
+	info, err := store.Put(ctx, key, bytes.NewReader([]byte("committed-segment")), contracts.BlobOptions{})
+	require.NoError(t, err)
+	_, err = store.Promote(ctx, info)
+	require.NoError(t, err)
+	require.NoError(t, store.MarkCommitted(ctx, key))
+
+	// 模拟 MarkCommitted 成功后标记删除失败。
+	require.NoError(t, store.writePendingMarker(ctx, info))
+	fake.setLastModified(t, "_pending/"+key, time.Now().Add(-2*time.Hour))
+
+	store.SweepPending(ctx, time.Hour, func(string) bool { return false })
+	require.True(t, fake.hasObject(key), "committed object must never be reclaimed by pending sweep")
+	require.False(t, fake.hasObject("_pending/"+key), "stale marker must still be cleaned")
+}
+
+// Delete 同步删除标记，不留悬空标记。
+func TestObjectStoreDeleteRemovesPendingMarker(t *testing.T) {
+	fake := newFakeS3(t)
+	store := fake.newStore(t)
+	ctx := context.Background()
+
+	key := "recordings/13800138000/1_1700000000001.ts"
+	info, err := store.Put(ctx, key, bytes.NewReader([]byte("segment")), contracts.BlobOptions{})
+	require.NoError(t, err)
+	_, err = store.Promote(ctx, info)
+	require.NoError(t, err)
+
+	require.NoError(t, store.Delete(ctx, key))
+	require.False(t, fake.hasObject(key))
+	require.False(t, fake.hasObject("_pending/"+key))
+
+	// 标记已删，扫描不应再报出该 key。
+	markers, err := store.PendingBefore(ctx, 0)
+	require.NoError(t, err)
+	require.NotContains(t, markers, key)
 }
