@@ -107,6 +107,15 @@ func (s *Server) ReleasePlaybackSession(_ context.Context, sessionID string) err
 	return s.Release(sessionID)
 }
 
+// PlaybackSession 返回会话快照；不存在时 found=false。
+func (s *Server) PlaybackSession(_ context.Context, sessionID string) (contracts.PlaybackSession, bool) {
+	info, _, ok := s.Session(sessionID)
+	if !ok {
+		return contracts.PlaybackSession{}, false
+	}
+	return toContractSession(info), true
+}
+
 func toContractSession(info SessionInfo) contracts.PlaybackSession {
 	out := contracts.PlaybackSession{
 		ID:          info.ID,
