@@ -320,9 +320,9 @@ func (st *fileState) failBlobLocked() {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), blobOpTimeout)
 	defer cancel()
-	if err := st.saveBlobRecordLocked(ctx, repository.AttachmentStatusFailed); err != nil {
+	if err := st.saveBlobRecordLocked(ctx, repository.AttachmentStatusExpired); err != nil {
 		log.Warn().Err(err).Str("phone", st.phone).Str("file", st.fileName).
-			Msg("Fail to mark attachment file failed")
+			Msg("Fail to mark attachment file expired")
 	}
 }
 
@@ -459,6 +459,45 @@ func (a *Assembler) findBlobMetadata(phone, fileName string) (Metadata, error) {
 		return Metadata{}, ErrFileNotRegistered
 	}
 	return metadataFromRecord(record), nil
+}
+
+// expireReceivingBlob 把长时间无进展的 receiving 记录转为 expired。
+//
+// 终端半路消失时不会再有进度更新；这些记录此前会一直停在 receiving，
+// pending 回收因为“有业务行”而跳过，对象段与本地暂存长期占用。
+// 转为 expired 后由 pruneBlobRetention 的终态路径统一回收。
+// 只处理共享库中确实超时的行；本进程活跃文件的 updated_at 会随进度刷新。
+func (a *Assembler) expireReceivingBlob(now time.Time, timeout time.Duration) int {
+	store := a.cfg.Storage
+	if store == nil || store.Files == nil {
+		return 0
+	}
+	if timeout <= 0 {
+		timeout = DefaultSessionTimeout
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), blobOpTimeout)
+	defer cancel()
+	rows, err := store.Files.ListReceivingUpdatedBefore(ctx, now.Add(-timeout), 500)
+	if err != nil {
+		log.Warn().Err(err).Msg("Fail to list stale attachment receiving records")
+		return 0
+	}
+	removed := 0
+	for _, row := range rows {
+		if row.StagingPath != "" {
+			_ = os.Remove(row.StagingPath)
+			_ = os.Remove(statePath(row.StagingPath))
+		}
+		row.Status = repository.AttachmentStatusExpired
+		row.StagingPath = ""
+		if _, saveErr := store.Files.Save(ctx, row); saveErr != nil {
+			log.Warn().Err(saveErr).Str("phone", row.Phone).Str("file", row.FileName).
+				Msg("Fail to mark stale attachment record expired")
+			continue
+		}
+		removed++
+	}
+	return removed
 }
 
 // reconcileBlob 清理崩溃残留。

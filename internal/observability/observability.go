@@ -32,6 +32,7 @@ const (
 	RetentionCategoryMediaFiles         = "mediaFiles"
 	RetentionCategoryMediaCaptures      = "mediaCaptures"
 	RetentionCategoryMediaSearchResults = "mediaSearchResults"
+	RetentionCategoryRecordingSegments  = "recordingSegments"
 )
 
 // retentionCounter 是单个类别的累计删除与失败计数。
@@ -713,6 +714,7 @@ var retentionMetricCategories = []string{
 	RetentionCategoryMediaFiles,
 	RetentionCategoryMediaCaptures,
 	RetentionCategoryMediaSearchResults,
+	RetentionCategoryRecordingSegments,
 }
 
 // writeRetentionPrometheus 输出历史数据清理任务的累计指标。

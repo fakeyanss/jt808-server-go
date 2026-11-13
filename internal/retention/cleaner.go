@@ -10,11 +10,14 @@ package retention
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"time"
 
 	"github.com/rs/zerolog/log"
 
+	"github.com/fakeyanss/jt808-server-go/internal/clock"
+	"github.com/fakeyanss/jt808-server-go/internal/contracts"
 	"github.com/fakeyanss/jt808-server-go/internal/observability"
 	"github.com/fakeyanss/jt808-server-go/internal/repository"
 )
@@ -45,6 +48,8 @@ type Config struct {
 	MediaFiles         time.Duration
 	MediaCaptures      time.Duration
 	MediaSearchResults time.Duration
+	// RecordingSegments 是平台录像切片的保留期；<=0 表示不清理。
+	RecordingSegments time.Duration
 }
 
 // normalized 填充零值，保证直接构造 Config 也可用。
@@ -65,12 +70,13 @@ type Summary struct {
 	MediaFiles         int64
 	MediaCaptures      int64
 	MediaSearchResults int64
+	RecordingSegments  int64
 	Failures           int
 }
 
 // Deleted 返回本次清理删除的总行数。
 func (s Summary) Deleted() int64 {
-	return s.Locations + s.Alarms + s.MediaFiles + s.MediaCaptures + s.MediaSearchResults
+	return s.Locations + s.Alarms + s.MediaFiles + s.MediaCaptures + s.MediaSearchResults + s.RecordingSegments
 }
 
 // LeaseRunner 是单实例任务执行器，由 coordination.Runner 实现。
@@ -80,13 +86,15 @@ type LeaseRunner interface {
 
 // Cleaner 执行历史数据清理。并发调用 CleanOnce 不安全，Run 内部串行执行。
 type Cleaner struct {
-	store   repository.RetentionStore
-	media   MediaStore
-	cfg     Config
-	metrics *observability.Metrics
-	now     func() time.Time
-	lease   LeaseRunner
-	done    chan struct{}
+	store    repository.RetentionStore
+	media    MediaStore
+	segments repository.RecordingSegmentRepository
+	blob     contracts.BlobStore
+	cfg      Config
+	metrics  *observability.Metrics
+	now      func() time.Time
+	lease    LeaseRunner
+	done     chan struct{}
 }
 
 // NewCleaner 创建清理任务。store 为 nil 时用于表达“后端不支持”的场景。
@@ -96,8 +104,16 @@ func NewCleaner(store repository.RetentionStore, media MediaStore, cfg Config, m
 		media:   media,
 		cfg:     cfg.normalized(),
 		metrics: metrics,
-		now:     time.Now,
+		now:     clock.System().Now,
 		done:    make(chan struct{}),
+	}
+}
+
+// SetSegmentStore 注入录像切片索引与对象存储后端；两者都为空时跳过切片清理。
+func (c *Cleaner) SetSegmentStore(segments repository.RecordingSegmentRepository, blob contracts.BlobStore) {
+	if c != nil {
+		c.segments = segments
+		c.blob = blob
 	}
 }
 
@@ -151,6 +167,7 @@ func (c *Cleaner) cleanOnceWithLog(ctx context.Context) {
 		Int64("media_files", summary.MediaFiles).
 		Int64("media_captures", summary.MediaCaptures).
 		Int64("media_search_results", summary.MediaSearchResults).
+		Int64("recording_segments", summary.RecordingSegments).
 		Int("failures", summary.Failures).
 		Dur("duration", c.now().Sub(started)).
 		Msg("Retention cleanup finished")
@@ -184,6 +201,11 @@ func (c *Cleaner) CleanOnce(ctx context.Context) Summary {
 	if c.cfg.MediaSearchResults > 0 {
 		summary.MediaSearchResults, summary.Failures = c.purgeCategory(ctx, observability.RetentionCategoryMediaSearchResults,
 			c.cfg.MediaSearchResults, now, summary.Failures, c.store.PurgeMediaSearchResults)
+	}
+	if c.cfg.RecordingSegments > 0 {
+		deleted, failures := c.purgeRecordingSegments(ctx, now.Add(-c.cfg.RecordingSegments))
+		summary.RecordingSegments = deleted
+		summary.Failures += failures
 	}
 	c.metrics.RecordRetentionRun(c.now(), c.now().Sub(now))
 	return summary
@@ -277,6 +299,78 @@ func (c *Cleaner) purgeMediaFiles(ctx context.Context, cutoff time.Time) (int64,
 	}
 	c.metrics.AddRetentionDeleted(category, total)
 	return total, failures
+}
+
+// purgeRecordingSegments 先删除切片内容（对象或本地文件），再删除索引行。
+// 内容删除失败时保留索引，下一轮重试，避免“行已删、对象仍在”的永久孤儿。
+func (c *Cleaner) purgeRecordingSegments(ctx context.Context, cutoff time.Time) (int64, int) {
+	category := observability.RetentionCategoryRecordingSegments
+	if c.segments == nil {
+		c.fail(category, errors.New("recording segment repository is not configured"))
+		return 0, 1
+	}
+	var total int64
+	var failures int
+	for {
+		rows, err := c.segments.ListExpired(ctx, cutoff, c.cfg.BatchSize)
+		if err != nil {
+			if ctx.Err() != nil {
+				return total, failures
+			}
+			c.fail(category, err)
+			return total, failures + 1
+		}
+		if len(rows) == 0 {
+			break
+		}
+		cleaned := make([]string, 0, len(rows))
+		for _, row := range rows {
+			if err := c.deleteSegmentContent(ctx, row); err != nil {
+				c.fail(category, err)
+				failures++
+				continue
+			}
+			cleaned = append(cleaned, row.ID)
+		}
+		if len(cleaned) > 0 {
+			deleted, deleteErr := c.segments.Delete(ctx, cleaned)
+			if deleteErr != nil {
+				if ctx.Err() != nil {
+					return total, failures
+				}
+				c.fail(category, deleteErr)
+				return total + deleted, failures + 1
+			}
+			total += deleted
+		}
+		// 存在无法删除的内容时结束本轮，下一次运行继续重试。
+		if failures > 0 || len(rows) < c.cfg.BatchSize {
+			break
+		}
+		if !c.pause(ctx) {
+			break
+		}
+	}
+	c.metrics.AddRetentionDeleted(category, total)
+	return total, failures
+}
+
+// deleteSegmentContent 删除一片录像的落盘内容；对象与本地文件至多一个非空。
+func (c *Cleaner) deleteSegmentContent(ctx context.Context, row *repository.RecordingSegment) error {
+	if row.ObjectKey != "" {
+		if c.blob == nil {
+			return fmt.Errorf("recording segment %s references object %s but blob store is not configured", row.ID, row.ObjectKey)
+		}
+		if err := c.blob.Delete(ctx, row.ObjectKey); err != nil {
+			return fmt.Errorf("delete recording segment object %s: %w", row.ObjectKey, err)
+		}
+	}
+	if row.LocalPath != "" {
+		if err := os.Remove(row.LocalPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("delete recording segment file %s: %w", row.LocalPath, err)
+		}
+	}
+	return nil
 }
 
 // fail 记录一次类别级失败，同时输出日志与指标。

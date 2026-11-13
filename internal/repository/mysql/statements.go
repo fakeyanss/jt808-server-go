@@ -20,6 +20,9 @@ const attachmentColumns = `source, phone, alarm_no, file_name, terminal_id, alar
 	file_type, total_size, received_bytes, watermark, staging_path, staging_base, ranges, segments,
 	status, created_at, updated_at, completed_at`
 
+const recordingSegmentColumns = `id, phone, channel, kind, object_key, local_path,
+	start_at, end_at, size, keyframes, state, created_at`
+
 func (statements) SchemaMigrationsTableExistsQuery() string {
 	return `SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = 'schema_migrations'`
 }
@@ -156,6 +159,16 @@ func (statements) UpsertAttachmentFile() string {
 		staging_base = VALUES(staging_base), ranges = VALUES(ranges),
 		segments = VALUES(segments), status = VALUES(status),
 		updated_at = VALUES(updated_at), completed_at = VALUES(completed_at)`
+}
+
+func (statements) UpsertRecordingSegment() string {
+	return `INSERT INTO recording_segments (` + recordingSegmentColumns + `)
+	VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	ON DUPLICATE KEY UPDATE
+		phone = VALUES(phone), channel = VALUES(channel), kind = VALUES(kind),
+		object_key = VALUES(object_key), local_path = VALUES(local_path),
+		start_at = VALUES(start_at), end_at = VALUES(end_at), size = VALUES(size),
+		keyframes = VALUES(keyframes), state = VALUES(state)`
 }
 
 func (statements) InsertLocationsIgnoringDuplicates(placeholders string) string {

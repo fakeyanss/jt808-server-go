@@ -425,6 +425,27 @@ CREATE TABLE IF NOT EXISTS attachment_files (
     KEY idx_attachment_files_status (status, updated_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
+-- 平台录像切片索引（2026-11-14）。
+-- 每行对应 media/segments/ 下的一个 .ts 对象，或媒体节点本地盘上的一个文件。
+-- start_at/end_at 由应用写入，覆盖查询使用半开区间 [start, end)。
+CREATE TABLE IF NOT EXISTS recording_segments (
+    id VARCHAR(160) NOT NULL,
+    phone VARCHAR(32) NOT NULL,
+    channel SMALLINT NOT NULL DEFAULT 0,
+    kind VARCHAR(16) NOT NULL DEFAULT 'live',
+    object_key VARCHAR(512) NOT NULL DEFAULT '',
+    local_path VARCHAR(512) NOT NULL DEFAULT '',
+    start_at BIGINT NOT NULL,
+    end_at BIGINT NOT NULL,
+    size BIGINT NOT NULL DEFAULT 0,
+    keyframes TEXT NOT NULL,
+    state VARCHAR(16) NOT NULL DEFAULT 'local',
+    created_at BIGINT NOT NULL,
+    PRIMARY KEY (id),
+    KEY idx_recording_segments_phone_channel (phone, channel, start_at),
+    KEY idx_recording_segments_end (end_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
 -- 多副本协调（2026-11-19）。
 -- task_leases：周期性任务的单实例租约，name 为任务名，expires_at 到期后可被其它副本接手。
 -- dedup_keys：按业务键的共享 TTL 去重，dedup_key 形如 auto-9208:<phone>:<alarmID>。

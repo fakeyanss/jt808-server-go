@@ -65,6 +65,8 @@ type Repositories struct {
 	Commands       repository.CommandRepository
 	// AttachmentFiles 是附件接收元数据；集群下由附件节点写入、控制面读取。
 	AttachmentFiles repository.AttachmentFileRepository
+	// RecordingSegments 是平台录像切片索引，由媒体节点写入、控制面查询与清理。
+	RecordingSegments repository.RecordingSegmentRepository
 	// Locations 为定位历史仓储；memory 后端保持既有热读环形缓冲，本字段为 nil。
 	Locations repository.LocationRepository
 	// Retention 为历史数据分批清理能力，仅 SQL 后端提供；memory 后端为 nil。
@@ -104,6 +106,7 @@ type sqlBackend interface {
 	UpgradeResultRepository() repository.UpgradeResultRepository
 	CommandRepository() repository.CommandRepository
 	AttachmentFileRepository() repository.AttachmentFileRepository
+	RecordingSegmentRepository() repository.RecordingSegmentRepository
 	AlarmRepository(policy repository.AlarmRetention) repository.AlarmRepository
 	LocationRepository(policy repository.LocationRetention) repository.LocationRepository
 	RetentionStore() repository.RetentionStore
@@ -122,24 +125,25 @@ func newRepositories(backend string) *Repositories {
 	// 文件与拍摄应答共用同一实现，才能在同一次查询里判断 mediaId 是否已落盘。
 	mediaFiles := memory.NewMediaFileRepository()
 	return &Repositories{
-		Devices:          memory.NewDeviceRepository(),
-		Geo:              memory.NewGeoRepository(),
-		Params:           memory.NewDeviceParamsRepository(),
-		Properties:       memory.NewTerminalPropertiesRepository(),
-		Alarms:           memory.NewAlarmRepository(),
-		Regions:          memory.NewRegionRepository(),
-		Industry:         memory.NewIndustryRepository(),
-		Media:            memory.NewMediaMetadataRepository(),
-		MediaFiles:       mediaFiles,
-		MediaCaptures:    mediaFiles,
-		MediaSearches:    memory.NewMediaSearchRepository(),
-		UpgradeResults:   memory.NewUpgradeResultRepository(),
-		Commands:         memory.NewCommandRepository(),
-		AttachmentFiles:  memory.NewAttachmentFileRepository(),
-		Coordination:     coordination.NewMemoryStore(),
-		GatewayNodes:     memory.NewGatewayNodeRepository(),
-		SessionDirectory: memory.NewSessionDirectoryRepository(),
-		Backend:          backend,
+		Devices:           memory.NewDeviceRepository(),
+		Geo:               memory.NewGeoRepository(),
+		Params:            memory.NewDeviceParamsRepository(),
+		Properties:        memory.NewTerminalPropertiesRepository(),
+		Alarms:            memory.NewAlarmRepository(),
+		Regions:           memory.NewRegionRepository(),
+		Industry:          memory.NewIndustryRepository(),
+		Media:             memory.NewMediaMetadataRepository(),
+		MediaFiles:        mediaFiles,
+		MediaCaptures:     mediaFiles,
+		MediaSearches:     memory.NewMediaSearchRepository(),
+		UpgradeResults:    memory.NewUpgradeResultRepository(),
+		Commands:          memory.NewCommandRepository(),
+		AttachmentFiles:   memory.NewAttachmentFileRepository(),
+		RecordingSegments: memory.NewRecordingSegmentRepository(),
+		Coordination:      coordination.NewMemoryStore(),
+		GatewayNodes:      memory.NewGatewayNodeRepository(),
+		SessionDirectory:  memory.NewSessionDirectoryRepository(),
+		Backend:           backend,
 	}
 }
 
@@ -191,6 +195,7 @@ func openSQL(handle sqlBackend, backend string, cfg Config) (*Repositories, erro
 	repos.UpgradeResults = handle.UpgradeResultRepository()
 	repos.Commands = handle.CommandRepository()
 	repos.AttachmentFiles = handle.AttachmentFileRepository()
+	repos.RecordingSegments = handle.RecordingSegmentRepository()
 	repos.Alarms = handle.AlarmRepository(cfg.AlarmRetention)
 	repos.Locations = handle.LocationRepository(cfg.LocationRetention)
 	repos.Retention = handle.RetentionStore()

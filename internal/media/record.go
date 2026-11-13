@@ -13,6 +13,7 @@ import (
 
 	"github.com/rs/zerolog/log"
 
+	"github.com/fakeyanss/jt808-server-go/internal/clock"
 	"github.com/fakeyanss/jt808-server-go/internal/contracts"
 	"github.com/fakeyanss/jt808-server-go/internal/media/playback"
 	"github.com/fakeyanss/jt808-server-go/internal/storage"
@@ -93,6 +94,7 @@ type recorderConfig struct {
 	blob      contracts.BlobStore
 	sink      SegmentSink
 	kind      StreamKind
+	clock     clock.Clock
 }
 
 type recorder struct {
@@ -118,6 +120,9 @@ func newRecorder(cfg recorderConfig) *recorder {
 	if cfg.duration <= 0 {
 		cfg.duration = DefaultSegmentDuration
 	}
+	if cfg.clock == nil {
+		cfg.clock = clock.System()
+	}
 	return &recorder{cfg: cfg}
 }
 
@@ -138,7 +143,7 @@ func (r *recorder) WriteVideo(pts uint64, key bool, frame []byte) error {
 		if err := r.startLocked(pts); err != nil {
 			return err
 		}
-	} else if key && time.Since(r.startAt) >= r.cfg.duration {
+	} else if key && r.cfg.clock.Now().Sub(r.startAt) >= r.cfg.duration {
 		if err := r.finishLocked(); err != nil {
 			return err
 		}
@@ -190,7 +195,7 @@ func (r *recorder) startLocked(pts uint64) error {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
-	name := fmt.Sprintf("%s-%d-%d.ts", r.cfg.stem, time.Now().UnixMilli(), pts)
+	name := fmt.Sprintf("%s-%d-%d.ts", r.cfg.stem, r.cfg.clock.Now().UnixMilli(), pts)
 	r.partPath = filepath.Join(dir, name+".part")
 	file, err := os.OpenFile(r.partPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o640)
 	if err != nil {
@@ -199,7 +204,7 @@ func (r *recorder) startLocked(pts uint64) error {
 	r.file = file
 	r.buffer = bufio.NewWriterSize(file, 64*1024)
 	r.muxer = newTSMuxer(r.buffer)
-	r.startAt = time.Now()
+	r.startAt = r.cfg.clock.Now()
 	r.startPTS = pts
 	r.index = nil
 	return r.muxer.WriteTables()
@@ -234,14 +239,14 @@ func (r *recorder) finishLocked() error {
 		Kind:      r.cfg.kind,
 		LocalPath: finalPath,
 		StartTime: r.startAt,
-		EndTime:   time.Now(),
-		Duration:  time.Since(r.startAt),
+		EndTime:   r.cfg.clock.Now(),
+		Duration:  r.cfg.clock.Now().Sub(r.startAt),
 		Size:      size,
 		Keyframes: append([]SegmentKeyframe(nil), r.index...),
 		State:     "local",
 	}
 	if r.cfg.blob != nil {
-		info.ObjectKey = segmentObjectKey(r.cfg.phone, r.cfg.channel, filepath.Base(finalPath))
+		info.ObjectKey = segmentObjectKey(r.cfg.phone, r.cfg.channel, r.startAt, filepath.Base(finalPath))
 		info.State = "uploading"
 		r.wg.Add(1)
 		go func() {
@@ -327,8 +332,8 @@ func (r *recorder) notify(info SegmentInfo) {
 	}
 }
 
-func segmentObjectKey(phone string, channel uint8, name string) string {
-	return storage.MediaSegment(phone, channel, time.Now().Format("20060102"), name)
+func segmentObjectKey(phone string, channel uint8, startAt time.Time, name string) string {
+	return storage.MediaSegment(phone, channel, startAt.Format("20060102"), name)
 }
 
 func hasParamSets(frame []byte) bool {

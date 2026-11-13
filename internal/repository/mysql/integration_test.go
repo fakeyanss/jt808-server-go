@@ -330,13 +330,14 @@ func TestMigrateBaselineOnRealMySQL(t *testing.T) {
 	require.NoError(t, db.QueryRow(`SELECT COUNT(*) FROM schema_migrations`).Scan(&versionCount))
 	require.Equal(t, 1, versionCount)
 
-	// 表清单：23 张业务表，device_runtime 已在基线内删除。
+	// 表清单：24 张业务表，device_runtime 已在基线内删除。
 	expectedTables := []string{
 		"alarms", "attachment_files", "command_outbox", "command_serial", "dedup_keys",
 		"device_params", "devices", "gateway_nodes", "locations", "media_capture_items",
 		"media_captures", "media_files", "media_resource_lists", "media_search_results",
-		"media_upload_notices", "media_upload_tasks", "region_items", "schema_migrations",
-		"session_directory", "task_leases", "terminal_catalogs", "terminal_properties", "upgrade_results",
+		"media_upload_notices", "media_upload_tasks", "recording_segments", "region_items",
+		"schema_migrations", "session_directory", "task_leases", "terminal_catalogs",
+		"terminal_properties", "upgrade_results",
 	}
 	actual := listTables(t, db)
 	require.Equal(t, expectedTables, actual)
@@ -860,4 +861,54 @@ func TestSaveAuthStateOnRealMySQL(t *testing.T) {
 
 	require.NoError(t, devices.DeleteByPhone(ctx, phone))
 	require.ErrorIs(t, devices.SaveAuthState(ctx, device), repository.ErrDeviceNotFound)
+}
+
+// 录像切片索引在 MySQL 方言下的 upsert、范围查询与引用判断。
+func TestRecordingSegmentRepositoryOnRealMySQL(t *testing.T) {
+	ctx := context.Background()
+	dsn := mysqlTestDSN(t)
+	raw := openRaw(t, dsn)
+	dropAllTables(t, raw)
+	_, err := Migrate(dsn)
+	require.NoError(t, err)
+	store, err := Open(dsn)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() })
+	segments := store.RecordingSegmentRepository()
+
+	base := time.Date(2026, 11, 14, 8, 0, 0, 0, time.UTC)
+	save := func(id string, start time.Time, end time.Time, key string) {
+		require.NoError(t, segments.Save(ctx, &repository.RecordingSegment{
+			ID: id, Phone: "13800138000", Channel: 1, Kind: "live",
+			ObjectKey: key, StartAt: start, EndAt: end, Size: 2048,
+			Keyframes: []byte(`[]`), State: repository.RecordingSegmentStateCommitted, CreatedAt: start,
+		}))
+	}
+	key := "media/segments/13800138000/ch1/20261114/a.ts"
+	save("seg-m1", base, base.Add(10*time.Minute), key)
+	save("seg-m2", base.Add(20*time.Minute), base.Add(30*time.Minute), "")
+
+	items, err := segments.ListByRange(ctx, "13800138000", 1, base.Add(5*time.Minute), base.Add(25*time.Minute))
+	require.NoError(t, err)
+	require.Len(t, items, 2)
+	require.Equal(t, "seg-m1", items[0].ID)
+
+	// 重复保存走 upsert，不产生新行。
+	save("seg-m1", base, base.Add(10*time.Minute), key)
+	count, bytes, err := segments.Stats(ctx)
+	require.NoError(t, err)
+	require.EqualValues(t, 2, count)
+	require.EqualValues(t, 4096, bytes)
+
+	referenced, err := segments.ReferencedSegment(ctx, key)
+	require.NoError(t, err)
+	require.True(t, referenced)
+
+	expired, err := segments.ListExpired(ctx, base.Add(time.Hour), 10)
+	require.NoError(t, err)
+	require.Len(t, expired, 2)
+
+	deleted, err := segments.Delete(ctx, []string{"seg-m1", "seg-m2"})
+	require.NoError(t, err)
+	require.EqualValues(t, 2, deleted)
 }

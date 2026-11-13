@@ -15,8 +15,10 @@ import (
 
 	"github.com/rs/zerolog/log"
 
+	"github.com/fakeyanss/jt808-server-go/internal/clock"
 	"github.com/fakeyanss/jt808-server-go/internal/contracts"
 	"github.com/fakeyanss/jt808-server-go/internal/media/playback"
+	"github.com/fakeyanss/jt808-server-go/internal/repository"
 	"github.com/fakeyanss/jt808-server-go/pkg/routines"
 )
 
@@ -53,6 +55,10 @@ type Config struct {
 	Blob contracts.BlobStore
 	// SegmentSink 接收切片完成事件；为空时只记日志。
 	SegmentSink SegmentSink
+	// SegmentRepository 持久化切片索引；为空时只用进程内索引。
+	SegmentRepository repository.RecordingSegmentRepository
+	// Clock 是进程内统一时钟源；为空时使用系统时钟。
+	Clock clock.Clock
 	// AdvertiseIP 是下行信令里填写的媒体节点地址；为空时用 127.0.0.1。
 	AdvertiseIP string
 	// NodeID 是集群内唯一的节点标识；为空时由监听地址与 AdvertiseIP 推导。
@@ -85,6 +91,9 @@ func (c Config) normalize() Config {
 	}
 	if c.RingDuration <= 0 {
 		c.RingDuration = DefaultRingDuration
+	}
+	if c.Clock == nil {
+		c.Clock = clock.System()
 	}
 	return c
 }
@@ -656,8 +665,9 @@ func (s *Server) newStreamLocked(phone string, channel uint8, kind StreamKind, s
 			stem:     st.stem,
 			duration: s.cfg.SegmentDuration,
 			blob:     s.cfg.Blob,
-			sink:     s.cfg.SegmentSink,
+			sink:     SegmentSinkFunc(s.onSegment),
 			kind:     kind,
+			clock:    s.cfg.Clock,
 		})
 	}
 	if s.playback != nil {

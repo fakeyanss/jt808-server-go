@@ -44,6 +44,8 @@ type Statements interface {
 	UpsertMediaCapture() string
 	// UpsertAttachmentFile 按 (source, phone, alarm_no, file_name) 覆盖附件接收进度。
 	UpsertAttachmentFile() string
+	// UpsertRecordingSegment 按 id 覆盖平台录像切片索引。
+	UpsertRecordingSegment() string
 	// InsertLocationsIgnoringDuplicates 生成 (phone, dedup_key) 冲突时忽略的批量插入。
 	// placeholders 是调用方拼好的 "(?, ?, ...)" 列表，不含 VALUES 关键字。
 	InsertLocationsIgnoringDuplicates(placeholders string) string
