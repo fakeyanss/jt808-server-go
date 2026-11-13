@@ -228,21 +228,26 @@ jt-control requires cluster.roles to contain "control"; current roles=[media]. u
 - `database`：数据库连通（gateway / control / attachment）。
 - `outbox_backlog`：过期 pending 命令未超过阈值（control，且 outbox 开启）。
 - `control_endpoint`：`uplink.http.url` 的 host 可解析（gateway-only）。
-- `media_nodes`：`cluster.media.nodes` 非空、至少一个节点可达且仍有并发额度（control 且没有本地媒体）。
+- `media_nodes`：以媒体节点注册表为准，至少一个节点在线、未过期且仍有容量（码率与端点数）；注册表为空时退回 `cluster.media.nodes` 静态清单的连通性检查（control 且没有本地媒体）。
 - `attachment_nodes`：`cluster.attachment.nodes` 非空、至少一个附件节点可达且仍有并发额度（control）。
 - `attachment_object_store`：附件节点已接入共享 objectStore 与共享元数据库（attachment）。
 - `media_disk` / `attachment_disk` / `media_upload_disk`：对应目录存在且可写。
 
 **control 调度 media**：
 
-- `cluster.media.nodes` 是管控可选的媒体节点清单，地址为 `jt-media` 的 `mediaServer.httpPort` 基址。
-- 管控通过 `GET /internal/media/status` 获取节点会话与剩余额度，选择“剩余额度多、当前负载低”的节点；
-  同一 `(phone, channel)` 在会话生命周期内固定在同一节点，管控重启后会从节点状态恢复粘性。
+- 媒体节点启动后向 control 注册（`POST /internal/v1/media/nodes/register`），每 10 秒心跳
+  （`.../heartbeat`）上报活跃通道数、TCP 连接数、入流码率与小体积的 CPU/内存；
+  30 秒无心跳即判死，不再参与新分配。`media_nodes` 由 control 独占写入。
+- control 在“在线、未过期、码率与端点容量未满”的注册节点中按负载从低到高选点；
+  选中后先用条件更新原子占位端点，建会话失败立即归还。
+  `cluster.media.nodes`（`jt-media` 的 `mediaServer.httpPort` 基址）只在注册表为空时兜底。
+- 同一 `(phone, channel)` 已有同类型会话时复用，不重复开流；管控重启后会先查节点状态再复用。
 - 创建/释放在媒体节点上真实执行：`POST /internal/media/sessions`、`DELETE /internal/media/sessions/{id}`。
+- 节点掉线或过期不迁移既有流：已建立的流随节点中断，终端自行重连后由新分配接管。
 - 没有可用节点时，播放接口返回 `503` 与稳定错误码：
-  - `no_media_node_configured`：`cluster.media.nodes` 为空；
+  - `no_media_node_configured`：注册表与静态清单都为空；
   - `no_media_node_available`：节点全部不可达、全部满载或创建全部失败，`message` 带逐个节点的原因。
-- 平台录像覆盖查询会汇总所有媒体节点的切片；切片内容按 `Range` 从持有该切片的节点流式读取。
+- 平台录像覆盖查询会汇总所有可用媒体节点的切片；切片内容按 `Range` 从持有该切片的节点流式读取。
 
 **control 调度 attachment**：
 
@@ -451,7 +456,7 @@ tar -czf /backup/jt808-files-$(date +%Y%m%d-%H%M).tgz ./data ./logs
 - `database`：数据库 `Ping` 是否成功（3 秒超时）。
 - `outbox_backlog`：下行 outbox 过期（超过 `expireAfter` 仍未投递）数量是否达到阈值（默认 100）；`commandOutbox.mode: off` 时不检查。
 - `control_endpoint`：gateway-only 时 `uplink.http.url` 的 host 可解析；不可解析说明上行事件无处投递。
-- `media_nodes`：control 且没有本地媒体时，`cluster.media.nodes` 非空、至少一个节点可达且仍有并发额度。
+- `media_nodes`：control 且没有本地媒体时，注册表中至少一个节点在线、未过期且仍有容量；注册表为空退回 `cluster.media.nodes` 静态清单检查。
 - `attachment_nodes`：control 时 `cluster.attachment.nodes` 非空、至少一个节点可达且仍有并发额度。
 - `attachment_object_store`：attachment 角色已接入共享 objectStore 与共享附件元数据表。
 - `media_disk`：媒体目录存在且可写，仅在 `mediaServer` 启用时检查。

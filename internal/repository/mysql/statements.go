@@ -221,6 +221,34 @@ func (statements) EnsureDedupKeyRow() string {
 		VALUES (?, 0, ?)`
 }
 
+func (statements) UpsertMediaNode() string {
+	return `INSERT INTO media_nodes
+		(node_id, instance_id, internal_url, push_ip, push_tcp_port, push_udp_port,
+		 playback_base_url, endpoint_capacity, endpoints_used, max_bitrate_kbps, inbound_bitrate_kbps,
+		 active_channels, active_tcp_conns, cpu_percent, memory_bytes, status,
+		 started_at, last_seen_at, expires_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON DUPLICATE KEY UPDATE
+			instance_id = VALUES(instance_id),
+			internal_url = VALUES(internal_url),
+			push_ip = VALUES(push_ip),
+			push_tcp_port = VALUES(push_tcp_port),
+			push_udp_port = VALUES(push_udp_port),
+			playback_base_url = VALUES(playback_base_url),
+			endpoint_capacity = VALUES(endpoint_capacity),
+			endpoints_used = VALUES(endpoints_used),
+			max_bitrate_kbps = VALUES(max_bitrate_kbps),
+			inbound_bitrate_kbps = VALUES(inbound_bitrate_kbps),
+			active_channels = VALUES(active_channels),
+			active_tcp_conns = VALUES(active_tcp_conns),
+			cpu_percent = VALUES(cpu_percent),
+			memory_bytes = VALUES(memory_bytes),
+			status = VALUES(status),
+			started_at = VALUES(started_at),
+			last_seen_at = VALUES(last_seen_at),
+			expires_at = VALUES(expires_at)`
+}
+
 func (statements) UpsertGatewayNode() string {
 	return `INSERT INTO gateway_nodes
 		(gateway_id, instance_id, downlink_url, status, started_at, last_seen_at, expires_at)

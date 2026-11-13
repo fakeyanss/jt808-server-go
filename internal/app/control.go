@@ -159,6 +159,8 @@ func (d *deps) setupControl() {
 		srv.SetGatewayNodeRepository(storeSet.GatewayNodes)
 		srv.SetSessionDirectoryRepository(storeSet.SessionDirectory)
 		srv.SetRecordingSegmentRepository(storeSet.RecordingSegments)
+		// 媒体节点注册表：0x9101/0x9201 从这里按负载与容量选点，静态清单只作兜底。
+		srv.SetMediaNodeRepository(storeSet.MediaNodes)
 		// 附件节点不连库：进度上报与恢复点查询都走这个入口。
 		if progressStore := control.NewAttachmentProgressStore(storeSet.AttachmentFiles, d.clock); progressStore != nil {
 			srv.SetAttachmentProgressStore(progressStore)

@@ -21,6 +21,7 @@ import (
 	"github.com/fakeyanss/jt808-server-go/internal/downlinkhttp"
 	"github.com/fakeyanss/jt808-server-go/internal/gatewaynode"
 	"github.com/fakeyanss/jt808-server-go/internal/media"
+	"github.com/fakeyanss/jt808-server-go/internal/medianode"
 	"github.com/fakeyanss/jt808-server-go/internal/mediaupload"
 	"github.com/fakeyanss/jt808-server-go/internal/observability"
 	"github.com/fakeyanss/jt808-server-go/internal/protocol"
@@ -88,13 +89,16 @@ type deps struct {
 	uplinkServer     *uplink.Server
 	nodeReporter     *gatewaynode.Reporter
 	cancelNodeReport context.CancelFunc
-	controlBlob      contracts.BlobStore
-	businessExecutor *control.BusinessExecutor
-	cancelSweep      context.CancelFunc
-	cancelOutbox     context.CancelFunc
-	outboxDone       <-chan struct{}
-	cancelClockSkew  context.CancelFunc
-	clockSkewDone    <-chan struct{}
+	// mediaNodeReporter 是独立 media 进程向 control 注册与心跳的上报器。
+	mediaNodeReporter     *medianode.Reporter
+	cancelMediaNodeReport context.CancelFunc
+	controlBlob           contracts.BlobStore
+	businessExecutor      *control.BusinessExecutor
+	cancelSweep           context.CancelFunc
+	cancelOutbox          context.CancelFunc
+	outboxDone            <-chan struct{}
+	cancelClockSkew       context.CancelFunc
+	clockSkewDone         <-chan struct{}
 
 	udpServ         *server.UDPServer
 	alarmServ       *alarmserver.Server
@@ -373,7 +377,12 @@ func buildDeps(spec Spec, cfg *config.Config, s settings) *deps {
 		for _, node := range clusterOptions.Media.Nodes {
 			nodes = append(nodes, control.MediaNode{Name: node.Name, URL: node.URL})
 		}
-		remoteMedia = control.NewRemoteMedia(control.RemoteMediaOptions{Nodes: nodes})
+		remoteMedia = control.NewRemoteMedia(control.RemoteMediaOptions{
+			Nodes:    nodes,
+			NodeRepo: storeSet.MediaNodes,
+			Clock:    d.clock,
+			Metrics:  metrics,
+		})
 		log.Info().Int("nodes", len(nodes)).Msg("Remote media allocator configured")
 	}
 

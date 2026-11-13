@@ -156,6 +156,14 @@ type Server struct {
 
 	lastAACWarn atomic.Int64
 
+	// 入流字节累计与负载采样：心跳只读这里的小指标。
+	ingressBytes  atomic.Int64
+	loadMu        sync.Mutex
+	lastIngress   int64
+	lastIngressAt time.Time
+	lastCPU       time.Duration
+	lastCPUAt     time.Time
+
 	playback *playback.Hub
 	segments *segmentIndex
 }
@@ -528,6 +536,8 @@ func (s *Server) handlePacket(raw []byte, source packetSource) {
 		// 透传数据不属于音视频流。
 		return
 	}
+	// 只统计被识别为音视频的包，避免把无效帧算进入流码率。
+	s.ingressBytes.Add(int64(len(raw)))
 
 	st := s.streamFor(pkt, source)
 	if st == nil {

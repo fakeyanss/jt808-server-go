@@ -18,6 +18,7 @@ import (
 	clockpkg "github.com/fakeyanss/jt808-server-go/internal/clock"
 	"github.com/fakeyanss/jt808-server-go/internal/contracts"
 	"github.com/fakeyanss/jt808-server-go/internal/gatewaynode"
+	"github.com/fakeyanss/jt808-server-go/internal/medianode"
 	"github.com/fakeyanss/jt808-server-go/internal/observability"
 	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
 	"github.com/fakeyanss/jt808-server-go/internal/repository"
@@ -84,6 +85,7 @@ type Server struct {
 	attachments     AttachmentProgressStore
 	attachmentFTP   FTPSessionStore
 	attachmentNodes repository.AttachmentNodeRepository
+	mediaNodes      repository.MediaNodeRepository
 	metrics         *observability.Metrics
 	clock           clockpkg.Clock
 
@@ -266,6 +268,11 @@ func (s *Server) Handler() http.Handler {
 		mux.HandleFunc(attachmentnode.PathRegister, s.handleAttachmentNodeRegister)
 		mux.HandleFunc(attachmentnode.PathHeartbeat, s.handleAttachmentNodeHeartbeat)
 		mux.HandleFunc(attachmentnode.PathDeregister, s.handleAttachmentNodeDeregister)
+	}
+	if s.mediaNodes != nil {
+		mux.HandleFunc(medianode.PathRegister, s.handleMediaNodeRegister)
+		mux.HandleFunc(medianode.PathHeartbeat, s.handleMediaNodeHeartbeat)
+		mux.HandleFunc(medianode.PathDeregister, s.handleMediaNodeDeregister)
 	}
 	return mux
 }

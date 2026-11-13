@@ -514,3 +514,30 @@ CREATE TABLE IF NOT EXISTS attachment_nodes (
     expires_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_attachment_nodes_status ON attachment_nodes (status, expires_at);
+
+-- 媒体节点注册与负载（0x9101/0x9201 分配依据）。与 gateway_nodes/attachment_nodes 同构：
+-- 心跳续期、过期判死、新 instance_id 覆盖旧实例。
+-- endpoints_used 由 control 的原子占位维护；心跳只更新小指标，不覆盖它。
+-- cpu_percent/memory_bytes 允许 NULL：采集不到的平台少报这一项，心跳照常成功。
+CREATE TABLE IF NOT EXISTS media_nodes (
+    node_id TEXT NOT NULL PRIMARY KEY,
+    instance_id TEXT NOT NULL,
+    internal_url TEXT NOT NULL,
+    push_ip TEXT NOT NULL DEFAULT '',
+    push_tcp_port INTEGER NOT NULL DEFAULT 0,
+    push_udp_port INTEGER NOT NULL DEFAULT 0,
+    playback_base_url TEXT NOT NULL DEFAULT '',
+    endpoint_capacity INTEGER NOT NULL DEFAULT 0,
+    endpoints_used INTEGER NOT NULL DEFAULT 0,
+    max_bitrate_kbps INTEGER NOT NULL DEFAULT 0,
+    inbound_bitrate_kbps INTEGER NOT NULL DEFAULT 0,
+    active_channels INTEGER NOT NULL DEFAULT 0,
+    active_tcp_conns INTEGER NOT NULL DEFAULT 0,
+    cpu_percent REAL NULL,
+    memory_bytes INTEGER NULL,
+    status TEXT NOT NULL DEFAULT 'online',
+    started_at INTEGER NOT NULL,
+    last_seen_at INTEGER NOT NULL,
+    expires_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_media_nodes_status ON media_nodes (status, expires_at);
