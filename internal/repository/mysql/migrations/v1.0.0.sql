@@ -104,8 +104,11 @@ CREATE TABLE IF NOT EXISTS region_items (
 CREATE INDEX idx_region_items_phone ON region_items (phone, region_type);
 
 -- 定位历史。record_id 由应用层生成（纳秒时间戳 + 进程内递增），
--- 避免同一毫秒内多条 0x0704 数据项共用 (phone, received_at_ms) 造成主键冲突。
+-- 避免同一毫秒内多条 0x0704 数据项仅靠 (phone, received_at_ms) 无法区分。
+-- 高频追加表使用自增 id 作为聚簇主键，业务键 (phone, record_id) 改为唯一键，
+-- 保持 INSERT IGNORE 的重传幂等语义。
 CREATE TABLE IF NOT EXISTS locations (
+    id BIGINT NOT NULL AUTO_INCREMENT,
     phone VARCHAR(32) NOT NULL,
     record_id BIGINT NOT NULL,
     msg_id SMALLINT NOT NULL,
@@ -119,14 +122,18 @@ CREATE TABLE IF NOT EXISTS locations (
     speed INTEGER NOT NULL DEFAULT 0,
     direction INTEGER NOT NULL DEFAULT 0,
     payload_json TEXT NOT NULL,
-    PRIMARY KEY (phone, record_id)
+    PRIMARY KEY (id),
+    UNIQUE KEY uq_locations_phone_record (phone, record_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 CREATE INDEX idx_locations_phone_report_time ON locations (phone, report_time_ms);
 CREATE INDEX idx_locations_report_time ON locations (report_time_ms);
 
 -- 报警历史。同一 (phone, message_serial) 在去重窗口内更新 alarm_sign，
 -- 窗口外以新的 received_at_ms 追加；confirmed 由 0x8203 人工确认置位。
+-- 高频追加表使用自增 id 作为聚簇主键，原 (phone, message_serial, received_at_ms)
+-- 改为唯一键，继续约束同一毫秒内的重复上报。
 CREATE TABLE IF NOT EXISTS alarms (
+    id BIGINT NOT NULL AUTO_INCREMENT,
     phone VARCHAR(32) NOT NULL,
     message_serial BIGINT NOT NULL,
     received_at_ms BIGINT NOT NULL,
@@ -135,7 +142,8 @@ CREATE TABLE IF NOT EXISTS alarms (
     latitude BIGINT NOT NULL DEFAULT 0,
     longitude BIGINT NOT NULL DEFAULT 0,
     confirmed SMALLINT NOT NULL DEFAULT 0,
-    PRIMARY KEY (phone, message_serial, received_at_ms)
+    PRIMARY KEY (id),
+    UNIQUE KEY uq_alarms_phone_serial_received (phone, message_serial, received_at_ms)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 CREATE INDEX idx_alarms_phone_received ON alarms (phone, received_at_ms);
 CREATE INDEX idx_alarms_received ON alarms (received_at_ms);
@@ -189,12 +197,15 @@ CREATE INDEX idx_media_upload_notices_phone ON media_upload_notices (phone, upda
 -- 每条平台下行命令先落库再发送，状态机为 pending -> acked | failed。
 -- idempotency_key 按设备唯一，重复提交返回已有 command_id，不会二次下发。
 -- payload 保存消息体编码（不含报文头），保留字段供后续重投与审计使用。
+-- command_id 是外部生成的 UUID，写入中频且随机分布；使用自增 id 作为聚簇主键，
+-- command_id 改为唯一键，缩短所有二级索引携带的主键长度。
 --
 -- 方言约束同既有迁移文件：只使用 MySQL 语法，显式声明 InnoDB 与 utf8mb4。
 -- 注：20261108 已被媒体元数据迁移占用，按迁移工具「同日唯一」约束顺延一天。
 
 CREATE TABLE IF NOT EXISTS command_outbox (
-    command_id VARCHAR(64) NOT NULL PRIMARY KEY,
+    id BIGINT NOT NULL AUTO_INCREMENT,
+    command_id VARCHAR(64) NOT NULL,
     idempotency_key VARCHAR(128) NOT NULL,
     phone VARCHAR(32) NOT NULL,
     msg_id INTEGER NOT NULL,
@@ -204,7 +215,9 @@ CREATE TABLE IF NOT EXISTS command_outbox (
     attempts INTEGER NOT NULL,
     last_error VARCHAR(255) NOT NULL,
     created_at BIGINT NOT NULL,
-    updated_at BIGINT NOT NULL
+    updated_at BIGINT NOT NULL,
+    PRIMARY KEY (id),
+    UNIQUE KEY uq_command_outbox_command_id (command_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 CREATE UNIQUE INDEX idx_command_outbox_idempotency ON command_outbox (phone, idempotency_key);
 CREATE INDEX idx_command_outbox_routing ON command_outbox (phone, msg_id, serial);
@@ -257,9 +270,13 @@ CREATE INDEX idx_upgrade_results_phone_received ON upgrade_results (phone, recei
 --   * media_captures：0x0805 摄像头立即拍摄命令应答，按 (phone, record_id) 唯一；
 --   * media_capture_items：0x0805 返回的 mediaId 列表，按 (phone, record_id, item_index) 唯一。
 --
+-- media_files 是媒体上传时的高频追加表，使用自增 id 作为聚簇主键，
+-- (phone, media_id) 改为唯一键，保持 ON DUPLICATE KEY UPDATE 的覆盖语义。
+--
 -- 方言约束同既有迁移文件：只使用 MySQL 语法，显式声明 InnoDB 与 utf8mb4。
 
 CREATE TABLE IF NOT EXISTS media_files (
+    id BIGINT NOT NULL AUTO_INCREMENT,
     phone VARCHAR(32) NOT NULL,
     media_id BIGINT NOT NULL,
     media_type SMALLINT NOT NULL DEFAULT 0,
@@ -278,7 +295,8 @@ CREATE TABLE IF NOT EXISTS media_files (
     file_size BIGINT NOT NULL DEFAULT 0,
     md5 VARCHAR(32) NOT NULL DEFAULT '',
     received_at BIGINT NOT NULL,
-    PRIMARY KEY (phone, media_id)
+    PRIMARY KEY (id),
+    UNIQUE KEY uq_media_files_phone_media (phone, media_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 CREATE INDEX idx_media_files_phone_time ON media_files (phone, location_time, received_at);
 CREATE INDEX idx_media_files_alarm ON media_files (phone, alarm_sign);
