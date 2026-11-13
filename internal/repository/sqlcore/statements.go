@@ -52,6 +52,11 @@ type Statements interface {
 	EnsureDedupKeyRow() string
 	// UpsertGatewayNode 按 gateway_id 写入或覆盖网关节点状态。
 	UpsertGatewayNode() string
+	// DeleteStaleSessionDirectory 删除同 gateway_id 下不属于当前 instance_id 的目录行。
+	// 参数为 (gateway_id, instance_id)，与节点 upsert 在同一事务内执行。
+	DeleteStaleSessionDirectory() string
+	// SelectGatewayNodeStats 用数据库时间统计在线、离线与已过期节点。
+	SelectGatewayNodeStats() string
 	// HeartbeatGatewayNode 刷新节点心跳；过期时间由数据库时间计算。
 	HeartbeatGatewayNode() string
 	// DeregisterGatewayNode 将节点标记为离线；过期时间由数据库时间计算。

@@ -183,6 +183,18 @@ func (statements) UpsertGatewayNode() string {
 			expires_at = VALUES(expires_at)`
 }
 
+func (statements) DeleteStaleSessionDirectory() string {
+	return `DELETE FROM session_directory WHERE gateway_id = ? AND instance_id <> ?`
+}
+
+func (statements) SelectGatewayNodeStats() string {
+	return `SELECT
+		COALESCE(SUM(status = 'online' AND expires_at > CURRENT_TIMESTAMP(3)), 0),
+		COALESCE(SUM(status = 'offline'), 0),
+		COALESCE(SUM(status = 'online' AND expires_at <= CURRENT_TIMESTAMP(3)), 0)
+		FROM gateway_nodes`
+}
+
 func (statements) HeartbeatGatewayNode() string {
 	return `UPDATE gateway_nodes
 		SET last_seen_at = CURRENT_TIMESTAMP(3),

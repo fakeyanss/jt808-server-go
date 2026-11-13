@@ -428,6 +428,7 @@ func buildDeps(spec Spec, cfg *config.Config, s settings) *deps {
 				Directory: storeSet.SessionDirectory,
 				Token:     clusterOptions.Gateway.Token,
 				Timeout:   clusterOptions.Downlink.Timeout,
+				Metrics:   metrics,
 			})
 			if routerErr != nil {
 				log.Error().Err(routerErr).Msg("Fail to create session directory downlink router")

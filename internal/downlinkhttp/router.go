@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/fakeyanss/jt808-server-go/internal/contracts"
+	"github.com/fakeyanss/jt808-server-go/internal/observability"
 	"github.com/fakeyanss/jt808-server-go/internal/repository"
 )
 
@@ -22,6 +23,8 @@ type RouterOptions struct {
 	Timeout time.Duration
 	// HTTPClient 便于测试注入；为空时按 Timeout 新建。
 	HTTPClient *http.Client
+	// Metrics 是目录命中/离线的观测计数器；可为空。
+	Metrics *observability.Metrics
 }
 
 // Router 按会话目录把下行请求发到归属网关。
@@ -33,6 +36,7 @@ type Router struct {
 	token      string
 	timeout    time.Duration
 	httpClient *http.Client
+	metrics    *observability.Metrics
 
 	mu      sync.Mutex
 	clients map[string]*Client
@@ -53,6 +57,7 @@ func NewRouter(options RouterOptions) (*Router, error) {
 		token:      strings.TrimSpace(options.Token),
 		timeout:    options.Timeout,
 		httpClient: options.HTTPClient,
+		metrics:    options.Metrics,
 		clients:    make(map[string]*Client),
 	}, nil
 }
@@ -66,6 +71,7 @@ func (r *Router) Send(ctx context.Context, request contracts.DownlinkRequest) (c
 		return contracts.DownlinkReceipt{}, fmt.Errorf("downlink message header is required")
 	}
 	if strings.TrimSpace(request.Phone) == "" {
+		r.metrics.IncDownlinkOffline()
 		return contracts.DownlinkReceipt{Status: contracts.DownlinkStatusOffline}, nil
 	}
 	baseURL, ok, err := r.directory.Route(ctx, request.Phone, request.SessionID)
@@ -76,8 +82,10 @@ func (r *Router) Send(ctx context.Context, request contracts.DownlinkRequest) (c
 		}
 	}
 	if !ok {
+		r.metrics.IncDownlinkOffline()
 		return contracts.DownlinkReceipt{Status: contracts.DownlinkStatusOffline}, nil
 	}
+	r.metrics.IncDownlinkDirectoryHit()
 	client, err := r.client(baseURL)
 	if err != nil {
 		// 节点登记的入口不可用属于可自愈的配置抖动：节点重新注册后即可恢复。

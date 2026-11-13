@@ -22,6 +22,8 @@ func NewGatewayNodeRepository() *GatewayNodeRepository {
 	return &GatewayNodeRepository{nodes: make(map[string]repository.GatewayNode)}
 }
 
+// Register 覆盖当前实例。内存后端不联动会话目录：内存目录没有节点信息，
+// Router 恒返回未命中；集群注册与目录清理走 SQL 后端。
 func (r *GatewayNodeRepository) Register(_ context.Context, gatewayID, instanceID, downlinkURL string) error {
 	now := time.Now()
 	r.mu.Lock()
@@ -37,7 +39,6 @@ func (r *GatewayNodeRepository) Register(_ context.Context, gatewayID, instanceI
 	}
 	return nil
 }
-
 func (r *GatewayNodeRepository) Heartbeat(_ context.Context, gatewayID, instanceID string) (bool, error) {
 	now := time.Now()
 	r.mu.Lock()
@@ -77,4 +78,22 @@ func (r *GatewayNodeRepository) Get(_ context.Context, gatewayID string) (*repos
 	}
 	copy := node
 	return &copy, nil
+}
+
+func (r *GatewayNodeRepository) Stats(_ context.Context) (repository.GatewayNodeStats, error) {
+	now := time.Now()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var stats repository.GatewayNodeStats
+	for _, node := range r.nodes {
+		switch {
+		case node.Status == "offline":
+			stats.Offline++
+		case node.ExpiresAt.After(now):
+			stats.Online++
+		default:
+			stats.Expired++
+		}
+	}
+	return stats, nil
 }

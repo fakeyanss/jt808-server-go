@@ -16,6 +16,7 @@ import (
 
 	"github.com/fakeyanss/jt808-server-go/internal/contracts"
 	"github.com/fakeyanss/jt808-server-go/internal/gatewaynode"
+	"github.com/fakeyanss/jt808-server-go/internal/observability"
 	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
 	"github.com/fakeyanss/jt808-server-go/internal/repository"
 )
@@ -75,6 +76,7 @@ type Server struct {
 	deviceLookup    func(ctx context.Context, phone string) (*model.Device, error)
 	nodes           repository.GatewayNodeRepository
 	sessions        repository.SessionDirectoryRepository
+	metrics         *observability.Metrics
 
 	httpServer *http.Server
 	listener   net.Listener
@@ -125,6 +127,16 @@ func (s *Server) RegisterDefaultConsumer(consumer EventConsumer) {
 	}
 	s.mu.Lock()
 	s.defaultConsumer = consumer
+	s.mu.Unlock()
+}
+
+// SetMetrics 注入集群观测计数器；为空时所有计数为 no-op。
+func (s *Server) SetMetrics(metrics *observability.Metrics) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	s.metrics = metrics
 	s.mu.Unlock()
 }
 
@@ -312,6 +324,7 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if fenced {
+		s.metrics.IncUplinkFenced()
 		s.dedup.Add(envelope.EventID, now)
 		writeJSON(w, http.StatusOK, map[string]any{"outcome": "fenced", "fenced": true})
 		return
@@ -403,6 +416,7 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 		body["generation"] = result.Generation
 	}
 	if result.Fenced {
+		s.metrics.IncUplinkFenced()
 		body["fenced"] = true
 	}
 	if len(result.Reply) > 0 {
@@ -613,6 +627,7 @@ func (s *Server) handleGatewayHeartbeat(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	if !ok {
+		s.metrics.IncGatewayNodeFenced()
 		writeJSON(w, http.StatusConflict, gatewaynode.StatusResponse{
 			Status:  "fenced",
 			Code:    "instance_stale",

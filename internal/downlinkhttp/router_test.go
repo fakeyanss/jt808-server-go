@@ -13,6 +13,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/fakeyanss/jt808-server-go/internal/contracts"
+	"github.com/fakeyanss/jt808-server-go/internal/observability"
 	"github.com/fakeyanss/jt808-server-go/internal/repository"
 )
 
@@ -67,7 +68,8 @@ func TestRouterSendsToDirectoryNode(t *testing.T) {
 		}
 		return gateway.URL, true, nil
 	}}
-	router, err := NewRouter(RouterOptions{Directory: dir, Token: testToken, Timeout: time.Second})
+	metrics := observability.NewMetrics()
+	router, err := NewRouter(RouterOptions{Directory: dir, Token: testToken, Timeout: time.Second, Metrics: metrics})
 	require.NoError(t, err)
 
 	msg, _ := testMessage(t, testPhone)
@@ -80,6 +82,8 @@ func TestRouterSendsToDirectoryNode(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, contracts.DownlinkStatusAccepted, receipt.Status)
 	require.Equal(t, "dl-1", receipt.ID)
+	require.Equal(t, int64(1), metrics.ClusterEventSnapshot().DownlinkDirectoryHits)
+	require.Zero(t, metrics.ClusterEventSnapshot().DownlinkOffline)
 }
 
 // 没有目录或节点不可用时返回 offline，且不得访问任何节点。
@@ -93,7 +97,8 @@ func TestRouterReturnsOfflineWithoutSending(t *testing.T) {
 	dir := &stubSessionDirectory{route: func(context.Context, string, string) (string, bool, error) {
 		return "", false, nil
 	}}
-	router, err := NewRouter(RouterOptions{Directory: dir, Token: testToken, Timeout: time.Second})
+	metrics := observability.NewMetrics()
+	router, err := NewRouter(RouterOptions{Directory: dir, Token: testToken, Timeout: time.Second, Metrics: metrics})
 	require.NoError(t, err)
 
 	msg, _ := testMessage(t, testPhone)
@@ -106,6 +111,8 @@ func TestRouterReturnsOfflineWithoutSending(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, contracts.DownlinkStatusOffline, receipt.Status)
 	require.Zero(t, atomic.LoadInt32(&hits))
+	require.Equal(t, int64(1), metrics.ClusterEventSnapshot().DownlinkOffline)
+	require.Zero(t, metrics.ClusterEventSnapshot().DownlinkDirectoryHits)
 }
 
 // 目录查询失败属于可重试的传输错误，不能伪装成 offline。
