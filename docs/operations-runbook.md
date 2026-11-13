@@ -175,7 +175,7 @@ jt-control requires cluster.roles to contain "control"; current roles=[media]. u
 ./bin/jt-attachment -c configs/cluster/jt-attachment.yaml
 ```
 
-`jt-signal` / `jt-control` / `jt-attachment` 依赖共享 MySQL。
+`jt-signal` / `jt-control` 依赖共享 MySQL；`jt-media` / `jt-attachment` 是数据面节点，不连数据库。
 所有集群角色必须指向**同一套** `cluster.storage`（同一个 `root`，或同一个 `objectStore` 桶）。
 
 > `cluster.allowEmbeddedStorage` 是 **dev-only** 开关，只允许本地联调时让多个角色进程共用一个 SQLite 文件。
@@ -289,11 +289,16 @@ jt-control requires cluster.roles to contain "control"; current roles=[media]. u
 
 - 附件节点只保留有界本地暂存（`alarmServer.dir/staging`），收到数据即写入，按
   `alarmServer.segmentSizeBytes`（默认 8 MiB）切片上传到共享 objectStore。
-- 元数据落共享库 `attachment_files`：`received_bytes / watermark / segments / status`，
+- 元数据由 control 落库 `attachment_files`：`received_bytes / watermark / segments / status`，
   控制面通过 `GET /api/device/:phone/attachments` 查询进度，附件节点重启不丢。
+- 附件节点不连数据库，通过 `alarmServer.progressReport` 出站上报进度（幂等 upsert），
+  重连时向 control 查询恢复点；control 不可达时用本地暂存与对象存储扫描继续接收。
 - 暂存区总量 `alarmServer.stagingMaxBytes` 到顶后拒绝新的文件登记（终端收到失败应答），不排队、不写满磁盘。
 - 崩溃残留按 `.part` 标记 + 宽限期扫描清理；文件全部切片提交后才转为 `completed`，并把对象 `MarkCommitted`。
-- 保留期只由附件节点执行，范围限定在 `attachment/` 前缀与 `attachment_files` 表；control 的 retention 不触碰附件。
+- 过期标记、pending 回收与保留期统一由 control 执行，范围限定在 `attachment/` 前缀与 `attachment_files` 表；
+  control 不得删除或引用边缘节点的本地暂存路径。
+- 对象 key 自带元数据，扫描即可重建索引：
+  `attachment/<source>/<phone>/<alarmNo>/<fileName>/<offset>_<size>_<total>_<index>`。
 - 集群的媒体与附件共用一套 objectStore，key 前缀按来源分区：
   `media/segments/`（1078 切片）、`media/uploads/`（0x0801 图片）、`attachment/subia/`（苏标附件）、
   `attachment/ftp1078/`（预留）。pending 回收与保留期清理都按前缀隔离。

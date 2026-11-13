@@ -18,7 +18,6 @@ import (
 )
 
 // errAttachmentBlobRequired 表示附件角色缺少共享对象存储。
-//
 // 前置依赖：config.ValidateServerMode 对 media/attachment 角色强制
 // cluster.storage.backend ∈ {sharedVolume, objectStore}（见 config.go 的 needsBlob 分支）；
 // 这两种后端都会在 buildDeps 里给 controlBlob 赋值。因此正常启动走不到这里，
@@ -31,6 +30,24 @@ func checkAttachmentBlob(blob contracts.BlobStore) error {
 		return errAttachmentBlobRequired
 	}
 	return nil
+}
+
+// attachmentProgressSink 选择附件节点上报进度的通道。
+//
+// 同进程有 control 时直接写库；独立部署时用出站 HTTP，禁止 control 反向连节点。
+// 都没配置时返回 nil：接收与对象写入照常进行，恢复改用对象存储扫描。
+func (d *deps) attachmentProgressSink() (contracts.AttachmentProgressSink, error) {
+	if d.hasControl && d.storeSet != nil {
+		if store := control.NewAttachmentProgressStore(d.storeSet.AttachmentFiles, d.clock); store != nil {
+			return store, nil
+		}
+	}
+	report := d.alarmOptions.ProgressReport
+	if report.URL == "" {
+		log.Warn().Msg("alarmServer.progressReport.url is not configured; attachment progress relies on object storage scan")
+		return nil, nil
+	}
+	return attachmentserver.NewHTTPProgressSink(report.URL, report.Token, report.Timeout)
 }
 
 // installUploadHooks 按形态安装 0x9208 自动上传触发。
@@ -93,7 +110,6 @@ func (d *deps) startAttachment() {
 	standalone := d.standalone
 	alarmOptions := d.alarmOptions
 	clusterOptions := d.settings.options
-	storeSet := d.storeSet
 	controlBlob := d.controlBlob
 	hasControl := d.hasControl
 	remoteAttachment := d.remoteAttachment
@@ -126,10 +142,15 @@ func (d *deps) startAttachment() {
 		}
 		routines.GoSafe(func() { alarmServ.Start() })
 	} else if hasAttachment && alarmEnabled {
-		// cluster 附件节点：本地只保留有界暂存，切片写入共享 objectStore，
-		// 元数据落共享库供控制面查询。
+		// cluster 附件节点：本地只保留有界暂存，切片写入共享 objectStore；
+		// 水位、段列表与终态由 control 落库，本进程不持有任何仓储。
 		if err := checkAttachmentBlob(controlBlob); err != nil {
 			log.Error().Msg(err.Error())
+			os.Exit(1)
+		}
+		progress, progressErr := d.attachmentProgressSink()
+		if progressErr != nil {
+			log.Error().Err(progressErr).Msg("Fail to configure attachment progress report")
 			os.Exit(1)
 		}
 		nodeID := clusterOptions.Attachment.NodeID
@@ -147,8 +168,8 @@ func (d *deps) startAttachment() {
 			SessionTimeout:  alarmserver.DefaultSessionTimeout,
 			CompletedTTL:    alarmOptions.CompletedTTL,
 			Retention:       alarmOptions.Retention,
-			Files:           storeSet.AttachmentFiles,
 			Blob:            controlBlob,
+			Progress:        progress,
 			StagingDir:      filepath.Join(alarmOptions.Dir, "staging"),
 			SegmentSize:     alarmOptions.SegmentSizeBytes,
 			MaxStagingBytes: alarmOptions.StagingMaxBytes,

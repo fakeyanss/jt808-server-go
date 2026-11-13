@@ -80,6 +80,7 @@ type Server struct {
 	nodes           repository.GatewayNodeRepository
 	sessions        repository.SessionDirectoryRepository
 	segments        repository.RecordingSegmentRepository
+	attachments     AttachmentProgressStore
 	metrics         *observability.Metrics
 	clock           clockpkg.Clock
 
@@ -229,6 +230,13 @@ func (s *Server) SetRecordingSegmentRepository(segments repository.RecordingSegm
 	}
 }
 
+// SetAttachmentProgressStore 挂载附件进度入口；设置后暴露附件节点出站上报与恢复点查询。
+func (s *Server) SetAttachmentProgressStore(store AttachmentProgressStore) {
+	if s != nil {
+		s.attachments = store
+	}
+}
+
 // Handler 返回可挂到任意 mux 的 HTTP 处理器，便于测试注入。
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
@@ -244,6 +252,9 @@ func (s *Server) Handler() http.Handler {
 	}
 	if s.segments != nil {
 		mux.HandleFunc(PathMediaSegment, s.handleMediaSegment)
+	}
+	if s.attachments != nil {
+		mux.HandleFunc(PathAttachmentProgress, s.handleAttachmentProgress)
 	}
 	return mux
 }

@@ -13,7 +13,7 @@ import (
 
 	"github.com/rs/zerolog/log"
 
-	"github.com/fakeyanss/jt808-server-go/internal/repository"
+	"github.com/fakeyanss/jt808-server-go/internal/contracts"
 )
 
 // byteRange 表示附件文件中已连续覆盖的字节区间 [Offset, Offset+Length)。
@@ -103,7 +103,7 @@ type fileState struct {
 	// store 非空表示该文件使用对象存储模式：本地只有暂存窗口，文件按切片提交。
 	store *StorageConfig
 	// segments 是已提交的对象切片；flushCursor 是已提交到的字节偏移。
-	segments    []repository.AttachmentSegment
+	segments    []contracts.AttachmentProgressSegment
 	flushCursor int64
 	// stagedMax 是本地暂存文件写到的最高偏移，用于暂存区总量统计。
 	stagedMax int64
@@ -470,6 +470,11 @@ type Assembler struct {
 	staging atomic.Int64
 	// receiving 是本进程正在接收的附件数量，供附件节点状态接口回报剩余额度。
 	receiving atomic.Int64
+	// reportCh/reportDone 是向 control 异步上报进度的队列与停止信号。
+	reportCh     chan contracts.AttachmentProgress
+	reportDone   chan struct{}
+	reportClosed atomic.Bool
+	reportWG     sync.WaitGroup
 	// now 可注入时钟，测试据此验证完成态 TTL，无需等待真实时间。
 	now func() time.Time
 }
@@ -478,11 +483,13 @@ func NewAssembler(cfg Config) *Assembler {
 	if cfg.Storage != nil {
 		cfg.Storage.Normalize()
 	}
-	return &Assembler{
+	a := &Assembler{
 		cfg:   cfg.Normalize(),
 		files: make(map[string]*fileState),
 		now:   time.Now,
 	}
+	a.startProgressReporter()
+	return a
 }
 
 func (a *Assembler) nowTime() time.Time { return a.now() }
@@ -779,7 +786,7 @@ func (a *Assembler) CleanupCompleted(now time.Time, ttl time.Duration) int {
 	return removed
 }
 
-// Close 关闭全部文件句柄，供服务停机与测试使用。
+// Close 关闭全部文件句柄与进度上报协程，供服务停机与测试使用。
 func (a *Assembler) Close() {
 	a.mu.Lock()
 	states := make([]*fileState, 0, len(a.files))
@@ -792,6 +799,7 @@ func (a *Assembler) Close() {
 		st.closeFileLocked()
 		st.mu.Unlock()
 	}
+	a.stopProgressReporter()
 }
 
 // Reconcile 扫描落盘目录并与位图状态对账：
@@ -889,9 +897,12 @@ func (a *Assembler) Reconcile() error {
 
 // Select 返回已完成的附件元数据，phone 为空时返回全部。
 // 内存态之外还会扫描落盘元数据，保证进程重启后历史附件仍可查询。
+//
+// 对象存储模式下附件节点不连库，只回报本进程内存里已完成的文件；
+// 跨节点、跨重启的查询由 control 的 attachment_files 索引提供。
 func (a *Assembler) Select(phone string) []Metadata {
 	if a.cfg.Storage != nil {
-		return a.selectBlob(phone)
+		return a.selectInMemory(phone)
 	}
 	merged := make(map[string]Metadata)
 	a.mu.Lock()
@@ -936,18 +947,6 @@ func (a *Assembler) Select(phone string) []Metadata {
 
 // FindMetadata 返回指定手机号与文件名的已完成附件元数据。
 func (a *Assembler) FindMetadata(phone, fileName string) (Metadata, error) {
-	if a.cfg.Storage != nil {
-		if st := a.lookup(phone, fileName); st != nil {
-			st.mu.Lock()
-			completed := st.completed
-			meta := st.meta
-			st.mu.Unlock()
-			if completed {
-				return meta, nil
-			}
-		}
-		return a.findBlobMetadata(phone, fileName)
-	}
 	if st := a.lookup(phone, fileName); st != nil {
 		st.mu.Lock()
 		completed := st.completed
@@ -957,10 +956,37 @@ func (a *Assembler) FindMetadata(phone, fileName string) (Metadata, error) {
 			return meta, nil
 		}
 	}
+	if a.cfg.Storage != nil {
+		// 对象存储模式不查共享库：未在本进程完成即视为不可查询。
+		return Metadata{}, ErrFileNotRegistered
+	}
 	for _, meta := range a.Select(phone) {
 		if meta.FileName == fileName {
 			return meta, nil
 		}
 	}
 	return Metadata{}, ErrFileNotRegistered
+}
+
+// selectInMemory 从本进程内存态收集已完成附件。
+func (a *Assembler) selectInMemory(phone string) []Metadata {
+	merged := make(map[string]Metadata)
+	a.mu.Lock()
+	for key, st := range a.files {
+		st.mu.Lock()
+		if st.completed && (phone == "" || st.phone == phone) {
+			merged[key] = st.meta
+		}
+		st.mu.Unlock()
+	}
+	a.mu.Unlock()
+
+	result := make([]Metadata, 0, len(merged))
+	for _, meta := range merged {
+		result = append(result, meta)
+	}
+	sort.Slice(result, func(i, j int) bool {
+		return result[i].CompletedAt.After(result[j].CompletedAt)
+	})
+	return result
 }

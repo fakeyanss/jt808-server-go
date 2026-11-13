@@ -91,8 +91,8 @@ func (d *deps) buildProbes() {
 			checks = append(checks, observability.Check{
 				Name: "attachment_object_store",
 				Fn: func(context.Context) error {
-					if controlBlob == nil || storeSet == nil || storeSet.AttachmentFiles == nil {
-						return fmt.Errorf("attachment object store / shared attachment repository is not configured")
+					if controlBlob == nil {
+						return fmt.Errorf("attachment object store is not configured")
 					}
 					return nil
 				},

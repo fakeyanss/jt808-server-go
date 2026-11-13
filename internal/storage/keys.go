@@ -139,11 +139,82 @@ func AttachmentPrefix(source string) string {
 	}
 }
 
-// AttachmentSegment 返回附件切片的对象 key。
-// 同一逻辑文件的切片按序号自然排序，读取时按序号拼接。
-func AttachmentSegment(source, phone, alarmNo, fileName string, index int) string {
-	return fmt.Sprintf("%s%s/%s/%s/%08d",
-		AttachmentPrefix(source), SafeSegment(phone), SafeSegment(alarmNo), SafeSegment(fileName), index)
+// AttachmentSegmentKeyInfo 是能从附件切片对象 key 独立解析出的元数据。
+//
+// 附件节点不连库：control 侧的索引允许丢失，由扫描 attachment/ 前缀重建。
+// 因此终端、报警号、文件名、偏移、段大小与文件总长必须全部编码在 key 里，
+// 扫描不依赖任何上报内容就能得出“覆盖到哪、是否完整”。
+type AttachmentSegmentKeyInfo struct {
+	Source    string
+	Phone     string
+	AlarmNo   string
+	FileName  string
+	Offset    int64
+	Size      int64
+	TotalSize int64
+	Index     int
+	ObjectKey string
+}
+
+// AttachmentSegmentObjectKey 生成附件切片的对象 key。
+//
+// 格式：<prefix><phone>/<alarmNo>/<fileName>/<offset>_<size>_<total>_<index>
+// offset/size/total 以十进制写入，固定宽度便于人工排查；解析以字段值为准。
+func AttachmentSegmentObjectKey(source, phone, alarmNo, fileName string, offset, size, totalSize int64, index int) string {
+	return fmt.Sprintf("%s%s/%s/%s/%012d_%012d_%012d_%08d",
+		AttachmentPrefix(source),
+		SafeSegment(phone),
+		SafeSegment(alarmNo),
+		SafeSegment(fileName),
+		offset, size, totalSize, index,
+	)
+}
+
+// ParseAttachmentSegmentKey 从附件切片对象 key 解析元数据。
+// 任何一段不符合约定都返回错误，调用方应跳过该对象而不是写坏索引。
+func ParseAttachmentSegmentKey(key string) (AttachmentSegmentKeyInfo, error) {
+	parts := strings.Split(strings.TrimPrefix(key, "/"), "/")
+	if len(parts) != 6 || parts[0] != "attachment" {
+		return AttachmentSegmentKeyInfo{}, fmt.Errorf("invalid attachment segment key %q", key)
+	}
+	source := parts[1]
+	if source != SourceSubia && source != SourceFTP1078 {
+		return AttachmentSegmentKeyInfo{}, fmt.Errorf("invalid attachment source %q in key %q", source, key)
+	}
+	info := AttachmentSegmentKeyInfo{
+		Source:    source,
+		Phone:     parts[2],
+		AlarmNo:   parts[3],
+		FileName:  parts[4],
+		ObjectKey: key,
+	}
+	if info.Phone == "" || info.AlarmNo == "" || info.FileName == "" {
+		return AttachmentSegmentKeyInfo{}, fmt.Errorf("attachment segment key has empty path field: %q", key)
+	}
+	fields := strings.Split(parts[5], "_")
+	if len(fields) != 4 {
+		return AttachmentSegmentKeyInfo{}, fmt.Errorf("invalid attachment segment file name %q", parts[5])
+	}
+	values := make([]int64, 4)
+	for i, field := range fields {
+		parsed, err := strconv.ParseInt(field, 10, 64)
+		if err != nil || parsed < 0 {
+			return AttachmentSegmentKeyInfo{}, fmt.Errorf("invalid attachment segment field %q in %q", field, key)
+		}
+		values[i] = parsed
+	}
+	info.Offset, info.Size, info.TotalSize = values[0], values[1], values[2]
+	if info.Size <= 0 {
+		return AttachmentSegmentKeyInfo{}, fmt.Errorf("attachment segment size must be positive in %q", key)
+	}
+	if info.Offset+info.Size > info.TotalSize {
+		return AttachmentSegmentKeyInfo{}, fmt.Errorf("attachment segment exceeds total size in %q", key)
+	}
+	if values[3] > int64(^uint32(0)) {
+		return AttachmentSegmentKeyInfo{}, fmt.Errorf("attachment segment index out of range in %q", key)
+	}
+	info.Index = int(values[3])
+	return info, nil
 }
 
 // SafeSegment 把任意业务标识转换成安全的单层路径段。

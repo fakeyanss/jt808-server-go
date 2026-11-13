@@ -1,7 +1,9 @@
 # jt-attachment 的最小可运行配置：只承担 attachment 角色。
 #
 # 独立监听附件 TCP 7400 / UDP 7401，自行解析 808 帧；
-# 本地只保留有界暂存窗口，切片写入全集群共享的 objectStore，元数据落共享 MySQL。
+# 本地只保留有界暂存窗口，切片写入全集群共享的 objectStore。
+# 附件节点不连数据库：水位、段列表与终态由 control 落库，
+# 本节点通过 progressReport 出站上报进度、重连时向 control 查询恢复点。
 # 过渡期用共享卷代替对象存储：所有集群角色必须指向同一个 root。
 # 启动前创建共享卷标记文件与暂存目录：
 #   mkdir -p data/blobs data/attachments && touch data/blobs/.jt808-shared-volume
@@ -44,6 +46,11 @@ alarmServer:
   stagingMaxBytes: 2147483648
   retentionDays: 7
   autoUpload: false
+  # 进度出站上报 control：允许丢失，control 会扫描 attachment/ 前缀补齐索引。
+  progressReport:
+    url: "http://127.0.0.1:9102/internal/v1/attachment/progress"
+    token: "uplink-token"
+    timeoutMs: 3000
 
 mediaUpload:
   dir: "./data/blobs"
@@ -72,6 +79,5 @@ cluster:
     marker: ".jt808-shared-volume"
 
 database:
-  type: "mysql"
-  mysql:
-    dsn: "root:password@tcp(127.0.0.1:3306)/jt808?parseTime=true&charset=utf8mb4"
+  # 附件节点不连数据库；所有元数据操作在 control。
+  type: "memory"
