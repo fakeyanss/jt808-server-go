@@ -531,3 +531,31 @@ CREATE TABLE IF NOT EXISTS attachment_nodes (
     PRIMARY KEY (node_id),
     KEY idx_attachment_nodes_status (status, expires_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+-- 媒体节点注册与负载（0x9101/0x9201 分配依据）。与 gateway_nodes/attachment_nodes 同构：
+-- 心跳续期、过期判死、新 instance_id 覆盖旧实例。
+-- endpoints_used 由 control 的原子占位维护；心跳只更新小指标，不覆盖它。
+-- cpu_percent/memory_bytes 允许 NULL：采集不到的平台少报这一项，心跳照常成功。
+CREATE TABLE IF NOT EXISTS media_nodes (
+    node_id VARCHAR(64) NOT NULL,
+    instance_id VARCHAR(64) NOT NULL,
+    internal_url VARCHAR(255) NOT NULL,
+    push_ip VARCHAR(64) NOT NULL DEFAULT '',
+    push_tcp_port SMALLINT UNSIGNED NOT NULL DEFAULT 0,
+    push_udp_port SMALLINT UNSIGNED NOT NULL DEFAULT 0,
+    playback_base_url VARCHAR(255) NOT NULL DEFAULT '',
+    endpoint_capacity BIGINT NOT NULL DEFAULT 0,
+    endpoints_used BIGINT NOT NULL DEFAULT 0,
+    max_bitrate_kbps BIGINT NOT NULL DEFAULT 0,
+    inbound_bitrate_kbps BIGINT NOT NULL DEFAULT 0,
+    active_channels BIGINT NOT NULL DEFAULT 0,
+    active_tcp_conns BIGINT NOT NULL DEFAULT 0,
+    cpu_percent DOUBLE NULL,
+    memory_bytes BIGINT NULL,
+    status VARCHAR(16) NOT NULL DEFAULT 'online',
+    started_at BIGINT NOT NULL,
+    last_seen_at BIGINT NOT NULL,
+    expires_at BIGINT NOT NULL,
+    PRIMARY KEY (node_id),
+    KEY idx_media_nodes_status (status, expires_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;

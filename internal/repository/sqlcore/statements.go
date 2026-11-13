@@ -49,6 +49,9 @@ type Statements interface {
 	UpsertAttachmentFTPTask() string
 	// UpsertAttachmentNode 按 node_id 写入或覆盖附件节点注册与心跳。
 	UpsertAttachmentNode() string
+	// UpsertMediaNode 按 node_id 写入或覆盖媒体节点注册与负载快照。
+	// 新实例注册即顶替旧实例，端点数从零重新计数。
+	UpsertMediaNode() string
 	// UpsertRecordingSegment 按 id 覆盖平台录像切片索引。
 	UpsertRecordingSegment() string
 	// InsertLocationsIgnoringDuplicates 生成 (phone, dedup_key) 冲突时忽略的批量插入。

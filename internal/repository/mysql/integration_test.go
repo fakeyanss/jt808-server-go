@@ -146,6 +146,93 @@ func TestGatewayNodeRepositoryOnRealMySQL(t *testing.T) {
 	require.Nil(t, missing)
 }
 
+// 媒体节点注册表要验证：负载 NULL 字段、条件占位的原子性、新实例顶替与过期过滤。
+func TestMediaNodeRepositoryOnRealMySQL(t *testing.T) {
+	ctx := context.Background()
+	dsn := mysqlTestDSN(t)
+	requireMigrated(t, dsn)
+	db := openRaw(t, dsn)
+	repo := openStore(t, dsn).MediaNodeRepository()
+
+	const nodeID = "media-it"
+	_, err := db.Exec(`DELETE FROM media_nodes WHERE node_id = ?`, nodeID)
+	require.NoError(t, err)
+
+	now := time.UnixMilli(time.Now().UnixMilli())
+	require.NoError(t, repo.Register(ctx, &repository.MediaNode{
+		NodeID:           nodeID,
+		InstanceID:       "inst-a",
+		InternalURL:      "http://media-it:7301",
+		PushIP:           "10.0.0.8",
+		PushTCPPort:      7300,
+		PushUDPPort:      7300,
+		PlaybackBaseURL:  "http://media-it:7301/live",
+		EndpointCapacity: 1,
+		MaxBitrateKbps:   20000,
+	}, now))
+
+	node, err := repo.Get(ctx, nodeID)
+	require.NoError(t, err)
+	require.NotNil(t, node)
+	require.Equal(t, "inst-a", node.InstanceID)
+	require.Equal(t, uint16(7300), node.PushTCPPort)
+	require.Nil(t, node.CPUPercent)
+	require.Nil(t, node.MemoryBytes)
+
+	// CPU 缺省不影响心跳；负载小指标写入，端点数不被心跳覆盖。
+	ok, err := repo.Heartbeat(ctx, nodeID, "inst-a", repository.MediaNodeLoad{
+		ActiveChannels: 2, ActiveTCPConns: 1, InboundBitrateKbps: 6000,
+	}, now.Add(time.Second))
+	require.NoError(t, err)
+	require.True(t, ok)
+	node, err = repo.Get(ctx, nodeID)
+	require.NoError(t, err)
+	require.Equal(t, int64(2), node.ActiveChannels)
+	require.Equal(t, int64(6000), node.InboundBitrateKbps)
+	require.Equal(t, int64(0), node.EndpointsUsed)
+
+	// 容量 1：第一次占位成功，第二次必须失败。
+	ok, err = repo.Reserve(ctx, nodeID, "inst-a", 1, now.Add(2*time.Second))
+	require.NoError(t, err)
+	require.True(t, ok)
+	ok, err = repo.Reserve(ctx, nodeID, "inst-a", 1, now.Add(2*time.Second))
+	require.NoError(t, err)
+	require.False(t, ok)
+
+	require.NoError(t, repo.Release(ctx, nodeID, "inst-a", 1, now.Add(3*time.Second)))
+	node, err = repo.Get(ctx, nodeID)
+	require.NoError(t, err)
+	require.Equal(t, int64(0), node.EndpointsUsed)
+
+	// 过期节点不参与 ListOnline 与占位。
+	_, err = db.Exec(`UPDATE media_nodes SET expires_at = ? WHERE node_id = ?`, now.UnixMilli(), nodeID)
+	require.NoError(t, err)
+	online, err := repo.ListOnline(ctx, now.Add(4*time.Second))
+	require.NoError(t, err)
+	require.Empty(t, online)
+	ok, err = repo.Reserve(ctx, nodeID, "inst-a", 1, now.Add(4*time.Second))
+	require.NoError(t, err)
+	require.False(t, ok)
+
+	// 新实例注册顶替旧实例，端点数清零；旧实例心跳被围栏。
+	require.NoError(t, repo.Register(ctx, &repository.MediaNode{
+		NodeID: nodeID, InstanceID: "inst-b", InternalURL: "http://media-it:7301",
+		EndpointCapacity: 4,
+	}, now.Add(5*time.Second)))
+	ok, err = repo.Heartbeat(ctx, nodeID, "inst-a", repository.MediaNodeLoad{}, now.Add(6*time.Second))
+	require.NoError(t, err)
+	require.False(t, ok)
+	node, err = repo.Get(ctx, nodeID)
+	require.NoError(t, err)
+	require.Equal(t, "inst-b", node.InstanceID)
+	require.Equal(t, int64(0), node.EndpointsUsed)
+
+	require.NoError(t, repo.Deregister(ctx, nodeID, "inst-b", now.Add(7*time.Second)))
+	node, err = repo.Get(ctx, nodeID)
+	require.NoError(t, err)
+	require.Equal(t, "offline", node.Status)
+}
+
 // 会话目录的 claimed_at 由应用传入；claim 幂等与 generation 递增必须在真库验证。
 func TestSessionDirectoryOnRealMySQL(t *testing.T) {
 	ctx := context.Background()
@@ -330,12 +417,12 @@ func TestMigrateBaselineOnRealMySQL(t *testing.T) {
 	require.NoError(t, db.QueryRow(`SELECT COUNT(*) FROM schema_migrations`).Scan(&versionCount))
 	require.Equal(t, 1, versionCount)
 
-	// 表清单：26 张业务表，device_runtime 已在基线内删除。
+	// 表清单：27 张业务表，device_runtime 已在基线内删除。
 	expectedTables := []string{
 		"alarms", "attachment_files", "attachment_ftp_tasks", "attachment_nodes",
 		"command_outbox", "command_serial", "dedup_keys",
 		"device_params", "devices", "gateway_nodes", "locations", "media_capture_items",
-		"media_captures", "media_files", "media_resource_lists", "media_search_results",
+		"media_captures", "media_files", "media_nodes", "media_resource_lists", "media_search_results",
 		"media_upload_notices", "media_upload_tasks", "recording_segments", "region_items",
 		"schema_migrations", "session_directory", "task_leases", "terminal_catalogs",
 		"terminal_properties", "upgrade_results",

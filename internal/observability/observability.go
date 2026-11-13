@@ -83,6 +83,9 @@ type Metrics struct {
 	// 1078 FTP：完成清单与切片不一致的异常次数、0x9207 推送失败次数。
 	ftp1078DoneAnomaly   atomic.Int64
 	ftpControlPushFailed atomic.Int64
+	// 媒体端点分配：没有可用节点、分配尝试全部失败。
+	mediaAllocationsNoNode atomic.Int64
+	mediaAllocationsFailed atomic.Int64
 }
 
 // NewMetrics 创建进程级计数器。
@@ -225,6 +228,39 @@ func (m *Metrics) FTPControlPushFailed() int64 {
 		return 0
 	}
 	return m.ftpControlPushFailed.Load()
+}
+
+// IncMediaAllocationNoNode 记录一次因没有可用媒体节点而拒绝的端点申请。
+func (m *Metrics) IncMediaAllocationNoNode() {
+	if m == nil {
+		return
+	}
+	m.mediaAllocationsNoNode.Add(1)
+}
+
+// IncMediaAllocationFailed 记录一次所有候选节点都创建失败的端点申请。
+func (m *Metrics) IncMediaAllocationFailed() {
+	if m == nil {
+		return
+	}
+	m.mediaAllocationsFailed.Add(1)
+}
+
+// MediaAllocationSnapshot 是媒体端点分配的累计结果。
+type MediaAllocationSnapshot struct {
+	NoNode int64
+	Failed int64
+}
+
+// MediaAllocationSnapshot 返回媒体端点分配计数副本。
+func (m *Metrics) MediaAllocationSnapshot() MediaAllocationSnapshot {
+	if m == nil {
+		return MediaAllocationSnapshot{}
+	}
+	return MediaAllocationSnapshot{
+		NoNode: m.mediaAllocationsNoNode.Load(),
+		Failed: m.mediaAllocationsFailed.Load(),
+	}
 }
 
 // IncAutoUploadSkipped 记录一次 0x9208 自动触发因角色拆分而不可用的告警。
@@ -500,6 +536,19 @@ type Snapshot struct {
 	ClockSkew ClockSkewSnapshot
 	// FTP1078 是 1078 FTP 链路的异常与推送失败计数。
 	FTP1078 FTP1078Snapshot
+	// MediaAllocations 是媒体端点分配的结果计数。
+	MediaAllocations MediaAllocationSnapshot
+	// MediaNodes 是注册表中每个媒体节点的当前负载；由采集时查询共享库得到。
+	MediaNodes []MediaNodeSnapshot
+}
+
+// MediaNodeSnapshot 是单个媒体节点的负载与容量快照。
+type MediaNodeSnapshot struct {
+	NodeID             string
+	ActiveChannels     int64
+	InboundBitrateKbps int64
+	EndpointsUsed      int64
+	EndpointCapacity   int64
 }
 
 // FTP1078Snapshot 是 1078 FTP 链路的累计计数。
@@ -613,6 +662,7 @@ func (p *Provider) Snapshot(ctx context.Context) Snapshot {
 		DoneAnomaly:       p.Metrics.FTP1078DoneAnomaly(),
 		ControlPushFailed: p.Metrics.FTPControlPushFailed(),
 	}
+	snapshot.MediaAllocations = p.Metrics.MediaAllocationSnapshot()
 	return snapshot
 }
 
@@ -656,6 +706,8 @@ func WritePrometheus(w io.Writer, snapshot Snapshot) error {
 		{"jt808_clock_skew_alerts_total", "Clock skew probe runs whose absolute skew exceeded the alert threshold.", "counter", fmt.Sprint(snapshot.ClockSkew.Alerts)},
 		{"jt808_ftp1078_done_anomaly_total", "1078 FTP uploads whose .done manifest exists but segments are not contiguous.", "counter", fmt.Sprint(snapshot.FTP1078.DoneAnomaly)},
 		{"jt808_ftp1078_control_push_failed_total", "0x9207 control pushes to attachment nodes that failed after retries.", "counter", fmt.Sprint(snapshot.FTP1078.ControlPushFailed)},
+		{"jt808_media_allocations_no_node_total", "Media endpoint requests rejected because no media node had capacity.", "counter", fmt.Sprint(snapshot.MediaAllocations.NoNode)},
+		{"jt808_media_allocations_failed_total", "Media endpoint requests where every candidate node failed to create a session.", "counter", fmt.Sprint(snapshot.MediaAllocations.Failed)},
 	}
 	for _, line := range lines {
 		if _, err := fmt.Fprintf(w, "# HELP %s %s\n# TYPE %s %s\n%s %s\n",
@@ -672,7 +724,39 @@ func WritePrometheus(w io.Writer, snapshot Snapshot) error {
 	if err := writeTerminalReplyPrometheus(w, snapshot.TerminalReply); err != nil {
 		return err
 	}
+	if err := writeMediaNodePrometheus(w, snapshot.MediaNodes); err != nil {
+		return err
+	}
 	return writeOrphanPrometheus(w, snapshot.Orphan)
+}
+
+// writeMediaNodePrometheus 输出每个媒体节点的负载与端点占用。
+// 单值聚合无法反映分配策略看到的拓扑，因此按节点打标签。
+func writeMediaNodePrometheus(w io.Writer, nodes []MediaNodeSnapshot) error {
+	if len(nodes) == 0 {
+		return nil
+	}
+	metrics := []struct {
+		name  string
+		help  string
+		value func(MediaNodeSnapshot) int64
+	}{
+		{"jt808_media_node_active_channels", "Active media channels reported by the node heartbeat.", func(n MediaNodeSnapshot) int64 { return n.ActiveChannels }},
+		{"jt808_media_node_inbound_kbps", "Inbound media bitrate in kbps reported by the node heartbeat.", func(n MediaNodeSnapshot) int64 { return n.InboundBitrateKbps }},
+		{"jt808_media_node_endpoints_used", "Media endpoints reserved by control on the node.", func(n MediaNodeSnapshot) int64 { return n.EndpointsUsed }},
+		{"jt808_media_node_endpoints_capacity", "Media endpoint capacity configured on the node.", func(n MediaNodeSnapshot) int64 { return n.EndpointCapacity }},
+	}
+	for _, metric := range metrics {
+		if _, err := fmt.Fprintf(w, "# HELP %s %s\n# TYPE %s gauge\n", metric.name, metric.help, metric.name); err != nil {
+			return err
+		}
+		for _, node := range nodes {
+			if _, err := fmt.Fprintf(w, "%s{node=%q} %d\n", metric.name, node.NodeID, metric.value(node)); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 // writeUplinkQueuePrometheus 输出每个 phone 分片的队列深度。

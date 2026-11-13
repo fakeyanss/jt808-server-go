@@ -708,6 +708,9 @@ type mediaServerConf struct {
 	Playback      *mediaPlaybackConf `yaml:"playback"`
 	RingBytes     int64              `yaml:"ringBytes"`
 	RingSeconds   int                `yaml:"ringSeconds"`
+	// MaxBitrateKbps 是节点入流码率容量，心跳上报后 control 据此判断容量；
+	// 0 表示不按码率限制。
+	MaxBitrateKbps int64 `yaml:"maxBitrateKbps"`
 	// SegmentReport 是切片完成后向 control 出站上报的地址；为空时不上报。
 	SegmentReport *mediaSegmentReportConf `yaml:"segmentReport"`
 }
@@ -761,6 +764,8 @@ type MediaServerOptions struct {
 	SegmentDuration    time.Duration
 	RingBytes          int64
 	RingDuration       time.Duration
+	// MaxBitrateKbps 是入流码率容量；0 表示不限。
+	MaxBitrateKbps int64
 	// Playback 是播放出口配置；Output 默认 flv。
 	Playback PlaybackOptions
 	// SegmentReport 是切片索引出站上报配置。
@@ -898,6 +903,9 @@ func (c *Config) ParseMediaServer() (options MediaServerOptions, enabled bool, e
 			report.Timeout = time.Duration(conf.SegmentReport.TimeoutMS) * time.Millisecond
 		}
 	}
+	if conf.MaxBitrateKbps < 0 {
+		return MediaServerOptions{}, false, fmt.Errorf("mediaServer.maxBitrateKbps must be >= 0, got %d", conf.MaxBitrateKbps)
+	}
 	return MediaServerOptions{
 		Port:               port,
 		HTTPPort:           httpPort,
@@ -911,6 +919,7 @@ func (c *Config) ParseMediaServer() (options MediaServerOptions, enabled bool, e
 		SegmentDuration:    time.Duration(segmentMinutes) * time.Minute,
 		RingBytes:          ringBytes,
 		RingDuration:       time.Duration(ringSeconds) * time.Second,
+		MaxBitrateKbps:     conf.MaxBitrateKbps,
 		Playback:           playback,
 		SegmentReport:      report,
 	}, true, nil
@@ -1681,6 +1690,14 @@ type clusterControlConf struct {
 type clusterMediaConf struct {
 	NodeID string                 `yaml:"nodeId"`
 	Nodes  []clusterMediaNodeConf `yaml:"nodes"`
+	// ControlURL 是媒体节点注册与心跳的 control 基址；
+	// 为空时从 mediaServer.segmentReport.url 反推。
+	ControlURL string `yaml:"controlUrl"`
+	// Token 是 media -> control 的内部令牌；为空时回退 segmentReport.token。
+	Token string `yaml:"token"`
+	// AdvertiseURL 是 control 可达的本节点内部 HTTP 基址；
+	// 为空时按 mediaServer.advertiseIp + mediaServer.httpPort 推导。
+	AdvertiseURL string `yaml:"advertiseUrl"`
 }
 
 type clusterMediaNodeConf struct {
@@ -1799,8 +1816,11 @@ type ClusterOptions struct {
 		Token string
 	}
 	Media struct {
-		NodeID string
-		Nodes  []MediaNodeOptions
+		NodeID       string
+		Nodes        []MediaNodeOptions
+		ControlURL   string
+		Token        string
+		AdvertiseURL string
 	}
 	Attachment struct {
 		NodeID       string
@@ -1985,6 +2005,19 @@ func (c *Config) ParseServerMode() (ClusterOptions, error) {
 	}
 	if conf.Media != nil {
 		options.Media.NodeID = strings.TrimSpace(conf.Media.NodeID)
+		options.Media.ControlURL = strings.TrimSpace(conf.Media.ControlURL)
+		options.Media.Token = strings.TrimSpace(conf.Media.Token)
+		options.Media.AdvertiseURL = strings.TrimSpace(conf.Media.AdvertiseURL)
+		if options.Media.ControlURL != "" {
+			if err := validateHTTPURL("cluster.media.controlUrl", options.Media.ControlURL); err != nil {
+				problems = append(problems, err.Error())
+			}
+		}
+		if options.Media.AdvertiseURL != "" {
+			if err := validateHTTPURL("cluster.media.advertiseUrl", options.Media.AdvertiseURL); err != nil {
+				problems = append(problems, err.Error())
+			}
+		}
 		seenNodeURL := map[string]bool{}
 		for index, raw := range conf.Media.Nodes {
 			url := strings.TrimSpace(raw.URL)

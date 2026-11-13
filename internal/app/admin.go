@@ -186,6 +186,22 @@ func (d *deps) buildProbes() {
 					}
 				}
 			}
+			// 媒体节点负载：心跳上报的小指标，按节点输出便于定位热点。
+			if storeSet != nil && storeSet.MediaNodes != nil {
+				nodes, err := storeSet.MediaNodes.ListOnline(ctx, clock.Now())
+				if err != nil {
+					log.Warn().Err(err).Msg("Fail to collect media node metrics")
+				}
+				for _, node := range nodes {
+					snapshot.MediaNodes = append(snapshot.MediaNodes, observability.MediaNodeSnapshot{
+						NodeID:             node.NodeID,
+						ActiveChannels:     node.ActiveChannels,
+						InboundBitrateKbps: node.InboundBitrateKbps,
+						EndpointsUsed:      node.EndpointsUsed,
+						EndpointCapacity:   node.EndpointCapacity,
+					})
+				}
+			}
 			if uplinkSink != nil {
 				stats := uplinkSink.Stats()
 				snapshot.Uplink = observability.UplinkSnapshot{

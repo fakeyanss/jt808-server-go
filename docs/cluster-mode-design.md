@@ -566,6 +566,48 @@ Authorization: Bearer <token>
 - **文件必须落共享存储**（共享卷或对象存储），元数据落共享库，其他节点可读，但不接管活跃流；具体契约见 5.5；
 - 端点租约必须有 TTL，节点崩溃后租约自动失效，避免“分配了但没人接”。
 
+### 5.3.1 媒体节点注册、负载与分配
+
+媒体节点不连库：启动后向 control 注册，每 10 秒心跳；`media_nodes` 由 control 独占写入。
+
+**注册字段**（`POST /internal/v1/media/nodes/register`）：节点标识与实例、`internalUrl`（control
+调度播放会话的基址）、终端可达的 `pushIp/pushTcpPort/pushUdpPort`（NAT 场景由 `advertiseIp`
+填写）、`playbackBaseUrl`、`endpointCapacity`（并发端点池）、`maxBitrateKbps`（码率容量）。
+1078 采用单端口多流，**端点数即并发流额度（`maxConcurrent`），不是每流独占端口**；字段沿用
+“端点池”的命名是为了与附件节点的端口池口径对齐。
+
+**心跳只带小指标**（`POST /internal/v1/media/nodes/heartbeat`）：活跃通道数、活跃 TCP 连接数、
+入流总码率，以及可选的 CPU 与内存。心跳体保持小体积，判死时效不能被拖慢；每路流明细、每个
+端口状态这类大体量数据必须另开上报通道，不得塞进心跳。CPU/内存在某些平台取不到时**少报这一项
+（字段缺省）而不是让心跳失败**。
+
+**负载口径**：排序键依次为码率利用率（`inboundBitrateKbps / maxBitrateKbps`）、端点利用率
+（`endpointsUsed / endpointCapacity`）、`node_id`。先看码率是因为媒体节点的首要瓶颈是带宽与
+解码负载，只按连接数会把一路高码率流和一路低码率流等价；但连接数也必须同时看——端口、文件
+句柄与并发会话会先于带宽耗尽，所以码率之后立即比较端点占用。
+
+**并发分配**：`endpoints_used` 由 control 维护。`Reserve` 用条件 UPDATE 原子占位
+（`status='online' AND expires_at > now AND endpoints_used + ? <= endpoint_capacity`），
+并发申请同一个“当前最低”节点时只有一个能占到最后一个额度，其余换下一个候选；建会话失败
+立即 `Release`。心跳只刷新负载小指标，**不覆盖 `endpoints_used`**，否则占位每 10 秒就会被
+节点上报抹掉。
+
+**复用**：同一 `(phone, channel)` 已有同类型会话时直接复用，不重复开流；管控重启后本地映射
+为空，先查节点状态再决定复用。实时与终端回放类型不同仍按冲突拒绝。
+
+**节点掉线或过期**：既有流**不做自动迁移**。已建立的流随节点中断，终端丢流后自行重连，
+control 在该节点恢复心跳或新节点注册后按当时负载重新分配；30 秒 TTL 内没有心跳的节点不再
+参与任何新分配。
+
+**指标**：`jt808_media_node_active_channels{node}`、`jt808_media_node_inbound_kbps{node}`、
+`jt808_media_node_endpoints_used{node}`、`jt808_media_node_endpoints_capacity{node}`、
+`jt808_media_allocations_no_node_total`、`jt808_media_allocations_failed_total`。
+
+**为什么这轮不抽通用注册**：`gateway_nodes`、`attachment_nodes`、`media_nodes` 结构相近，
+但生命周期语义不同——第一种要联动 `session_directory` 清理，第二种是 `0x9207` 的推送地址，
+第三种带负载与端点池。三张表都还在演进期，此时抽通用层会把三种生命周期耦合在一起，风险
+收益不划算。本轮只对齐字段与词汇，待出现第四张节点表或三者字段稳定后再评估。
+
 ### 5.4 808 UDP 的特殊约束
 
 - 808 UDP 以远端端点为会话键；多网关部署时，L4 负载均衡必须按源端点做一致性哈希，否则同一终端的不同分片可能落到不同网关，分包重组会失败；
@@ -778,7 +820,7 @@ phone -> session_directory
 | 节点注册与健康状态 | 管控 | MySQL（`gateway_nodes`） | 是 |
 | 会话目录 | 管控 | MySQL（`session_directory`） | 是 |
 | 1078 流、SPS/PPS、文件句柄 | 媒体 | 进程内存 | 否 |
-| 媒体端点租约 | 媒体 | 内存/共享存储（TTL） | 是（仅分配需要） |
+| 媒体节点注册、心跳负载与端点占用 | 管控 | MySQL（`media_nodes`） | 是 |
 | 媒体切片索引 | 管控 | MySQL（`recording_segments`） | 是 |
 | 附件组装、缺口记账、FTP 暂存与上传进度 | 附件 | 进程内存 + 本地暂存 | 否 |
 | 附件水位、段列表、终态 | 管控 | MySQL（`attachment_files`） | 是 |
@@ -843,8 +885,10 @@ gateway+media 同进程、control 独立，或 gateway+control 同进程、media
 
 `jt808-server` 保留为通用入口，完全按配置运行，不参与角色强校验。
 五个二进制均通过 `probes.addr` 提供 `/healthz` 与 `/readyz`（含 `jt-attachment`）。
-控制面通过 `cluster.media.nodes`（媒体节点内部 HTTP 基址）调度媒体节点：
-`GET /internal/media/status` 选点、`POST/DELETE /internal/media/sessions` 建停会话。
+控制面通过媒体节点注册表（`media_nodes`）调度媒体节点：节点启动后向 control 注册，每 10 秒
+心跳上报小指标负载；control 在“未过期、在线、容量未满”的节点中按负载从低到高选点，并用
+条件更新原子占位端点。`cluster.media.nodes` 静态清单只在注册表为空时兜底。
+`GET /internal/media/status` 与 `POST/DELETE /internal/media/sessions` 仍是实际建停会话的契约。
 完整的配置样例与最小启动命令见 [operations-runbook.md](operations-runbook.md#15-集群角色二进制部署)。
 
 ### 9.2 配置骨架

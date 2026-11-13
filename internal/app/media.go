@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"strings"
@@ -11,6 +12,7 @@ import (
 	"github.com/fakeyanss/jt808-server-go/internal/control"
 	"github.com/fakeyanss/jt808-server-go/internal/media"
 	"github.com/fakeyanss/jt808-server-go/internal/media/playback"
+	"github.com/fakeyanss/jt808-server-go/internal/medianode"
 	"github.com/fakeyanss/jt808-server-go/pkg/routines"
 )
 
@@ -109,6 +111,7 @@ func (d *deps) startMedia() {
 			os.Exit(1)
 		}
 		routines.GoSafe(func() { mediaServ.Start() })
+		d.startMediaNodeReporter(mediaServ)
 	}
 
 	// 播放能力：同进程有媒体节点时直接本地调用，否则使用跨进程的媒体调度器。
@@ -126,4 +129,64 @@ func (d *deps) startMedia() {
 
 	d.mediaServ = mediaServ
 	d.playbackLibrary = playbackLibrary
+}
+
+// mediaControlBase 从切片上报地址反推 control 基址，复用同源令牌。
+func mediaControlBase(reportURL string) string {
+	trimmed := strings.TrimRight(strings.TrimSpace(reportURL), "/")
+	return strings.TrimSuffix(trimmed, "/internal/v1/media/segments")
+}
+
+// startMediaNodeReporter 让独立 media 进程向 control 注册并心跳上报小指标负载。
+//
+// 同进程有 control 时播放直接走本地媒体节点，不需要注册；standalone 同此。
+// 注册失败只打日志：注册器会按周期重试，节点在 control 侧过期前仍可用静态清单兜底。
+func (d *deps) startMediaNodeReporter(server *media.Server) {
+	if server == nil || d.hasControl || d.standalone {
+		return
+	}
+	clusterOptions := d.settings.options
+	base := strings.TrimSpace(clusterOptions.Media.ControlURL)
+	if base == "" {
+		base = mediaControlBase(d.mediaOptions.SegmentReport.URL)
+	}
+	if base == "" {
+		log.Warn().Msg("Media node registration is skipped: neither cluster.media.controlUrl nor mediaServer.segmentReport.url is configured")
+		return
+	}
+	token := strings.TrimSpace(clusterOptions.Media.Token)
+	if token == "" {
+		token = d.mediaOptions.SegmentReport.Token
+	}
+	advertise := strings.TrimSpace(clusterOptions.Media.AdvertiseURL)
+	if advertise == "" {
+		advertise = fmt.Sprintf("http://%s:%d", server.PushIP(), d.mediaOptions.HTTPPort)
+	}
+	nodeID := strings.TrimSpace(clusterOptions.Media.NodeID)
+	if nodeID == "" {
+		nodeID = server.NodeID()
+	}
+	tcpPort, udpPort := server.PushPorts()
+	reporter, err := medianode.NewReporter(medianode.ReporterOptions{
+		BaseURL:          base,
+		Token:            token,
+		NodeID:           nodeID,
+		InstanceID:       medianode.NewInstanceID(),
+		AdvertiseURL:     advertise,
+		PushIP:           server.PushIP(),
+		PushTCPPort:      tcpPort,
+		PushUDPPort:      udpPort,
+		PlaybackBaseURL:  server.PlaybackBaseURL(),
+		EndpointCapacity: int64(d.mediaOptions.MaxConcurrent),
+		MaxBitrateKbps:   d.mediaOptions.MaxBitrateKbps,
+		Load:             func() medianode.Load { return server.Load() },
+	})
+	if err != nil {
+		log.Error().Err(err).Msg("Fail to create media node reporter")
+		return
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	d.mediaNodeReporter = reporter
+	d.cancelMediaNodeReport = cancel
+	routines.GoSafe(func() { reporter.Run(ctx) })
 }

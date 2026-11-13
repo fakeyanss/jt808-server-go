@@ -69,6 +69,8 @@ type Repositories struct {
 	AttachmentFTPTasks repository.AttachmentFTPTaskRepository
 	// AttachmentNodes 是附件节点注册表，control 据此推送 0x9207。
 	AttachmentNodes repository.AttachmentNodeRepository
+	// MediaNodes 是媒体节点注册表与负载，control 据此分配 0x9101/0x9201 端点。
+	MediaNodes repository.MediaNodeRepository
 	// RecordingSegments 是平台录像切片索引，由媒体节点写入、控制面查询与清理。
 	RecordingSegments repository.RecordingSegmentRepository
 	// Locations 为定位历史仓储；memory 后端保持既有热读环形缓冲，本字段为 nil。
@@ -112,6 +114,7 @@ type sqlBackend interface {
 	AttachmentFileRepository() repository.AttachmentFileRepository
 	AttachmentFTPTaskRepository() repository.AttachmentFTPTaskRepository
 	AttachmentNodeRepository() repository.AttachmentNodeRepository
+	MediaNodeRepository() repository.MediaNodeRepository
 	RecordingSegmentRepository() repository.RecordingSegmentRepository
 	AlarmRepository(policy repository.AlarmRetention) repository.AlarmRepository
 	LocationRepository(policy repository.LocationRetention) repository.LocationRepository
@@ -147,6 +150,7 @@ func newRepositories(backend string) *Repositories {
 		AttachmentFiles:    memory.NewAttachmentFileRepository(),
 		AttachmentFTPTasks: memory.NewAttachmentFTPTaskRepository(),
 		AttachmentNodes:    memory.NewAttachmentNodeRepository(),
+		MediaNodes:         memory.NewMediaNodeRepository(),
 		RecordingSegments:  memory.NewRecordingSegmentRepository(),
 		Coordination:       coordination.NewMemoryStore(),
 		GatewayNodes:       memory.NewGatewayNodeRepository(),
@@ -205,6 +209,7 @@ func openSQL(handle sqlBackend, backend string, cfg Config) (*Repositories, erro
 	repos.AttachmentFiles = handle.AttachmentFileRepository()
 	repos.AttachmentFTPTasks = handle.AttachmentFTPTaskRepository()
 	repos.AttachmentNodes = handle.AttachmentNodeRepository()
+	repos.MediaNodes = handle.MediaNodeRepository()
 	repos.RecordingSegments = handle.RecordingSegmentRepository()
 	repos.Alarms = handle.AlarmRepository(cfg.AlarmRetention)
 	repos.Locations = handle.LocationRepository(cfg.LocationRetention)

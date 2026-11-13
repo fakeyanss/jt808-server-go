@@ -35,6 +35,8 @@ mediaServer:
   dir: "./data/media"
   maxConcurrent: 16
   maxTCPConns: 64
+  # 入流码率容量（kbps），心跳上报后由 control 判断是否还能接新流；0 表示不限。
+  maxBitrateKbps: 20000
   record:
     mode: "off"
   # 切片完成后的出站通知；允许丢失，control 会扫描 media/segments/ 补齐索引。
@@ -64,6 +66,12 @@ cluster:
   media:
     # 管控在 /internal/media/status 里看到的节点标识。
     nodeId: "media-1"
+    # 注册与心跳的 control 基址；为空时从 mediaServer.segmentReport.url 反推。
+    controlUrl: "http://127.0.0.1:9102"
+    # control 可达的本节点 HTTP 基址；为空时按 advertiseIp + mediaServer.httpPort 推导。
+    advertiseUrl: "http://127.0.0.1:7301"
+    # media -> control 的内部令牌；为空时回退 mediaServer.segmentReport.token。
+    token: "uplink-token"
   storage:
     backend: "sharedVolume"
     sharedVolume: true

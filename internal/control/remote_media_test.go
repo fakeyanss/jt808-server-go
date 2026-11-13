@@ -49,6 +49,21 @@ func (n *fakeMediaNode) handler() http.Handler {
 				Kind    string `json:"kind"`
 			}
 			_ = json.NewDecoder(r.Body).Decode(&request)
+			// 节点侧已有同一通道的会话时返回 409，管控据此复用而不是重复开流。
+			for _, existing := range n.sessions {
+				if existing["phone"] == request.Phone && existing["channel"] == request.Channel {
+					w.WriteHeader(http.StatusConflict)
+					_ = json.NewEncoder(w).Encode(map[string]any{
+						"code": "session_conflict",
+						"existing": map[string]any{
+							"sessionId": existing["sessionId"],
+							"kind":      existing["kind"],
+							"expiresAt": existing["expiresAt"],
+						},
+					})
+					return
+				}
+			}
 			n.createCalls++
 			n.nextID++
 			session := map[string]any{
@@ -119,16 +134,18 @@ func TestRemoteMediaCreatesAndReleasesOnSameNode(t *testing.T) {
 		t.Fatalf("expected node b to be selected, got a=%d b=%d", first.createCalls, second.createCalls)
 	}
 
-	// 同一 (phone, channel) 再申请必须冲突，且不会再向任何节点发创建请求。
-	_, err = media.CreatePlaybackSession(ctx, contracts.PlaybackSessionRequest{
+	// 同一 (phone, channel) 再申请必须复用已有分配，且不会再向任何节点发创建请求。
+	reused, err := media.CreatePlaybackSession(ctx, contracts.PlaybackSessionRequest{
 		Phone: "13800138000", Channel: 1, Kind: "live",
 	})
-	var conflict *contracts.PlaybackSessionConflictError
-	if !errors.As(err, &conflict) {
-		t.Fatalf("expected session conflict, got %v", err)
+	if err != nil {
+		t.Fatalf("expected reuse of existing session, got %v", err)
+	}
+	if reused.ID != session.ID {
+		t.Fatalf("expected reused session %s, got %s", session.ID, reused.ID)
 	}
 	if first.createCalls != 0 || second.createCalls != 1 {
-		t.Fatalf("conflict must not create a second session, got a=%d b=%d", first.createCalls, second.createCalls)
+		t.Fatalf("reuse must not create a second session, got a=%d b=%d", first.createCalls, second.createCalls)
 	}
 
 	if err := media.ReleasePlaybackSession(ctx, session.ID); err != nil {
@@ -158,18 +175,18 @@ func TestRemoteMediaRestoresStickinessFromNodeStatus(t *testing.T) {
 		{Name: "a", URL: firstServer.URL},
 		{Name: "b", URL: secondServer.URL},
 	}})
-	_, err := media.CreatePlaybackSession(context.Background(), contracts.PlaybackSessionRequest{
+	// 管控本地没有映射时，节点返回 409；同类型会话应被复用而不是报冲突。
+	session, err := media.CreatePlaybackSession(context.Background(), contracts.PlaybackSessionRequest{
 		Phone: "13800138000", Channel: 1, Kind: "live",
 	})
-	var conflict *contracts.PlaybackSessionConflictError
-	if !errors.As(err, &conflict) {
-		t.Fatalf("expected conflict restored from node status, got %v", err)
+	if err != nil {
+		t.Fatalf("expected reuse of node session, got %v", err)
 	}
-	if conflict.Existing.ID != "existing-1" {
-		t.Fatalf("unexpected existing session: %+v", conflict.Existing)
+	if session.ID != "existing-1" {
+		t.Fatalf("unexpected reused session: %+v", session)
 	}
 	if first.createCalls != 0 || second.createCalls != 0 {
-		t.Fatal("restoring stickiness must not create a new session")
+		t.Fatal("reusing the node session must not create a new session")
 	}
 }
 

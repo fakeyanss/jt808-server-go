@@ -36,6 +36,8 @@ func (d *deps) shutdown() {
 	retentionDones := d.retentionDones
 	cancelNodeReport := d.cancelNodeReport
 	nodeReporter := d.nodeReporter
+	cancelMediaNodeReport := d.cancelMediaNodeReport
+	mediaNodeReporter := d.mediaNodeReporter
 	alarmServ := d.alarmServ
 	attachmentServ := d.attachmentServ
 	mediaServ := d.mediaServ
@@ -75,6 +77,18 @@ func (d *deps) shutdown() {
 		case <-nodeReporter.Done():
 		case <-time.After(5 * time.Second):
 			log.Warn().Msg("Timed out waiting for gateway node deregistration")
+		}
+	}
+	// 媒体节点注销同样要在内部 HTTP 与 control 入口关闭前完成，避免 0x9101/0x9201
+	// 继续分配到正在退出的节点。
+	if cancelMediaNodeReport != nil {
+		cancelMediaNodeReport()
+	}
+	if mediaNodeReporter != nil {
+		select {
+		case <-mediaNodeReporter.Done():
+		case <-time.After(5 * time.Second):
+			log.Warn().Msg("Timed out waiting for media node deregistration")
 		}
 	}
 
