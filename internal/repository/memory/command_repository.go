@@ -18,6 +18,8 @@ type memoryCommandRepository struct {
 	routing map[commandRoutingKey]string
 	// nextSerial 是 per-phone 的流水号游标，只在 outbox 启用时使用。
 	nextSerial map[string]uint16
+	// now 是内存后端的时钟；SQL 后端对应数据库当前时间。
+	now func() time.Time
 }
 
 type commandIdempotencyKey struct {
@@ -33,15 +35,24 @@ type commandRoutingKey struct {
 
 // NewCommandRepository 创建独立的内存下行命令仓储。
 func NewCommandRepository() repository.CommandRepository {
+	return NewCommandRepositoryWithClock(time.Now)
+}
+
+// NewCommandRepositoryWithClock 用指定时钟创建内存仓储，供 outbox 测试推进时间。
+func NewCommandRepositoryWithClock(now func() time.Time) repository.CommandRepository {
+	if now == nil {
+		now = time.Now
+	}
 	return &memoryCommandRepository{
 		byID:       map[string]*repository.DownlinkCommand{},
 		byIdem:     map[commandIdempotencyKey]string{},
 		routing:    map[commandRoutingKey]string{},
 		nextSerial: map[string]uint16{},
+		now:        now,
 	}
 }
 
-func (r *memoryCommandRepository) Enqueue(_ context.Context, command *repository.DownlinkCommand) (*repository.DownlinkCommand, bool, error) {
+func (r *memoryCommandRepository) Enqueue(_ context.Context, command *repository.DownlinkCommand, schedule repository.CommandSchedule) (*repository.DownlinkCommand, bool, error) {
 	if command == nil {
 		return nil, false, fmt.Errorf("enqueue command: nil command")
 	}
@@ -57,18 +68,19 @@ func (r *memoryCommandRepository) Enqueue(_ context.Context, command *repository
 	if id, ok := r.byIdem[key]; ok {
 		return cloneCommand(r.byID[id]), false, nil
 	}
-	now := time.Now()
+	now := r.now()
 	stored := cloneCommand(command)
 	stored.Status = repository.CommandStatusPending
 	if stored.Attempts == 0 {
 		// 首次下发即第一次尝试，重投在此基础上累加。
 		stored.Attempts = 1
 	}
-	if stored.CreatedAt.IsZero() {
-		stored.CreatedAt = now
-	}
-	if stored.NextAttemptAt.IsZero() {
-		stored.NextAttemptAt = now
+	stored.CreatedAt = now
+	stored.NextAttemptAt = now.Add(schedule.InitialWait)
+	if schedule.ExpireAfter == 0 {
+		stored.ExpiresAt = time.Time{}
+	} else {
+		stored.ExpiresAt = now.Add(schedule.ExpireAfter)
 	}
 	stored.LeaseOwner = ""
 	stored.LeaseExpiresAt = time.Time{}
@@ -106,15 +118,33 @@ func (r *memoryCommandRepository) FindByRouting(_ context.Context, phone string,
 func (r *memoryCommandRepository) ListPending(_ context.Context, query repository.PendingQuery) ([]*repository.DownlinkCommand, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
+	now := r.now()
 	commands := make([]*repository.DownlinkCommand, 0, len(r.byID))
 	for _, stored := range r.byID {
-		if !isQueueable(stored, query.DueBefore) {
+		if !isQueueable(stored, now) {
 			continue
 		}
 		commands = append(commands, cloneCommand(stored))
 	}
 	sortCommands(commands)
 	return pageCommands(commands, query.Offset, query.Limit), nil
+}
+
+func (r *memoryCommandRepository) PendingStats(_ context.Context) (repository.PendingStats, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	now := r.now()
+	var stats repository.PendingStats
+	for _, stored := range r.byID {
+		if stored.Status != repository.CommandStatusPending {
+			continue
+		}
+		stats.Pending++
+		if !stored.ExpiresAt.IsZero() && !stored.ExpiresAt.After(now) {
+			stats.Expired++
+		}
+	}
+	return stats, nil
 }
 
 func (r *memoryCommandRepository) ClaimPending(_ context.Context, claim repository.CommandClaim) ([]*repository.DownlinkCommand, error) {
@@ -124,10 +154,7 @@ func (r *memoryCommandRepository) ClaimPending(_ context.Context, claim reposito
 	if claim.Lease <= 0 {
 		return nil, fmt.Errorf("claim commands: lease must be positive")
 	}
-	now := claim.Now
-	if now.IsZero() {
-		now = time.Now()
-	}
+	now := r.now()
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -152,9 +179,10 @@ func (r *memoryCommandRepository) ClaimPending(_ context.Context, claim reposito
 	return claimed, nil
 }
 
-func (r *memoryCommandRepository) BeginAttempt(_ context.Context, commandID, owner string, now time.Time) (bool, error) {
+func (r *memoryCommandRepository) BeginAttempt(_ context.Context, commandID, owner string) (bool, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	now := r.now()
 	stored := r.byID[commandID]
 	if stored == nil || stored.Status != repository.CommandStatusPending || stored.LeaseOwner != owner {
 		return false, nil
@@ -168,24 +196,26 @@ func (r *memoryCommandRepository) BeginAttempt(_ context.Context, commandID, own
 	return true, nil
 }
 
-func (r *memoryCommandRepository) ReleaseAttempt(_ context.Context, commandID, owner string, next time.Time, reason string) (bool, error) {
+func (r *memoryCommandRepository) ReleaseAttempt(_ context.Context, commandID, owner string, delay time.Duration, reason string) (bool, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	now := r.now()
 	stored := r.byID[commandID]
 	if stored == nil || stored.Status != repository.CommandStatusPending || stored.LeaseOwner != owner {
 		return false, nil
 	}
 	stored.LeaseOwner = ""
 	stored.LeaseExpiresAt = time.Time{}
-	stored.NextAttemptAt = next
+	stored.NextAttemptAt = now.Add(delay)
 	stored.LastError = reason
-	stored.UpdatedAt = time.Now()
+	stored.UpdatedAt = now
 	return true, nil
 }
 
-func (r *memoryCommandRepository) ReleaseOffline(_ context.Context, commandID, owner string, attempts int, lastAttemptAt time.Time, next time.Time, reason string) (bool, error) {
+func (r *memoryCommandRepository) ReleaseOffline(_ context.Context, commandID, owner string, attempts int, lastAttemptAt time.Time, delay time.Duration, reason string) (bool, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	now := r.now()
 	stored := r.byID[commandID]
 	if stored == nil || stored.Status != repository.CommandStatusPending || stored.LeaseOwner != owner {
 		return false, nil
@@ -196,9 +226,9 @@ func (r *memoryCommandRepository) ReleaseOffline(_ context.Context, commandID, o
 	// MaxAttempts 这道闸刷掉；同时写入短退避，避免每个 poll tick 都重新占用。
 	stored.Attempts = attempts
 	stored.LastAttemptAt = lastAttemptAt
-	stored.NextAttemptAt = next
+	stored.NextAttemptAt = now.Add(delay)
 	stored.LastError = reason
-	stored.UpdatedAt = time.Now()
+	stored.UpdatedAt = now
 	return true, nil
 }
 
@@ -248,9 +278,10 @@ func wrapSerial(value uint16) uint16 {
 	return value
 }
 
-func (r *memoryCommandRepository) ScheduleRetry(_ context.Context, phone string, msgID, serial uint16, next time.Time, reason string) (bool, error) {
+func (r *memoryCommandRepository) ScheduleRetry(_ context.Context, phone string, msgID, serial uint16, delay time.Duration, reason string) (bool, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	now := r.now()
 	id, ok := r.routing[commandRoutingKey{phone: phone, msgID: msgID, serial: serial}]
 	if !ok {
 		return false, nil
@@ -261,15 +292,16 @@ func (r *memoryCommandRepository) ScheduleRetry(_ context.Context, phone string,
 	}
 	stored.LeaseOwner = ""
 	stored.LeaseExpiresAt = time.Time{}
-	stored.NextAttemptAt = next
+	stored.NextAttemptAt = now.Add(delay)
 	stored.LastError = reason
-	stored.UpdatedAt = time.Now()
+	stored.UpdatedAt = now
 	return true, nil
 }
 
-func (r *memoryCommandRepository) ExpirePending(_ context.Context, now time.Time, reason string) (int, error) {
+func (r *memoryCommandRepository) ExpirePending(_ context.Context, reason string) (int, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	now := r.now()
 	expired := 0
 	for _, stored := range r.byID {
 		if stored.Status != repository.CommandStatusPending || stored.ExpiresAt.IsZero() || stored.ExpiresAt.After(now) {
@@ -283,6 +315,27 @@ func (r *memoryCommandRepository) ExpirePending(_ context.Context, now time.Time
 		expired++
 	}
 	return expired, nil
+}
+
+func (r *memoryCommandRepository) ExpireByRouting(_ context.Context, phone string, msgID, serial uint16, reason string) (bool, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	now := r.now()
+	id, ok := r.routing[commandRoutingKey{phone: phone, msgID: msgID, serial: serial}]
+	if !ok {
+		return false, nil
+	}
+	stored := r.byID[id]
+	if stored == nil || stored.Status != repository.CommandStatusPending ||
+		stored.ExpiresAt.IsZero() || stored.ExpiresAt.After(now) {
+		return false, nil
+	}
+	stored.Status = repository.CommandStatusFailed
+	stored.LastError = reason
+	stored.LeaseOwner = ""
+	stored.LeaseExpiresAt = time.Time{}
+	stored.UpdatedAt = now
+	return true, nil
 }
 
 func (r *memoryCommandRepository) MarkAcked(_ context.Context, phone string, msgID, serial uint16) (bool, error) {
@@ -314,21 +367,21 @@ func (r *memoryCommandRepository) finish(phone string, msgID, serial uint16, sta
 	stored.LastError = reason
 	stored.LeaseOwner = ""
 	stored.LeaseExpiresAt = time.Time{}
-	stored.UpdatedAt = time.Now()
+	stored.UpdatedAt = r.now()
 	// 保留 routing 索引：迟到/重复应答仍需按 (phone, msgID, serial) 找到终态记录，
 	// 才能区分 duplicate 与 unmatched，而不是把迟到应答误报为无匹配。
 	return true, nil
 }
 
 // isQueueable 判断命令是否属于 pending、已到可投时刻且未过期（用于 ListPending）。
-func isQueueable(c *repository.DownlinkCommand, dueBefore time.Time) bool {
+func isQueueable(c *repository.DownlinkCommand, now time.Time) bool {
 	if c.Status != repository.CommandStatusPending {
 		return false
 	}
-	if !dueBefore.IsZero() && c.NextAttemptAt.After(dueBefore) {
+	if !c.NextAttemptAt.IsZero() && c.NextAttemptAt.After(now) {
 		return false
 	}
-	if !dueBefore.IsZero() && !c.ExpiresAt.IsZero() && !c.ExpiresAt.After(dueBefore) {
+	if !c.ExpiresAt.IsZero() && !c.ExpiresAt.After(now) {
 		return false
 	}
 	return true

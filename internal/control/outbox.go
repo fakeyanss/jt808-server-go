@@ -95,8 +95,6 @@ type OutboxDependencies struct {
 	Metrics *observability.Metrics
 	// Owner 是租约标识；为空时按主机名 + 进程号 + 随机串生成。
 	Owner string
-	// Clock 便于测试控制时间；为空时使用 time.Now。
-	Clock func() time.Time
 }
 
 // Outbox 是内置管控的 durable 下行投递模块。
@@ -106,7 +104,6 @@ type Outbox struct {
 	send     contracts.DownlinkSender
 	metrics  *observability.Metrics
 	owner    string
-	clock    func() time.Time
 	opts     OutboxOptions
 	// done 在 Run 退出后关闭，供关机流程等待当前 tick 收尾。
 	done chan struct{}
@@ -133,17 +130,12 @@ func NewOutbox(deps OutboxDependencies, options OutboxOptions) (*Outbox, error) 
 	if owner == "" {
 		owner = newLeaseOwner()
 	}
-	clock := deps.Clock
-	if clock == nil {
-		clock = time.Now
-	}
 	return &Outbox{
 		commands: deps.Commands,
 		devices:  deps.Devices,
 		send:     deps.Send,
 		metrics:  deps.Metrics,
 		owner:    owner,
-		clock:    clock,
 		opts:     options,
 		done:     make(chan struct{}),
 	}, nil
@@ -215,7 +207,6 @@ func (o *Outbox) Submit(ctx context.Context, request contracts.DownlinkRequest) 
 		return contracts.DownlinkResult{}, fmt.Errorf("encoded downlink message has no body")
 	}
 
-	now := o.clock()
 	command, created, err := o.commands.Enqueue(ctx, &repository.DownlinkCommand{
 		CommandID:      commandID,
 		IdempotencyKey: idempotencyKey,
@@ -224,9 +215,10 @@ func (o *Outbox) Submit(ctx context.Context, request contracts.DownlinkRequest) 
 		Serial:         serial,
 		Payload:        encoded[len(headerBytes):],
 		Status:         repository.CommandStatusPending,
+	}, repository.CommandSchedule{
 		// initialWait 覆盖会话重传窗口，到期前不重投，避免与仍在重传的报文重复。
-		NextAttemptAt: now.Add(o.opts.InitialWait),
-		ExpiresAt:     now.Add(o.opts.ExpireAfter),
+		InitialWait: o.opts.InitialWait,
+		ExpireAfter: o.opts.ExpireAfter,
 	})
 	if err != nil {
 		return contracts.DownlinkResult{}, fmt.Errorf("enqueue downlink command: %w", err)
@@ -246,8 +238,7 @@ func (o *Outbox) Submit(ctx context.Context, request contracts.DownlinkRequest) 
 			return result, fmt.Errorf("send downlink command: %w", sendErr)
 		}
 		// 可重试失败（429/5xx/网络/超时）保持 pending，按退避安排下一次。
-		next := o.clock().Add(o.retryDelayFor(1, classified))
-		_, _ = o.commands.ScheduleRetry(ctx, header.PhoneNumber, header.MsgID, serial, next, classified.Error())
+		_, _ = o.commands.ScheduleRetry(ctx, header.PhoneNumber, header.MsgID, serial, o.retryDelayFor(1, classified), classified.Error())
 		return result, fmt.Errorf("send downlink command: %w", sendErr)
 	}
 	switch receipt.Status {
@@ -258,12 +249,11 @@ func (o *Outbox) Submit(ctx context.Context, request contracts.DownlinkRequest) 
 			Str("phone", header.PhoneNumber).
 			Msg("Downlink command is waiting for device to come online")
 	case contracts.DownlinkStatusRejected:
-		next := o.clock().Add(o.retryDelayFor(1, nil))
 		reason := receipt.Reason
 		if reason == "" {
 			reason = "gateway rejected downlink"
 		}
-		_, _ = o.commands.ScheduleRetry(ctx, header.PhoneNumber, header.MsgID, serial, next, reason)
+		_, _ = o.commands.ScheduleRetry(ctx, header.PhoneNumber, header.MsgID, serial, o.retryDelayFor(1, nil), reason)
 		return result, fmt.Errorf("send downlink command: %s", reason)
 	case contracts.DownlinkStatusAcked, contracts.DownlinkStatusFailed:
 		o.handleReceipt(ctx, contracts.DownlinkRequest{
@@ -339,8 +329,7 @@ func (o *Outbox) Tick(ctx context.Context) error {
 	if !o.Enabled() {
 		return nil
 	}
-	now := o.clock()
-	if expired, err := o.commands.ExpirePending(ctx, now, "expired before delivery"); err != nil {
+	if expired, err := o.commands.ExpirePending(ctx, "expired before delivery"); err != nil {
 		log.Error().Err(err).Msg("Failed to expire pending downlink commands")
 	} else if expired > 0 {
 		log.Info().Int("count", expired).Msg("Expired pending downlink commands")
@@ -348,7 +337,6 @@ func (o *Outbox) Tick(ctx context.Context) error {
 
 	claimed, err := o.commands.ClaimPending(ctx, repository.CommandClaim{
 		Owner: o.owner,
-		Now:   now,
 		Limit: o.opts.BatchSize,
 		Lease: o.opts.LeaseDuration,
 	})
@@ -386,8 +374,7 @@ func (o *Outbox) dispatch(ctx context.Context, command *repository.DownlinkComma
 	previousAttempts := command.Attempts
 	previousLastAttempt := command.LastAttemptAt
 
-	now := o.clock()
-	begun, err := o.commands.BeginAttempt(ctx, command.CommandID, o.owner, now)
+	begun, err := o.commands.BeginAttempt(ctx, command.CommandID, o.owner)
 	if err != nil {
 		log.Error().Err(err).Str("command_id", command.CommandID).Msg("Failed to record command attempt")
 		return
@@ -563,10 +550,12 @@ func (o *Outbox) HandleTerminalReply(ctx context.Context, reply contracts.Termin
 	}
 
 	// 命令已过 ExpiresAt 但 Tick 尚未清理：按迟到处理，先终结为 failed，绝不改回 acked。
-	if !command.ExpiresAt.IsZero() && !command.ExpiresAt.After(o.clock()) {
-		if _, err := o.commands.MarkFailed(ctx, reply.Phone, reply.AnswerMsgID, reply.AnswerSerial, "expired before reply"); err != nil {
-			return "", fmt.Errorf("mark expired command failed: %w", err)
-		}
+	// 过期判定在 SQL 内用数据库时间完成，Go 侧不比较时间。
+	expired, err := o.commands.ExpireByRouting(ctx, reply.Phone, reply.AnswerMsgID, reply.AnswerSerial, "expired before reply")
+	if err != nil {
+		return "", fmt.Errorf("mark expired command failed: %w", err)
+	}
+	if expired {
 		o.observeTerminalReply(contracts.TerminalReplyLate)
 		log.Info().
 			Str("command_id", command.CommandID).
@@ -597,8 +586,8 @@ func (o *Outbox) HandleTerminalReply(ctx context.Context, reply contracts.Termin
 
 	// 终端明确执行失败：默认终结，不重投；仅 Result=1 且显式开启开关时重投。
 	if o.opts.RetryOnTerminalFailure && reply.Result == 1 && command.Attempts < o.opts.MaxAttempts {
-		next := o.clock().Add(o.retryDelay(command.Attempts))
-		updated, err := o.commands.ScheduleRetry(ctx, reply.Phone, reply.AnswerMsgID, reply.AnswerSerial, next, terminalFailureReason(reply.Result))
+		delay := o.retryDelay(command.Attempts)
+		updated, err := o.commands.ScheduleRetry(ctx, reply.Phone, reply.AnswerMsgID, reply.AnswerSerial, delay, terminalFailureReason(reply.Result))
 		if err != nil {
 			return "", fmt.Errorf("schedule retry after terminal failure: %w", err)
 		}
@@ -613,7 +602,7 @@ func (o *Outbox) HandleTerminalReply(ctx context.Context, reply contracts.Termin
 			Uint16("serial", reply.AnswerSerial).
 			Uint8("result", reply.Result).
 			Int("attempts", command.Attempts).
-			Time("next_attempt_at", next).
+			Dur("delay", delay).
 			Msg("Scheduled retry after terminal failure reply")
 		return contracts.TerminalReplyRetryScheduled, nil
 	}
@@ -706,8 +695,8 @@ func (o *Outbox) handleFailure(ctx context.Context, phone string, msgID, serial 
 		o.fail(ctx, phone, msgID, serial, reason)
 		return
 	}
-	next := o.clock().Add(o.retryDelay(command.Attempts))
-	updated, err := o.commands.ScheduleRetry(ctx, phone, msgID, serial, next, reason)
+	delay := o.retryDelay(command.Attempts)
+	updated, err := o.commands.ScheduleRetry(ctx, phone, msgID, serial, delay, reason)
 	if err != nil {
 		log.Error().Err(err).
 			Str("phone", phone).
@@ -721,7 +710,7 @@ func (o *Outbox) handleFailure(ctx context.Context, phone string, msgID, serial 
 		Uint16("msg_id", msgID).
 		Uint16("serial", serial).
 		Int("attempts", command.Attempts).
-		Time("next_attempt_at", next).
+		Dur("delay", delay).
 		Str("reason", reason).
 		Msg("Scheduled downlink command retry")
 	if !updated {
@@ -745,8 +734,7 @@ func (o *Outbox) releaseOffline(ctx context.Context, command *repository.Downlin
 }
 
 func (o *Outbox) releaseOfflineWithSnapshot(ctx context.Context, command *repository.DownlinkCommand, attempts int, lastAttemptAt time.Time, reason string) {
-	next := o.clock().Add(o.opts.OfflineRetry)
-	updated, err := o.commands.ReleaseOffline(ctx, command.CommandID, o.owner, attempts, lastAttemptAt, next, reason)
+	updated, err := o.commands.ReleaseOffline(ctx, command.CommandID, o.owner, attempts, lastAttemptAt, o.opts.OfflineRetry, reason)
 	if err != nil {
 		log.Error().Err(err).Str("command_id", command.CommandID).Msg("Failed to release command lease while offline")
 		return
@@ -766,8 +754,8 @@ func (o *Outbox) releaseAfterFailure(ctx context.Context, command *repository.Do
 		o.fail(ctx, command.Phone, command.MsgID, command.Serial, reason)
 		return
 	}
-	next := o.clock().Add(o.retryDelayFor(attempts, failure))
-	updated, err := o.commands.ReleaseAttempt(ctx, command.CommandID, o.owner, next, reason)
+	delay := o.retryDelayFor(attempts, failure)
+	updated, err := o.commands.ReleaseAttempt(ctx, command.CommandID, o.owner, delay, reason)
 	if err != nil {
 		log.Error().Err(err).Str("command_id", command.CommandID).Msg("Failed to release command lease after failure")
 		return
@@ -778,7 +766,7 @@ func (o *Outbox) releaseAfterFailure(ctx context.Context, command *repository.Do
 		Uint16("msg_id", command.MsgID).
 		Uint16("serial", command.Serial).
 		Int("attempts", attempts).
-		Time("next_attempt_at", next).
+		Dur("delay", delay).
 		Str("reason", reason).
 		Bool("released", updated).
 		Msg("Scheduled downlink command retry after send failure")

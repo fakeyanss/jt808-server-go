@@ -101,11 +101,11 @@ type harness struct {
 func newHarness(t *testing.T, options OutboxOptions) *harness {
 	t.Helper()
 	ctx := context.Background()
-	repo := memory.NewCommandRepository()
+	clock := &fakeClock{now: time.Date(2026, 11, 8, 12, 0, 0, 0, time.UTC)}
+	repo := memory.NewCommandRepositoryWithClock(clock.Now)
 	devices := memory.NewDeviceRepository()
 	sender := &fakeSender{}
 	metrics := observability.NewMetrics()
-	clock := &fakeClock{now: time.Date(2026, 11, 8, 12, 0, 0, 0, time.UTC)}
 	require.NoError(t, devices.Upsert(ctx, &model.Device{
 		Phone:           testPhone,
 		SessionID:       testSessionID,
@@ -118,7 +118,6 @@ func newHarness(t *testing.T, options OutboxOptions) *harness {
 		Metrics:  metrics,
 		Send:     sender,
 		Owner:    "test-node",
-		Clock:    clock.Now,
 	}, options)
 	require.NoError(t, err)
 	return &harness{
@@ -134,6 +133,10 @@ func newHarness(t *testing.T, options OutboxOptions) *harness {
 
 func (h *harness) enqueue(t *testing.T, commandID string, attempts int, next, expires time.Time) *repository.DownlinkCommand {
 	t.Helper()
+	schedule := repository.CommandSchedule{InitialWait: next.Sub(h.clock.now)}
+	if !expires.IsZero() {
+		schedule.ExpireAfter = expires.Sub(h.clock.now)
+	}
 	command, created, err := h.repo.Enqueue(context.Background(), &repository.DownlinkCommand{
 		CommandID:      commandID,
 		IdempotencyKey: commandID,
@@ -142,9 +145,7 @@ func (h *harness) enqueue(t *testing.T, commandID string, attempts int, next, ex
 		Serial:         77,
 		Payload:        []byte{0x02},
 		Attempts:       attempts,
-		NextAttemptAt:  next,
-		ExpiresAt:      expires,
-	})
+	}, schedule)
 	require.NoError(t, err)
 	require.True(t, created)
 	return command
@@ -329,7 +330,6 @@ func TestReplayIsIdempotentAcrossInstances(t *testing.T) {
 		Devices:  h.devices,
 		Send:     h.sender,
 		Owner:    "other-node",
-		Clock:    h.clock.Now,
 	}, options)
 	require.NoError(t, err)
 

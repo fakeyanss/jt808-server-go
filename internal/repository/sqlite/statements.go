@@ -60,11 +60,19 @@ func (statements) UpsertUpgradeResult() string {
 		received_at = excluded.received_at`
 }
 
+// dbTimeMillisExpr 是 SQLite 的“数据库当前时间 Unix 毫秒”表达式。
+// julianday('now') 的精度足够毫秒；结果取整后与 BIGINT 毫秒列比较。
+const dbTimeMillisExpr = `CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER)`
+
+func (statements) DBTimeMillisExpr() string { return dbTimeMillisExpr }
+
 func (statements) InsertCommandIgnoringDuplicate() string {
 	return `INSERT INTO command_outbox
 		(command_id, idempotency_key, phone, msg_id, serial, payload, status, attempts, last_error, created_at, updated_at,
 		 last_attempt_at, next_attempt_at, expires_at, lease_owner, lease_expires_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, '', ` + dbTimeMillisExpr + `, ` + dbTimeMillisExpr + `,
+		 ?, ` + dbTimeMillisExpr + ` + ?,
+		 CASE WHEN ? = 0 THEN 0 ELSE ` + dbTimeMillisExpr + ` + ? END, '', 0)
 		ON CONFLICT(phone, idempotency_key) DO NOTHING`
 }
 
@@ -160,12 +168,12 @@ func (statements) InsertLocationsIgnoringDuplicates(placeholders string) string 
 
 func (statements) EnsureTaskLeaseRow() string {
 	return `INSERT OR IGNORE INTO task_leases (name, owner, expires_at, updated_at)
-		VALUES (?, '', 0, ?)`
+		VALUES (?, '', 0, ` + dbTimeMillisExpr + `)`
 }
 
 func (statements) EnsureDedupKeyRow() string {
 	return `INSERT OR IGNORE INTO dedup_keys (dedup_key, expires_at, updated_at)
-		VALUES (?, 0, ?)`
+		VALUES (?, 0, ` + dbTimeMillisExpr + `)`
 }
 
 func (statements) UpsertGatewayNode() string {

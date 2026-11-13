@@ -152,7 +152,7 @@ func (d *deps) setupControl() {
 				case <-ticker.C:
 					leaseRunner.Run(sweepCtx, "media-pending-sweep", func(ctx context.Context) {
 						businessExecutor.SweepPending(ctx, 30*time.Minute)
-						if _, err := storeSet.Coordination.PruneExpired(ctx, time.Now()); err != nil {
+						if _, err := storeSet.Coordination.PruneExpired(ctx); err != nil {
 							log.Warn().Err(err).Msg("Prune expired coordination rows failed")
 						}
 					})

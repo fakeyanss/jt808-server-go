@@ -60,11 +60,19 @@ func (statements) UpsertUpgradeResult() string {
 		received_at = VALUES(received_at)`
 }
 
+// dbTimeMillisExpr 是 MySQL 的“数据库当前时间 Unix 毫秒”表达式。
+// CURRENT_TIMESTAMP(3) 保留毫秒，UNIX_TIMESTAMP 返回 DECIMAL，乘 1000 后取整。
+const dbTimeMillisExpr = `CAST(UNIX_TIMESTAMP(CURRENT_TIMESTAMP(3)) * 1000 AS SIGNED)`
+
+func (statements) DBTimeMillisExpr() string { return dbTimeMillisExpr }
+
 func (statements) InsertCommandIgnoringDuplicate() string {
 	return `INSERT IGNORE INTO command_outbox
 		(command_id, idempotency_key, phone, msg_id, serial, payload, status, attempts, last_error, created_at, updated_at,
 		 last_attempt_at, next_attempt_at, expires_at, lease_owner, lease_expires_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, '', ` + dbTimeMillisExpr + `, ` + dbTimeMillisExpr + `,
+		 ?, ` + dbTimeMillisExpr + ` + ?,
+		 CASE WHEN ? = 0 THEN 0 ELSE ` + dbTimeMillisExpr + ` + ? END, '', 0)`
 }
 
 func (statements) EnsureCommandSerialRow() string {
@@ -161,12 +169,12 @@ func (statements) InsertLocationsIgnoringDuplicates(placeholders string) string 
 
 func (statements) EnsureTaskLeaseRow() string {
 	return `INSERT IGNORE INTO task_leases (name, owner, expires_at, updated_at)
-		VALUES (?, '', 0, ?)`
+		VALUES (?, '', 0, ` + dbTimeMillisExpr + `)`
 }
 
 func (statements) EnsureDedupKeyRow() string {
 	return `INSERT IGNORE INTO dedup_keys (dedup_key, expires_at, updated_at)
-		VALUES (?, 0, ?)`
+		VALUES (?, 0, ` + dbTimeMillisExpr + `)`
 }
 
 func (statements) UpsertGatewayNode() string {

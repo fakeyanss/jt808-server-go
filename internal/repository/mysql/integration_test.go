@@ -44,28 +44,38 @@ func TestCoordinationStoreOnRealMySQL(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = store.Close() })
 	coord := store.CoordinationStore()
-	now := time.Now()
 
-	acquired, err := coord.Acquire(ctx, "cleanup", "replica-a", now, time.Minute)
+	acquired, err := coord.Acquire(ctx, "cleanup", "replica-a", time.Minute)
 	require.NoError(t, err)
 	require.True(t, acquired)
-	acquired, err = coord.Acquire(ctx, "cleanup", "replica-b", now, time.Minute)
+	acquired, err = coord.Acquire(ctx, "cleanup", "replica-b", time.Minute)
 	require.NoError(t, err)
 	require.False(t, acquired)
-	acquired, err = coord.Acquire(ctx, "cleanup", "replica-a", now.Add(30*time.Second), time.Minute)
-	require.NoError(t, err)
-	require.True(t, acquired)
-	acquired, err = coord.Acquire(ctx, "cleanup", "replica-b", now.Add(2*time.Minute), time.Minute)
+	acquired, err = coord.Acquire(ctx, "cleanup", "replica-a", time.Minute)
 	require.NoError(t, err)
 	require.True(t, acquired)
 
-	first, err := coord.MarkOnce(ctx, "auto-9208:phone:alarm", now, time.Minute)
+	// 手动把租约改到过去，模拟到期；过期判定由数据库时间完成。
+	_, err = raw.Exec(`UPDATE task_leases
+		SET expires_at = CAST(UNIX_TIMESTAMP(CURRENT_TIMESTAMP(3)) * 1000 AS SIGNED) - 1000
+		WHERE name = 'cleanup'`)
+	require.NoError(t, err)
+	acquired, err = coord.Acquire(ctx, "cleanup", "replica-b", time.Minute)
+	require.NoError(t, err)
+	require.True(t, acquired)
+
+	first, err := coord.MarkOnce(ctx, "auto-9208:phone:alarm", time.Minute)
 	require.NoError(t, err)
 	require.True(t, first)
-	second, err := coord.MarkOnce(ctx, "auto-9208:phone:alarm", now.Add(30*time.Second), time.Minute)
+	second, err := coord.MarkOnce(ctx, "auto-9208:phone:alarm", time.Minute)
 	require.NoError(t, err)
 	require.False(t, second)
-	third, err := coord.MarkOnce(ctx, "auto-9208:phone:alarm", now.Add(2*time.Minute), time.Minute)
+
+	_, err = raw.Exec(`UPDATE dedup_keys
+		SET expires_at = CAST(UNIX_TIMESTAMP(CURRENT_TIMESTAMP(3)) * 1000 AS SIGNED) - 1000
+		WHERE dedup_key = 'auto-9208:phone:alarm'`)
+	require.NoError(t, err)
+	third, err := coord.MarkOnce(ctx, "auto-9208:phone:alarm", time.Minute)
 	require.NoError(t, err)
 	require.True(t, third)
 }
@@ -474,7 +484,7 @@ func TestOutboxClaimIsExclusiveAcrossInstances(t *testing.T) {
 			MsgID:          0x8103,
 			Serial:         uint16(i + 1),
 			Payload:        []byte{byte(i)},
-		})
+		}, repository.CommandSchedule{})
 		require.NoError(t, err)
 		require.True(t, created)
 	}
@@ -509,7 +519,6 @@ func TestOutboxClaimIsExclusiveAcrossInstances(t *testing.T) {
 			for round := 0; round < 30; round++ {
 				cmds, err := inst.CommandRepository().ClaimPending(ctx, repository.CommandClaim{
 					Owner: owner,
-					Now:   time.Now(),
 					Limit: 5,
 					Lease: time.Minute,
 				})
@@ -550,13 +559,13 @@ func TestOutboxIdempotencyOnRealMySQL(t *testing.T) {
 
 	first, created, err := repo.Enqueue(ctx, &repository.DownlinkCommand{
 		CommandID: "idem-first", IdempotencyKey: key, Phone: phone, MsgID: 0x8103, Serial: 1,
-	})
+	}, repository.CommandSchedule{})
 	require.NoError(t, err)
 	require.True(t, created)
 
 	second, created, err := repo.Enqueue(ctx, &repository.DownlinkCommand{
 		CommandID: "idem-second", IdempotencyKey: key, Phone: phone, MsgID: 0x8103, Serial: 2,
-	})
+	}, repository.CommandSchedule{})
 	require.NoError(t, err, "重复幂等键不应报错")
 	require.False(t, created)
 	require.Equal(t, first.CommandID, second.CommandID)
@@ -581,7 +590,7 @@ func TestOutboxIdempotencyOnRealMySQL(t *testing.T) {
 				Phone:          phone,
 				MsgID:          0x8103,
 				Serial:         uint16(100 + i),
-			})
+			}, repository.CommandSchedule{})
 			if err != nil {
 				errCh <- err
 				return
@@ -855,4 +864,54 @@ func TestSaveAuthStateOnRealMySQL(t *testing.T) {
 
 	require.NoError(t, devices.DeleteByPhone(ctx, phone))
 	require.ErrorIs(t, devices.SaveAuthState(ctx, device), repository.ErrDeviceNotFound)
+}
+
+// outbox 的到期与判定表达式是方言相关的，必须在真库上验证：
+// next_attempt_at/expires_at 由数据库时间生成，Claim 与 PendingStats 也在 SQL 内判定。
+func TestCommandOutboxDatabaseTimeSemanticsOnRealMySQL(t *testing.T) {
+	ctx := context.Background()
+	dsn := mysqlTestDSN(t)
+	requireMigrated(t, dsn)
+	db := openRaw(t, dsn)
+	_, err := db.Exec(`DELETE FROM command_outbox`)
+	require.NoError(t, err)
+	store := openStore(t, dsn)
+	repo := store.CommandRepository()
+
+	const phone = "13800000009"
+	_, created, err := repo.Enqueue(ctx, &repository.DownlinkCommand{
+		CommandID: "db-time-expired", IdempotencyKey: "db-time-expired",
+		Phone: phone, MsgID: 0x8103, Serial: 1,
+	}, repository.CommandSchedule{InitialWait: -time.Minute, ExpireAfter: -time.Minute})
+	require.NoError(t, err)
+	require.True(t, created)
+	_, created, err = repo.Enqueue(ctx, &repository.DownlinkCommand{
+		CommandID: "db-time-live", IdempotencyKey: "db-time-live",
+		Phone: phone, MsgID: 0x8103, Serial: 2,
+	}, repository.CommandSchedule{ExpireAfter: time.Hour})
+	require.NoError(t, err)
+	require.True(t, created)
+
+	stats, err := repo.PendingStats(ctx)
+	require.NoError(t, err)
+	require.Equal(t, repository.PendingStats{Pending: 2, Expired: 1}, stats)
+
+	claimed, err := repo.ClaimPending(ctx, repository.CommandClaim{
+		Owner: "db-time-node", Limit: 10, Lease: time.Minute,
+	})
+	require.NoError(t, err)
+	require.Len(t, claimed, 1)
+	require.Equal(t, "db-time-live", claimed[0].CommandID)
+	require.True(t, claimed[0].LeaseExpiresAt.After(time.Now()))
+
+	expired, err := repo.ExpireByRouting(ctx, phone, 0x8103, 1, "expired before reply")
+	require.NoError(t, err)
+	require.True(t, expired)
+	again, err := repo.ExpireByRouting(ctx, phone, 0x8103, 1, "expired before reply")
+	require.NoError(t, err)
+	require.False(t, again)
+
+	stored, err := repo.Get(ctx, "db-time-expired")
+	require.NoError(t, err)
+	require.Equal(t, repository.CommandStatusFailed, stored.Status)
 }
