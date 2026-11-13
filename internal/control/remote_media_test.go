@@ -144,6 +144,9 @@ func TestRemoteMediaCreatesAndReleasesOnSameNode(t *testing.T) {
 	if reused.ID != session.ID {
 		t.Fatalf("expected reused session %s, got %s", session.ID, reused.ID)
 	}
+	if !reused.Reused {
+		t.Fatal("reused allocation must be marked Reused so the API can skip the downlink command")
+	}
 	if first.createCalls != 0 || second.createCalls != 1 {
 		t.Fatalf("reuse must not create a second session, got a=%d b=%d", first.createCalls, second.createCalls)
 	}
@@ -184,6 +187,9 @@ func TestRemoteMediaRestoresStickinessFromNodeStatus(t *testing.T) {
 	}
 	if session.ID != "existing-1" {
 		t.Fatalf("unexpected reused session: %+v", session)
+	}
+	if !session.Reused {
+		t.Fatal("session adopted from node status must be marked Reused")
 	}
 	if first.createCalls != 0 || second.createCalls != 0 {
 		t.Fatal("reusing the node session must not create a new session")

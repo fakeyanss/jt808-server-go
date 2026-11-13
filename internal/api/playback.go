@@ -134,6 +134,26 @@ func registerPlaybackRoutes(api *gin.RouterGroup, devices repository.DeviceRepos
 			}
 			return
 		}
+		if created.Reused {
+			// 复用已有分配：不再下发 0x9101/0x9201。重复下发会让终端重新协商推流，
+			// 可能把已有流顶掉，属于行为回归。
+			c.JSON(http.StatusOK, gin.H{
+				"messageId":   "",
+				"sessionId":   created.ID,
+				"channel":     created.Channel,
+				"kind":        created.Kind,
+				"endpoints":   toEndpointJSON(created.Endpoints),
+				"playbackUrl": created.PlaybackURL,
+				"output":      created.Output,
+				"expiresAt":   created.ExpiresAt,
+				"reused":      true,
+				"downlink": gin.H{
+					"sent":   false,
+					"reason": "reused existing allocation; 0x9101/0x9201 not resent",
+				},
+			})
+			return
+		}
 
 		var msg model.JT808Msg
 		messageID := "0x9101"

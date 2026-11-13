@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"io"
@@ -55,9 +56,12 @@ func (f *fakeStopDownlink) captured() []contracts.DownlinkRequest {
 }
 
 type fakePlaybackLibrary struct {
-	mu         sync.Mutex
-	sessions   map[string]contracts.PlaybackSession
-	releaseErr error
+	mu           sync.Mutex
+	sessions     map[string]contracts.PlaybackSession
+	releaseErr   error
+	createResult contracts.PlaybackSession
+	createErr    error
+	createCalls  int
 }
 
 func newFakePlaybackLibrary(sessions ...contracts.PlaybackSession) *fakePlaybackLibrary {
@@ -69,7 +73,10 @@ func newFakePlaybackLibrary(sessions ...contracts.PlaybackSession) *fakePlayback
 }
 
 func (f *fakePlaybackLibrary) CreatePlaybackSession(context.Context, contracts.PlaybackSessionRequest) (contracts.PlaybackSession, error) {
-	return contracts.PlaybackSession{}, nil
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.createCalls++
+	return f.createResult, f.createErr
 }
 
 func (f *fakePlaybackLibrary) PlaybackSession(_ context.Context, sessionID string) (contracts.PlaybackSession, bool) {
@@ -297,4 +304,40 @@ func TestDeletePlaybackReleasesWhenDispatchFails(t *testing.T) {
 	require.NotEmpty(t, stop["reason"])
 	_, stillThere := playback.PlaybackSession(context.Background(), "ms-fail")
 	require.False(t, stillThere)
+}
+
+// TestCreatePlaybackReuseSkipsDownlink 验证复用已有分配时不再下发 0x9101，
+// 否则终端会重新协商推流并可能顶掉已有流。
+func TestCreatePlaybackReuseSkipsDownlink(t *testing.T) {
+	downlink := &fakeStopDownlink{enabled: true}
+	playback := newFakePlaybackLibrary()
+	playback.createResult = contracts.PlaybackSession{
+		ID:        "ms-live",
+		Phone:     "18800001111",
+		Channel:   1,
+		Kind:      playbackKindLive,
+		Endpoint:  contracts.MediaEndpoint{IP: "10.0.0.1", TCPPort: 7300, UDPPort: 7300},
+		ExpiresAt: time.Now().Add(time.Minute),
+		Reused:    true,
+	}
+	env := newPlaybackTestEnv(t, downlink, playback)
+	env.addDevice(t, "18800001111")
+	env.bind808(t, "18800001111")
+
+	request, err := http.NewRequest(http.MethodPost, env.server.URL+"/api/device/18800001111/playback",
+		bytes.NewReader([]byte(`{"channel":1}`)))
+	require.NoError(t, err)
+	request.Header.Set("Content-Type", "application/json")
+	response, err := http.DefaultClient.Do(request)
+	require.NoError(t, err)
+	defer response.Body.Close()
+	require.Equal(t, http.StatusOK, response.StatusCode)
+
+	var body map[string]any
+	require.NoError(t, json.NewDecoder(response.Body).Decode(&body))
+	require.Equal(t, true, body["reused"])
+	require.Equal(t, "ms-live", body["sessionId"])
+	downlinkBody := body["downlink"].(map[string]any)
+	require.Equal(t, false, downlinkBody["sent"])
+	require.Empty(t, downlink.captured(), "reused allocation must not resend 0x9101/0x9201")
 }

@@ -159,6 +159,20 @@ func (r *mediaNodeRepository) Release(ctx context.Context, nodeID, instanceID st
 	return nil
 }
 
+func (r *mediaNodeRepository) SetEndpointsUsed(ctx context.Context, nodeID, instanceID string, used int64, now time.Time) error {
+	if used < 0 {
+		used = 0
+	}
+	_, err := r.store.db.ExecContext(ctx,
+		`UPDATE media_nodes SET endpoints_used = ?
+		 WHERE node_id = ? AND instance_id = ? AND status = 'online' AND expires_at > ?`,
+		used, nodeID, instanceID, now.UnixMilli())
+	if err != nil {
+		return fmt.Errorf("reconcile media endpoints on %s: %w", nodeID, err)
+	}
+	return nil
+}
+
 func (r *mediaNodeRepository) Stats(ctx context.Context, now time.Time) (repository.MediaNodeStats, error) {
 	ctx, cancel := readContext(ctx)
 	defer cancel()

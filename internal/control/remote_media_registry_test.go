@@ -160,6 +160,38 @@ func TestRemoteMediaReusesSessionForConcurrentSameChannel(t *testing.T) {
 	}
 }
 
+func TestRemoteMediaReconcileCalibratesEndpointUsage(t *testing.T) {
+	node := &fakeMediaNode{nodeID: "media-1", available: 8}
+	node.sessions = []map[string]any{
+		{"sessionId": "s-1", "phone": "13800138001", "channel": 1, "kind": "live", "expiresAt": time.Now().Add(time.Minute)},
+		{"sessionId": "s-2", "phone": "13800138002", "channel": 1, "kind": "live", "expiresAt": time.Now().Add(time.Minute)},
+	}
+	server := httptest.NewServer(node.handler())
+	defer server.Close()
+
+	repo := memory.NewMediaNodeRepository()
+	if err := repo.Register(context.Background(), &repository.MediaNode{
+		NodeID: "media-1", InstanceID: "i1", InternalURL: server.URL, EndpointCapacity: 8,
+	}, time.Now()); err != nil {
+		t.Fatalf("register media node: %v", err)
+	}
+	// 模拟漂移：占位多记了 5 个，节点实际只有 2 路会话。
+	if ok, err := repo.Reserve(context.Background(), "media-1", "i1", 5, time.Now()); err != nil || !ok {
+		t.Fatalf("seed reservation: ok=%v err=%v", ok, err)
+	}
+
+	media := NewRemoteMedia(RemoteMediaOptions{NodeRepo: repo})
+	media.Reconcile(context.Background())
+
+	stored, err := repo.Get(context.Background(), "media-1")
+	if err != nil || stored == nil {
+		t.Fatalf("get media node: %v", err)
+	}
+	if stored.EndpointsUsed != int64(len(node.sessions)) {
+		t.Fatalf("expected endpoints_used to be reconciled to %d, got %d", len(node.sessions), stored.EndpointsUsed)
+	}
+}
+
 func TestRemoteMediaSkipsExpiredRegisteredNodes(t *testing.T) {
 	node := &fakeMediaNode{nodeID: "media-stale", available: 1}
 	server := httptest.NewServer(node.handler())

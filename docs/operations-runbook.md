@@ -241,7 +241,11 @@ jt-control requires cluster.roles to contain "control"; current roles=[media]. u
 - control 在“在线、未过期、码率与端点容量未满”的注册节点中按负载从低到高选点；
   选中后先用条件更新原子占位端点，建会话失败立即归还。
   `cluster.media.nodes`（`jt-media` 的 `mediaServer.httpPort` 基址）只在注册表为空时兜底。
-- 同一 `(phone, channel)` 已有同类型会话时复用，不重复开流；管控重启后会先查节点状态再复用。
+- 同一 `(phone, channel)` 已有同类型会话时复用，不重复开流；复用时 API 返回 `200` 且
+  `reused=true`，**不再下发 `0x9101`/`0x9201`**，避免终端重新协商顶掉已有流。
+  管控重启后会并发查询节点状态再复用。
+- control 每 60 秒用各节点 `/internal/media/status` 的实际会话数对账 `endpoints_used`，
+  节点查询失败或已过期则跳过；心跳仍只报负载，不覆盖端点占用。
 - 创建/释放在媒体节点上真实执行：`POST /internal/media/sessions`、`DELETE /internal/media/sessions/{id}`。
 - 节点掉线或过期不迁移既有流：已建立的流随节点中断，终端自行重连后由新分配接管。
 - 没有可用节点时，播放接口返回 `503` 与稳定错误码：

@@ -42,6 +42,9 @@ func (d *deps) startMedia() {
 		if recordMode == string(media.RecordModeOff) {
 			log.Info().Msg("Media recording is disabled (record.mode=off): live frames stay in the in-memory ring")
 		}
+		if mediaOptions.MaxBitrateKbps <= 0 {
+			log.Warn().Msg("mediaServer.maxBitrateKbps is 0: bitrate capacity protection is disabled, only endpoint capacity limits new streams")
+		}
 		playbackOpts := mediaOptions.Playback
 		advertiseIP := mediaOptions.AdvertiseIP
 		if advertiseIP == "" {

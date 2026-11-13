@@ -308,6 +308,7 @@ func (r *RemoteMedia) CreatePlaybackSession(ctx context.Context, request contrac
 	// 同一终端同一逻辑通道已有分配：复用，不重复开流。
 	if existing, ok := r.liveBinding(key); ok {
 		if existing.Kind == kind {
+			existing.Reused = true
 			return existing, nil
 		}
 		return contracts.PlaybackSession{}, &contracts.PlaybackSessionConflictError{Existing: existing}
@@ -321,6 +322,7 @@ func (r *RemoteMedia) CreatePlaybackSession(ctx context.Context, request contrac
 		}
 		r.remember(key, target, existing, false)
 		if existing.Kind == kind {
+			existing.Reused = true
 			return existing, nil
 		}
 		return contracts.PlaybackSession{}, &contracts.PlaybackSessionConflictError{Existing: existing}
@@ -389,6 +391,7 @@ func (r *RemoteMedia) CreatePlaybackSession(ctx context.Context, request contrac
 			}
 			if existing.Kind == kind {
 				// 节点上已有同一通道的会话（例如管控重启后）：直接复用。
+				existing.Reused = true
 				return existing, nil
 			}
 			return contracts.PlaybackSession{}, conflict
@@ -894,36 +897,109 @@ func (s mediaStatus) sessionsView() []contracts.PlaybackSession {
 
 func (r *RemoteMedia) fetchStatuses(ctx context.Context) []nodeStatus {
 	targets := r.staticTargets()
-	out := make([]nodeStatus, 0, len(targets))
-	for _, target := range targets {
-		status, err := r.fetchStatus(ctx, target)
-		out = append(out, nodeStatus{target: target, status: status, err: err})
+	out := make([]nodeStatus, len(targets))
+	var wg sync.WaitGroup
+	for index := range targets {
+		wg.Add(1)
+		go func(index int) {
+			defer wg.Done()
+			status, err := r.fetchStatus(ctx, targets[index])
+			out[index] = nodeStatus{target: targets[index], status: status, err: err}
+		}(index)
 	}
+	wg.Wait()
 	return out
 }
 
 // findExistingSession 在候选节点上查找同一 (phone, channel) 的有效会话。
 //
 // 只在本地没有映射时调用：管控重启或另一副本已建流时，节点状态是唯一的
-// 复用依据，避免同一逻辑通道开出第二条流。
+// 复用依据，避免同一逻辑通道开出第二条流。节点查询并发执行，
+// 每个请求各自带 3 秒超时，总延迟不随节点数线性累加。
 func (r *RemoteMedia) findExistingSession(ctx context.Context, targets []mediaTarget, phone string, channel uint8) (contracts.PlaybackSession, mediaTarget, bool) {
+	if len(targets) == 0 {
+		return contracts.PlaybackSession{}, mediaTarget{}, false
+	}
+	type lookupResult struct {
+		session contracts.PlaybackSession
+		target  mediaTarget
+		ok      bool
+	}
 	now := r.now()
+	results := make(chan lookupResult, len(targets))
+	var wg sync.WaitGroup
 	for _, target := range targets {
-		status, err := r.fetchStatus(ctx, target)
-		if err != nil {
+		wg.Add(1)
+		go func(target mediaTarget) {
+			defer wg.Done()
+			status, err := r.fetchStatus(ctx, target)
+			if err != nil {
+				results <- lookupResult{}
+				return
+			}
+			for _, session := range status.sessionsView() {
+				if session.Phone != phone || session.Channel != channel {
+					continue
+				}
+				if !session.ExpiresAt.IsZero() && now.After(session.ExpiresAt) {
+					continue
+				}
+				results <- lookupResult{session: session, target: target, ok: true}
+				return
+			}
+			results <- lookupResult{}
+		}(target)
+	}
+	wg.Wait()
+	close(results)
+	var best lookupResult
+	for result := range results {
+		if !result.ok {
 			continue
 		}
-		for _, session := range status.sessionsView() {
-			if session.Phone != phone || session.Channel != channel {
-				continue
-			}
-			if !session.ExpiresAt.IsZero() && now.After(session.ExpiresAt) {
-				continue
-			}
-			return session, target, true
+		// 多个节点都报告同一通道时按 node_id 取最小者，保证复用结果可预测。
+		if !best.ok || result.target.ID < best.target.ID {
+			best = result
 		}
 	}
-	return contracts.PlaybackSession{}, mediaTarget{}, false
+	return best.session, best.target, best.ok
+}
+
+// Reconcile 用节点实际活跃会话数校准 media_nodes.endpoints_used。
+//
+// 占位是 control 的“分配决定”，节点事实以 /internal/media/status 为准；
+// 对账只修正计数，不改变“心跳不覆盖端点占用”的语义。查询并发执行并各自带超时。
+func (r *RemoteMedia) Reconcile(ctx context.Context) {
+	if r == nil || r.repo == nil {
+		return
+	}
+	targets, err := r.registeredTargets(ctx)
+	if err != nil || len(targets) == 0 {
+		return
+	}
+	var wg sync.WaitGroup
+	for _, target := range targets {
+		wg.Add(1)
+		go func(target mediaTarget) {
+			defer wg.Done()
+			status, err := r.fetchStatus(ctx, target)
+			if err != nil {
+				log.Debug().Err(err).Str("node", target.ID).Msg("Skip media endpoint reconciliation: node status unavailable")
+				return
+			}
+			actual := int64(status.Active)
+			if actual == target.EndpointsUsed {
+				return
+			}
+			if err := r.repo.SetEndpointsUsed(ctx, target.ID, target.InstanceID, actual, r.now()); err != nil {
+				log.Warn().Err(err).Str("node", target.ID).Msg("Fail to reconcile media endpoint usage")
+				return
+			}
+			log.Info().Str("node", target.ID).Int64("reserved", target.EndpointsUsed).Int64("actual", actual).
+				Msg("Reconciled media endpoint usage")
+		}(target)
+	}
+	wg.Wait()
 }
 
 func (r *RemoteMedia) fetchStatus(ctx context.Context, target mediaTarget) (mediaStatus, error) {

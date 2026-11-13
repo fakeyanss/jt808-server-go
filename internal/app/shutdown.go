@@ -38,6 +38,7 @@ func (d *deps) shutdown() {
 	nodeReporter := d.nodeReporter
 	cancelMediaNodeReport := d.cancelMediaNodeReport
 	mediaNodeReporter := d.mediaNodeReporter
+	cancelMediaReconcile := d.cancelMediaReconcile
 	alarmServ := d.alarmServ
 	attachmentServ := d.attachmentServ
 	mediaServ := d.mediaServ
@@ -78,6 +79,10 @@ func (d *deps) shutdown() {
 		case <-time.After(5 * time.Second):
 			log.Warn().Msg("Timed out waiting for gateway node deregistration")
 		}
+	}
+	// 停机时先停对账，避免它向正在退出的节点发状态查询。
+	if cancelMediaReconcile != nil {
+		cancelMediaReconcile()
 	}
 	// 媒体节点注销同样要在内部 HTTP 与 control 入口关闭前完成，避免 0x9101/0x9201
 	// 继续分配到正在退出的节点。

@@ -443,6 +443,9 @@ type PlaybackSession struct {
 	PlaybackURL string
 	// Endpoints 是全部可用播放/发布端点。
 	Endpoints []PlaybackEndpoint
+	// Reused 表示本次申请复用了已有分配，调用方不得重复下发 0x9101/0x9201，
+	// 否则会让终端重新协商并可能把已有流顶掉。
+	Reused bool
 }
 
 // PlaybackEndpoint 是一个可播放/可发布端点。
