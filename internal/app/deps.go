@@ -198,7 +198,7 @@ func buildDeps(spec Spec, cfg *config.Config, s settings) *deps {
 			Str("url", uplinkSinkOptions.HTTP.URL).
 			Dur("timeout", uplinkSinkOptions.HTTP.Timeout).
 			Int("queue_size", uplinkSinkOptions.HTTP.QueueSize).
-			Int("workers", uplinkSinkOptions.HTTP.Workers).
+			Int("shards", uplinkSinkOptions.HTTP.Workers).
 			Int("max_attempts", uplinkSinkOptions.HTTP.MaxAttempts).
 			Str("gateway_id", uplinkSinkOptions.HTTP.GatewayID).
 			Msg("Uplink HTTP sink enabled")

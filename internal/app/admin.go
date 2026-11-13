@@ -175,13 +175,13 @@ func (d *deps) buildProbes() {
 			if uplinkSink != nil {
 				stats := uplinkSink.Stats()
 				snapshot.Uplink = observability.UplinkSnapshot{
-					Delivered:  stats.Delivered,
-					Failed:     stats.Failed,
-					Timeouts:   stats.Timeouts,
-					Dropped:    stats.Dropped,
-					Rejected:   stats.Rejected,
-					InFlight:   stats.InFlight,
-					QueueDepth: stats.QueueDepth,
+					Delivered:   stats.Delivered,
+					Failed:      stats.Failed,
+					Timeouts:    stats.Timeouts,
+					Dropped:     stats.Dropped,
+					Rejected:    stats.Rejected,
+					InFlight:    stats.InFlight,
+					ShardQueues: stats.ShardQueues,
 				}
 			}
 			return snapshot

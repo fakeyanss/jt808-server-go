@@ -355,10 +355,12 @@ type UplinkSinkOptions struct {
 
 // UplinkHTTPOptions 是 HTTP 上行出口的归一化配置。
 type UplinkHTTPOptions struct {
-	URL         string
-	Token       string
-	Timeout     time.Duration
-	QueueSize   int
+	URL       string
+	Token     string
+	Timeout   time.Duration
+	QueueSize int
+	// Workers 是 phone 分片数：每个分片单 goroutine 顺序消费，
+	// 同一 phone 的事件固定落在同一分片。
 	Workers     int
 	MaxAttempts int
 	GatewayID   string

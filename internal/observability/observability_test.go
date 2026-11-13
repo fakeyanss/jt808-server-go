@@ -31,7 +31,7 @@ func TestWritePrometheusExposesRequiredMetrics(t *testing.T) {
 		MediaFileBytes:       11,
 		Uplink: UplinkSnapshot{
 			Delivered: 12, Failed: 13, Timeouts: 14, Dropped: 15,
-			Rejected: 16, InFlight: 17, QueueDepth: 18,
+			Rejected: 16, InFlight: 17, ShardQueues: []int{7, 11},
 		},
 	}
 	require.NoError(t, WritePrometheus(&buf, snapshot))
@@ -54,7 +54,8 @@ func TestWritePrometheusExposesRequiredMetrics(t *testing.T) {
 		"jt808_uplink_dropped_total 15",
 		"jt808_uplink_rejected_total 16",
 		"jt808_uplink_in_flight 17",
-		"jt808_uplink_queue_depth 18",
+		"jt808_uplink_queue_depth{shard=\"0\"} 7",
+		"jt808_uplink_queue_depth{shard=\"1\"} 11",
 	} {
 		require.Contains(t, output, want)
 	}
