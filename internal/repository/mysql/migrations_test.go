@@ -18,8 +18,8 @@ func TestExpectedVersionMatchesEmbeddedFiles(t *testing.T) {
 	require.Equal(t, "1.0.0", ExpectedVersion().String())
 }
 
-// MySQL 建表语句必须显式声明存储引擎与字符集，避免依赖服务端默认值。
-func TestCreateTableStatementsDeclareEngineAndCharset(t *testing.T) {
+// MySQL 建表语句必须显式声明存储引擎、字符集与排序规则，避免依赖服务端默认值。
+func TestCreateTableStatementsDeclareEngineCharsetAndCollation(t *testing.T) {
 	for _, migration := range Plan().Migrations() {
 		for _, stmt := range migration.Stmts {
 			if !strings.HasPrefix(stmt, "CREATE TABLE") {
@@ -27,6 +27,7 @@ func TestCreateTableStatementsDeclareEngineAndCharset(t *testing.T) {
 			}
 			require.Contains(t, stmt, "ENGINE=InnoDB", migration.Name)
 			require.Contains(t, stmt, "DEFAULT CHARSET=utf8mb4", migration.Name)
+			require.Contains(t, stmt, "COLLATE=utf8mb4_general_ci", migration.Name)
 		}
 	}
 }
