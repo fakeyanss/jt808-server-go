@@ -1,0 +1,77 @@
+# jt-attachment 的最小可运行配置：只承担 attachment 角色。
+#
+# 独立监听附件 TCP 7400 / UDP 7401，自行解析 808 帧；
+# 本地只保留有界暂存窗口，切片写入全集群共享的 objectStore，元数据落共享 MySQL。
+# 过渡期用共享卷代替对象存储：所有集群角色必须指向同一个 root。
+# 启动前创建共享卷标记文件与暂存目录：
+#   mkdir -p data/blobs data/attachments && touch data/blobs/.jt808-shared-volume
+log:
+  consoleEnable: true
+  fileEnable: true
+  logDirectory: "./logs/"
+  logFile: "jt-attachment.log"
+  logLevel: "INFO"
+
+server:
+  name: "jt-attachment"
+  mode: "cluster"
+  ackTimeoutMs: 5000
+  maxRetransmissions: 3
+  port:
+    tcpPort: "8080"
+    udpPort: "8081"
+    httpPort: "8008"
+  banner:
+    enable: false
+    bannerPath: "configs/banner.txt"
+
+probes:
+  addr: "0.0.0.0:9109"
+
+alarmServer:
+  # 附件接入端口：TCP 与 UDP 分别监听，0x9208 通告同样的端口。
+  port: "7400"
+  udpPort: "7401"
+  # 内部状态接口：/internal/attachment/status 与 /files，控制面据此选点。
+  httpPort: "7402"
+  uploadIP: "127.0.0.1"
+  # 本地暂存根目录；实际暂存在 dir/staging，崩溃残留按宽限期清理。
+  dir: "./data/attachments"
+  maxFileSize: 104857600
+  maxConcurrent: 16
+  # 单个对象切片 8 MiB；暂存区总量上限 2 GiB，到顶拒绝新的文件登记。
+  segmentSizeBytes: 8388608
+  stagingMaxBytes: 2147483648
+  retentionDays: 7
+  autoUpload: false
+
+mediaUpload:
+  dir: "./data/blobs"
+
+admin:
+  enable: false
+  addr: "127.0.0.1:9000"
+  token: "admin-token"
+
+api:
+  auth:
+    token: "api-token"
+
+uplink:
+  sink: "local"
+
+cluster:
+  roles:
+    - attachment
+  attachment:
+    nodeId: "attachment-1"
+  storage:
+    backend: "sharedVolume"
+    sharedVolume: true
+    root: "./data/blobs"
+    marker: ".jt808-shared-volume"
+
+database:
+  type: "mysql"
+  mysql:
+    dsn: "root:password@tcp(127.0.0.1:3306)/jt808?parseTime=true&charset=utf8mb4"
