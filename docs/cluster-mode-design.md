@@ -615,9 +615,10 @@ gateway_nodes (
     instance_id     VARCHAR(64) NOT NULL,   -- 进程启动生成，重启即变
     downlink_url    VARCHAR(255) NOT NULL,
     status          VARCHAR(16) NOT NULL,   -- online / offline
-    started_at      BIGINT NOT NULL,
-    last_seen_at    BIGINT NOT NULL,
-    expires_at      BIGINT NOT NULL
+    started_at      DATETIME(3) NOT NULL,
+    last_seen_at    DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3)
+                    ON UPDATE CURRENT_TIMESTAMP(3),
+    expires_at      DATETIME(3) NOT NULL
 )
 
 session_directory (
@@ -626,15 +627,21 @@ session_directory (
     instance_id     VARCHAR(64) NOT NULL,
     session_id      VARCHAR(128) NOT NULL,
     generation      BIGINT NOT NULL,
-    claimed_at      BIGINT NOT NULL,
+    claimed_at      DATETIME(3) NOT NULL,
     KEY idx_session_directory_node (gateway_id, instance_id)
 )
 ```
 
-- `session_directory` **不设 `expires_at`**。会话是否有效由联表推出：所属 `(gateway_id, instance_id)` 在 `gateway_nodes` 中 `status=online` 且 `expires_at > now`。
-- 节点心跳 10 秒一次，`expires_at = last_seen_at + 30s`；连续 3 次未上报即判定死亡。
+MySQL 使用上面的 `DATETIME(3)`。SQLite 没有 `DATETIME(3)`，时间列用 `TEXT` 存 ISO8601 毫秒，取值统一用 `strftime('%Y-%m-%d %H:%M:%f','now')`，因为 SQLite 的 `CURRENT_TIMESTAMP` 只到秒。两种后端各写各的语句，不做兼容层。
+
+- `session_directory` **不设 `expires_at`**。会话是否有效由联表推出：所属 `(gateway_id, instance_id)` 在 `gateway_nodes` 中 `status=online` 且 `expires_at > 数据库当前时间`。
+- 节点心跳 10 秒一次，`expires_at` 由数据库时间加 30 秒；连续 3 次未上报即判定死亡。
 - 客户端心跳、TCP 半开、会话本地超时仍由网关判断；目录不复制这份状态。
-- 实现时选定**单一时间源，不要混用**。应用侧 `time.Now()` 在 NTP 正常时足够；数据库时间的价值是对时钟跳变（VM 暂停恢复、NTP step）免疫，代价是每次判断多一次取值。真正的风险是时钟跳变，不是同步漂移。
+- **节点与会话的过期时间一律用数据库时间，应用侧不参与任何时间运算**：
+  - MySQL 用 `CURRENT_TIMESTAMP(3)`、`DATE_ADD(..., INTERVAL 30 SECOND)`；
+  - SQLite 用 `strftime('%Y-%m-%d %H:%M:%f','now','+30 seconds')`；
+  - 判死、下行前校验这类“要不要放行”的判断全部写成带数据库当前时间条件的 SQL，Go 侧只拿布尔结果，不写 `time.Now()` 参与比较；
+  - 这样对 VM 暂停恢复、NTP step 等时钟跳变免疫，而不是只防同步漂移。
 
 #### 7.2.2 写入时机
 
@@ -670,7 +677,7 @@ session_directory (
 ```text
 phone -> session_directory
       -> join gateway_nodes on (gateway_id, instance_id)
-      -> 校验 status=online 且 expires_at > now
+      -> 校验 status=online 且 expires_at > 数据库当前时间
       -> 取 downlink_url 下发
 ```
 
@@ -889,7 +896,7 @@ cluster:
 | 会话残留 | 网关活着但单条会话未释放 | 平台侧无法仅凭目录判断，继续路由到该网关 | 明确退化：信任网关自身 JT808 心跳超时与 release |
 | 共享库不可用 | 管控无法落库 | `best-effort` 继续应答但可能丢；`confirm-before-ack` 不应答 | 与当前单机语义一致 |
 | 端点租约泄漏 | 节点崩溃未释放 | TTL 到期自动回收 | 短暂端点浪费 |
-| 时钟偏差 | 各节点时间不一致 | 目录/租约统一使用数据库时间或单一时间源 | 不影响协议正确性 |
+| 时钟偏差 | 各节点时间不一致 | 过期判断由数据库时间裁决，不依赖各 control 本机时钟 | 不影响协议正确性 |
 
 明确不承诺：
 
@@ -1204,7 +1211,7 @@ E2 不引入协调组件；以上方案只在确实需要严格顺序时再选�
   - `terminal_catalogs` 与 `attachment_files` 的宽主键可后续优化：宽业务主键会被 InnoDB 二级索引隐式携带，数据量上来后评估自增 id + 唯一键。
 
 - 节点/会话目录实现阶段（按顺序，每阶段独立验证、独立提交）：
-  1. **E4.1 节点注册与实例生命周期**：新增 `gateway_nodes` 与 `instance_id`；网关注册、10 秒心跳、30 秒判死、优雅注销；本阶段只落节点状态，不改变会话绑定与下行路由。验收：两个网关注册、杀一个后 30 秒内 status=offline；现有下行行为不变。
+  1. **E4.1 节点注册与实例生命周期**：新增 `gateway_nodes` 与 `instance_id`；MySQL 用 `DATETIME(3)`、SQLite 用 ISO8601 毫秒 TEXT；网关注册、10 秒心跳、30 秒判死、优雅注销全部由数据库时间裁决，Go 只拿布尔结果；本阶段只落节点状态，不改变会话绑定与下行路由。验收：两个网关注册、杀一个后 30 秒内 status=offline；现有下行行为不变。
   2. **E4.2 会话归属与 generation 围栏**：新增 `session_directory`；control 在 0x0102 业务路径 claim/release，claim 幂等（同一 gateway/instance/session 不递增），返回 generation；0x0102 强制同步，网关等待 claim 结果后再应答；cluster 下 claim 失败 fail-closed；上行信封与终端应答携带 generation，旧事件丢弃并回传 `fenced`，confirm 与 best-effort 两条路径都解析响应体，网关收到后关闭本地会话。验收：同 phone 双 claim 只有一个 generation 生效；重复 claim 不递增；旧 generation 事件不写库；release 丢失时节点离线后目录联表失效。
   3. **E4.3 下行路由器**：新增 `cluster.gateway.advertiseUrl` 与可选 `cluster.gateway.nodes`；`cluster.gateway.url` 降级为单节点兼容；按 phone 查目录、联节点表、取 `downlink_url`；无目录/离线一律 `offline`，不跨节点猜测。验收：同 phone 迁移到另一网关后下行跟随；节点过期后 outbox 重试并最终过期。
   4. **E4.4 旧实例清理、观测与运维**：网关注册时按新 `instance_id` 批量清理同 `gateway_id` 旧行；补目录命中/离线/fenced/节点过期指标与运行手册；覆盖网关重启、同号双活、节点分区等混沌场景。revoke 推送作为后续增强，不阻塞本阶段。
