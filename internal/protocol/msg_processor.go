@@ -1179,7 +1179,10 @@ func (mp *JT808MsgProcessor) processMsg0200(ctx context.Context, data *model.Pro
 		return errors.Wrapf(err, "Fail to decode device geo, phoneNumber=%s", device.Phone)
 	}
 
-	if dg.Geo.ACCStatus == 0 { // ACC关闭，设备休眠
+	// 与 Geo.Append 的单调守卫使用同一基准：旧位置不能把新在线态改回休眠。
+	latestGeo, latestErr := mp.deps.Repos.Geo.Latest(ctx, device.Phone)
+	staleLocation := latestErr == nil && latestGeo != nil && dg.Time.Before(latestGeo.Time)
+	if !staleLocation && dg.Geo.ACCStatus == 0 { // ACC关闭，设备休眠
 		device.Status = model.DeviceStatusSleeping
 		device.LastestComTime = time.Now()
 		_ = devices.Upsert(ctx, device)
