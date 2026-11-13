@@ -10,6 +10,7 @@ import (
 	"github.com/fakeyanss/jt808-server-go/internal/config"
 	"github.com/fakeyanss/jt808-server-go/internal/contracts"
 	"github.com/fakeyanss/jt808-server-go/internal/control"
+	"github.com/fakeyanss/jt808-server-go/internal/coordination"
 	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
 	"github.com/fakeyanss/jt808-server-go/internal/storage"
 	"github.com/fakeyanss/jt808-server-go/internal/uplink"
@@ -31,6 +32,7 @@ func (d *deps) setupControl() {
 	controlDownlink := d.controlDownlink
 	storeSet := d.storeSet
 	processorDeps := d.processorDeps
+	leaseRunner := coordination.NewRunner(storeSet.Coordination, coordination.DefaultTTL)
 
 	var uplinkServer *uplink.Server
 	var controlBlob contracts.BlobStore
@@ -90,7 +92,7 @@ func (d *deps) setupControl() {
 		// 不再要求 gateway 与 control 同进程。
 		controlHooks := hooks
 		if alarmOptions.AutoUpload && hasControl && remoteAttachment != nil && controlDownlink != nil {
-			controlHooks = control.NewAutoUploadTrigger(hooks, remoteAttachment, controlDownlink, 30*time.Minute)
+			controlHooks = control.NewAutoUploadTrigger(hooks, remoteAttachment, controlDownlink, storeSet.Coordination, 30*time.Minute)
 			log.Info().Msg("Automatic 0x9208 attachment upload trigger enabled in control via remote attachment nodes")
 		}
 		executor := control.NewBusinessExecutor(control.BusinessOptions{
@@ -144,7 +146,12 @@ func (d *deps) setupControl() {
 				case <-sweepCtx.Done():
 					return
 				case <-ticker.C:
-					businessExecutor.SweepPending(sweepCtx, 30*time.Minute)
+					leaseRunner.Run(sweepCtx, "media-pending-sweep", func(ctx context.Context) {
+						businessExecutor.SweepPending(ctx, 30*time.Minute)
+						if _, err := storeSet.Coordination.PruneExpired(ctx, time.Now()); err != nil {
+							log.Warn().Err(err).Msg("Prune expired coordination rows failed")
+						}
+					})
 				}
 			}
 		})

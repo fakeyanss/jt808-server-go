@@ -4,13 +4,13 @@ import (
 	"context"
 	"encoding/hex"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/rs/zerolog/log"
 
 	actionpkg "github.com/fakeyanss/jt808-server-go/internal/action"
 	"github.com/fakeyanss/jt808-server-go/internal/contracts"
+	"github.com/fakeyanss/jt808-server-go/internal/coordination"
 	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
 )
 
@@ -20,30 +20,34 @@ import (
 // 下行经 DownlinkSender 走网关，因此 gateway 与 control 可以分进程部署。
 // 没有可用附件节点时只记录明确告警，不影响报警入库。
 type AutoUploadTrigger struct {
-	next      actionpkg.Hooks
-	allocator contracts.AttachmentAllocator
-	sender    contracts.DownlinkSender
-	dedup     time.Duration
-	mu        sync.Mutex
-	seen      map[string]time.Time
-	now       func() time.Time
+	next       actionpkg.Hooks
+	allocator  contracts.AttachmentAllocator
+	sender     contracts.DownlinkSender
+	dedupStore coordination.Store
+	dedupTTL   time.Duration
+	now        func() time.Time
 }
 
 // NewAutoUploadTrigger 创建自动下发装饰器。
-func NewAutoUploadTrigger(next actionpkg.Hooks, allocator contracts.AttachmentAllocator, sender contracts.DownlinkSender, dedup time.Duration) *AutoUploadTrigger {
+// dedupStore 为 nil 时退化为进程内去重；多副本必须传入共享 Store。
+func NewAutoUploadTrigger(next actionpkg.Hooks, allocator contracts.AttachmentAllocator, sender contracts.DownlinkSender,
+	dedupStore coordination.Store, dedupTTL time.Duration) *AutoUploadTrigger {
 	if next == nil {
 		next = actionpkg.Noop{}
 	}
-	if dedup <= 0 {
-		dedup = 30 * time.Minute
+	if dedupStore == nil {
+		dedupStore = coordination.NewMemoryStore()
+	}
+	if dedupTTL <= 0 {
+		dedupTTL = 30 * time.Minute
 	}
 	return &AutoUploadTrigger{
-		next:      next,
-		allocator: allocator,
-		sender:    sender,
-		dedup:     dedup,
-		seen:      map[string]time.Time{},
-		now:       time.Now,
+		next:       next,
+		allocator:  allocator,
+		sender:     sender,
+		dedupStore: dedupStore,
+		dedupTTL:   dedupTTL,
+		now:        time.Now,
 	}
 }
 
@@ -76,7 +80,13 @@ func (t *AutoUploadTrigger) OnAlarm(ctx context.Context, event actionpkg.AlarmEv
 		return
 	}
 	alarmIDHex := strings.ToUpper(hex.EncodeToString(event.AlarmID))
-	if !t.markSeen(event.Phone + "/" + alarmIDHex) {
+	first, err := t.dedupStore.MarkOnce(ctx, "auto-9208:"+event.Phone+":"+alarmIDHex, t.now(), t.dedupTTL)
+	if err != nil {
+		// 去重存储不可用时按 at-least-once 处理：继续下发，重复命令由 outbox
+		// 幂等键 (phone + idempotency_key) 兜底，避免漏掉报警附件上传。
+		log.Warn().Err(err).Str("phone", event.Phone).Str("alarm_id", alarmIDHex).
+			Msg("Automatic 0x9208 dedup unavailable; continue with at-least-once semantics")
+	} else if !first {
 		return
 	}
 	lease, err := t.allocator.Allocate(ctx, contracts.AttachmentLeaseRequest{
@@ -112,22 +122,6 @@ func (t *AutoUploadTrigger) OnAlarm(ctx context.Context, event actionpkg.AlarmEv
 		Str("ip", lease.Endpoint.IP).Uint16("tcp_port", lease.Endpoint.TCPPort).
 		Uint16("udp_port", lease.Endpoint.UDPPort).
 		Msg("Sent automatic 0x9208 attachment upload command via downlink")
-}
-
-func (t *AutoUploadTrigger) markSeen(key string) bool {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	now := t.now()
-	for seenKey, seenAt := range t.seen {
-		if now.Sub(seenAt) >= t.dedup {
-			delete(t.seen, seenKey)
-		}
-	}
-	if _, ok := t.seen[key]; ok {
-		return false
-	}
-	t.seen[key] = now
-	return true
 }
 
 var _ actionpkg.Hooks = (*AutoUploadTrigger)(nil)

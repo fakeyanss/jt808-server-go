@@ -411,3 +411,19 @@ CREATE TABLE IF NOT EXISTS attachment_files (
 );
 CREATE INDEX idx_attachment_files_phone ON attachment_files (source, phone, updated_at);
 CREATE INDEX idx_attachment_files_status ON attachment_files (status, updated_at);
+
+-- 多副本协调（2026-11-19）。
+-- task_leases：周期性任务的单实例租约，name 为任务名，expires_at 到期后可被其它副本接手。
+-- dedup_keys：按业务键的共享 TTL 去重，dedup_key 形如 auto-9208:<phone>:<alarmID>。
+CREATE TABLE IF NOT EXISTS task_leases (
+    name TEXT NOT NULL PRIMARY KEY,
+    owner TEXT NOT NULL DEFAULT '',
+    expires_at INTEGER NOT NULL DEFAULT 0,
+    updated_at INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS dedup_keys (
+    dedup_key TEXT NOT NULL PRIMARY KEY,
+    expires_at INTEGER NOT NULL DEFAULT 0,
+    updated_at INTEGER NOT NULL DEFAULT 0
+);

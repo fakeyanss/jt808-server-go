@@ -56,7 +56,7 @@ func TestApplyIsIdempotent(t *testing.T) {
 		"terminal_catalogs", "region_items", "locations", "alarms",
 		"media_resource_lists", "media_upload_tasks", "media_upload_notices",
 		"media_files", "media_captures", "media_capture_items", "media_search_results",
-		"upgrade_results", "attachment_files",
+		"upgrade_results", "attachment_files", "task_leases", "dedup_keys",
 	} {
 		var name string
 		err := db.QueryRowContext(ctx, `SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?`, table).Scan(&name)

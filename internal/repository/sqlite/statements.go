@@ -157,3 +157,13 @@ func (statements) InsertLocationsIgnoringDuplicates(placeholders string) string 
 		 alarm_sign, status_sign, latitude, longitude, altitude, speed, direction, payload_json, dedup_key)
 		VALUES ` + placeholders
 }
+
+func (statements) EnsureTaskLeaseRow() string {
+	return `INSERT OR IGNORE INTO task_leases (name, owner, expires_at, updated_at)
+		VALUES (?, '', 0, ?)`
+}
+
+func (statements) EnsureDedupKeyRow() string {
+	return `INSERT OR IGNORE INTO dedup_keys (dedup_key, expires_at, updated_at)
+		VALUES (?, 0, ?)`
+}

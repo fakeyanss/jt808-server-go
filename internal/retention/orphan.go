@@ -82,6 +82,7 @@ type OrphanScanner struct {
 	cfg     OrphanConfig
 	metrics *observability.Metrics
 	now     func() time.Time
+	lease   LeaseRunner
 	done    chan struct{}
 }
 
@@ -94,6 +95,13 @@ func NewOrphanScanner(store repository.RetentionStore, media MediaStore, cfg Orp
 		metrics: metrics,
 		now:     time.Now,
 		done:    make(chan struct{}),
+	}
+}
+
+// SetLease 设置单实例执行器。未设置时按进程内单实例运行，兼容 standalone。
+func (s *OrphanScanner) SetLease(lease LeaseRunner) {
+	if s != nil {
+		s.lease = lease
 	}
 }
 
@@ -121,24 +129,32 @@ func (s *OrphanScanner) Run(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			started := s.now()
-			summary := s.ScanOnce(ctx)
-			event := log.Info()
-			if summary.Failures > 0 {
-				event = log.Warn()
+			if s.lease != nil {
+				s.lease.Run(ctx, "retention-orphan-scan", s.scanOnceWithLog)
+				continue
 			}
-			event.
-				Int64("scanned", summary.Scanned).
-				Int64("deleted", summary.Deleted).
-				Int64("skipped", summary.Skipped).
-				Int("failures", summary.Failures).
-				Bool("limited", summary.Limited).
-				Dur("duration", s.now().Sub(started)).
-				Msg("Orphan media scan finished")
-			if summary.Limited {
-				log.Warn().Int("limit", s.cfg.MaxFilesPerRun).Msg(orphanLimitReachedReason)
-			}
+			s.scanOnceWithLog(ctx)
 		}
+	}
+}
+
+func (s *OrphanScanner) scanOnceWithLog(ctx context.Context) {
+	started := s.now()
+	summary := s.ScanOnce(ctx)
+	event := log.Info()
+	if summary.Failures > 0 {
+		event = log.Warn()
+	}
+	event.
+		Int64("scanned", summary.Scanned).
+		Int64("deleted", summary.Deleted).
+		Int64("skipped", summary.Skipped).
+		Int("failures", summary.Failures).
+		Bool("limited", summary.Limited).
+		Dur("duration", s.now().Sub(started)).
+		Msg("Orphan media scan finished")
+	if summary.Limited {
+		log.Warn().Int("limit", s.cfg.MaxFilesPerRun).Msg(orphanLimitReachedReason)
 	}
 }
 
