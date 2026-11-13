@@ -364,13 +364,14 @@ type Snapshot struct {
 
 // UplinkSnapshot 是上行出口的累计计数与当前水位。
 type UplinkSnapshot struct {
-	Delivered  int64
-	Failed     int64
-	Timeouts   int64
-	Dropped    int64
-	Rejected   int64
-	InFlight   int64
-	QueueDepth int
+	Delivered int64
+	Failed    int64
+	Timeouts  int64
+	Dropped   int64
+	Rejected  int64
+	InFlight  int64
+	// ShardQueues 是每个 phone 分片队列的当前深度，下标即分片号。
+	ShardQueues []int
 }
 
 // Check 是一条带名称的就绪检查。
@@ -479,7 +480,6 @@ func WritePrometheus(w io.Writer, snapshot Snapshot) error {
 		{"jt808_uplink_timeouts_total", "Uplink events whose sink delivery timed out.", "counter", fmt.Sprint(snapshot.Uplink.Timeouts)},
 		{"jt808_uplink_dropped_total", "Uplink events dropped by the sink queue.", "counter", fmt.Sprint(snapshot.Uplink.Dropped)},
 		{"jt808_uplink_rejected_total", "Confirm-before-ack events rejected due to in-flight limits.", "counter", fmt.Sprint(snapshot.Uplink.Rejected)},
-		{"jt808_uplink_queue_depth", "Uplink events waiting in the sink queue.", "gauge", fmt.Sprint(snapshot.Uplink.QueueDepth)},
 		{"jt808_uplink_in_flight", "Confirm-before-ack uplink deliveries in flight.", "gauge", fmt.Sprint(snapshot.Uplink.InFlight)},
 		{"jt808_uplink_unknown_device_dropped_total", "Uplink events dropped after a 409 unknown_device redelivery.", "counter", fmt.Sprint(snapshot.UplinkEvent.UnknownDeviceDropped)},
 		{"jt808_uplink_oversized_total", "Uplink events dropped because the message body exceeded maxBodyBytes.", "counter", fmt.Sprint(snapshot.UplinkEvent.Oversized)},
@@ -493,6 +493,9 @@ func WritePrometheus(w io.Writer, snapshot Snapshot) error {
 			return err
 		}
 	}
+	if err := writeUplinkQueuePrometheus(w, snapshot.Uplink.ShardQueues); err != nil {
+		return err
+	}
 	if err := writeRetentionPrometheus(w, snapshot.Retention); err != nil {
 		return err
 	}
@@ -500,6 +503,25 @@ func WritePrometheus(w io.Writer, snapshot Snapshot) error {
 		return err
 	}
 	return writeOrphanPrometheus(w, snapshot.Orphan)
+}
+
+// writeUplinkQueuePrometheus 输出每个 phone 分片的队列深度。
+// 出口按 phone 哈希分片，单一 queue_depth 无法反映实际拓扑，因此按分片打标签。
+func writeUplinkQueuePrometheus(w io.Writer, depths []int) error {
+	if len(depths) == 0 {
+		return nil
+	}
+	if _, err := fmt.Fprintf(w,
+		"# HELP jt808_uplink_queue_depth Uplink events waiting in each sink shard queue.\n"+
+			"# TYPE jt808_uplink_queue_depth gauge\n"); err != nil {
+		return err
+	}
+	for shard, depth := range depths {
+		if _, err := fmt.Fprintf(w, "jt808_uplink_queue_depth{shard=\"%d\"} %d\n", shard, depth); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // writeTerminalReplyPrometheus 输出终端应答处理结果的累计计数。

@@ -15,6 +15,7 @@ import (
 
 	"github.com/rs/zerolog/log"
 
+	"github.com/fakeyanss/jt808-server-go/internal/codec/hash"
 	"github.com/fakeyanss/jt808-server-go/internal/contracts"
 )
 
@@ -38,14 +39,17 @@ type HTTPSinkOptions struct {
 
 // HTTPSinkStats 是 HTTP 出口的累计计数与当前水位。
 type HTTPSinkStats struct {
-	Delivered  int64
-	Failed     int64
-	Timeouts   int64
-	Dropped    int64
-	Rejected   int64
-	Unknown    int64
-	InFlight   int64
-	QueueDepth int
+	Delivered int64
+	Failed    int64
+	Timeouts  int64
+	Dropped   int64
+	Rejected  int64
+	Unknown   int64
+	InFlight  int64
+	// ShardQueues 是每个 phone 分片队列的当前深度，下标即分片号。
+	// 出口按 phone 哈希分片、分片内单 goroutine 顺序消费，因此不再存在
+	// 能代表整体拓扑的单一队列深度。
+	ShardQueues []int
 }
 
 // HTTPEnvelope 是上行出口的 JSON 信封，字段与设计文档第 4 节一致。
@@ -77,6 +81,10 @@ type HTTPEnvelope struct {
 //   - best-effort：事件进入有界队列，立即返回；队列满直接丢弃并计数；
 //   - confirm-before-ack：同步 POST，成功才返回 nil；失败/超时返回错误，
 //     调用方因此不应答终端，由终端按协议重传。
+//
+// 队列按 phone 分片：同一 phone 的事件进入同一分片，由单个 goroutine
+// 顺序消费；不同分片之间并发。confirm 事件也走同一分片队列，保证不会
+// 越过同 phone 已排队的事件。
 type HTTPSink struct {
 	url         string
 	token       string
@@ -84,8 +92,7 @@ type HTTPSink struct {
 	maxAttempts int
 	client      *http.Client
 
-	queue    chan HTTPEnvelope
-	workers  int
+	shards   []chan sinkJob
 	done     chan struct{}
 	startOne sync.Once
 	stopOne  sync.Once
@@ -104,6 +111,18 @@ type HTTPSink struct {
 	regMu            sync.Mutex
 	registrations    map[string]cachedRegistration
 	unknownSince     map[string]time.Time
+}
+
+// sinkJob 是一次分片内投递任务。
+// result 非空表示 confirm-before-ack：worker 完成后把结果写回，调用方等待。
+type sinkJob struct {
+	envelope HTTPEnvelope
+	result   chan sinkResult
+}
+
+type sinkResult struct {
+	result contracts.UplinkResult
+	err    error
 }
 
 const (
@@ -138,6 +157,16 @@ func NewHTTPSink(options HTTPSinkOptions) (*HTTPSink, error) {
 	if options.MaxAttempts <= 0 {
 		return nil, fmt.Errorf("uplink http sink: maxAttempts must be > 0")
 	}
+	// 分片数直接复用 workers：分片内单 goroutine 顺序消费。
+	// 每个分片独立有界，总量仍以 queueSize 为预算（向下取整，至少 1）。
+	shardCap := options.QueueSize / options.Workers
+	if shardCap < 1 {
+		shardCap = 1
+	}
+	shards := make([]chan sinkJob, options.Workers)
+	for i := range shards {
+		shards[i] = make(chan sinkJob, shardCap)
+	}
 	return &HTTPSink{
 		url:         options.URL,
 		token:       options.Token,
@@ -146,9 +175,8 @@ func NewHTTPSink(options HTTPSinkOptions) (*HTTPSink, error) {
 		client: &http.Client{
 			Timeout: options.Timeout,
 		},
-		queue:   make(chan HTTPEnvelope, options.QueueSize),
-		workers: options.Workers,
-		done:    make(chan struct{}),
+		shards: shards,
+		done:   make(chan struct{}),
 		// confirm-before-ack 的并发上限与队列容量一致，避免无界 goroutine。
 		slot:             make(chan struct{}, options.QueueSize),
 		onUnknownDropped: options.OnUnknownDeviceDropped,
@@ -157,19 +185,19 @@ func NewHTTPSink(options HTTPSinkOptions) (*HTTPSink, error) {
 	}, nil
 }
 
-// Run 启动 best-effort worker，并在 ctx 结束时停止接收新事件。
+// Run 启动各分片 worker，并在 ctx 结束时停止接收新事件。
 func (s *HTTPSink) Run(ctx context.Context) {
 	if s == nil {
 		return
 	}
 	s.startOne.Do(func() {
 		var wg sync.WaitGroup
-		for i := 0; i < s.workers; i++ {
+		for _, jobs := range s.shards {
 			wg.Add(1)
-			go func() {
+			go func(jobs <-chan sinkJob) {
 				defer wg.Done()
-				s.worker(ctx)
-			}()
+				s.worker(ctx, jobs)
+			}(jobs)
 		}
 		<-ctx.Done()
 		s.stop()
@@ -192,20 +220,24 @@ func (s *HTTPSink) stop() {
 	})
 }
 
-// Stats 返回当前累计计数与队列水位。
+// Stats 返回当前累计计数与各分片队列水位。
 func (s *HTTPSink) Stats() HTTPSinkStats {
 	if s == nil {
 		return HTTPSinkStats{}
 	}
+	shardQueues := make([]int, len(s.shards))
+	for i, jobs := range s.shards {
+		shardQueues[i] = len(jobs)
+	}
 	return HTTPSinkStats{
-		Delivered:  s.delivered.Load(),
-		Failed:     s.failed.Load(),
-		Timeouts:   s.timeouts.Load(),
-		Dropped:    s.dropped.Load(),
-		Rejected:   s.rejected.Load(),
-		Unknown:    s.unknown.Load(),
-		InFlight:   s.inFlight.Load(),
-		QueueDepth: len(s.queue),
+		Delivered:   s.delivered.Load(),
+		Failed:      s.failed.Load(),
+		Timeouts:    s.timeouts.Load(),
+		Dropped:     s.dropped.Load(),
+		Rejected:    s.rejected.Load(),
+		Unknown:     s.unknown.Load(),
+		InFlight:    s.inFlight.Load(),
+		ShardQueues: shardQueues,
 	}
 }
 
@@ -236,17 +268,24 @@ func (s *HTTPSink) Deliver(ctx context.Context, event contracts.UplinkEvent) (co
 	return s.deliverSync(ctx, envelope)
 }
 
+// shardFor 按 phone 选择分片；同一 phone 永远命中同一分片，从而由同一条
+// goroutine 顺序处理。不同 phone 只有在哈希碰撞时才共享分片。
+func (s *HTTPSink) shardFor(phone string) chan sinkJob {
+	return s.shards[int(hash.FNV32(phone)%uint32(len(s.shards)))]
+}
+
 func (s *HTTPSink) enqueue(envelope HTTPEnvelope) (contracts.UplinkResult, error) {
+	jobs := s.shardFor(envelope.Phone)
 	if s.closed.Load() {
 		s.dropped.Add(1)
-		log.Warn().Str("event_id", envelope.EventID).Int("queue_depth", len(s.queue)).Msg("uplink http sink dropped event: sink closed")
+		log.Warn().Str("event_id", envelope.EventID).Msg("uplink http sink dropped event: sink closed")
 		return contracts.UplinkResult{Accepted: true}, nil
 	}
 	select {
-	case s.queue <- envelope:
+	case jobs <- sinkJob{envelope: envelope}:
 		log.Debug().
 			Str("event_id", envelope.EventID).
-			Int("queue_depth", len(s.queue)).
+			Int("shard_queue_depth", len(jobs)).
 			Msg("uplink http sink enqueued event")
 		return contracts.UplinkResult{Accepted: true}, nil
 	case <-s.done:
@@ -257,14 +296,18 @@ func (s *HTTPSink) enqueue(envelope HTTPEnvelope) (contracts.UplinkResult, error
 		s.dropped.Add(1)
 		log.Warn().
 			Str("event_id", envelope.EventID).
-			Int("queue_depth", len(s.queue)).
+			Int("shard_queue_depth", len(jobs)).
 			Str("reliability", envelope.Reliability).
-			Msg("uplink http sink dropped event: queue full")
+			Msg("uplink http sink dropped event: shard queue full")
 		return contracts.UplinkResult{Accepted: true}, nil
 	}
 }
 
 func (s *HTTPSink) deliverSync(ctx context.Context, envelope HTTPEnvelope) (contracts.UplinkResult, error) {
+	if s.closed.Load() {
+		s.rejected.Add(1)
+		return contracts.UplinkResult{Reason: "sink closed"}, fmt.Errorf("uplink http sink closed")
+	}
 	select {
 	case s.slot <- struct{}{}:
 		defer func() { <-s.slot }()
@@ -280,16 +323,32 @@ func (s *HTTPSink) deliverSync(ctx context.Context, envelope HTTPEnvelope) (cont
 		return contracts.UplinkResult{Reason: "too many in-flight requests"}, fmt.Errorf("uplink http sink busy")
 	}
 
-	s.inFlight.Add(1)
-	defer s.inFlight.Add(-1)
-	status, err := s.postWithRetryStatus(ctx, envelope)
-	if err == nil {
-		return contracts.UplinkResult{Accepted: true}, nil
+	// confirm 事件与 best-effort 走同一分片队列，只是额外等待结果；
+	// 这样它不会越过同 phone 已排队的事件。
+	resultCh := make(chan sinkResult, 1)
+	jobs := s.shardFor(envelope.Phone)
+	select {
+	case jobs <- sinkJob{envelope: envelope, result: resultCh}:
+	case <-s.done:
+		s.rejected.Add(1)
+		return contracts.UplinkResult{Reason: "sink closed"}, fmt.Errorf("uplink http sink closed")
+	default:
+		s.rejected.Add(1)
+		log.Warn().
+			Str("event_id", envelope.EventID).
+			Int("shard_queue_depth", len(jobs)).
+			Msg("uplink http sink rejected event: shard queue full")
+		return contracts.UplinkResult{Reason: "too many in-flight requests"}, fmt.Errorf("uplink http sink busy")
 	}
-	if status == http.StatusConflict && envelope.MsgID != 0x0100 {
-		return s.handleUnknownDevice(ctx, envelope, err)
+
+	select {
+	case result := <-resultCh:
+		return result.result, result.err
+	case <-ctx.Done():
+		return contracts.UplinkResult{Reason: ctx.Err().Error()}, ctx.Err()
+	case <-s.done:
+		return contracts.UplinkResult{Reason: "sink closed"}, fmt.Errorf("uplink http sink closed")
 	}
-	return contracts.UplinkResult{Reason: err.Error()}, err
 }
 
 // handleUnknownDevice 处理管控返回的 409。
@@ -374,23 +433,48 @@ func (s *HTTPSink) markUnknown(phone string) {
 	s.unknownSince[phone] = time.Now()
 }
 
-func (s *HTTPSink) worker(ctx context.Context) {
+func (s *HTTPSink) worker(ctx context.Context, jobs <-chan sinkJob) {
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-s.done:
 			return
-		case envelope := <-s.queue:
-			// worker 侧不继承连接 ctx 的取消作为失败原因：队列在关闭时可能仍有积压，
-			// 但只处理到进程退出为止，不新建持久重投。
-			postCtx, cancel := context.WithTimeout(context.Background(), s.timeout)
-			if err := s.postWithRetry(postCtx, envelope); err != nil {
-				log.Warn().Err(err).Str("event_id", envelope.EventID).Msg("uplink http sink best-effort delivery failed")
-			}
-			cancel()
+		case job := <-jobs:
+			s.runJob(job)
 		}
 	}
+}
+
+// runJob 在分片内顺序执行一次投递。
+// HTTP 请求不继承连接 ctx：任务一旦入队就应处理完，连接断开不会取消已
+// 接收的事件；confirm 调用方可能提前返回，但事件仍按序投递（at-least-once）。
+func (s *HTTPSink) runJob(job sinkJob) {
+	postCtx, cancel := context.WithTimeout(context.Background(), s.timeout)
+	defer cancel()
+
+	if job.result == nil {
+		if err := s.postWithRetry(postCtx, job.envelope); err != nil {
+			log.Warn().Err(err).Str("event_id", job.envelope.EventID).Msg("uplink http sink best-effort delivery failed")
+		}
+		return
+	}
+
+	s.inFlight.Add(1)
+	defer s.inFlight.Add(-1)
+	result, err := s.deliverConfirm(postCtx, job.envelope)
+	job.result <- sinkResult{result: result, err: err}
+}
+
+func (s *HTTPSink) deliverConfirm(ctx context.Context, envelope HTTPEnvelope) (contracts.UplinkResult, error) {
+	status, err := s.postWithRetryStatus(ctx, envelope)
+	if err == nil {
+		return contracts.UplinkResult{Accepted: true}, nil
+	}
+	if status == http.StatusConflict && envelope.MsgID != 0x0100 {
+		return s.handleUnknownDevice(ctx, envelope, err)
+	}
+	return contracts.UplinkResult{Reason: err.Error()}, err
 }
 
 func (s *HTTPSink) postWithRetry(ctx context.Context, envelope HTTPEnvelope) error {

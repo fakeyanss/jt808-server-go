@@ -3,8 +3,10 @@ package uplink
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -76,6 +78,15 @@ func newTestSink(t *testing.T, url string, mutate func(*HTTPSinkOptions)) *HTTPS
 	return sink
 }
 
+// runTestSink 启动分片 worker；confirm-before-ack 现在必须经过队列，
+// 因此所有依赖 confirm 结果的测试都要先启动它。
+func runTestSink(t *testing.T, sink *HTTPSink) {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	go sink.Run(ctx)
+}
+
 func TestNewHTTPSinkRejectsInvalidOptions(t *testing.T) {
 	valid := HTTPSinkOptions{
 		URL:         "http://127.0.0.1/uplink",
@@ -117,6 +128,7 @@ func TestHTTPSinkSendsAuthAndEnvelope(t *testing.T) {
 	defer server.Close()
 
 	sink := newTestSink(t, server.URL, nil)
+	runTestSink(t, sink)
 	result, err := sink.Deliver(context.Background(), testEvent(contracts.ReliabilityConfirmBeforeAck))
 	require.NoError(t, err)
 	require.True(t, result.Accepted)
@@ -145,6 +157,7 @@ func TestHTTPSinkConfirmNon2xxFails(t *testing.T) {
 	defer server.Close()
 
 	sink := newTestSink(t, server.URL, nil)
+	runTestSink(t, sink)
 	result, err := sink.Deliver(context.Background(), testEvent(contracts.ReliabilityConfirmBeforeAck))
 	require.Error(t, err)
 	require.False(t, result.Accepted)
@@ -178,6 +191,7 @@ func TestHTTPSinkUnknownDeviceRedeliveryIsBounded(t *testing.T) {
 	sink := newTestSink(t, server.URL, func(o *HTTPSinkOptions) {
 		o.OnUnknownDeviceDropped = func(string) { dropped++ }
 	})
+	runTestSink(t, sink)
 
 	registration := testEvent(contracts.ReliabilityConfirmBeforeAck)
 	registration.MsgID = 0x0100
@@ -215,6 +229,7 @@ func TestHTTPSinkConfirmTimeoutFails(t *testing.T) {
 	defer server.Close()
 
 	sink := newTestSink(t, server.URL, func(o *HTTPSinkOptions) { o.Timeout = 80 * time.Millisecond })
+	runTestSink(t, sink)
 	_, err := sink.Deliver(context.Background(), testEvent(contracts.ReliabilityConfirmBeforeAck))
 	require.Error(t, err)
 
@@ -231,6 +246,7 @@ func TestHTTPSinkConfirmConnectionFailure(t *testing.T) {
 	sink := newTestSink(t, url, func(o *HTTPSinkOptions) {
 		o.Timeout = 200 * time.Millisecond
 	})
+	runTestSink(t, sink)
 	_, err := sink.Deliver(context.Background(), testEvent(contracts.ReliabilityConfirmBeforeAck))
 	require.Error(t, err)
 	require.Equal(t, int64(1), sink.Stats().Failed)
@@ -309,7 +325,8 @@ func TestHTTPSinkBestEffortQueueFullDrops(t *testing.T) {
 	require.True(t, second.Accepted)
 
 	stats := sink.Stats()
-	require.Equal(t, 1, stats.QueueDepth)
+	require.Len(t, stats.ShardQueues, 1)
+	require.Equal(t, 1, stats.ShardQueues[0])
 	require.Equal(t, int64(1), stats.Dropped)
 }
 
@@ -327,6 +344,7 @@ func TestHTTPSinkConfirmRejectsWhenInFlightFull(t *testing.T) {
 	defer server.Close()
 
 	sink := newTestSink(t, server.URL, func(o *HTTPSinkOptions) { o.QueueSize = 1 })
+	runTestSink(t, sink)
 
 	firstDone := make(chan error, 1)
 	go func() {
@@ -376,4 +394,164 @@ func TestBuildHTTPEnvelopeRejectsUnsupportedPayload(t *testing.T) {
 	event.Payload = make(chan int)
 	_, err := BuildHTTPEnvelope(event)
 	require.Error(t, err)
+}
+
+// 同一 phone 的事件固定落在同一分片，即使 workers > 1 也必须按入队顺序投递。
+func TestHTTPSinkSamePhonePreservesOrder(t *testing.T) {
+	var mu sync.Mutex
+	var order []uint16
+	first := make(chan struct{})
+	release := make(chan struct{})
+	var firstOnce sync.Once
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var envelope HTTPEnvelope
+		if err := json.NewDecoder(r.Body).Decode(&envelope); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		mu.Lock()
+		order = append(order, envelope.Serial)
+		n := len(order)
+		mu.Unlock()
+		if n == 1 {
+			firstOnce.Do(func() { close(first) })
+			<-release
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+
+	sink := newTestSink(t, server.URL, func(o *HTTPSinkOptions) {
+		o.Workers = 4
+		o.QueueSize = 32
+	})
+	runTestSink(t, sink)
+
+	for serial := uint16(1); serial <= 5; serial++ {
+		event := testEvent(contracts.ReliabilityBestEffort)
+		event.Serial = serial
+		event.EventID = fmt.Sprintf("same-phone|0x0200|%d", serial)
+		result, err := sink.Deliver(context.Background(), event)
+		require.NoError(t, err)
+		require.True(t, result.Accepted)
+	}
+
+	select {
+	case <-first:
+	case <-time.After(2 * time.Second):
+		t.Fatal("first event was not delivered")
+	}
+	close(release)
+
+	require.Eventually(t, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return len(order) == 5
+	}, 2*time.Second, 10*time.Millisecond)
+	mu.Lock()
+	defer mu.Unlock()
+	require.Equal(t, []uint16{1, 2, 3, 4, 5}, order)
+}
+
+// confirm 事件必须排在同 phone 已入队的 best-effort 事件之后，不能插队。
+func TestHTTPSinkConfirmWaitsBehindSamePhoneQueue(t *testing.T) {
+	release := make(chan struct{})
+	arrived := make(chan uint16, 2)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var envelope HTTPEnvelope
+		if err := json.NewDecoder(r.Body).Decode(&envelope); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		arrived <- envelope.MsgID
+		if envelope.MsgID == 0x0200 {
+			<-release
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+
+	sink := newTestSink(t, server.URL, func(o *HTTPSinkOptions) { o.Workers = 2 })
+	runTestSink(t, sink)
+
+	best := testEvent(contracts.ReliabilityBestEffort)
+	best.MsgID = 0x0200
+	best.EventID = "same-phone|0x0200|1"
+	_, err := sink.Deliver(context.Background(), best)
+	require.NoError(t, err)
+	require.Equal(t, uint16(0x0200), <-arrived)
+
+	confirm := testEvent(contracts.ReliabilityConfirmBeforeAck)
+	confirm.MsgID = 0x0102
+	confirm.EventID = "same-phone|0x0102|2"
+	done := make(chan error, 1)
+	go func() {
+		_, err := sink.Deliver(context.Background(), confirm)
+		done <- err
+	}()
+
+	select {
+	case <-arrived:
+		t.Fatal("confirm overtook the queued best-effort event for the same phone")
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(release)
+	require.NoError(t, <-done)
+	require.Equal(t, uint16(0x0102), <-arrived)
+}
+
+// 不同分片之间仍然并发：两个 phone 分别阻塞在自己的请求里时都应已经进入处理。
+func TestHTTPSinkDifferentShardsRunConcurrently(t *testing.T) {
+	entered := make(chan string, 2)
+	release := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var envelope HTTPEnvelope
+		if err := json.NewDecoder(r.Body).Decode(&envelope); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		entered <- envelope.Phone
+		<-release
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+
+	sink := newTestSink(t, server.URL, func(o *HTTPSinkOptions) { o.Workers = 2 })
+	runTestSink(t, sink)
+
+	var phoneA, phoneB string
+	for i := 0; i < 100 && phoneB == ""; i++ {
+		candidate := fmt.Sprintf("phone-%d", i)
+		if phoneA == "" {
+			phoneA = candidate
+			continue
+		}
+		if sink.shardFor(candidate) != sink.shardFor(phoneA) {
+			phoneB = candidate
+		}
+	}
+	require.NotEmpty(t, phoneB, "expected to find two phones in different shards")
+
+	for _, phone := range []string{phoneA, phoneB} {
+		event := testEvent(contracts.ReliabilityBestEffort)
+		event.Phone = phone
+		event.EventID = phone + "|0x0200|1"
+		result, err := sink.Deliver(context.Background(), event)
+		require.NoError(t, err)
+		require.True(t, result.Accepted)
+	}
+
+	got := map[string]bool{}
+	for i := 0; i < 2; i++ {
+		select {
+		case phone := <-entered:
+			got[phone] = true
+		case <-time.After(2 * time.Second):
+			t.Fatal("different shards did not run concurrently")
+		}
+	}
+	close(release)
+	require.True(t, got[phoneA])
+	require.True(t, got[phoneB])
 }
