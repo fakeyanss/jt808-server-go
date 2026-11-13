@@ -5,19 +5,19 @@
 CREATE TABLE IF NOT EXISTS schema_migrations (
     version VARCHAR(32) NOT NULL PRIMARY KEY,
     applied_at BIGINT NOT NULL
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
 -- v1.0.0 是开发阶段的唯一基线，包含此前全部增量变更的最终形态。
 -- 后续变更以 v<MAJOR>.<MINOR>.<PATCH>.sql 增加新文件，版本号同步推进。
 -- 文件开头的日期即版本号，迁移按日期升序执行；同一天只允许一个迁移文件。
 --
 -- 方言约束：本文件只供 MySQL 执行。
---   * 建表显式声明 ENGINE=InnoDB DEFAULT CHARSET=utf8mb4。
+--   * 建表显式声明 ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci。
 --   * 主键显式写 NOT NULL。
 --   * 不使用 TEXT/BLOB/JSON 的 DEFAULT（MySQL 不允许字面量默认值）。
 --   * 不使用 CREATE INDEX IF NOT EXISTS（MySQL 不支持），索引重复执行由版本表规避。
 
--- 设备静态主数据。运行时字段（session/在线态/最后通信时间）在 device_runtime。
+-- 设备静态主数据。运行时字段（session/在线态/最后通信时间）由进程内 runtime 持有，不落库。
 CREATE TABLE IF NOT EXISTS devices (
     phone VARCHAR(32) NOT NULL PRIMARY KEY,
     id VARCHAR(128) NOT NULL DEFAULT '',
@@ -28,8 +28,10 @@ CREATE TABLE IF NOT EXISTS devices (
     auth_code VARCHAR(64) NOT NULL DEFAULT '',
     imei VARCHAR(64) NOT NULL DEFAULT '',
     software_version VARCHAR(64) NOT NULL DEFAULT '',
-    updated_at BIGINT NOT NULL
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+    updated_at BIGINT NOT NULL,
+    -- 车牌普通索引（非唯一）：设备身份以 phone 为准，plate 允许重复，仅用于加速 GetByPlate。
+    KEY idx_devices_plate (plate)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
 -- 终端参数按设计决策 D1 使用整体 JSON 单字段。
 CREATE TABLE IF NOT EXISTS device_params (
@@ -37,7 +39,7 @@ CREATE TABLE IF NOT EXISTS device_params (
     param_cnt SMALLINT NOT NULL DEFAULT 0,
     params_json TEXT NOT NULL,
     updated_at BIGINT NOT NULL
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
 -- 终端属性档案：只承载 0x0107 查询应答，与 devices 独立存储。
 CREATE TABLE IF NOT EXISTS terminal_properties (
@@ -53,22 +55,7 @@ CREATE TABLE IF NOT EXISTS terminal_properties (
     communication_properties SMALLINT NOT NULL DEFAULT 0,
     extra_json TEXT NOT NULL,
     updated_at BIGINT NOT NULL
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-
--- 设备运行时投影。存量 session/status 跨进程无意义，无需搬运数据。
--- 不在启动时批量重置：单机由优雅停机清空，异常重启后由读路径 TTL 判定收敛为离线。
-CREATE TABLE IF NOT EXISTS device_runtime (
-    phone VARCHAR(32) NOT NULL PRIMARY KEY,
-    session_id VARCHAR(128) NOT NULL DEFAULT '',
-    trans_proto VARCHAR(16) NOT NULL DEFAULT '',
-    last_com_time_ms BIGINT NOT NULL DEFAULT 0,
-    status SMALLINT NOT NULL DEFAULT 0,
-    updated_at BIGINT NOT NULL
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-
--- 车牌普通索引（非唯一）：设备身份以 phone 为准，plate 允许重复。
--- 该索引只用于加速 GetByPlate 查询。
-CREATE INDEX idx_devices_plate ON devices (plate);
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
 -- 持久化数据表（2026-11-02）。
 -- 批次 A：终端下行配置目录（terminal_catalogs）与区域/路线（region_items）。
@@ -87,9 +74,9 @@ CREATE TABLE IF NOT EXISTS terminal_catalogs (
     item_key VARCHAR(255) NOT NULL,
     payload_json MEDIUMTEXT NOT NULL,
     updated_at BIGINT NOT NULL,
-    PRIMARY KEY (phone, catalog_type, item_key)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-CREATE INDEX idx_terminal_catalogs_phone ON terminal_catalogs (phone, catalog_type);
+    PRIMARY KEY (phone, catalog_type, item_key),
+    KEY idx_terminal_catalogs_phone (phone, catalog_type)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
 -- 区域/路线目录。region_type: 1 圆形 / 2 矩形 / 3 多边形 / 4 路线。
 -- “清空后重设”由应用层在同一事务内完成 DELETE + INSERT。
@@ -99,14 +86,16 @@ CREATE TABLE IF NOT EXISTS region_items (
     item_id BIGINT NOT NULL,
     payload_json TEXT NOT NULL,
     updated_at BIGINT NOT NULL,
-    PRIMARY KEY (phone, region_type, item_id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-CREATE INDEX idx_region_items_phone ON region_items (phone, region_type);
+    PRIMARY KEY (phone, region_type, item_id),
+    KEY idx_region_items_phone (phone, region_type)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
 -- 定位历史。record_id 由应用层生成（纳秒时间戳 + 进程内递增），
 -- 避免同一毫秒内多条 0x0704 数据项仅靠 (phone, received_at_ms) 无法区分。
 -- 高频追加表使用自增 id 作为聚簇主键，业务键 (phone, record_id) 改为唯一键，
 -- 保持 INSERT IGNORE 的重传幂等语义。
+-- dedup_key = hash(eventId + itemIndex)，老数据与 standalone 写入保持 NULL；
+-- 唯一索引允许多个 NULL，因此不影响既有数据。
 CREATE TABLE IF NOT EXISTS locations (
     id BIGINT NOT NULL AUTO_INCREMENT,
     phone VARCHAR(32) NOT NULL,
@@ -122,11 +111,14 @@ CREATE TABLE IF NOT EXISTS locations (
     speed INTEGER NOT NULL DEFAULT 0,
     direction INTEGER NOT NULL DEFAULT 0,
     payload_json TEXT NOT NULL,
+    dedup_key VARCHAR(64) NULL,
     PRIMARY KEY (id),
-    UNIQUE KEY uq_locations_phone_record (phone, record_id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-CREATE INDEX idx_locations_phone_report_time ON locations (phone, report_time_ms);
-CREATE INDEX idx_locations_report_time ON locations (report_time_ms);
+    UNIQUE KEY uq_locations_phone_record (phone, record_id),
+    KEY idx_locations_phone_report_time (phone, report_time_ms),
+    KEY idx_locations_report_time (report_time_ms),
+    KEY idx_locations_received (received_at_ms),
+    UNIQUE KEY uq_locations_phone_dedup_key (phone, dedup_key)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
 -- 报警历史。同一 (phone, message_serial) 在去重窗口内更新 alarm_sign，
 -- 窗口外以新的 received_at_ms 追加；confirmed 由 0x8203 人工确认置位。
@@ -143,21 +135,10 @@ CREATE TABLE IF NOT EXISTS alarms (
     longitude BIGINT NOT NULL DEFAULT 0,
     confirmed SMALLINT NOT NULL DEFAULT 0,
     PRIMARY KEY (id),
-    UNIQUE KEY uq_alarms_phone_serial_received (phone, message_serial, received_at_ms)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-CREATE INDEX idx_alarms_phone_received ON alarms (phone, received_at_ms);
-CREATE INDEX idx_alarms_received ON alarms (received_at_ms);
-
--- 移除设备运行时投影表（2026-11-05）。
---
--- 运行时状态（session_id / trans_proto / last_com_time_ms / status）不再进入数据库，
--- 改由进程内 runtime 注册表持有：连接在则有效，进程重启后自然归零。
--- devices 表只保留设备静态档案与 keepalive_ms，作为跨进程可恢复的注册信息。
---
--- DROP TABLE IF EXISTS 保证重复执行与部分失败后重跑幂等。
--- 本迁移不搬运存量运行时数据：这些字段跨进程无意义，升级后直接丢弃。
-
-DROP TABLE IF EXISTS device_runtime;
+    UNIQUE KEY uq_alarms_phone_serial_received (phone, message_serial, received_at_ms),
+    KEY idx_alarms_phone_received (phone, received_at_ms),
+    KEY idx_alarms_received (received_at_ms)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
 -- 1078 媒体元数据表（2026-11-08）。
 --
@@ -173,7 +154,7 @@ CREATE TABLE IF NOT EXISTS media_resource_lists (
     media_count BIGINT NOT NULL DEFAULT 0,
     items_json MEDIUMTEXT NOT NULL,
     updated_at BIGINT NOT NULL
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
 CREATE TABLE IF NOT EXISTS media_upload_tasks (
     phone VARCHAR(32) NOT NULL,
@@ -181,16 +162,16 @@ CREATE TABLE IF NOT EXISTS media_upload_tasks (
     payload_json MEDIUMTEXT NOT NULL,
     updated_at BIGINT NOT NULL,
     PRIMARY KEY (phone, serial)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
 CREATE TABLE IF NOT EXISTS media_upload_notices (
     phone VARCHAR(32) NOT NULL,
     serial BIGINT NOT NULL,
     result SMALLINT NOT NULL DEFAULT 0,
     updated_at BIGINT NOT NULL,
-    PRIMARY KEY (phone, serial)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-CREATE INDEX idx_media_upload_notices_phone ON media_upload_notices (phone, updated_at);
+    PRIMARY KEY (phone, serial),
+    KEY idx_media_upload_notices_phone (phone, updated_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
 -- 下行命令 outbox（2026-11-09）。
 --
@@ -216,33 +197,24 @@ CREATE TABLE IF NOT EXISTS command_outbox (
     last_error VARCHAR(255) NOT NULL,
     created_at BIGINT NOT NULL,
     updated_at BIGINT NOT NULL,
+    -- 重投闭环字段均带默认值，兼容升级前已存在的 pending 记录：
+    --   next_attempt_at = 0 表示立即可投；
+    --   expires_at = 0 表示不设过期（新写入的记录由应用层按配置填充）；
+    --   lease_expires_at = 0 表示未占用。
+    -- lease_owner / lease_expires_at 是多实例并发保护：同一命令在租约有效期内
+    -- 只会被一个实例下发；租约到期后允许重新占用，因此整体语义是 at-least-once。
+    last_attempt_at BIGINT NOT NULL DEFAULT 0,
+    next_attempt_at BIGINT NOT NULL DEFAULT 0,
+    expires_at BIGINT NOT NULL DEFAULT 0,
+    lease_owner VARCHAR(128) NOT NULL DEFAULT '',
+    lease_expires_at BIGINT NOT NULL DEFAULT 0,
     PRIMARY KEY (id),
-    UNIQUE KEY uq_command_outbox_command_id (command_id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-CREATE UNIQUE INDEX idx_command_outbox_idempotency ON command_outbox (phone, idempotency_key);
-CREATE INDEX idx_command_outbox_routing ON command_outbox (phone, msg_id, serial);
-
--- 下行命令 outbox 重投闭环字段（2026-11-10）。
---
--- 增列均带默认值，兼容升级前已存在的 pending 记录：
---   next_attempt_at = 0 表示立即可投；
---   expires_at = 0 表示不设过期（新写入的记录由应用层按配置填充）；
---   lease_expires_at = 0 表示未占用。
--- lease_owner / lease_expires_at 是多实例并发保护：同一命令在租约有效期内
--- 只会被一个实例下发；租约到期后允许重新占用，因此整体语义是 at-least-once。
---
--- 方言约束同既有迁移文件：只使用 MySQL 语法，
--- 每次 ALTER 只增一列，避免方言差异。
--- 注：迁移工具要求同日唯一，本文件日期顺延至 20261110。
-
-ALTER TABLE command_outbox ADD COLUMN last_attempt_at BIGINT NOT NULL DEFAULT 0;
-ALTER TABLE command_outbox ADD COLUMN next_attempt_at BIGINT NOT NULL DEFAULT 0;
-ALTER TABLE command_outbox ADD COLUMN expires_at BIGINT NOT NULL DEFAULT 0;
-ALTER TABLE command_outbox ADD COLUMN lease_owner VARCHAR(128) NOT NULL DEFAULT '';
-ALTER TABLE command_outbox ADD COLUMN lease_expires_at BIGINT NOT NULL DEFAULT 0;
-
-CREATE INDEX idx_command_outbox_due ON command_outbox (status, next_attempt_at, expires_at);
-CREATE INDEX idx_command_outbox_lease ON command_outbox (lease_expires_at);
+    UNIQUE KEY uq_command_outbox_command_id (command_id),
+    UNIQUE KEY idx_command_outbox_idempotency (phone, idempotency_key),
+    KEY idx_command_outbox_routing (phone, msg_id, serial),
+    KEY idx_command_outbox_due (status, next_attempt_at, expires_at),
+    KEY idx_command_outbox_lease (lease_expires_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
 -- 终端升级结果（2026-11-11）。
 --
@@ -259,9 +231,9 @@ CREATE TABLE IF NOT EXISTS upgrade_results (
     upgrade_type SMALLINT NOT NULL DEFAULT 0,
     result SMALLINT NOT NULL DEFAULT 0,
     received_at BIGINT NOT NULL,
-    PRIMARY KEY (phone, serial)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-CREATE INDEX idx_upgrade_results_phone_received ON upgrade_results (phone, received_at);
+    PRIMARY KEY (phone, serial),
+    KEY idx_upgrade_results_phone_received (phone, received_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
 -- 0x0801 多媒体文件与 0x0805 拍摄应答（2026-11-12）。
 --
@@ -296,10 +268,11 @@ CREATE TABLE IF NOT EXISTS media_files (
     md5 VARCHAR(32) NOT NULL DEFAULT '',
     received_at BIGINT NOT NULL,
     PRIMARY KEY (id),
-    UNIQUE KEY uq_media_files_phone_media (phone, media_id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-CREATE INDEX idx_media_files_phone_time ON media_files (phone, location_time, received_at);
-CREATE INDEX idx_media_files_alarm ON media_files (phone, alarm_sign);
+    UNIQUE KEY uq_media_files_phone_media (phone, media_id),
+    KEY idx_media_files_phone_time (phone, location_time, received_at),
+    KEY idx_media_files_alarm (phone, alarm_sign),
+    KEY idx_media_files_received (received_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
 CREATE TABLE IF NOT EXISTS media_captures (
     phone VARCHAR(32) NOT NULL,
@@ -307,18 +280,19 @@ CREATE TABLE IF NOT EXISTS media_captures (
     answer_serial BIGINT NOT NULL,
     result SMALLINT NOT NULL DEFAULT 0,
     received_at BIGINT NOT NULL,
-    PRIMARY KEY (phone, record_id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-CREATE INDEX idx_media_captures_phone_time ON media_captures (phone, received_at);
+    PRIMARY KEY (phone, record_id),
+    KEY idx_media_captures_phone_time (phone, received_at),
+    KEY idx_media_captures_received (received_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
 CREATE TABLE IF NOT EXISTS media_capture_items (
     phone VARCHAR(32) NOT NULL,
     record_id VARCHAR(64) NOT NULL,
     item_index INTEGER NOT NULL,
     media_id BIGINT NOT NULL,
-    PRIMARY KEY (phone, record_id, item_index)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-CREATE INDEX idx_media_capture_items_media ON media_capture_items (phone, media_id);
+    PRIMARY KEY (phone, record_id, item_index),
+    KEY idx_media_capture_items_media (phone, media_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
 -- 终端 BCD 时间从“伪 UTC”统一为固定 GMT+8（2026-11-13）。
 --
@@ -394,34 +368,11 @@ CREATE TABLE IF NOT EXISTS media_search_results (
     direction INTEGER NOT NULL DEFAULT 0,
     location_time BIGINT NOT NULL DEFAULT 0,
     received_at BIGINT NOT NULL,
-    PRIMARY KEY (phone, answer_serial, item_index)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
--- 查询方式为“按设备取最近检索结果”，按接收时间倒序扫描。
-CREATE INDEX idx_media_search_results_phone_time ON media_search_results (phone, received_at);
-
--- 历史数据保留期清理所需索引（2026-11-15）。
---
--- 定期清理按“接收时间早于 cutoff”扫描并分批删除，需要独立的接收时间索引：
---   * locations.received_at_ms：既有索引以 (phone, report_time_ms) 与 report_time_ms 为主，
---     不覆盖按接收时间的全局扫描；
---   * media_files.received_at：既有索引以 phone 开头，无法支撑全局时间扫描；
---   * media_captures.received_at：同上；
---   * media_search_results.received_at：20261114 只建了 (phone, received_at)
---     复合索引，无法支撑按时间的全局扫描。
--- alarms.received_at_ms 已有 idx_alarms_received，无需重复创建。
---
--- 方言约束同既有迁移文件：只使用 MySQL 语法，显式声明 InnoDB 与 utf8mb4。
-
-CREATE INDEX idx_locations_received ON locations (received_at_ms);
-CREATE INDEX idx_media_files_received ON media_files (received_at);
-CREATE INDEX idx_media_captures_received ON media_captures (received_at);
-CREATE INDEX idx_media_search_results_received ON media_search_results (received_at);
-
--- E2：定位历史按事件幂等写入。
--- dedup_key = hash(eventId + itemIndex)，老数据与 standalone 写入保持 NULL；
--- 唯一索引允许多个 NULL，因此不影响既有数据。
-ALTER TABLE locations ADD COLUMN dedup_key VARCHAR(64) NULL;
-CREATE UNIQUE INDEX uq_locations_phone_dedup_key ON locations (phone, dedup_key);
+    PRIMARY KEY (phone, answer_serial, item_index),
+    -- 按设备取最近检索结果；接收时间索引供保留期清理按全局时间扫描。
+    KEY idx_media_search_results_phone_time (phone, received_at),
+    KEY idx_media_search_results_received (received_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
 -- 下行命令流水号分配表（2026-11-17）。
 --
@@ -437,7 +388,7 @@ CREATE TABLE IF NOT EXISTS command_serial (
     phone VARCHAR(32) NOT NULL PRIMARY KEY,
     next_serial INTEGER NOT NULL,
     updated_at BIGINT NOT NULL
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
 -- 附件接收元数据（2026-11-18）。
 --
@@ -469,7 +420,7 @@ CREATE TABLE IF NOT EXISTS attachment_files (
     created_at BIGINT NOT NULL,
     updated_at BIGINT NOT NULL,
     completed_at BIGINT NOT NULL DEFAULT 0,
-    PRIMARY KEY (source, phone, alarm_no, file_name)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-CREATE INDEX idx_attachment_files_phone ON attachment_files (source, phone, updated_at);
-CREATE INDEX idx_attachment_files_status ON attachment_files (status, updated_at);
+    PRIMARY KEY (source, phone, alarm_no, file_name),
+    KEY idx_attachment_files_phone (source, phone, updated_at),
+    KEY idx_attachment_files_status (status, updated_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
