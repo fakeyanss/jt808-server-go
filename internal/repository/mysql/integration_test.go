@@ -168,6 +168,65 @@ func TestSessionDirectoryOnRealMySQL(t *testing.T) {
 	require.Nil(t, record)
 }
 
+// Route 的联表判定用 CURRENT_TIMESTAMP(3)，MySQL 方言必须单独验证。
+func TestSessionDirectoryRouteOnRealMySQL(t *testing.T) {
+	ctx := context.Background()
+	dsn := mysqlTestDSN(t)
+	requireMigrated(t, dsn)
+	db := openRaw(t, dsn)
+	store := openStore(t, dsn)
+	dir := store.SessionDirectoryRepository()
+	nodes := store.GatewayNodeRepository()
+
+	const (
+		gatewayID = "gw-route-it"
+		phone     = "13800000998"
+	)
+	_, err := db.Exec(`DELETE FROM session_directory WHERE phone = ?`, phone)
+	require.NoError(t, err)
+	_, err = db.Exec(`DELETE FROM gateway_nodes WHERE gateway_id = ?`, gatewayID)
+	require.NoError(t, err)
+
+	owner := repository.SessionOwner{GatewayID: gatewayID, InstanceID: "inst-a", SessionID: "sess-1"}
+	_, err = dir.Claim(ctx, phone, owner)
+	require.NoError(t, err)
+
+	// 节点未注册。
+	_, ok, err := dir.Route(ctx, phone, "")
+	require.NoError(t, err)
+	require.False(t, ok)
+
+	require.NoError(t, nodes.Register(ctx, gatewayID, "inst-a", "http://gw-route-it:9100"))
+	url, ok, err := dir.Route(ctx, phone, "")
+	require.NoError(t, err)
+	require.True(t, ok)
+	require.Equal(t, "http://gw-route-it:9100", url)
+
+	_, ok, err = dir.Route(ctx, phone, "sess-stale")
+	require.NoError(t, err)
+	require.False(t, ok)
+
+	// 节点过期由数据库时间裁决。
+	_, err = db.Exec(`UPDATE gateway_nodes
+		SET expires_at = DATE_SUB(CURRENT_TIMESTAMP(3), INTERVAL 1 SECOND)
+		WHERE gateway_id = ?`, gatewayID)
+	require.NoError(t, err)
+	_, ok, err = dir.Route(ctx, phone, "")
+	require.NoError(t, err)
+	require.False(t, ok)
+
+	// 目录指向的实例与节点当前实例不一致时不可路由。
+	require.NoError(t, nodes.Register(ctx, gatewayID, "inst-b", "http://gw-route-it:9100"))
+	_, ok, err = dir.Route(ctx, phone, "")
+	require.NoError(t, err)
+	require.False(t, ok)
+
+	require.NoError(t, nodes.Deregister(ctx, gatewayID, "inst-b"))
+	_, ok, err = dir.Route(ctx, phone, "")
+	require.NoError(t, err)
+	require.False(t, ok)
+}
+
 // openRaw 打开一个独立的原始连接池，用于观察/构造 SQL 层状态。
 func openRaw(t *testing.T, dsn string) *sql.DB {
 	t.Helper()

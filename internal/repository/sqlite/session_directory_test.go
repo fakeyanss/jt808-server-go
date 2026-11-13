@@ -63,3 +63,66 @@ func TestSessionDirectoryClaimIsIdempotentAndFences(t *testing.T) {
 	require.NoError(t, err)
 	require.False(t, ok)
 }
+
+// Route 的有效性判定全部在 SQL 内完成：目录存在、节点在线且未过期。
+func TestSessionDirectoryRouteFollowsNodeLiveness(t *testing.T) {
+	ctx := context.Background()
+	backend := openTestSQLite(t)
+	dir := backend.SessionDirectoryRepository()
+	nodes := backend.GatewayNodeRepository()
+
+	const phone = "13800000002"
+	owner := repository.SessionOwner{GatewayID: "gw-1", InstanceID: "inst-a", SessionID: "sess-1"}
+
+	// 没有目录行。
+	url, ok, err := dir.Route(ctx, phone, "")
+	require.NoError(t, err)
+	require.False(t, ok)
+	require.Empty(t, url)
+
+	_, err = dir.Claim(ctx, phone, owner)
+	require.NoError(t, err)
+
+	// 目录存在但节点未注册，不可路由。
+	_, ok, err = dir.Route(ctx, phone, "")
+	require.NoError(t, err)
+	require.False(t, ok)
+
+	require.NoError(t, nodes.Register(ctx, "gw-1", "inst-a", "http://gw-1:9100"))
+	url, ok, err = dir.Route(ctx, phone, "")
+	require.NoError(t, err)
+	require.True(t, ok)
+	require.Equal(t, "http://gw-1:9100", url)
+
+	// SessionID 显式指定时必须与目录一致。
+	url, ok, err = dir.Route(ctx, phone, "sess-1")
+	require.NoError(t, err)
+	require.True(t, ok)
+	require.Equal(t, "http://gw-1:9100", url)
+
+	_, ok, err = dir.Route(ctx, phone, "sess-stale")
+	require.NoError(t, err)
+	require.False(t, ok)
+
+	// 节点注销后立即不可路由。
+	require.NoError(t, nodes.Deregister(ctx, "gw-1", "inst-a"))
+	_, ok, err = dir.Route(ctx, phone, "")
+	require.NoError(t, err)
+	require.False(t, ok)
+
+	// 节点过期后不可路由；过期时间由数据库决定。
+	require.NoError(t, nodes.Register(ctx, "gw-1", "inst-a", "http://gw-1:9100"))
+	_, err = backend.DB().ExecContext(ctx,
+		`UPDATE gateway_nodes SET expires_at = strftime('%Y-%m-%d %H:%M:%f','now','-1 seconds')
+		 WHERE gateway_id = ?`, "gw-1")
+	require.NoError(t, err)
+	_, ok, err = dir.Route(ctx, phone, "")
+	require.NoError(t, err)
+	require.False(t, ok)
+
+	// 目录指向的实例与节点当前实例不一致时不可路由。
+	require.NoError(t, nodes.Register(ctx, "gw-1", "inst-b", "http://gw-1:9100"))
+	_, ok, err = dir.Route(ctx, phone, "")
+	require.NoError(t, err)
+	require.False(t, ok)
+}

@@ -265,6 +265,14 @@ func buildDeps(spec Spec, cfg *config.Config, s settings) *deps {
 			Str("advertise_url", clusterOptions.Gateway.AdvertiseURL).
 			Msg("Gateway node reporter enabled")
 	}
+	if len(clusterOptions.Gateway.Nodes) > 0 {
+		seedIDs := make([]string, 0, len(clusterOptions.Gateway.Nodes))
+		for _, node := range clusterOptions.Gateway.Nodes {
+			seedIDs = append(seedIDs, node.ID)
+		}
+		log.Info().Strs("seed_nodes", seedIDs).
+			Msg("Gateway seed nodes configured; downlink routing still follows session directory")
+	}
 
 	var hooks action.Hooks = action.Noop{}
 	if cfg.Server.Action != nil && cfg.Server.Action.HTTP != nil && cfg.Server.Action.HTTP.URL != "" {
@@ -405,7 +413,8 @@ func buildDeps(spec Spec, cfg *config.Config, s settings) *deps {
 				os.Exit(1)
 			}
 			downlinkSender = sender
-		} else {
+		} else if clusterOptions.Gateway.URL != "" {
+			// 单节点兼容：固定入口，不查会话目录。
 			client, clientErr := downlinkhttp.NewClient(downlinkhttp.ClientOptions{
 				BaseURL: clusterOptions.Gateway.URL,
 				Token:   clusterOptions.Gateway.Token,
@@ -417,6 +426,19 @@ func buildDeps(spec Spec, cfg *config.Config, s settings) *deps {
 			}
 			downlinkSender = client
 			log.Info().Str("gateway_url", clusterOptions.Gateway.URL).Msg("HTTP downlink client enabled")
+		} else {
+			// 多节点：按 phone 的会话目录定位归属网关，节点不可用一律 offline。
+			router, routerErr := downlinkhttp.NewRouter(downlinkhttp.RouterOptions{
+				Directory: storeSet.SessionDirectory,
+				Token:     clusterOptions.Gateway.Token,
+				Timeout:   clusterOptions.Downlink.Timeout,
+			})
+			if routerErr != nil {
+				log.Error().Err(routerErr).Msg("Fail to create session directory downlink router")
+				os.Exit(1)
+			}
+			downlinkSender = router
+			log.Info().Msg("Session directory downlink router enabled")
 		}
 		built, buildErr := control.NewOutbox(control.OutboxDependencies{
 			Commands: commandRepo,
