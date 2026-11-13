@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	clockpkg "github.com/fakeyanss/jt808-server-go/internal/clock"
 	"github.com/fakeyanss/jt808-server-go/internal/contracts"
 	"github.com/fakeyanss/jt808-server-go/internal/observability"
 	"github.com/fakeyanss/jt808-server-go/internal/repository"
@@ -25,6 +26,8 @@ type RouterOptions struct {
 	HTTPClient *http.Client
 	// Metrics 是目录命中/离线的观测计数器；可为空。
 	Metrics *observability.Metrics
+	// Clock 是进程内唯一时钟源；为空时使用系统时钟。
+	Clock clockpkg.Clock
 }
 
 // Router 按会话目录把下行请求发到归属网关。
@@ -37,6 +40,7 @@ type Router struct {
 	timeout    time.Duration
 	httpClient *http.Client
 	metrics    *observability.Metrics
+	clock      clockpkg.Clock
 
 	mu      sync.Mutex
 	clients map[string]*Client
@@ -52,12 +56,17 @@ func NewRouter(options RouterOptions) (*Router, error) {
 	if strings.TrimSpace(options.Token) == "" {
 		return nil, fmt.Errorf("downlink router: token is required")
 	}
+	clk := options.Clock
+	if clk == nil {
+		clk = clockpkg.System()
+	}
 	return &Router{
 		directory:  options.Directory,
 		token:      strings.TrimSpace(options.Token),
 		timeout:    options.Timeout,
 		httpClient: options.HTTPClient,
 		metrics:    options.Metrics,
+		clock:      clk,
 		clients:    make(map[string]*Client),
 	}, nil
 }
@@ -74,7 +83,7 @@ func (r *Router) Send(ctx context.Context, request contracts.DownlinkRequest) (c
 		r.metrics.IncDownlinkOffline()
 		return contracts.DownlinkReceipt{Status: contracts.DownlinkStatusOffline}, nil
 	}
-	baseURL, ok, err := r.directory.Route(ctx, request.Phone, request.SessionID)
+	baseURL, ok, err := r.directory.Route(ctx, request.Phone, request.SessionID, r.clock.Now())
 	if err != nil {
 		return contracts.DownlinkReceipt{}, &contracts.DownlinkError{
 			Kind:    contracts.DownlinkErrorTransient,

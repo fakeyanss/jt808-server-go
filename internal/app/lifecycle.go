@@ -17,6 +17,7 @@ func run(spec Spec, cfg *config.Config) {
 	d.startRetention()
 	d.setupDownlinkHTTP()
 	d.setupControl()
+	d.startClockSkewProbe()
 	d.startOutbox()
 	d.startDownlinkHTTP()
 	d.startUplinkHTTP()

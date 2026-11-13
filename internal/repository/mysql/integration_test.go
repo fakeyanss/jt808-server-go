@@ -44,43 +44,33 @@ func TestCoordinationStoreOnRealMySQL(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = store.Close() })
 	coord := store.CoordinationStore()
+	now := time.Now()
 
-	acquired, err := coord.Acquire(ctx, "cleanup", "replica-a", time.Minute)
+	acquired, err := coord.Acquire(ctx, "cleanup", "replica-a", now, time.Minute, 2*time.Second)
 	require.NoError(t, err)
 	require.True(t, acquired)
-	acquired, err = coord.Acquire(ctx, "cleanup", "replica-b", time.Minute)
+	acquired, err = coord.Acquire(ctx, "cleanup", "replica-b", now, time.Minute, 2*time.Second)
 	require.NoError(t, err)
 	require.False(t, acquired)
-	acquired, err = coord.Acquire(ctx, "cleanup", "replica-a", time.Minute)
+	acquired, err = coord.Acquire(ctx, "cleanup", "replica-a", now.Add(30*time.Second), time.Minute, 2*time.Second)
+	require.NoError(t, err)
+	require.True(t, acquired)
+	acquired, err = coord.Acquire(ctx, "cleanup", "replica-b", now.Add(2*time.Minute), time.Minute, 2*time.Second)
 	require.NoError(t, err)
 	require.True(t, acquired)
 
-	// 手动把租约改到过去，模拟到期；过期判定由数据库时间完成。
-	_, err = raw.Exec(`UPDATE task_leases
-		SET expires_at = CAST(UNIX_TIMESTAMP(CURRENT_TIMESTAMP(3)) * 1000 AS SIGNED) - 1000
-		WHERE name = 'cleanup'`)
-	require.NoError(t, err)
-	acquired, err = coord.Acquire(ctx, "cleanup", "replica-b", time.Minute)
-	require.NoError(t, err)
-	require.True(t, acquired)
-
-	first, err := coord.MarkOnce(ctx, "auto-9208:phone:alarm", time.Minute)
+	first, err := coord.MarkOnce(ctx, "auto-9208:phone:alarm", now, time.Minute)
 	require.NoError(t, err)
 	require.True(t, first)
-	second, err := coord.MarkOnce(ctx, "auto-9208:phone:alarm", time.Minute)
+	second, err := coord.MarkOnce(ctx, "auto-9208:phone:alarm", now.Add(30*time.Second), time.Minute)
 	require.NoError(t, err)
 	require.False(t, second)
-
-	_, err = raw.Exec(`UPDATE dedup_keys
-		SET expires_at = CAST(UNIX_TIMESTAMP(CURRENT_TIMESTAMP(3)) * 1000 AS SIGNED) - 1000
-		WHERE dedup_key = 'auto-9208:phone:alarm'`)
-	require.NoError(t, err)
-	third, err := coord.MarkOnce(ctx, "auto-9208:phone:alarm", time.Minute)
+	third, err := coord.MarkOnce(ctx, "auto-9208:phone:alarm", now.Add(2*time.Minute), time.Minute)
 	require.NoError(t, err)
 	require.True(t, third)
 }
 
-// 节点注册表全部时间由 CURRENT_TIMESTAMP(3) 计算，MySQL 方言必须单独验证。
+// 节点注册表的所有时刻由应用传入，MySQL 方言必须单独验证 BIGINT 毫秒读写。
 func TestGatewayNodeRepositoryOnRealMySQL(t *testing.T) {
 	ctx := context.Background()
 	dsn := mysqlTestDSN(t)
@@ -92,21 +82,22 @@ func TestGatewayNodeRepositoryOnRealMySQL(t *testing.T) {
 	_, err := db.Exec(`DELETE FROM gateway_nodes WHERE gateway_id = ?`, gatewayID)
 	require.NoError(t, err)
 
-	require.NoError(t, repo.Register(ctx, gatewayID, "inst-a", "http://gw-it:9001"))
+	now := time.UnixMilli(time.Now().UnixMilli())
+	require.NoError(t, repo.Register(ctx, gatewayID, "inst-a", "http://gw-it:9001", now))
 	node, err := repo.Get(ctx, gatewayID)
 	require.NoError(t, err)
 	require.NotNil(t, node)
 	require.Equal(t, "inst-a", node.InstanceID)
 	require.Equal(t, "http://gw-it:9001", node.DownlinkURL)
 	require.Equal(t, "online", node.Status)
-	require.WithinDuration(t, time.Now(), node.StartedAt, time.Minute)
-	require.WithinDuration(t, time.Now().Add(30*time.Second), node.ExpiresAt, time.Minute)
+	require.Equal(t, now, node.StartedAt)
+	require.Equal(t, now.Add(repository.GatewayNodeTTL), node.ExpiresAt)
 
-	ok, err := repo.Heartbeat(ctx, gatewayID, "inst-a")
+	ok, err := repo.Heartbeat(ctx, gatewayID, "inst-a", now.Add(time.Second))
 	require.NoError(t, err)
 	require.True(t, ok)
 
-	ok, err = repo.Heartbeat(ctx, gatewayID, "inst-stale")
+	ok, err = repo.Heartbeat(ctx, gatewayID, "inst-stale", now.Add(time.Second))
 	require.NoError(t, err)
 	require.False(t, ok)
 
@@ -117,13 +108,13 @@ func TestGatewayNodeRepositoryOnRealMySQL(t *testing.T) {
 	dir := openStore(t, dsn).SessionDirectoryRepository()
 	_, err = dir.Claim(ctx, phone, repository.SessionOwner{
 		GatewayID: gatewayID, InstanceID: "inst-a", SessionID: "sess-1",
-	})
+	}, now)
 	require.NoError(t, err)
-	require.NoError(t, repo.Register(ctx, gatewayID, "inst-b", "http://gw-it:9001"))
+	require.NoError(t, repo.Register(ctx, gatewayID, "inst-b", "http://gw-it:9001", now))
 	record, err := dir.Get(ctx, phone)
 	require.NoError(t, err)
 	require.Nil(t, record)
-	ok, err = repo.Heartbeat(ctx, gatewayID, "inst-a")
+	ok, err = repo.Heartbeat(ctx, gatewayID, "inst-a", now.Add(time.Second))
 	require.NoError(t, err)
 	require.False(t, ok)
 
@@ -131,21 +122,22 @@ func TestGatewayNodeRepositoryOnRealMySQL(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "inst-b", node.InstanceID)
 
-	require.NoError(t, repo.Deregister(ctx, gatewayID, "inst-b"))
+	require.NoError(t, repo.Deregister(ctx, gatewayID, "inst-b", now.Add(2*time.Second)))
 	node, err = repo.Get(ctx, gatewayID)
 	require.NoError(t, err)
 	require.Equal(t, "offline", node.Status)
 
-	stats, err := repo.Stats(ctx)
+	statsAt := now.Add(3 * time.Second)
+	stats, err := repo.Stats(ctx, statsAt)
 	require.NoError(t, err)
 	require.GreaterOrEqual(t, stats.Offline, int64(1))
 
 	// 仍标记 online 但已过期的节点单独计数。
 	_, err = db.Exec(`UPDATE gateway_nodes
-		SET status = 'online', expires_at = DATE_SUB(CURRENT_TIMESTAMP(3), INTERVAL 1 SECOND)
-		WHERE gateway_id = ?`, gatewayID)
+		SET status = 'online', expires_at = ?
+		WHERE gateway_id = ?`, now.UnixMilli(), gatewayID)
 	require.NoError(t, err)
-	stats, err = repo.Stats(ctx)
+	stats, err = repo.Stats(ctx, statsAt)
 	require.NoError(t, err)
 	require.GreaterOrEqual(t, stats.Expired, int64(1))
 
@@ -154,7 +146,7 @@ func TestGatewayNodeRepositoryOnRealMySQL(t *testing.T) {
 	require.Nil(t, missing)
 }
 
-// 会话目录同样只用数据库时间；claim 幂等与 generation 递增必须在真库验证。
+// 会话目录的 claimed_at 由应用传入；claim 幂等与 generation 递增必须在真库验证。
 func TestSessionDirectoryOnRealMySQL(t *testing.T) {
 	ctx := context.Background()
 	dsn := mysqlTestDSN(t)
@@ -166,12 +158,13 @@ func TestSessionDirectoryOnRealMySQL(t *testing.T) {
 	_, err := db.Exec(`DELETE FROM session_directory WHERE phone = ?`, phone)
 	require.NoError(t, err)
 
+	now := time.UnixMilli(time.Now().UnixMilli())
 	ownerA := repository.SessionOwner{GatewayID: "gw-1", InstanceID: "inst-a", SessionID: "sess-1"}
-	generation, err := dir.Claim(ctx, phone, ownerA)
+	generation, err := dir.Claim(ctx, phone, ownerA, now)
 	require.NoError(t, err)
 	require.Equal(t, uint64(1), generation)
 
-	generation, err = dir.Claim(ctx, phone, ownerA)
+	generation, err = dir.Claim(ctx, phone, ownerA, now)
 	require.NoError(t, err)
 	require.Equal(t, uint64(1), generation, "同一 owner 重复 claim 不得递增")
 
@@ -179,10 +172,10 @@ func TestSessionDirectoryOnRealMySQL(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, record)
 	require.Equal(t, ownerA, record.SessionOwner)
-	require.WithinDuration(t, time.Now(), record.ClaimedAt, time.Minute)
+	require.Equal(t, now, record.ClaimedAt)
 
 	ownerB := repository.SessionOwner{GatewayID: "gw-1", InstanceID: "inst-a", SessionID: "sess-2"}
-	generation, err = dir.Claim(ctx, phone, ownerB)
+	generation, err = dir.Claim(ctx, phone, ownerB, now.Add(time.Second))
 	require.NoError(t, err)
 	require.Equal(t, uint64(2), generation)
 
@@ -207,7 +200,7 @@ func TestSessionDirectoryOnRealMySQL(t *testing.T) {
 	require.Nil(t, record)
 }
 
-// Route 的联表判定用 CURRENT_TIMESTAMP(3)，MySQL 方言必须单独验证。
+// Route 的联表判定用应用传入的时刻，MySQL 方言必须单独验证。
 func TestSessionDirectoryRouteOnRealMySQL(t *testing.T) {
 	ctx := context.Background()
 	dsn := mysqlTestDSN(t)
@@ -226,42 +219,43 @@ func TestSessionDirectoryRouteOnRealMySQL(t *testing.T) {
 	_, err = db.Exec(`DELETE FROM gateway_nodes WHERE gateway_id = ?`, gatewayID)
 	require.NoError(t, err)
 
+	now := time.UnixMilli(time.Now().UnixMilli())
 	owner := repository.SessionOwner{GatewayID: gatewayID, InstanceID: "inst-a", SessionID: "sess-1"}
-	_, err = dir.Claim(ctx, phone, owner)
+	_, err = dir.Claim(ctx, phone, owner, now)
 	require.NoError(t, err)
 
 	// 节点未注册。
-	_, ok, err := dir.Route(ctx, phone, "")
+	_, ok, err := dir.Route(ctx, phone, "", now)
 	require.NoError(t, err)
 	require.False(t, ok)
 
-	require.NoError(t, nodes.Register(ctx, gatewayID, "inst-a", "http://gw-route-it:9100"))
-	url, ok, err := dir.Route(ctx, phone, "")
+	require.NoError(t, nodes.Register(ctx, gatewayID, "inst-a", "http://gw-route-it:9100", now))
+	url, ok, err := dir.Route(ctx, phone, "", now)
 	require.NoError(t, err)
 	require.True(t, ok)
 	require.Equal(t, "http://gw-route-it:9100", url)
 
-	_, ok, err = dir.Route(ctx, phone, "sess-stale")
+	_, ok, err = dir.Route(ctx, phone, "sess-stale", now)
 	require.NoError(t, err)
 	require.False(t, ok)
 
-	// 节点过期由数据库时间裁决。
+	// 节点过期由应用写入的时间裁决。
 	_, err = db.Exec(`UPDATE gateway_nodes
-		SET expires_at = DATE_SUB(CURRENT_TIMESTAMP(3), INTERVAL 1 SECOND)
-		WHERE gateway_id = ?`, gatewayID)
+		SET expires_at = ?
+		WHERE gateway_id = ?`, now.Add(-time.Second).UnixMilli(), gatewayID)
 	require.NoError(t, err)
-	_, ok, err = dir.Route(ctx, phone, "")
+	_, ok, err = dir.Route(ctx, phone, "", now)
 	require.NoError(t, err)
 	require.False(t, ok)
 
 	// 目录指向的实例与节点当前实例不一致时不可路由。
-	require.NoError(t, nodes.Register(ctx, gatewayID, "inst-b", "http://gw-route-it:9100"))
-	_, ok, err = dir.Route(ctx, phone, "")
+	require.NoError(t, nodes.Register(ctx, gatewayID, "inst-b", "http://gw-route-it:9100", now))
+	_, ok, err = dir.Route(ctx, phone, "", now)
 	require.NoError(t, err)
 	require.False(t, ok)
 
-	require.NoError(t, nodes.Deregister(ctx, gatewayID, "inst-b"))
-	_, ok, err = dir.Route(ctx, phone, "")
+	require.NoError(t, nodes.Deregister(ctx, gatewayID, "inst-b", now))
+	_, ok, err = dir.Route(ctx, phone, "", now)
 	require.NoError(t, err)
 	require.False(t, ok)
 }
@@ -484,7 +478,7 @@ func TestOutboxClaimIsExclusiveAcrossInstances(t *testing.T) {
 			MsgID:          0x8103,
 			Serial:         uint16(i + 1),
 			Payload:        []byte{byte(i)},
-		}, repository.CommandSchedule{})
+		})
 		require.NoError(t, err)
 		require.True(t, created)
 	}
@@ -518,9 +512,11 @@ func TestOutboxClaimIsExclusiveAcrossInstances(t *testing.T) {
 			owner := fmt.Sprintf("control-%d", w)
 			for round := 0; round < 30; round++ {
 				cmds, err := inst.CommandRepository().ClaimPending(ctx, repository.CommandClaim{
-					Owner: owner,
-					Limit: 5,
-					Lease: time.Minute,
+					Owner:     owner,
+					Now:       time.Now(),
+					Limit:     5,
+					Lease:     time.Minute,
+					Tolerance: 2 * time.Second,
 				})
 				if err != nil {
 					require.NoError(t, err)
@@ -559,13 +555,13 @@ func TestOutboxIdempotencyOnRealMySQL(t *testing.T) {
 
 	first, created, err := repo.Enqueue(ctx, &repository.DownlinkCommand{
 		CommandID: "idem-first", IdempotencyKey: key, Phone: phone, MsgID: 0x8103, Serial: 1,
-	}, repository.CommandSchedule{})
+	})
 	require.NoError(t, err)
 	require.True(t, created)
 
 	second, created, err := repo.Enqueue(ctx, &repository.DownlinkCommand{
 		CommandID: "idem-second", IdempotencyKey: key, Phone: phone, MsgID: 0x8103, Serial: 2,
-	}, repository.CommandSchedule{})
+	})
 	require.NoError(t, err, "重复幂等键不应报错")
 	require.False(t, created)
 	require.Equal(t, first.CommandID, second.CommandID)
@@ -590,7 +586,7 @@ func TestOutboxIdempotencyOnRealMySQL(t *testing.T) {
 				Phone:          phone,
 				MsgID:          0x8103,
 				Serial:         uint16(100 + i),
-			}, repository.CommandSchedule{})
+			})
 			if err != nil {
 				errCh <- err
 				return
@@ -864,54 +860,4 @@ func TestSaveAuthStateOnRealMySQL(t *testing.T) {
 
 	require.NoError(t, devices.DeleteByPhone(ctx, phone))
 	require.ErrorIs(t, devices.SaveAuthState(ctx, device), repository.ErrDeviceNotFound)
-}
-
-// outbox 的到期与判定表达式是方言相关的，必须在真库上验证：
-// next_attempt_at/expires_at 由数据库时间生成，Claim 与 PendingStats 也在 SQL 内判定。
-func TestCommandOutboxDatabaseTimeSemanticsOnRealMySQL(t *testing.T) {
-	ctx := context.Background()
-	dsn := mysqlTestDSN(t)
-	requireMigrated(t, dsn)
-	db := openRaw(t, dsn)
-	_, err := db.Exec(`DELETE FROM command_outbox`)
-	require.NoError(t, err)
-	store := openStore(t, dsn)
-	repo := store.CommandRepository()
-
-	const phone = "13800000009"
-	_, created, err := repo.Enqueue(ctx, &repository.DownlinkCommand{
-		CommandID: "db-time-expired", IdempotencyKey: "db-time-expired",
-		Phone: phone, MsgID: 0x8103, Serial: 1,
-	}, repository.CommandSchedule{InitialWait: -time.Minute, ExpireAfter: -time.Minute})
-	require.NoError(t, err)
-	require.True(t, created)
-	_, created, err = repo.Enqueue(ctx, &repository.DownlinkCommand{
-		CommandID: "db-time-live", IdempotencyKey: "db-time-live",
-		Phone: phone, MsgID: 0x8103, Serial: 2,
-	}, repository.CommandSchedule{ExpireAfter: time.Hour})
-	require.NoError(t, err)
-	require.True(t, created)
-
-	stats, err := repo.PendingStats(ctx)
-	require.NoError(t, err)
-	require.Equal(t, repository.PendingStats{Pending: 2, Expired: 1}, stats)
-
-	claimed, err := repo.ClaimPending(ctx, repository.CommandClaim{
-		Owner: "db-time-node", Limit: 10, Lease: time.Minute,
-	})
-	require.NoError(t, err)
-	require.Len(t, claimed, 1)
-	require.Equal(t, "db-time-live", claimed[0].CommandID)
-	require.True(t, claimed[0].LeaseExpiresAt.After(time.Now()))
-
-	expired, err := repo.ExpireByRouting(ctx, phone, 0x8103, 1, "expired before reply")
-	require.NoError(t, err)
-	require.True(t, expired)
-	again, err := repo.ExpireByRouting(ctx, phone, 0x8103, 1, "expired before reply")
-	require.NoError(t, err)
-	require.False(t, again)
-
-	stored, err := repo.Get(ctx, "db-time-expired")
-	require.NoError(t, err)
-	require.Equal(t, repository.CommandStatusFailed, stored.Status)
 }

@@ -102,7 +102,7 @@ func newHarness(t *testing.T, options OutboxOptions) *harness {
 	t.Helper()
 	ctx := context.Background()
 	clock := &fakeClock{now: time.Date(2026, 11, 8, 12, 0, 0, 0, time.UTC)}
-	repo := memory.NewCommandRepositoryWithClock(clock.Now)
+	repo := memory.NewCommandRepositoryWithClock(clock)
 	devices := memory.NewDeviceRepository()
 	sender := &fakeSender{}
 	metrics := observability.NewMetrics()
@@ -118,6 +118,7 @@ func newHarness(t *testing.T, options OutboxOptions) *harness {
 		Metrics:  metrics,
 		Send:     sender,
 		Owner:    "test-node",
+		Clock:    clock,
 	}, options)
 	require.NoError(t, err)
 	return &harness{
@@ -133,10 +134,6 @@ func newHarness(t *testing.T, options OutboxOptions) *harness {
 
 func (h *harness) enqueue(t *testing.T, commandID string, attempts int, next, expires time.Time) *repository.DownlinkCommand {
 	t.Helper()
-	schedule := repository.CommandSchedule{InitialWait: next.Sub(h.clock.now)}
-	if !expires.IsZero() {
-		schedule.ExpireAfter = expires.Sub(h.clock.now)
-	}
 	command, created, err := h.repo.Enqueue(context.Background(), &repository.DownlinkCommand{
 		CommandID:      commandID,
 		IdempotencyKey: commandID,
@@ -145,7 +142,9 @@ func (h *harness) enqueue(t *testing.T, commandID string, attempts int, next, ex
 		Serial:         77,
 		Payload:        []byte{0x02},
 		Attempts:       attempts,
-	}, schedule)
+		NextAttemptAt:  next,
+		ExpiresAt:      expires,
+	})
 	require.NoError(t, err)
 	require.True(t, created)
 	return command
@@ -330,6 +329,7 @@ func TestReplayIsIdempotentAcrossInstances(t *testing.T) {
 		Devices:  h.devices,
 		Send:     h.sender,
 		Owner:    "other-node",
+		Clock:    h.clock,
 	}, options)
 	require.NoError(t, err)
 
@@ -344,8 +344,8 @@ func TestReplayIsIdempotentAcrossInstances(t *testing.T) {
 	require.NoError(t, h.service.Tick(ctx))
 	require.Equal(t, 1, h.sender.count())
 
-	// 租约到期后允许重新占用，体现 at-least-once。
-	h.clock.advance(options.LeaseDuration + time.Second)
+	// 租约到期且超过保守容差后才允许重新占用，体现 at-least-once。
+	h.clock.advance(options.LeaseDuration + DefaultLeaseTolerance + time.Second)
 	require.NoError(t, second.Tick(ctx))
 	require.Equal(t, 2, h.sender.count())
 }

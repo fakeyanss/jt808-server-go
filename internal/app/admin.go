@@ -40,6 +40,7 @@ func (d *deps) buildProbes() {
 	mediaServ := d.mediaServ
 	uplinkSink := d.uplinkSink
 	alarmServ := d.alarmServ
+	clock := d.clock
 
 	// 就绪检查：存储连通、outbox 过期堆积、媒体/附件目录可写。
 	// 未启用的组件不参与判定，避免把“功能关闭”误报成“服务异常”。
@@ -172,9 +173,9 @@ func (d *deps) buildProbes() {
 					snapshot.MediaFileBytes = bytes
 				}
 			}
-			// 节点存活水位：过期判定在 SQL 内用数据库时间完成。
+			// 节点存活水位：过期判定用进程时钟，多副本口径一致。
 			if storeSet != nil && storeSet.GatewayNodes != nil {
-				stats, err := storeSet.GatewayNodes.Stats(ctx)
+				stats, err := storeSet.GatewayNodes.Stats(ctx, clock.Now())
 				if err != nil {
 					log.Warn().Err(err).Msg("Fail to collect gateway node metrics")
 				} else {

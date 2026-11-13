@@ -16,6 +16,16 @@ import (
 	"github.com/fakeyanss/jt808-server-go/internal/repository/memory"
 )
 
+func TestClockSkewSnapshot(t *testing.T) {
+	metrics := NewMetrics()
+	metrics.RecordClockSkew(-1500 * time.Millisecond)
+	metrics.IncClockSkewAlert()
+
+	snapshot := metrics.ClockSkewSnapshot()
+	require.Equal(t, int64(-1500), snapshot.SkewMillis)
+	require.Equal(t, int64(1), snapshot.Alerts)
+}
+
 func TestWritePrometheusExposesRequiredMetrics(t *testing.T) {
 	var buf bytes.Buffer
 	snapshot := Snapshot{
@@ -178,30 +188,25 @@ func TestProviderSnapshotAddsCounters(t *testing.T) {
 
 func TestCheckOutboxBacklog(t *testing.T) {
 	now := time.Now()
-	repo := memory.NewCommandRepositoryWithClock(func() time.Time { return now })
-	schedules := []repository.CommandSchedule{
-		{ExpireAfter: -time.Minute},
-		{ExpireAfter: -time.Second},
-		{ExpireAfter: time.Minute},
-	}
+	repo := memory.NewCommandRepository()
 	commands := []*repository.DownlinkCommand{
-		{CommandID: "expired-1", IdempotencyKey: "idem-1", Phone: "1001", MsgID: 0x8105, Serial: 1, Status: repository.CommandStatusPending},
-		{CommandID: "expired-2", IdempotencyKey: "idem-2", Phone: "1002", MsgID: 0x8105, Serial: 2, Status: repository.CommandStatusPending},
-		{CommandID: "live", IdempotencyKey: "idem-3", Phone: "1003", MsgID: 0x8105, Serial: 3, Status: repository.CommandStatusPending},
+		{CommandID: "expired-1", IdempotencyKey: "idem-1", Phone: "1001", MsgID: 0x8105, Serial: 1, Status: repository.CommandStatusPending, ExpiresAt: now.Add(-time.Minute)},
+		{CommandID: "expired-2", IdempotencyKey: "idem-2", Phone: "1002", MsgID: 0x8105, Serial: 2, Status: repository.CommandStatusPending, ExpiresAt: now.Add(-time.Second)},
+		{CommandID: "live", IdempotencyKey: "idem-3", Phone: "1003", MsgID: 0x8105, Serial: 3, Status: repository.CommandStatusPending, ExpiresAt: now.Add(time.Minute)},
 	}
-	for index, command := range commands {
-		_, _, err := repo.Enqueue(context.Background(), command, schedules[index])
+	for _, command := range commands {
+		_, _, err := repo.Enqueue(context.Background(), command)
 		require.NoError(t, err)
 	}
 
-	require.Error(t, CheckOutboxBacklog(context.Background(), repo, 2))
-	require.NoError(t, CheckOutboxBacklog(context.Background(), repo, 3))
+	require.Error(t, CheckOutboxBacklog(context.Background(), repo, now, 2))
+	require.NoError(t, CheckOutboxBacklog(context.Background(), repo, now, 3))
 
-	pending, expired, err := OutboxStats(context.Background(), repo)
+	pending, expired, err := OutboxStats(context.Background(), repo, now)
 	require.NoError(t, err)
 	require.Equal(t, 3, pending)
 	require.Equal(t, 2, expired)
-	require.NoError(t, CheckOutboxBacklog(context.Background(), nil, 1))
+	require.NoError(t, CheckOutboxBacklog(context.Background(), nil, now, 1))
 }
 
 func TestCheckWritableDir(t *testing.T) {

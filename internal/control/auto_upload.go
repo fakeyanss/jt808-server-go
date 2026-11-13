@@ -9,6 +9,7 @@ import (
 	"github.com/rs/zerolog/log"
 
 	actionpkg "github.com/fakeyanss/jt808-server-go/internal/action"
+	clockpkg "github.com/fakeyanss/jt808-server-go/internal/clock"
 	"github.com/fakeyanss/jt808-server-go/internal/contracts"
 	"github.com/fakeyanss/jt808-server-go/internal/coordination"
 	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
@@ -25,12 +26,14 @@ type AutoUploadTrigger struct {
 	sender     contracts.DownlinkSender
 	dedupStore coordination.Store
 	dedupTTL   time.Duration
+	clock      clockpkg.Clock
 }
 
 // NewAutoUploadTrigger 创建自动下发装饰器。
 // dedupStore 为 nil 时退化为进程内去重；多副本必须传入共享 Store。
+// clk 为 nil 时使用系统时钟。
 func NewAutoUploadTrigger(next actionpkg.Hooks, allocator contracts.AttachmentAllocator, sender contracts.DownlinkSender,
-	dedupStore coordination.Store, dedupTTL time.Duration) *AutoUploadTrigger {
+	dedupStore coordination.Store, dedupTTL time.Duration, clk clockpkg.Clock) *AutoUploadTrigger {
 	if next == nil {
 		next = actionpkg.Noop{}
 	}
@@ -40,12 +43,16 @@ func NewAutoUploadTrigger(next actionpkg.Hooks, allocator contracts.AttachmentAl
 	if dedupTTL <= 0 {
 		dedupTTL = 30 * time.Minute
 	}
+	if clk == nil {
+		clk = clockpkg.System()
+	}
 	return &AutoUploadTrigger{
 		next:       next,
 		allocator:  allocator,
 		sender:     sender,
 		dedupStore: dedupStore,
 		dedupTTL:   dedupTTL,
+		clock:      clk,
 	}
 }
 
@@ -78,7 +85,7 @@ func (t *AutoUploadTrigger) OnAlarm(ctx context.Context, event actionpkg.AlarmEv
 		return
 	}
 	alarmIDHex := strings.ToUpper(hex.EncodeToString(event.AlarmID))
-	first, err := t.dedupStore.MarkOnce(ctx, "auto-9208:"+event.Phone+":"+alarmIDHex, t.dedupTTL)
+	first, err := t.dedupStore.MarkOnce(ctx, "auto-9208:"+event.Phone+":"+alarmIDHex, t.clock.Now(), t.dedupTTL)
 	if err != nil {
 		// 去重存储不可用时按 at-least-once 处理：继续下发，重复命令由 outbox
 		// 幂等键 (phone + idempotency_key) 兜底，避免漏掉报警附件上传。

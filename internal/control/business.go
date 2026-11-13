@@ -15,6 +15,7 @@ import (
 	"github.com/rs/zerolog/log"
 
 	actionpkg "github.com/fakeyanss/jt808-server-go/internal/action"
+	clockpkg "github.com/fakeyanss/jt808-server-go/internal/clock"
 	"github.com/fakeyanss/jt808-server-go/internal/contracts"
 	"github.com/fakeyanss/jt808-server-go/internal/mediaupload"
 	"github.com/fakeyanss/jt808-server-go/internal/protocol"
@@ -45,6 +46,8 @@ type BusinessOptions struct {
 	OnMediaTypeRejected func(phone string, mediaType uint8)
 	// OnStorageCommitFailed 在文件已写、状态标记失败时回调。
 	OnStorageCommitFailed func(phone string, mediaID uint32)
+	// Clock 是进程内唯一时钟源；为空时使用系统时钟。
+	Clock clockpkg.Clock
 }
 
 // BusinessExecutor 是管控侧的上行事件消费者。
@@ -68,6 +71,9 @@ type phoneMailbox struct {
 
 // NewBusinessExecutor 创建管控业务执行器。
 func NewBusinessExecutor(opts BusinessOptions) *BusinessExecutor {
+	if opts.Clock == nil {
+		opts.Clock = clockpkg.System()
+	}
 	processorDeps := opts.ProcessorDeps
 	processorDeps.UplinkSink = nil
 	hooks := opts.Hooks
@@ -188,7 +194,7 @@ func (b *BusinessExecutor) claimSession(ctx context.Context, event contracts.Upl
 		InstanceID: event.InstanceID,
 		SessionID:  event.SessionID,
 	}
-	return b.opts.Sessions.Claim(ctx, event.Phone, owner)
+	return b.opts.Sessions.Claim(ctx, event.Phone, owner, b.opts.Clock.Now())
 }
 
 // ingestMedia 按“写文件 → 写库 → 标记已提交”的顺序处理 0x0801。

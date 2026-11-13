@@ -9,7 +9,7 @@ import (
 )
 
 // SessionDirectoryRepository 是进程内会话目录，仅用于单机与测试。
-// 集群生产路径使用 SQL 后端，claimed_at 由数据库时间写入。
+// 集群生产路径使用 SQL 后端；claimed_at 由调用方传入的进程时刻写入。
 type SessionDirectoryRepository struct {
 	mu      sync.Mutex
 	records map[string]repository.SessionRecord
@@ -20,7 +20,7 @@ func NewSessionDirectoryRepository() *SessionDirectoryRepository {
 	return &SessionDirectoryRepository{records: make(map[string]repository.SessionRecord)}
 }
 
-func (r *SessionDirectoryRepository) Claim(_ context.Context, phone string, owner repository.SessionOwner) (uint64, error) {
+func (r *SessionDirectoryRepository) Claim(_ context.Context, phone string, owner repository.SessionOwner, now time.Time) (uint64, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	record, ok := r.records[phone]
@@ -29,7 +29,7 @@ func (r *SessionDirectoryRepository) Claim(_ context.Context, phone string, owne
 			Phone:        phone,
 			SessionOwner: owner,
 			Generation:   1,
-			ClaimedAt:    time.Now(),
+			ClaimedAt:    now,
 		}
 		r.records[phone] = record
 		return record.Generation, nil
@@ -37,7 +37,7 @@ func (r *SessionDirectoryRepository) Claim(_ context.Context, phone string, owne
 	if record.SessionOwner != owner {
 		record.SessionOwner = owner
 		record.Generation++
-		record.ClaimedAt = time.Now()
+		record.ClaimedAt = now
 		r.records[phone] = record
 	}
 	return record.Generation, nil
@@ -76,6 +76,8 @@ func (r *SessionDirectoryRepository) Get(_ context.Context, phone string) (*repo
 }
 
 // Route 在内存后端恒返回未命中：内存目录没有节点信息，也无所谓跨节点下行。
-func (r *SessionDirectoryRepository) Route(_ context.Context, _, _ string) (string, bool, error) {
+func (r *SessionDirectoryRepository) Route(_ context.Context, _, _ string, _ time.Time) (string, bool, error) {
 	return "", false, nil
 }
+
+var _ repository.SessionDirectoryRepository = (*SessionDirectoryRepository)(nil)

@@ -2,7 +2,6 @@ package sqlcore
 
 import (
 	"context"
-	"fmt"
 	"time"
 
 	"github.com/fakeyanss/jt808-server-go/internal/coordination"
@@ -10,6 +9,7 @@ import (
 
 // coordinationStore 用 task_leases / dedup_keys 两张表实现跨副本协调。
 // 所有写操作都通过条件 UPDATE 完成，依赖数据库的行锁保证同一行只有一个赢家。
+// 判定时刻一律由调用方从进程时钟传入，SQL 只做参数比较。
 type coordinationStore struct {
 	store *Store
 }
@@ -19,15 +19,17 @@ func (s *Store) CoordinationStore() coordination.Store {
 	return &coordinationStore{store: s}
 }
 
-func (c *coordinationStore) Acquire(ctx context.Context, name, owner string, ttl time.Duration) (bool, error) {
-	now := c.store.stmts.DBTimeMillisExpr()
-	if _, err := c.store.db.ExecContext(ctx, c.store.stmts.EnsureTaskLeaseRow(), name); err != nil {
+func (c *coordinationStore) Acquire(ctx context.Context, name, owner string, now time.Time, ttl, tolerance time.Duration) (bool, error) {
+	nowMs := now.UnixMilli()
+	expiresAt := now.Add(normalizeTTL(ttl)).UnixMilli()
+	if _, err := c.store.db.ExecContext(ctx, c.store.stmts.EnsureTaskLeaseRow(), name, nowMs); err != nil {
 		return false, err
 	}
-	res, err := c.store.db.ExecContext(ctx, fmt.Sprintf(
-		`UPDATE task_leases SET owner = ?, expires_at = %s + ?, updated_at = %s
-		 WHERE name = ? AND (expires_at <= %s OR owner = ?)`, now, now, now),
-		owner, normalizeTTL(ttl).Milliseconds(), name, owner)
+	// 接管条件使用 expires_at + 容差 < now：时钟偏差下宁可晚夺，不可早夺。
+	res, err := c.store.db.ExecContext(ctx,
+		`UPDATE task_leases SET owner = ?, expires_at = ?, updated_at = ?
+		 WHERE name = ? AND (expires_at + ? < ? OR owner = ?)`,
+		owner, expiresAt, nowMs, name, normalizeTolerance(tolerance).Milliseconds(), nowMs, owner)
 	if err != nil {
 		return false, err
 	}
@@ -44,15 +46,16 @@ func (c *coordinationStore) Release(ctx context.Context, name, owner string) err
 	return err
 }
 
-func (c *coordinationStore) MarkOnce(ctx context.Context, key string, ttl time.Duration) (bool, error) {
-	now := c.store.stmts.DBTimeMillisExpr()
-	if _, err := c.store.db.ExecContext(ctx, c.store.stmts.EnsureDedupKeyRow(), key); err != nil {
+func (c *coordinationStore) MarkOnce(ctx context.Context, key string, now time.Time, ttl time.Duration) (bool, error) {
+	nowMs := now.UnixMilli()
+	expiresAt := now.Add(normalizeTTL(ttl)).UnixMilli()
+	if _, err := c.store.db.ExecContext(ctx, c.store.stmts.EnsureDedupKeyRow(), key, nowMs); err != nil {
 		return false, err
 	}
-	res, err := c.store.db.ExecContext(ctx, fmt.Sprintf(
-		`UPDATE dedup_keys SET expires_at = %s + ?, updated_at = %s
-		 WHERE dedup_key = ? AND expires_at <= %s`, now, now, now),
-		normalizeTTL(ttl).Milliseconds(), key)
+	res, err := c.store.db.ExecContext(ctx,
+		`UPDATE dedup_keys SET expires_at = ?, updated_at = ?
+		 WHERE dedup_key = ? AND expires_at <= ?`,
+		expiresAt, nowMs, key, nowMs)
 	if err != nil {
 		return false, err
 	}
@@ -63,9 +66,9 @@ func (c *coordinationStore) MarkOnce(ctx context.Context, key string, ttl time.D
 	return affected > 0, nil
 }
 
-func (c *coordinationStore) PruneExpired(ctx context.Context) (int64, error) {
-	now := c.store.stmts.DBTimeMillisExpr()
-	res, err := c.store.db.ExecContext(ctx, `DELETE FROM task_leases WHERE expires_at <= `+now)
+func (c *coordinationStore) PruneExpired(ctx context.Context, now time.Time) (int64, error) {
+	nowMs := now.UnixMilli()
+	res, err := c.store.db.ExecContext(ctx, `DELETE FROM task_leases WHERE expires_at <= ?`, nowMs)
 	if err != nil {
 		return 0, err
 	}
@@ -73,7 +76,7 @@ func (c *coordinationStore) PruneExpired(ctx context.Context) (int64, error) {
 	if err != nil {
 		return 0, err
 	}
-	res, err = c.store.db.ExecContext(ctx, `DELETE FROM dedup_keys WHERE expires_at <= `+now)
+	res, err = c.store.db.ExecContext(ctx, `DELETE FROM dedup_keys WHERE expires_at <= ?`, nowMs)
 	if err != nil {
 		return leases, err
 	}
@@ -89,4 +92,11 @@ func normalizeTTL(ttl time.Duration) time.Duration {
 		return coordination.DefaultTTL
 	}
 	return ttl
+}
+
+func normalizeTolerance(tolerance time.Duration) time.Duration {
+	if tolerance < 0 {
+		return 0
+	}
+	return tolerance
 }

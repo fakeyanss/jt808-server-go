@@ -182,6 +182,21 @@ jt-control requires cluster.roles to contain "control"; current roles=[media]. u
 > 开启后启动打印 WARN，`/readyz` 返回 `degraded`（HTTP 200，但 `status` 不是 `ready`）。
 > **生产环境禁止开启**，集群部署必须使用共享 MySQL。
 
+**时间同步（强制）**：集群所有副本的节点判死、会话路由、outbox 租约与任务租约
+都使用**进程时钟**，不再依赖数据库时钟。部署前必须：
+
+1. 所有主机启用 NTP/chrony（如 `chronyd` 或 `systemd-timesyncd`），并与同一时间源同步；
+2. 核对 `chronyc tracking` 的 `System time` 偏差在 100ms 内，`Leap status` 为 `Normal`；
+3. 跨副本抢租约使用保守容差，判定式为 `expires_at + tolerance < now`。容差默认
+   2 秒，可通过 `cluster.leaseTolerance` 调整；调小会放大时钟偏差导致双持有的风险，
+   调大会延后故障接管，通常无需修改。
+
+进程每分钟读取一次数据库时间与本机时钟比对，结果只用于观测与告警
+（`jt808_clock_skew_ms` / `jt808_clock_skew_alerts_total`）；绝对值超过 2 秒时
+打印 WARN 并累加告警计数，不会改变任何业务判定。memory 后端没有数据库时钟，
+该探针自动跳过。
+
+
 **端口规划**（同机部署全部角色时逐项核对，避免撞车）：
 
 | 用途 | 默认端口 | 角色 / 配置项 |
@@ -268,6 +283,7 @@ jt-control requires cluster.roles to contain "control"; current roles=[media]. u
 | 网关下线但目录残留（bug / release 丢失） | 下行继续路由到该网关，直到 phone 重新 claim 或节点换实例；平台侧不兜底 | `jt808_downlink_directory_hit_total` 正常但终端无响应；节点仍为 online |
 | 终端跨网关重连 | 新 `0x0102` 立即改写目录并递增 generation；旧网关在下一次上行收到 `fenced` 后关闭会话 | `jt808_uplink_fenced_total` 短时增长；目录 `generation` 递增 |
 | control 重启 | 不丢目录与节点状态；启动后重新按 `directory` 模式路由 | 启动日志 `downlink_mode=directory`；`jt808_gateway_nodes_*` 与重启前一致 |
+| 主机时钟漂移 | 节点判死、租约接管时间偏移；偏差在 2 秒容差内时接管延后但不会双持有 | `jt808_clock_skew_ms` 绝对值上升；`jt808_clock_skew_alerts_total` 增长时检查 NTP |
 
 **附件存储与进度**：
 
@@ -446,6 +462,8 @@ tar -czf /backup/jt808-files-$(date +%Y%m%d-%H%M).tgz ./data ./logs
 | `jt808_downlink_offline_total` | `directory` 模式判定无可用归属、直接返回 `offline` 的累计次数 |
 | `jt808_uplink_fenced_total` | 上行事件 generation 落后于目录、被丢弃的累计次数 |
 | `jt808_gateway_node_fenced_total` | 节点心跳因实例已被新注册顶替而拒绝的累计次数 |
+| `jt808_clock_skew_ms` | 最近一次进程时钟与数据库时间的偏差（毫秒）；正数表示进程时钟偏慢，仅观测 |
+| `jt808_clock_skew_alerts_total` | 偏差绝对值超过 2 秒阈值的累计告警次数 |
 
 采集示例：
 
@@ -462,6 +480,7 @@ curl -fsS -H "Authorization: Bearer $ADMIN_TOKEN" http://127.0.0.1:9000/metrics
 - `jt808_gateway_nodes_expired > 0` 持续存在 → 检查网关进程与心跳链路；节点过期会让其全部会话不可路由。
 - `jt808_downlink_offline_total` 快速增长 → 对照 `jt808_gateway_nodes_*` 与会话目录，确认是终端下线还是节点失联。
 - `jt808_gateway_node_fenced_total` 持续增长 → 同一 `gatewayId` 有多实例竞争，检查部署侧唯一性约束。
+- `jt808_clock_skew_alerts_total` 增长或 `jt808_clock_skew_ms` 绝对值持续 > 2000 → 立即检查主机 NTP/chrony；时钟失步会让租约与节点过期判定同时失真，容差只能覆盖 2 秒以内的偏差。
 
 ---
 

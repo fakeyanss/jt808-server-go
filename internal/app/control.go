@@ -32,7 +32,7 @@ func (d *deps) setupControl() {
 	controlDownlink := d.controlDownlink
 	storeSet := d.storeSet
 	processorDeps := d.processorDeps
-	leaseRunner := coordination.NewRunner(storeSet.Coordination, coordination.DefaultTTL)
+	leaseRunner := coordination.NewRunner(storeSet.Coordination, coordination.DefaultTTL, d.clock, clusterOptions.LeaseTolerance)
 
 	var uplinkServer *uplink.Server
 	var controlBlob contracts.BlobStore
@@ -80,6 +80,7 @@ func (d *deps) setupControl() {
 			DedupMaxEntries:     clusterOptions.Uplink.DedupMaxEntries,
 			MaxRequestBytes:     clusterOptions.Uplink.MaxRequestBytes,
 			MaxDecodedBodyBytes: clusterOptions.Uplink.MaxDecodedBodyBytes,
+			Clock:               d.clock,
 		})
 		if srvErr != nil {
 			log.Error().Err(srvErr).Msg("Fail to create uplink HTTP server")
@@ -92,7 +93,7 @@ func (d *deps) setupControl() {
 		// 不再要求 gateway 与 control 同进程。
 		controlHooks := hooks
 		if alarmOptions.AutoUpload && hasControl && remoteAttachment != nil && controlDownlink != nil {
-			controlHooks = control.NewAutoUploadTrigger(hooks, remoteAttachment, controlDownlink, storeSet.Coordination, 30*time.Minute)
+			controlHooks = control.NewAutoUploadTrigger(hooks, remoteAttachment, controlDownlink, storeSet.Coordination, 30*time.Minute, d.clock)
 			log.Info().Msg("Automatic 0x9208 attachment upload trigger enabled in control via remote attachment nodes")
 		}
 		executor := control.NewBusinessExecutor(control.BusinessOptions{
@@ -103,6 +104,7 @@ func (d *deps) setupControl() {
 			Blob:          controlBlob,
 			MediaUpload:   mediaUploadStore,
 			Hooks:         controlHooks,
+			Clock:         d.clock,
 			OnUnknownDevice: func(phone string) {
 				log.Error().Str("phone", phone).Msg("Uplink event rejected: device is not registered")
 			},
@@ -152,7 +154,7 @@ func (d *deps) setupControl() {
 				case <-ticker.C:
 					leaseRunner.Run(sweepCtx, "media-pending-sweep", func(ctx context.Context) {
 						businessExecutor.SweepPending(ctx, 30*time.Minute)
-						if _, err := storeSet.Coordination.PruneExpired(ctx); err != nil {
+						if _, err := storeSet.Coordination.PruneExpired(ctx, d.clock.Now()); err != nil {
 							log.Warn().Err(err).Msg("Prune expired coordination rows failed")
 						}
 					})

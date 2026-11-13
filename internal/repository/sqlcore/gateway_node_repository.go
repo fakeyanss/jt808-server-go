@@ -3,7 +3,6 @@ package sqlcore
 import (
 	"context"
 	"database/sql"
-	"fmt"
 	"time"
 
 	"github.com/fakeyanss/jt808-server-go/internal/repository"
@@ -18,7 +17,7 @@ func (s *Store) GatewayNodeRepository() repository.GatewayNodeRepository {
 	return &gatewayNodeRepository{store: s}
 }
 
-func (r *gatewayNodeRepository) Register(ctx context.Context, gatewayID, instanceID, downlinkURL string) error {
+func (r *gatewayNodeRepository) Register(ctx context.Context, gatewayID, instanceID, downlinkURL string, now time.Time) error {
 	tx, err := r.store.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -31,15 +30,20 @@ func (r *gatewayNodeRepository) Register(ctx context.Context, gatewayID, instanc
 		gatewayID, instanceID); err != nil {
 		return err
 	}
+	nowMilli := now.UnixMilli()
+	expiresAt := now.Add(repository.GatewayNodeTTL).UnixMilli()
 	if _, err = tx.ExecContext(ctx, r.store.stmts.UpsertGatewayNode(),
-		gatewayID, instanceID, downlinkURL); err != nil {
+		gatewayID, instanceID, downlinkURL, nowMilli, nowMilli, expiresAt); err != nil {
 		return err
 	}
 	return tx.Commit()
 }
 
-func (r *gatewayNodeRepository) Heartbeat(ctx context.Context, gatewayID, instanceID string) (bool, error) {
-	res, err := r.store.db.ExecContext(ctx, r.store.stmts.HeartbeatGatewayNode(), gatewayID, instanceID)
+func (r *gatewayNodeRepository) Heartbeat(ctx context.Context, gatewayID, instanceID string, now time.Time) (bool, error) {
+	nowMilli := now.UnixMilli()
+	expiresAt := now.Add(repository.GatewayNodeTTL).UnixMilli()
+	res, err := r.store.db.ExecContext(ctx, r.store.stmts.HeartbeatGatewayNode(),
+		nowMilli, expiresAt, gatewayID, instanceID)
 	if err != nil {
 		return false, err
 	}
@@ -50,7 +54,7 @@ func (r *gatewayNodeRepository) Heartbeat(ctx context.Context, gatewayID, instan
 	if affected > 0 {
 		return true, nil
 	}
-	// 同一毫秒内重复心跳时 MySQL 可能返回 0 行受影响，用一次存在性查询兜底。
+	// 写入与更新落在同一毫秒时 MySQL 可能返回 0 行受影响，用一次存在性查询兜底。
 	var exists int
 	err = r.store.db.QueryRowContext(ctx,
 		`SELECT 1 FROM gateway_nodes WHERE gateway_id = ? AND instance_id = ?`,
@@ -64,17 +68,18 @@ func (r *gatewayNodeRepository) Heartbeat(ctx context.Context, gatewayID, instan
 	return true, nil
 }
 
-func (r *gatewayNodeRepository) Deregister(ctx context.Context, gatewayID, instanceID string) error {
-	_, err := r.store.db.ExecContext(ctx, r.store.stmts.DeregisterGatewayNode(), gatewayID, instanceID)
+func (r *gatewayNodeRepository) Deregister(ctx context.Context, gatewayID, instanceID string, now time.Time) error {
+	_, err := r.store.db.ExecContext(ctx, r.store.stmts.DeregisterGatewayNode(),
+		now.UnixMilli(), gatewayID, instanceID)
 	return err
 }
 
 func (r *gatewayNodeRepository) Get(ctx context.Context, gatewayID string) (*repository.GatewayNode, error) {
 	var (
 		node      repository.GatewayNode
-		startedAt any
-		lastSeen  any
-		expiresAt any
+		startedAt int64
+		lastSeen  int64
+		expiresAt int64
 	)
 	err := r.store.db.QueryRowContext(ctx, r.store.stmts.SelectGatewayNode(), gatewayID).Scan(
 		&node.GatewayID, &node.InstanceID, &node.DownlinkURL, &node.Status,
@@ -86,24 +91,16 @@ func (r *gatewayNodeRepository) Get(ctx context.Context, gatewayID string) (*rep
 	if err != nil {
 		return nil, err
 	}
-	node.StartedAt, err = parseDBTime(startedAt)
-	if err != nil {
-		return nil, err
-	}
-	node.LastSeenAt, err = parseDBTime(lastSeen)
-	if err != nil {
-		return nil, err
-	}
-	node.ExpiresAt, err = parseDBTime(expiresAt)
-	if err != nil {
-		return nil, err
-	}
+	node.StartedAt = timeFromUnixMilli(startedAt)
+	node.LastSeenAt = timeFromUnixMilli(lastSeen)
+	node.ExpiresAt = timeFromUnixMilli(expiresAt)
 	return &node, nil
 }
 
-func (r *gatewayNodeRepository) Stats(ctx context.Context) (repository.GatewayNodeStats, error) {
+func (r *gatewayNodeRepository) Stats(ctx context.Context, now time.Time) (repository.GatewayNodeStats, error) {
 	var stats repository.GatewayNodeStats
-	err := r.store.readDB.QueryRowContext(ctx, r.store.stmts.SelectGatewayNodeStats()).
+	nowMilli := now.UnixMilli()
+	err := r.store.readDB.QueryRowContext(ctx, r.store.stmts.SelectGatewayNodeStats(), nowMilli, nowMilli).
 		Scan(&stats.Online, &stats.Offline, &stats.Expired)
 	if err != nil {
 		return repository.GatewayNodeStats{}, err
@@ -111,28 +108,4 @@ func (r *gatewayNodeRepository) Stats(ctx context.Context) (repository.GatewayNo
 	return stats, nil
 }
 
-func parseDBTime(value any) (time.Time, error) {
-	switch v := value.(type) {
-	case time.Time:
-		return v, nil
-	case string:
-		return parseDBTimeString(v)
-	case []byte:
-		return parseDBTimeString(string(v))
-	default:
-		return time.Time{}, fmt.Errorf("unsupported database time type %T", value)
-	}
-}
-
-func parseDBTimeString(value string) (time.Time, error) {
-	for _, layout := range []string{
-		"2006-01-02 15:04:05.000",
-		"2006-01-02 15:04:05",
-		time.RFC3339Nano,
-	} {
-		if parsed, err := time.Parse(layout, value); err == nil {
-			return parsed, nil
-		}
-	}
-	return time.Time{}, fmt.Errorf("unsupported database time value %q", value)
-}
+var _ repository.GatewayNodeRepository = (*gatewayNodeRepository)(nil)

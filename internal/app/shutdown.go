@@ -26,6 +26,8 @@ func (d *deps) shutdown() {
 	serv := d.serv
 	udpServ := d.udpServ
 	cancelSweep := d.cancelSweep
+	cancelClockSkew := d.cancelClockSkew
+	clockSkewDone := d.clockSkewDone
 	cancelOutbox := d.cancelOutbox
 	outboxDone := d.outboxDone
 	cancelUplinkSink := d.cancelUplinkSink
@@ -114,6 +116,15 @@ func (d *deps) shutdown() {
 	}
 
 	// 5. 停止清理与扫描任务，等待当前批次收尾，避免与存储关闭竞争。
+	if cancelClockSkew != nil {
+		cancelClockSkew()
+		if clockSkewDone != nil {
+			select {
+			case <-clockSkewDone:
+			case <-time.After(time.Second):
+			}
+		}
+	}
 	cancelRetention()
 	if len(retentionDones) > 0 {
 		timer := time.NewTimer(5 * time.Second)

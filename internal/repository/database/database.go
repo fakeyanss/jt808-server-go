@@ -81,6 +81,9 @@ type Repositories struct {
 	close   func() error
 	// check 校验后端连通性；memory 后端为空操作，nil 表示始终可用。
 	check func(ctx context.Context) error
+	// dbTime 读取数据库当前时间（Unix 毫秒），仅供应时钟偏差探针观测；
+	// memory 后端为 nil，探针跳过。
+	dbTime func(ctx context.Context) (int64, error)
 }
 
 // sqlBackend 是两个 SQL 后端句柄的公共装配面。
@@ -107,6 +110,7 @@ type sqlBackend interface {
 	CoordinationStore() coordination.Store
 	GatewayNodeRepository() repository.GatewayNodeRepository
 	SessionDirectoryRepository() repository.SessionDirectoryRepository
+	CurrentTimeMillis(ctx context.Context) (int64, error)
 }
 
 // NewMemory 创建一组互相独立的内存仓储，供测试与新代码注入。
@@ -195,6 +199,7 @@ func openSQL(handle sqlBackend, backend string, cfg Config) (*Repositories, erro
 	repos.SessionDirectory = handle.SessionDirectoryRepository()
 	repos.close = handle.Close
 	repos.check = handle.Ping
+	repos.dbTime = handle.CurrentTimeMillis
 	return repos, nil
 }
 
@@ -269,6 +274,16 @@ func (s *Repositories) Check(ctx context.Context) error {
 		return nil
 	}
 	return s.check(ctx)
+}
+
+// CurrentTimeMillis 读取数据库当前时间，供时钟偏差探针观测。
+// 返回 false 表示当前后端没有数据库时钟（memory）。
+func (s *Repositories) CurrentTimeMillis(ctx context.Context) (int64, bool, error) {
+	if s == nil || s.dbTime == nil {
+		return 0, false, nil
+	}
+	millis, err := s.dbTime(ctx)
+	return millis, true, err
 }
 
 // Close 关闭默认仓储持有的资源（当前仅 SQL 后端需要）。
