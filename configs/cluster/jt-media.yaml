@@ -70,5 +70,4 @@ cluster:
     root: "./data/blobs"
     marker: ".jt808-shared-volume"
 
-database:
-  type: "memory"
+# 元数据面不变量：媒体节点不连数据库；切片索引与清理全部在 control。

@@ -78,6 +78,44 @@ main ──●──────────────────────
 
 ## 2. 角色定义与边界
 
+### 2.0 元数据面不变量（集群模式）
+
+**集群模式下，元数据面集中在 control，由 control 独占元数据库。gateway、media、attachment
+是数据面/接入面节点，不连数据库，只通过 HTTP 与 control 交互。**
+
+这是架构不变量，不以“节点可能部署在边缘”为前提：边缘部署只是理由之一，
+现场网络拓扑变化不改变这条边界。
+
+| 角色 | 与元数据库的关系 | 与 control 的交互 |
+|---|---|---|
+| control | **独占**：唯一持有连接、唯一执行迁移与清理 | — |
+| gateway | 不连 | 上行出口 `POST /internal/v1/uplink`（gateway → control）；下行契约 control → gateway；鉴权只读查询走 control |
+| media | 不连 | 进度/切片元数据出站上报；端点申请由 control 发起 HTTP |
+| attachment | 不连 | FTP 登录校验与进度出站上报；节点注册/心跳出站；0x9207 由 control 推送到节点 |
+
+**降级行为**：元数据面不可用时，数据面节点继续接收与写对象存储，元数据事后补齐。
+对象存储是事实来源，库是可重建的索引：
+
+- media / attachment 的进度上报失败只降级索引新鲜度，不阻断接收与切片提交；
+- 对象 key 必须自带足够元数据（终端、通道/报警号、文件名、时间或偏移），
+  control 扫描前缀即可重建索引，不依赖丢失的上报内容；
+- FTP 是例外：登录校验必须问 control，不可达时拒绝**新**登录，已建立连接继续读写；
+- control 恢复后由维护任务扫描对象前缀补齐索引，保留期清理仍只在 control 执行。
+
+**standalone 不受此约束**：单进程承担全部角色，进程内直接使用本地/SQL 存储，
+不存在跨进程元数据面。
+
+**核对结果（2026-11-14）**：
+
+- media / attachment：配置模板已移除 `database` 段，启动时没有连库入口（`buildDeps` 仅对
+  gateway/control 执行 `database.Init`）；对象存储与出站 HTTP 是唯一外部依赖。
+- control：独占 MySQL，迁移、索引补齐（`attachment-maintenance` / `attachment-index`）与
+  保留期清理都在 control 的租约任务里。
+- **gateway 仍有残留**：`internal/app/deps.go` 在 `hasGateway` 时同样执行 `database.Init`，
+  `config.go` 要求 gateway 角色使用 mysql，`configs/cluster/jt-signal.yaml` 仍配置 mysql DSN 与
+  `commandOutbox.mode: durable`。这属于把 durable outbox 与只读档案查询下沉到网关的旧实现，
+  与不变量冲突，列为后续拆项；本次不顺手改，避免与 FTP 变更混在一笔。
+
 ### 2.1 四个逻辑角色
 
 | 角色 | 数据面 | 负责 | 不负责 |
@@ -106,11 +144,12 @@ main ──●──────────────────────
 外部调用方 ──HTTP──> API 管控
 API 管控 ──下行契约──> 808 网关
 API 管控 ──端点申请/读取──> 1078 媒体 / 苏标附件
-API 管控 ──落库/查询──> 共享存储
+API 管控 ──读写──> 元数据库（独占）
 808 网关 ──上行出口──> API 管控（或 MQ）
 808 网关 ──鉴权只读查询──> API 管控
-1078 媒体 ──元数据/事件──> 共享存储 / 事件出口
-苏标附件 ──元数据/事件──> 共享存储 / 事件出口
+1078 媒体 ──进度/事件──> API 管控（出站 HTTP）
+苏标附件 ──进度/登录──> API 管控（出站 HTTP）
+1078 媒体 / 苏标附件 ──写对象──> 共享对象存储
 ```
 
 禁止的调用方向：

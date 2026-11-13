@@ -89,6 +89,4 @@ cluster:
     root: "./data/blobs"
     marker: ".jt808-shared-volume"
 
-database:
-  # 附件节点不连数据库；所有元数据操作在 control。
-  type: "memory"
+# 元数据面不变量：附件节点不连数据库；任务、水位、节点注册与终态全部在 control。
