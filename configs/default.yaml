@@ -225,7 +225,10 @@ cluster:
   gateway:
     # 网关侧下行 HTTP 入口监听地址；role=gateway 必填。
     addr: ""
-    # 管控侧调用下行入口的基址；role=control 必填。
+    # control 下行模式：directory 按会话目录路由；fixed 固定发往 url。
+    # role=control 必填，且与 url 互斥：fixed 必须有 url，directory 必须留空。
+    routing: ""
+    # fixed 模式的下行入口基址；directory 模式必须留空。
     url: ""
     # control -> gateway 共享密钥（Authorization: Bearer）。role=gateway 必填。
     token: ""

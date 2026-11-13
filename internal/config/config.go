@@ -1541,6 +1541,13 @@ const (
 	RoleAttachment = "attachment"
 )
 
+// control 的下行路由模式。directory 按会话目录定位归属网关；
+// fixed 固定发往 cluster.gateway.url，只用于单节点部署。
+const (
+	GatewayRoutingDirectory = "directory"
+	GatewayRoutingFixed     = "fixed"
+)
+
 // 文件存储后端。local 只用于 standalone；sharedVolume 是过渡形态；objectStore 是正式形态。
 // 配置值大小写不敏感，内部统一为小写规范值。
 const (
@@ -1582,7 +1589,9 @@ type clusterConf struct {
 type clusterGatewayConf struct {
 	// Addr 是网关侧下行 HTTP 入口的监听地址。
 	Addr string `yaml:"addr"`
-	// URL 是单节点兼容的下行入口基址；为空时 control 按会话目录路由到具体节点。
+	// Routing 是 control 的下行模式：directory 按会话目录路由，fixed 固定发往 URL。
+	Routing string `yaml:"routing"`
+	// URL 是 fixed 模式下唯一的下行入口基址；directory 模式禁止配置。
 	URL string `yaml:"url"`
 	// NodeID 是网关节点标识，必须全局唯一；为空时默认主机名。
 	NodeID string `yaml:"nodeId"`
@@ -1590,17 +1599,6 @@ type clusterGatewayConf struct {
 	AdvertiseURL string `yaml:"advertiseUrl"`
 	// Token 是 control -> gateway 的共享密钥；gateway 校验、control 发送。
 	Token string `yaml:"token"`
-	// Nodes 是可选的网关种子清单，仅用于静态部署或启动预热；
-	// 下行路由仍以 gateway_nodes 动态注册目录为准。
-	Nodes []clusterGatewayNodeConf `yaml:"nodes"`
-}
-
-// clusterGatewayNodeConf 是种子清单中的一条网关记录。
-type clusterGatewayNodeConf struct {
-	// ID 是网关节点标识，清单内必须唯一。
-	ID string `yaml:"id"`
-	// URL 是该节点对 control 可达的下行入口基址。
-	URL string `yaml:"url"`
 }
 
 type clusterControlConf struct {
@@ -1711,11 +1709,11 @@ type ClusterOptions struct {
 	Roles   RoleSet
 	Gateway struct {
 		Addr         string
+		Routing      string
 		URL          string
 		NodeID       string
 		AdvertiseURL string
 		Token        string
-		Nodes        []GatewayNodeOptions
 	}
 	Control struct {
 		Addr  string
@@ -1769,13 +1767,6 @@ type ObjectStoreOptions struct {
 type MediaNodeOptions struct {
 	Name string
 	URL  string
-}
-
-// GatewayNodeOptions 是 cluster.gateway.nodes 的一条网关种子记录。
-// 种子清单不参与路由，下行目标始终来自 session_directory + gateway_nodes。
-type GatewayNodeOptions struct {
-	ID  string
-	URL string
 }
 
 // AttachmentNodeOptions 是一个可被控制面调度的附件节点。
@@ -1868,6 +1859,7 @@ func (c *Config) ParseServerMode() (ClusterOptions, error) {
 	// gateway / control 的监听与凭据。
 	if conf.Gateway != nil {
 		options.Gateway.Addr = strings.TrimSpace(conf.Gateway.Addr)
+		options.Gateway.Routing = strings.ToLower(strings.TrimSpace(conf.Gateway.Routing))
 		options.Gateway.URL = strings.TrimSpace(conf.Gateway.URL)
 		options.Gateway.NodeID = strings.TrimSpace(conf.Gateway.NodeID)
 		options.Gateway.AdvertiseURL = strings.TrimSpace(conf.Gateway.AdvertiseURL)
@@ -1877,29 +1869,6 @@ func (c *Config) ParseServerMode() (ClusterOptions, error) {
 		}
 		if options.Gateway.AdvertiseURL == "" {
 			options.Gateway.AdvertiseURL = options.Gateway.URL
-		}
-		seenGatewayNodeID := map[string]bool{}
-		for index, raw := range conf.Gateway.Nodes {
-			id := strings.TrimSpace(raw.ID)
-			url := strings.TrimSpace(raw.URL)
-			if id == "" {
-				problems = append(problems, fmt.Sprintf("cluster.gateway.nodes[%d].id is required", index))
-				continue
-			}
-			if seenGatewayNodeID[id] {
-				problems = append(problems, fmt.Sprintf("cluster.gateway.nodes[%d].id duplicates %q", index, id))
-				continue
-			}
-			seenGatewayNodeID[id] = true
-			if url == "" {
-				problems = append(problems, fmt.Sprintf("cluster.gateway.nodes[%d].url is required", index))
-				continue
-			}
-			if err := validateHTTPURL(fmt.Sprintf("cluster.gateway.nodes[%d].url", index), url); err != nil {
-				problems = append(problems, err.Error())
-				continue
-			}
-			options.Gateway.Nodes = append(options.Gateway.Nodes, GatewayNodeOptions{ID: id, URL: url})
 		}
 	}
 	if conf.Control != nil {
@@ -1956,6 +1925,28 @@ func (c *Config) ParseServerMode() (ClusterOptions, error) {
 			options.Attachment.Nodes = append(options.Attachment.Nodes, AttachmentNodeOptions{Name: name, URL: url})
 		}
 	}
+	// 下行模式必须显式且互斥：fixed 依赖 url，directory 不允许再配 url。
+	switch options.Gateway.Routing {
+	case "":
+		if roles.Has(RoleControl) {
+			problems = append(problems, "cluster.gateway.routing is required for role control (directory or fixed)")
+		}
+	case GatewayRoutingDirectory:
+		if options.Gateway.URL != "" {
+			problems = append(problems, "cluster.gateway.url must be empty when cluster.gateway.routing=directory")
+		}
+	case GatewayRoutingFixed:
+		if options.Gateway.URL == "" {
+			problems = append(problems, "cluster.gateway.url is required when cluster.gateway.routing=fixed")
+		} else if err := validateHTTPURL("cluster.gateway.url", options.Gateway.URL); err != nil {
+			problems = append(problems, err.Error())
+		}
+	default:
+		problems = append(problems, fmt.Sprintf(
+			"cluster.gateway.routing must be %q or %q, got %q",
+			GatewayRoutingDirectory, GatewayRoutingFixed, options.Gateway.Routing))
+	}
+
 	if roles.Has(RoleGateway) {
 		if options.Gateway.Addr == "" {
 			problems = append(problems, "cluster.gateway.addr is required for role gateway")
@@ -1972,12 +1963,6 @@ func (c *Config) ParseServerMode() (ClusterOptions, error) {
 		}
 	}
 	if roles.Has(RoleControl) {
-		// cluster.gateway.url 是单节点兼容配置：为空时按会话目录路由到具体节点。
-		if options.Gateway.URL != "" {
-			if err := validateHTTPURL("cluster.gateway.url", options.Gateway.URL); err != nil {
-				problems = append(problems, err.Error())
-			}
-		}
 		if options.Control.Addr == "" {
 			problems = append(problems, "cluster.control.addr is required for role control")
 		} else if err := validateListenAddr("cluster.control.addr", options.Control.Addr); err != nil {
