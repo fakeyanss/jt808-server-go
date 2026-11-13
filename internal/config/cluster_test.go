@@ -15,7 +15,7 @@ func gatewayControlBase() *Config {
 		Uplink:        &uplinkConf{Sink: UplinkSinkLocal},
 		Cluster: &clusterConf{
 			Roles:   []string{RoleGateway, RoleControl},
-			Gateway: &clusterGatewayConf{Addr: "127.0.0.1:9101", URL: "http://127.0.0.1:9101", Token: "gateway-token"},
+			Gateway: &clusterGatewayConf{Addr: "127.0.0.1:9101", Routing: GatewayRoutingFixed, URL: "http://127.0.0.1:9101", Token: "gateway-token"},
 			Control: &clusterControlConf{Addr: "127.0.0.1:9102", Token: "control-token"},
 		},
 	}
@@ -108,6 +108,47 @@ func TestParseServerModeMatrix(t *testing.T) {
 			mutate: func(t *testing.T, cfg *Config) {
 				*cfg = *controlOnlyBase()
 			},
+		},
+		{
+			name: "control 缺少下行模式",
+			mutate: func(t *testing.T, cfg *Config) {
+				*cfg = *controlOnlyBase()
+				cfg.Cluster.Gateway.Routing = ""
+			},
+			wantErr: "cluster.gateway.routing is required",
+		},
+		{
+			name: "fixed 缺少 url",
+			mutate: func(t *testing.T, cfg *Config) {
+				*cfg = *controlOnlyBase()
+				cfg.Cluster.Gateway.URL = ""
+			},
+			wantErr: "cluster.gateway.url is required",
+		},
+		{
+			name: "directory 不得配置 url",
+			mutate: func(t *testing.T, cfg *Config) {
+				*cfg = *controlOnlyBase()
+				cfg.Cluster.Gateway.Routing = GatewayRoutingDirectory
+			},
+			wantErr: "cluster.gateway.url must be empty",
+		},
+		{
+			name: "directory 通过",
+			mutate: func(t *testing.T, cfg *Config) {
+				*cfg = *controlOnlyBase()
+				cfg.Cluster.Gateway.Routing = GatewayRoutingDirectory
+				cfg.Cluster.Gateway.URL = ""
+			},
+		},
+		{
+			name: "未知下行模式",
+			mutate: func(t *testing.T, cfg *Config) {
+				*cfg = *controlOnlyBase()
+				cfg.Cluster.Gateway.Routing = "roundrobin"
+				cfg.Cluster.Gateway.URL = ""
+			},
+			wantErr: "cluster.gateway.routing must be",
 		},
 		{
 			name: "uplink token 必须等于 control token",

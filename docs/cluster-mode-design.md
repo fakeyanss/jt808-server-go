@@ -682,9 +682,9 @@ phone -> session_directory
 ```
 
 - 查不到目录、节点已过期、节点离线、generation/sessionId 不匹配，一律返回 `offline`，由 outbox 重试；**不跨节点猜测，不做轮询兜底**。
-- `cluster.gateway.url` 降级为单节点兼容配置；多节点以节点目录为准。
+- `cluster.gateway.routing` 显式选择下行模式：`directory` 按会话目录路由，`fixed` 固定发往 `cluster.gateway.url`。两者互斥：`fixed` 缺少 `url`、`directory` 仍配置 `url` 都拒绝启动。
+- `fixed` 是单节点部署的兼容形态；多节点以节点目录为准，control 必须使用 `directory`。
 - 新增 `cluster.gateway.advertiseUrl`：网关告诉 control 的下行入口地址，与监听 `addr` 分开。
-- 新增可选的 `cluster.gateway.nodes` 种子清单，仅用于静态部署或启动预热；动态注册是主路径，种子清单不是唯一来源。
 - `gateway_id` 必须全局唯一；同一 `gateway_id` 启动两个进程会互相清理目录行并造成归属抖动，部署侧需要强约束。
 
 #### 7.2.6 明确退化点
@@ -804,10 +804,8 @@ cluster:
   gateway:
     # 节点对 control 可达的下行入口；gateway 注册时上报
     advertiseUrl: ""
-    # 可选种子清单；多节点以 gateway_nodes 动态目录为准
-    nodes:
-      - id: "gw-1"
-        url: "http://gw-1:9100"
+    # control 的下行模式：directory | fixed
+    routing: "directory"
     uplink:
       # builtin | http | mq
       mode: "builtin"
@@ -826,8 +824,7 @@ cluster:
       idempotencyTTL: "5m"
 
   control:
-    # 单节点兼容；多节点下行以 session_directory + gateway_nodes 为准
-    downlinkEndpoint: "http://gateway:9100"
+    # 下行模式与入口在 cluster.gateway.routing / url 中配置
     uplinkListen: "0.0.0.0:9101"
     callbackBaseURL: "http://control:9000"
 
@@ -852,7 +849,8 @@ cluster:
 | `cluster.nodeId` | 不校验 | 非空 |
 | 上行出口 | 固定 `builtin` | `builtin/http/mq` 三选一；`http/mq` 必填 endpoint/token |
 | `cluster.gateway.advertiseUrl` | 不校验 | `gateway` 角色必填；必须是 control 可达的下行基址 |
-| `cluster.gateway.nodes` | 不校验 | 可选；存在时校验 id 唯一、url 合法 |
+| `cluster.gateway.routing` | 不校验 | `control` 必填；`directory` 与 `url` 互斥，`fixed` 必须有 `url` |
+| `cluster.gateway.url` | 不校验 | 仅 `fixed` 模式使用；`directory` 模式必须留空 |
 | 下行契约监听 | 不启动 | `gateway` 角色必须配置且只绑内网 |
 | 媒体/附件端点分配器 | 不启动 | 承担对应角色时必须配置 |
 | `database.type` | `memory/sqlite/mysql` | `control` 角色必须为 `mysql` |
@@ -1213,7 +1211,7 @@ E2 不引入协调组件；以上方案只在确实需要严格顺序时再选�
 - 节点/会话目录实现阶段（按顺序，每阶段独立验证、独立提交）：
   1. **E4.1 节点注册与实例生命周期**：新增 `gateway_nodes` 与 `instance_id`；MySQL 用 `DATETIME(3)`、SQLite 用 ISO8601 毫秒 TEXT；网关注册、10 秒心跳、30 秒判死、优雅注销全部由数据库时间裁决，Go 只拿布尔结果；本阶段只落节点状态，不改变会话绑定与下行路由。验收：两个网关注册、杀一个后 30 秒内 status=offline；现有下行行为不变。
   2. **E4.2 会话归属与 generation 围栏**：新增 `session_directory`；control 在 0x0102 业务路径 claim/release，claim 幂等（同一 gateway/instance/session 不递增），返回 generation；0x0102 强制同步，网关等待 claim 结果后再应答；cluster 下 claim 失败 fail-closed；上行信封与终端应答携带 generation，旧事件丢弃并回传 `fenced`，confirm 与 best-effort 两条路径都解析响应体，网关收到后关闭本地会话。验收：同 phone 双 claim 只有一个 generation 生效；重复 claim 不递增；旧 generation 事件不写库；release 丢失时节点离线后目录联表失效。
-  3. **E4.3 下行路由器**：新增 `cluster.gateway.advertiseUrl` 与可选 `cluster.gateway.nodes`；`cluster.gateway.url` 降级为单节点兼容；按 phone 查目录、联节点表、取 `downlink_url`；无目录/离线一律 `offline`，不跨节点猜测。验收：同 phone 迁移到另一网关后下行跟随；节点过期后 outbox 重试并最终过期。
+  3. **E4.3 下行路由器**：新增 `cluster.gateway.advertiseUrl` 与 `cluster.gateway.routing`；`fixed` 保留单节点直连，`directory` 按 phone 查目录、联节点表、取 `downlink_url`；无目录/离线一律 `offline`，不跨节点猜测。验收：同 phone 迁移到另一网关后下行跟随；节点过期后 outbox 重试并最终过期。
   4. **E4.4 旧实例清理、观测与运维**：网关注册时按新 `instance_id` 批量清理同 `gateway_id` 旧行；补目录命中/离线/fenced/节点过期指标与运行手册；覆盖网关重启、同号双活、节点分区等混沌场景。revoke 推送作为后续增强，不阻塞本阶段。
 - 验收：故障场景可复现；指标可定位；standalone 回归全绿。
 

@@ -57,6 +57,8 @@ cluster:
   roles:
     - control
   gateway:
+    # 下行模式：fixed 发往下方 url；多节点部署改为 directory 并删除 url。
+    routing: "fixed"
     # control -> gateway 的下行契约基址与共享密钥。
     url: "http://127.0.0.1:9101"
     token: "cluster-shared-token"
