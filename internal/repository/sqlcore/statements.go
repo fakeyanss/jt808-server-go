@@ -44,4 +44,10 @@ type Statements interface {
 	// InsertLocationsIgnoringDuplicates 生成 (phone, dedup_key) 冲突时忽略的批量插入。
 	// placeholders 是调用方拼好的 "(?, ?, ...)" 列表，不含 VALUES 关键字。
 	InsertLocationsIgnoringDuplicates(placeholders string) string
+	// EnsureTaskLeaseRow 插入缺失的任务租约行；行已存在时静默忽略。
+	// 参数为 (name, updated_at)，owner 为空、expires_at 为 0。
+	EnsureTaskLeaseRow() string
+	// EnsureDedupKeyRow 插入缺失的共享去重行；行已存在时静默忽略。
+	// 参数为 (dedup_key, updated_at)，expires_at 为 0。
+	EnsureDedupKeyRow() string
 }

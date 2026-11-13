@@ -73,6 +73,11 @@ func (s Summary) Deleted() int64 {
 	return s.Locations + s.Alarms + s.MediaFiles + s.MediaCaptures + s.MediaSearchResults
 }
 
+// LeaseRunner 是单实例任务执行器，由 coordination.Runner 实现。
+type LeaseRunner interface {
+	Run(ctx context.Context, name string, fn func(context.Context)) bool
+}
+
 // Cleaner 执行历史数据清理。并发调用 CleanOnce 不安全，Run 内部串行执行。
 type Cleaner struct {
 	store   repository.RetentionStore
@@ -80,6 +85,7 @@ type Cleaner struct {
 	cfg     Config
 	metrics *observability.Metrics
 	now     func() time.Time
+	lease   LeaseRunner
 	done    chan struct{}
 }
 
@@ -92,6 +98,13 @@ func NewCleaner(store repository.RetentionStore, media MediaStore, cfg Config, m
 		metrics: metrics,
 		now:     time.Now,
 		done:    make(chan struct{}),
+	}
+}
+
+// SetLease 设置单实例执行器。未设置时按进程内单实例运行，兼容 standalone。
+func (c *Cleaner) SetLease(lease LeaseRunner) {
+	if c != nil {
+		c.lease = lease
 	}
 }
 
@@ -120,19 +133,27 @@ func (c *Cleaner) Run(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			started := c.now()
-			summary := c.CleanOnce(ctx)
-			log.Info().
-				Int64("locations", summary.Locations).
-				Int64("alarms", summary.Alarms).
-				Int64("media_files", summary.MediaFiles).
-				Int64("media_captures", summary.MediaCaptures).
-				Int64("media_search_results", summary.MediaSearchResults).
-				Int("failures", summary.Failures).
-				Dur("duration", c.now().Sub(started)).
-				Msg("Retention cleanup finished")
+			if c.lease != nil {
+				c.lease.Run(ctx, "retention-cleanup", c.cleanOnceWithLog)
+				continue
+			}
+			c.cleanOnceWithLog(ctx)
 		}
 	}
+}
+
+func (c *Cleaner) cleanOnceWithLog(ctx context.Context) {
+	started := c.now()
+	summary := c.CleanOnce(ctx)
+	log.Info().
+		Int64("locations", summary.Locations).
+		Int64("alarms", summary.Alarms).
+		Int64("media_files", summary.MediaFiles).
+		Int64("media_captures", summary.MediaCaptures).
+		Int64("media_search_results", summary.MediaSearchResults).
+		Int("failures", summary.Failures).
+		Dur("duration", c.now().Sub(started)).
+		Msg("Retention cleanup finished")
 }
 
 // CleanOnce 执行一轮清理，各类别相互独立，单类失败不影响其余类别。

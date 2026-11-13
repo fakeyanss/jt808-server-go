@@ -15,6 +15,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/fakeyanss/jt808-server-go/internal/coordination"
 	"github.com/fakeyanss/jt808-server-go/internal/repository"
 	"github.com/fakeyanss/jt808-server-go/internal/repository/memory"
 	"github.com/fakeyanss/jt808-server-go/internal/repository/mysql"
@@ -68,6 +69,8 @@ type Repositories struct {
 	Locations repository.LocationRepository
 	// Retention 为历史数据分批清理能力，仅 SQL 后端提供；memory 后端为 nil。
 	Retention repository.RetentionStore
+	// Coordination 提供任务租约与共享 TTL 去重；memory 后端为进程内实现。
+	Coordination coordination.Store
 
 	// Backend 记录实际启用的后端，供启动日志与运维排查使用。
 	Backend string
@@ -97,6 +100,7 @@ type sqlBackend interface {
 	AlarmRepository(policy repository.AlarmRetention) repository.AlarmRepository
 	LocationRepository(policy repository.LocationRetention) repository.LocationRepository
 	RetentionStore() repository.RetentionStore
+	CoordinationStore() coordination.Store
 }
 
 // NewMemory 创建一组互相独立的内存仓储，供测试与新代码注入。
@@ -122,6 +126,7 @@ func newRepositories(backend string) *Repositories {
 		UpgradeResults:  memory.NewUpgradeResultRepository(),
 		Commands:        memory.NewCommandRepository(),
 		AttachmentFiles: memory.NewAttachmentFileRepository(),
+		Coordination:    coordination.NewMemoryStore(),
 		Backend:         backend,
 	}
 }
@@ -177,6 +182,7 @@ func openSQL(handle sqlBackend, backend string, cfg Config) (*Repositories, erro
 	repos.Alarms = handle.AlarmRepository(cfg.AlarmRetention)
 	repos.Locations = handle.LocationRepository(cfg.LocationRetention)
 	repos.Retention = handle.RetentionStore()
+	repos.Coordination = handle.CoordinationStore()
 	repos.close = handle.Close
 	repos.check = handle.Ping
 	return repos, nil

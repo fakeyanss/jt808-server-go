@@ -424,3 +424,21 @@ CREATE TABLE IF NOT EXISTS attachment_files (
     KEY idx_attachment_files_phone (source, phone, updated_at),
     KEY idx_attachment_files_status (status, updated_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+-- 多副本协调（2026-11-19）。
+-- task_leases：周期性任务的单实例租约，name 为任务名，expires_at 到期后可被其它副本接手。
+-- dedup_keys：按业务键的共享 TTL 去重，dedup_key 形如 auto-9208:<phone>:<alarmID>。
+CREATE TABLE IF NOT EXISTS task_leases (
+    name VARCHAR(128) NOT NULL,
+    owner VARCHAR(128) NOT NULL DEFAULT '',
+    expires_at BIGINT NOT NULL DEFAULT 0,
+    updated_at BIGINT NOT NULL DEFAULT 0,
+    PRIMARY KEY (name)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+CREATE TABLE IF NOT EXISTS dedup_keys (
+    dedup_key VARCHAR(255) NOT NULL,
+    expires_at BIGINT NOT NULL DEFAULT 0,
+    updated_at BIGINT NOT NULL DEFAULT 0,
+    PRIMARY KEY (dedup_key)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;

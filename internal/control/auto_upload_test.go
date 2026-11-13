@@ -3,11 +3,13 @@ package control
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 
 	actionpkg "github.com/fakeyanss/jt808-server-go/internal/action"
 	"github.com/fakeyanss/jt808-server-go/internal/contracts"
+	"github.com/fakeyanss/jt808-server-go/internal/coordination"
 	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
 )
 
@@ -40,7 +42,7 @@ func TestAutoUploadTriggerSends9208WithAllocatedEndpoint(t *testing.T) {
 		Endpoint: contracts.AttachmentEndpoint{IP: "10.0.0.9", TCPPort: 7400, UDPPort: 7401},
 	}}
 	sender := &fakeDownlinkSender{}
-	trigger := NewAutoUploadTrigger(actionpkg.Noop{}, allocator, sender, 0)
+	trigger := NewAutoUploadTrigger(actionpkg.Noop{}, allocator, sender, nil, 0)
 	alarmID := []byte("ABCDEFGHIJKLMNOP")
 	event := actionpkg.AlarmEvent{Phone: "13800138000", AlarmSign: 1, AlarmID: alarmID}
 
@@ -65,10 +67,29 @@ func TestAutoUploadTriggerSkipsWhenNoNode(t *testing.T) {
 		Code: contracts.AttachmentCodeNodesUnavailable, Reason: "all nodes are full",
 	}}
 	sender := &fakeDownlinkSender{}
-	trigger := NewAutoUploadTrigger(actionpkg.Noop{}, allocator, sender, 0)
+	trigger := NewAutoUploadTrigger(actionpkg.Noop{}, allocator, sender, nil, 0)
 	trigger.OnAlarm(context.Background(), actionpkg.AlarmEvent{
 		Phone: "13800138000", AlarmSign: 1, AlarmID: []byte("ABCDEFGHIJKLMNOP"),
 	})
 	require.Len(t, allocator.requests, 1)
 	require.Empty(t, sender.requests)
+}
+
+// 两个 control 副本共享同一去重存储时，同一报警只允许一个副本触发 0x9208。
+func TestAutoUploadTriggerDedupsAcrossReplicas(t *testing.T) {
+	store := coordination.NewMemoryStore()
+	allocator := &fakeAttachmentAllocator{lease: contracts.AttachmentLease{
+		LeaseID:  "att-1",
+		Endpoint: contracts.AttachmentEndpoint{IP: "10.0.0.9", TCPPort: 7400, UDPPort: 7401},
+	}}
+	sender := &fakeDownlinkSender{}
+	triggerA := NewAutoUploadTrigger(actionpkg.Noop{}, allocator, sender, store, 30*time.Minute)
+	triggerB := NewAutoUploadTrigger(actionpkg.Noop{}, allocator, sender, store, 30*time.Minute)
+	event := actionpkg.AlarmEvent{Phone: "13800138000", AlarmSign: 1, AlarmID: []byte("ABCDEFGHIJKLMNOP")}
+
+	triggerA.OnAlarm(context.Background(), event)
+	triggerB.OnAlarm(context.Background(), event)
+
+	require.Len(t, allocator.requests, 1)
+	require.Len(t, sender.requests, 1)
 }

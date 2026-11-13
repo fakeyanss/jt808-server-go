@@ -5,6 +5,7 @@ import (
 
 	"github.com/rs/zerolog/log"
 
+	"github.com/fakeyanss/jt808-server-go/internal/coordination"
 	"github.com/fakeyanss/jt808-server-go/internal/retention"
 	"github.com/fakeyanss/jt808-server-go/pkg/routines"
 )
@@ -18,6 +19,7 @@ func (d *deps) startRetention() {
 	metrics := d.metrics
 
 	retentionPolicy := cfg.RetentionPolicy()
+	leaseRunner := coordination.NewRunner(storeSet.Coordination, coordination.DefaultTTL)
 	cancelRetention := func() {}
 	var retentionDones []<-chan struct{}
 	var retentionCtx context.Context
@@ -40,6 +42,7 @@ func (d *deps) startRetention() {
 				MediaCaptures:      retentionPolicy.MediaCaptures.MaxAge,
 				MediaSearchResults: retentionPolicy.MediaSearchResults.MaxAge,
 			}, metrics)
+			cleaner.SetLease(leaseRunner)
 			retentionDones = append(retentionDones, cleaner.Done())
 			routines.GoSafe(func() { cleaner.Run(retentionCtx) })
 			log.Info().
@@ -65,6 +68,7 @@ func (d *deps) startRetention() {
 				MaxFilesPerRun: retentionPolicy.OrphanFiles.MaxFilesPerRun,
 				BatchSize:      retentionPolicy.OrphanFiles.BatchSize,
 			}, metrics)
+			scanner.SetLease(leaseRunner)
 			retentionDones = append(retentionDones, scanner.Done())
 			routines.GoSafe(func() { scanner.Run(retentionCtx) })
 			log.Info().

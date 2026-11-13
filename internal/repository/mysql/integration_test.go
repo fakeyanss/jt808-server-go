@@ -31,6 +31,44 @@ func mysqlTestDSN(t *testing.T) string {
 	return dsn
 }
 
+// 协调表使用 INSERT IGNORE + 条件 UPDATE，MySQL 方言必须单独验证。
+func TestCoordinationStoreOnRealMySQL(t *testing.T) {
+	ctx := context.Background()
+	dsn := mysqlTestDSN(t)
+	raw := openRaw(t, dsn)
+	dropAllTables(t, raw)
+	_, err := Migrate(dsn)
+	require.NoError(t, err)
+	store, err := Open(dsn)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() })
+	coord := store.CoordinationStore()
+	now := time.Now()
+
+	acquired, err := coord.Acquire(ctx, "cleanup", "replica-a", now, time.Minute)
+	require.NoError(t, err)
+	require.True(t, acquired)
+	acquired, err = coord.Acquire(ctx, "cleanup", "replica-b", now, time.Minute)
+	require.NoError(t, err)
+	require.False(t, acquired)
+	acquired, err = coord.Acquire(ctx, "cleanup", "replica-a", now.Add(30*time.Second), time.Minute)
+	require.NoError(t, err)
+	require.True(t, acquired)
+	acquired, err = coord.Acquire(ctx, "cleanup", "replica-b", now.Add(2*time.Minute), time.Minute)
+	require.NoError(t, err)
+	require.True(t, acquired)
+
+	first, err := coord.MarkOnce(ctx, "auto-9208:phone:alarm", now, time.Minute)
+	require.NoError(t, err)
+	require.True(t, first)
+	second, err := coord.MarkOnce(ctx, "auto-9208:phone:alarm", now.Add(30*time.Second), time.Minute)
+	require.NoError(t, err)
+	require.False(t, second)
+	third, err := coord.MarkOnce(ctx, "auto-9208:phone:alarm", now.Add(2*time.Minute), time.Minute)
+	require.NoError(t, err)
+	require.True(t, third)
+}
+
 // openRaw 打开一个独立的原始连接池，用于观察/构造 SQL 层状态。
 func openRaw(t *testing.T, dsn string) *sql.DB {
 	t.Helper()
@@ -101,13 +139,13 @@ func TestMigrateBaselineOnRealMySQL(t *testing.T) {
 	require.NoError(t, db.QueryRow(`SELECT COUNT(*) FROM schema_migrations`).Scan(&versionCount))
 	require.Equal(t, 1, versionCount)
 
-	// 表清单：19 张业务表，device_runtime 已在基线内删除。
+	// 表清单：21 张业务表，device_runtime 已在基线内删除。
 	expectedTables := []string{
-		"alarms", "attachment_files", "command_outbox", "command_serial", "device_params",
-		"devices", "locations", "media_capture_items", "media_captures", "media_files",
-		"media_resource_lists", "media_search_results", "media_upload_notices",
-		"media_upload_tasks", "region_items", "schema_migrations", "terminal_catalogs",
-		"terminal_properties", "upgrade_results",
+		"alarms", "attachment_files", "command_outbox", "command_serial", "dedup_keys",
+		"device_params", "devices", "locations", "media_capture_items", "media_captures",
+		"media_files", "media_resource_lists", "media_search_results", "media_upload_notices",
+		"media_upload_tasks", "region_items", "schema_migrations", "task_leases",
+		"terminal_catalogs", "terminal_properties", "upgrade_results",
 	}
 	actual := listTables(t, db)
 	require.Equal(t, expectedTables, actual)
