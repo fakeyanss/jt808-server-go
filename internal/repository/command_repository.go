@@ -56,20 +56,31 @@ type DownlinkCommand struct {
 }
 
 // PendingQuery 描述待投命令的分页查询条件。
+// 可投时刻与过期判定由仓储用数据库当前时间完成，调用方不传判定时刻。
 type PendingQuery struct {
-	// DueBefore 只返回 NextAttemptAt 不晚于该时刻的命令；零值表示不限制。
-	DueBefore time.Time
 	// Offset/Limit 用于分页，Limit<=0 表示不限制条数（仅供运维排查使用）。
 	Offset int
 	Limit  int
+}
+
+// CommandSchedule 是入队时的相对时间参数，全部相对数据库当前时间。
+type CommandSchedule struct {
+	// InitialWait 是首次允许投递的延迟；<=0 表示立即可投。
+	InitialWait time.Duration
+	// ExpireAfter 是过期时长；0 表示不设过期，负数表示入队即已过期。
+	ExpireAfter time.Duration
+}
+
+// PendingStats 是 outbox 的 pending 水位。
+type PendingStats struct {
+	Pending int
+	Expired int
 }
 
 // CommandClaim 描述一次租约占用的条件。
 type CommandClaim struct {
 	// Owner 是本实例的租约标识，必须非空且跨实例唯一。
 	Owner string
-	// Now 是判定可投与租约是否失效的时刻。
-	Now time.Time
 	// Limit 是本批最多占用的条数。
 	Limit int
 	// Lease 是租约时长；必须覆盖一次下发到应答返回的窗口。
@@ -79,27 +90,35 @@ type CommandClaim struct {
 // CommandRepository 下行命令 outbox 仓储。
 // Enqueue 以 (Phone, IdempotencyKey) 保证幂等：重复键返回已有记录且 created=false。
 type CommandRepository interface {
-	Enqueue(ctx context.Context, command *DownlinkCommand) (stored *DownlinkCommand, created bool, err error)
+	// Enqueue 以 (Phone, IdempotencyKey) 保证幂等：重复键返回已有记录且 created=false。
+	// next_attempt_at/expires_at 由 schedule 相对数据库当前时间计算。
+	Enqueue(ctx context.Context, command *DownlinkCommand, schedule CommandSchedule) (stored *DownlinkCommand, created bool, err error)
 	Get(ctx context.Context, commandID string) (*DownlinkCommand, error)
 	// FindByRouting 按 (Phone, MsgID, Serial) 反查命令，用于处理终端应答与失败事件。
 	FindByRouting(ctx context.Context, phone string, msgID, serial uint16) (*DownlinkCommand, error)
 	// ListPending 按可投时间分页扫描 pending 命令，不改变租约与状态。
 	ListPending(ctx context.Context, query PendingQuery) ([]*DownlinkCommand, error)
+	// PendingStats 统计 pending 总量与其中已过期的数量。
+	// 过期判定在 SQL 内用数据库时间完成，供运维探针使用。
+	PendingStats(ctx context.Context) (PendingStats, error)
 	// ClaimPending 原子占用一批可投命令，同一命令在租约内只会被一个实例占用。
 	ClaimPending(ctx context.Context, claim CommandClaim) ([]*DownlinkCommand, error)
 	// BeginAttempt 记录一次实际下发尝试（attempts+1、last_attempt_at），仅租约持有者有效。
-	BeginAttempt(ctx context.Context, commandID, owner string, now time.Time) (bool, error)
+	BeginAttempt(ctx context.Context, commandID, owner string) (bool, error)
 	// ReleaseAttempt 释放租约并安排下一次可投时刻，用于真实下发失败（传输错误、网关 rejected）
-	// 后的退避。attempts 已由 BeginAttempt 递增，这里只写退避时刻与 last_error。
-	ReleaseAttempt(ctx context.Context, commandID, owner string, next time.Time, reason string) (bool, error)
+	// 后的退避。attempts 已由 BeginAttempt 递增，这里只写退避延迟与 last_error。
+	ReleaseAttempt(ctx context.Context, commandID, owner string, delay time.Duration, reason string) (bool, error)
 	// ReleaseOffline 释放租约但保持 pending，用于设备离线或档案未就绪等“未真正下发”的场景：
 	// attempts 与 last_attempt_at 回退到调用前的快照，不消耗也不清零重投次数；
-	// next 写为短退避后的下一次可投时刻，避免设备离线期间每个 poll tick 空转。
-	ReleaseOffline(ctx context.Context, commandID, owner string, attempts int, lastAttemptAt time.Time, next time.Time, reason string) (bool, error)
+	// delay 是相对数据库当前时间的短退避，避免设备离线期间每个 poll tick 空转。
+	ReleaseOffline(ctx context.Context, commandID, owner string, attempts int, lastAttemptAt time.Time, delay time.Duration, reason string) (bool, error)
 	// ScheduleRetry 按路由键安排重投，不要求租约归属；用于异步失败事件回填。
-	ScheduleRetry(ctx context.Context, phone string, msgID, serial uint16, next time.Time, reason string) (bool, error)
+	ScheduleRetry(ctx context.Context, phone string, msgID, serial uint16, delay time.Duration, reason string) (bool, error)
 	// ExpirePending 把已过期且仍为 pending 的命令转 failed，返回处理条数。
-	ExpirePending(ctx context.Context, now time.Time, reason string) (int, error)
+	ExpirePending(ctx context.Context, reason string) (int, error)
+	// ExpireByRouting 把指定路由已过期且仍 pending 的命令转 failed，返回是否命中。
+	// 过期判定在 SQL 内用数据库时间完成，供迟到的终端应答使用。
+	ExpireByRouting(ctx context.Context, phone string, msgID, serial uint16, reason string) (bool, error)
 	MarkAcked(ctx context.Context, phone string, msgID, serial uint16) (bool, error)
 	MarkFailed(ctx context.Context, phone string, msgID, serial uint16, reason string) (bool, error)
 	// NextSerial 为 (phone, msgID) 分配下一个下行流水号。

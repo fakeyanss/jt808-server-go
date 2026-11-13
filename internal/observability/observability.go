@@ -34,10 +34,6 @@ const (
 	RetentionCategoryMediaSearchResults = "mediaSearchResults"
 )
 
-// outboxScanLimit 是就绪检查与指标采集时单次扫描的 pending 命令上限。
-// 只用于判断趋势，不需要全量统计。
-const outboxScanLimit = 1000
-
 // retentionCounter 是单个类别的累计删除与失败计数。
 type retentionCounter struct {
 	deleted  atomic.Int64
@@ -722,17 +718,11 @@ func OutboxStats(ctx context.Context, commands repository.CommandRepository) (pe
 	if commands == nil {
 		return 0, 0, nil
 	}
-	list, err := commands.ListPending(ctx, repository.PendingQuery{Limit: outboxScanLimit})
+	stats, err := commands.PendingStats(ctx)
 	if err != nil {
-		return 0, 0, fmt.Errorf("list pending commands: %w", err)
+		return 0, 0, fmt.Errorf("pending command stats: %w", err)
 	}
-	now := time.Now()
-	for _, command := range list {
-		if !command.ExpiresAt.IsZero() && command.ExpiresAt.Before(now) {
-			expired++
-		}
-	}
-	return len(list), expired, nil
+	return stats.Pending, stats.Expired, nil
 }
 
 // CheckOutboxBacklog 在过期 pending 命令超过 threshold 时返回错误。

@@ -1805,7 +1805,7 @@ func TestTCPServerUpdatesCommandOutboxOnAck(t *testing.T) {
 		MsgID:          0x8105,
 		Serial:         serial,
 		Payload:        []byte{0x02},
-	})
+	}, repository.CommandSchedule{})
 	require.NoError(t, err)
 	require.True(t, created)
 	require.Equal(t, repository.CommandStatusPending, command.Status)

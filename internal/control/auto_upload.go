@@ -25,7 +25,6 @@ type AutoUploadTrigger struct {
 	sender     contracts.DownlinkSender
 	dedupStore coordination.Store
 	dedupTTL   time.Duration
-	now        func() time.Time
 }
 
 // NewAutoUploadTrigger 创建自动下发装饰器。
@@ -47,7 +46,6 @@ func NewAutoUploadTrigger(next actionpkg.Hooks, allocator contracts.AttachmentAl
 		sender:     sender,
 		dedupStore: dedupStore,
 		dedupTTL:   dedupTTL,
-		now:        time.Now,
 	}
 }
 
@@ -80,7 +78,7 @@ func (t *AutoUploadTrigger) OnAlarm(ctx context.Context, event actionpkg.AlarmEv
 		return
 	}
 	alarmIDHex := strings.ToUpper(hex.EncodeToString(event.AlarmID))
-	first, err := t.dedupStore.MarkOnce(ctx, "auto-9208:"+event.Phone+":"+alarmIDHex, t.now(), t.dedupTTL)
+	first, err := t.dedupStore.MarkOnce(ctx, "auto-9208:"+event.Phone+":"+alarmIDHex, t.dedupTTL)
 	if err != nil {
 		// 去重存储不可用时按 at-least-once 处理：继续下发，重复命令由 outbox
 		// 幂等键 (phone + idempotency_key) 兜底，避免漏掉报警附件上传。

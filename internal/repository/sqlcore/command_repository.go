@@ -15,34 +15,6 @@ const (
 		created_at, updated_at, last_attempt_at, next_attempt_at, expires_at, lease_owner, lease_expires_at
 		FROM command_outbox`
 
-	commandPendingFilter = ` status = 'pending'
-		AND (next_attempt_at = 0 OR next_attempt_at <= ?)
-		AND (expires_at = 0 OR expires_at > ?)
-		AND (lease_expires_at = 0 OR lease_expires_at <= ?)`
-
-	commandCandidateSQL = `SELECT command_id FROM command_outbox WHERE` + commandPendingFilter +
-		` ORDER BY next_attempt_at, created_at, command_id LIMIT ?`
-
-	commandDueListSQL = commandSelectColumns + ` WHERE` + commandPendingFilter +
-		` ORDER BY next_attempt_at, created_at, command_id LIMIT ? OFFSET ?`
-
-	commandClaimSQL = `UPDATE command_outbox
-		SET lease_owner = ?, lease_expires_at = ?, updated_at = ?
-		WHERE command_id = ? AND` + commandPendingFilter
-
-	commandBeginAttemptSQL = `UPDATE command_outbox
-		SET attempts = attempts + 1, last_attempt_at = ?, updated_at = ?
-		WHERE command_id = ? AND status = 'pending' AND lease_owner = ?
-		AND (lease_expires_at = 0 OR lease_expires_at > ?)`
-
-	commandReleaseSQL = `UPDATE command_outbox
-		SET lease_owner = '', lease_expires_at = 0, next_attempt_at = ?, last_error = ?, updated_at = ?
-		WHERE command_id = ? AND status = 'pending' AND lease_owner = ?`
-
-	commandReleaseOfflineSQL = `UPDATE command_outbox
-		SET lease_owner = '', lease_expires_at = 0, attempts = ?, last_attempt_at = ?, next_attempt_at = ?, last_error = ?, updated_at = ?
-		WHERE command_id = ? AND status = 'pending' AND lease_owner = ?`
-
 	commandSerialSelectSQL = `SELECT next_serial FROM command_serial WHERE phone = ?`
 
 	commandSerialUpdateSQL = `UPDATE command_serial SET next_serial = ?, updated_at = ? WHERE phone = ?`
@@ -53,23 +25,92 @@ const (
 
 	commandSerialInFlightSQL = `SELECT COUNT(1) FROM command_outbox
 		WHERE phone = ? AND msg_id = ? AND serial = ? AND status = 'pending'`
-
-	commandScheduleRetrySQL = `UPDATE command_outbox
-		SET lease_owner = '', lease_expires_at = 0, next_attempt_at = ?, last_error = ?, updated_at = ?
-		WHERE phone = ? AND msg_id = ? AND serial = ? AND status = 'pending'`
-
-	commandExpireSQL = `UPDATE command_outbox
-		SET status = 'failed', last_error = ?, lease_owner = '', lease_expires_at = 0, updated_at = ?
-		WHERE status = 'pending' AND expires_at > 0 AND expires_at <= ?`
-
-	commandMarkAckedSQL = `UPDATE command_outbox
-		SET status = 'acked', lease_owner = '', lease_expires_at = 0, updated_at = ?
-		WHERE phone = ? AND msg_id = ? AND serial = ? AND status = 'pending'`
-
-	commandMarkFailedSQL = `UPDATE command_outbox
-		SET status = 'failed', last_error = ?, lease_owner = '', lease_expires_at = 0, updated_at = ?
-		WHERE phone = ? AND msg_id = ? AND serial = ? AND status = 'pending'`
 )
+
+// commandPendingFilter 返回可投条件；时间比较一律用数据库当前时间。
+func (r *commandRepository) commandPendingFilter() string {
+	now := r.store.stmts.DBTimeMillisExpr()
+	return ` status = 'pending'
+		AND (next_attempt_at = 0 OR next_attempt_at <= ` + now + `)
+		AND (expires_at = 0 OR expires_at > ` + now + `)
+		AND (lease_expires_at = 0 OR lease_expires_at <= ` + now + `)`
+}
+
+func (r *commandRepository) commandCandidateSQL() string {
+	return `SELECT command_id FROM command_outbox WHERE` + r.commandPendingFilter() +
+		` ORDER BY next_attempt_at, created_at, command_id LIMIT ?`
+}
+
+func (r *commandRepository) commandDueListSQL() string {
+	return commandSelectColumns + ` WHERE` + r.commandPendingFilter() +
+		` ORDER BY next_attempt_at, created_at, command_id LIMIT ? OFFSET ?`
+}
+
+func (r *commandRepository) commandClaimSQL() string {
+	now := r.store.stmts.DBTimeMillisExpr()
+	return `UPDATE command_outbox
+		SET lease_owner = ?, lease_expires_at = ` + now + ` + ?, updated_at = ` + now + `
+		WHERE command_id = ? AND` + r.commandPendingFilter()
+}
+
+func (r *commandRepository) commandBeginAttemptSQL() string {
+	now := r.store.stmts.DBTimeMillisExpr()
+	return `UPDATE command_outbox
+		SET attempts = attempts + 1, last_attempt_at = ` + now + `, updated_at = ` + now + `
+		WHERE command_id = ? AND status = 'pending' AND lease_owner = ?
+		AND (lease_expires_at = 0 OR lease_expires_at > ` + now + `)`
+}
+
+func (r *commandRepository) commandReleaseSQL() string {
+	now := r.store.stmts.DBTimeMillisExpr()
+	return `UPDATE command_outbox
+		SET lease_owner = '', lease_expires_at = 0, next_attempt_at = ` + now + ` + ?, last_error = ?, updated_at = ` + now + `
+		WHERE command_id = ? AND status = 'pending' AND lease_owner = ?`
+}
+
+func (r *commandRepository) commandReleaseOfflineSQL() string {
+	now := r.store.stmts.DBTimeMillisExpr()
+	return `UPDATE command_outbox
+		SET lease_owner = '', lease_expires_at = 0, attempts = ?, last_attempt_at = ?, next_attempt_at = ` + now + ` + ?,
+			last_error = ?, updated_at = ` + now + `
+		WHERE command_id = ? AND status = 'pending' AND lease_owner = ?`
+}
+
+func (r *commandRepository) commandScheduleRetrySQL() string {
+	now := r.store.stmts.DBTimeMillisExpr()
+	return `UPDATE command_outbox
+		SET lease_owner = '', lease_expires_at = 0, next_attempt_at = ` + now + ` + ?, last_error = ?, updated_at = ` + now + `
+		WHERE phone = ? AND msg_id = ? AND serial = ? AND status = 'pending'`
+}
+
+func (r *commandRepository) commandExpireSQL() string {
+	now := r.store.stmts.DBTimeMillisExpr()
+	return `UPDATE command_outbox
+		SET status = 'failed', last_error = ?, lease_owner = '', lease_expires_at = 0, updated_at = ` + now + `
+		WHERE status = 'pending' AND expires_at > 0 AND expires_at <= ` + now
+}
+
+func (r *commandRepository) commandExpireByRoutingSQL() string {
+	now := r.store.stmts.DBTimeMillisExpr()
+	return `UPDATE command_outbox
+		SET status = 'failed', last_error = ?, lease_owner = '', lease_expires_at = 0, updated_at = ` + now + `
+		WHERE phone = ? AND msg_id = ? AND serial = ? AND status = 'pending'
+		AND expires_at > 0 AND expires_at <= ` + now
+}
+
+func (r *commandRepository) commandMarkAckedSQL() string {
+	now := r.store.stmts.DBTimeMillisExpr()
+	return `UPDATE command_outbox
+		SET status = 'acked', lease_owner = '', lease_expires_at = 0, updated_at = ` + now + `
+		WHERE phone = ? AND msg_id = ? AND serial = ? AND status = 'pending'`
+}
+
+func (r *commandRepository) commandMarkFailedSQL() string {
+	now := r.store.stmts.DBTimeMillisExpr()
+	return `UPDATE command_outbox
+		SET status = 'failed', last_error = ?, lease_owner = '', lease_expires_at = 0, updated_at = ` + now + `
+		WHERE phone = ? AND msg_id = ? AND serial = ? AND status = 'pending'`
+}
 
 // commandRepository 是 repository.CommandRepository 的 SQL 实现。
 type commandRepository struct {
@@ -81,7 +122,7 @@ func (s *Store) CommandRepository() repository.CommandRepository {
 	return &commandRepository{store: s}
 }
 
-func (r *commandRepository) Enqueue(ctx context.Context, command *repository.DownlinkCommand) (*repository.DownlinkCommand, bool, error) {
+func (r *commandRepository) Enqueue(ctx context.Context, command *repository.DownlinkCommand, schedule repository.CommandSchedule) (*repository.DownlinkCommand, bool, error) {
 	if command == nil {
 		return nil, false, fmt.Errorf("enqueue command: nil command")
 	}
@@ -91,30 +132,22 @@ func (r *commandRepository) Enqueue(ctx context.Context, command *repository.Dow
 	if command.IdempotencyKey == "" {
 		return nil, false, fmt.Errorf("enqueue command: empty idempotency key")
 	}
-	now := time.Now()
-	createdAt := command.CreatedAt
-	if createdAt.IsZero() {
-		createdAt = now
-	}
 	attempts := command.Attempts
 	if attempts == 0 {
 		// 首次下发即第一次尝试，重投在此基础上累加。
 		attempts = 1
-	}
-	nextAttemptAt := command.NextAttemptAt
-	if nextAttemptAt.IsZero() {
-		nextAttemptAt = now
 	}
 	stmt := r.store.stmts.InsertCommandIgnoringDuplicate()
 	payload := command.Payload
 	if payload == nil {
 		payload = []byte{}
 	}
+	initialWait := schedule.InitialWait.Milliseconds()
+	expireAfter := schedule.ExpireAfter.Milliseconds()
 	result, err := r.store.db.ExecContext(ctx, stmt,
 		command.CommandID, command.IdempotencyKey, command.Phone, int64(command.MsgID), int64(command.Serial),
-		payload, string(repository.CommandStatusPending), attempts, "", createdAt.UnixMilli(), now.UnixMilli(),
-		unixMilliOrZero(command.LastAttemptAt), unixMilliOrZero(nextAttemptAt), unixMilliOrZero(command.ExpiresAt),
-		"", int64(0))
+		payload, string(repository.CommandStatusPending), attempts,
+		unixMilliOrZero(command.LastAttemptAt), initialWait, expireAfter, expireAfter)
 	if err != nil {
 		return nil, false, fmt.Errorf("enqueue command %s: %w", command.CommandID, err)
 	}
@@ -188,10 +221,6 @@ func (r *commandRepository) getByIdempotencyKey(ctx context.Context, phone, key 
 func (r *commandRepository) ListPending(ctx context.Context, query repository.PendingQuery) ([]*repository.DownlinkCommand, error) {
 	ctx, cancel := readContext(ctx)
 	defer cancel()
-	due := query.DueBefore
-	if due.IsZero() {
-		due = time.Now()
-	}
 	limit := query.Limit
 	if limit <= 0 {
 		// MySQL 不支持 LIMIT -1，用足够大的上限表达「不分页」。
@@ -201,12 +230,26 @@ func (r *commandRepository) ListPending(ctx context.Context, query repository.Pe
 	if offset < 0 {
 		offset = 0
 	}
-	rows, err := r.store.readDB.QueryContext(ctx, commandDueListSQL, due.UnixMilli(), due.UnixMilli(), due.UnixMilli(), limit, offset)
+	rows, err := r.store.readDB.QueryContext(ctx, r.commandDueListSQL(), limit, offset)
 	if err != nil {
 		return nil, fmt.Errorf("list pending commands: %w", err)
 	}
 	defer rows.Close()
 	return scanCommands(rows)
+}
+
+func (r *commandRepository) PendingStats(ctx context.Context) (repository.PendingStats, error) {
+	ctx, cancel := readContext(ctx)
+	defer cancel()
+	now := r.store.stmts.DBTimeMillisExpr()
+	var stats repository.PendingStats
+	err := r.store.readDB.QueryRowContext(ctx,
+		`SELECT COUNT(1), COALESCE(SUM(CASE WHEN expires_at > 0 AND expires_at <= `+now+` THEN 1 ELSE 0 END), 0)
+		 FROM command_outbox WHERE status = 'pending'`).Scan(&stats.Pending, &stats.Expired)
+	if err != nil {
+		return repository.PendingStats{}, fmt.Errorf("command pending stats: %w", err)
+	}
+	return stats, nil
 }
 
 func (r *commandRepository) ClaimPending(ctx context.Context, claim repository.CommandClaim) ([]*repository.DownlinkCommand, error) {
@@ -219,12 +262,7 @@ func (r *commandRepository) ClaimPending(ctx context.Context, claim repository.C
 	if claim.Limit <= 0 {
 		return nil, nil
 	}
-	now := claim.Now
-	if now.IsZero() {
-		now = time.Now()
-	}
-	nowMilli := now.UnixMilli()
-	rows, err := r.store.db.QueryContext(ctx, commandCandidateSQL, nowMilli, nowMilli, nowMilli, claim.Limit)
+	rows, err := r.store.db.QueryContext(ctx, r.commandCandidateSQL(), claim.Limit)
 	if err != nil {
 		return nil, fmt.Errorf("list claimable commands: %w", err)
 	}
@@ -245,11 +283,11 @@ func (r *commandRepository) ClaimPending(ctx context.Context, claim repository.C
 
 	// 逐条条件更新：只有 lease 仍为空或已失效的实例能占用成功。
 	// 多实例同时选中同一条命令时，后提交的更新看到新租约，affected=0 自动跳过。
-	leaseUntil := now.Add(claim.Lease).UnixMilli()
+	leaseMilli := claim.Lease.Milliseconds()
 	claimed := make([]*repository.DownlinkCommand, 0, len(ids))
 	for _, id := range ids {
-		result, err := r.store.db.ExecContext(ctx, commandClaimSQL,
-			claim.Owner, leaseUntil, nowMilli, id, nowMilli, nowMilli, nowMilli)
+		result, err := r.store.db.ExecContext(ctx, r.commandClaimSQL(),
+			claim.Owner, leaseMilli, id)
 		if err != nil {
 			return nil, fmt.Errorf("claim command %s: %w", id, err)
 		}
@@ -269,9 +307,8 @@ func (r *commandRepository) ClaimPending(ctx context.Context, claim repository.C
 	return claimed, nil
 }
 
-func (r *commandRepository) BeginAttempt(ctx context.Context, commandID, owner string, now time.Time) (bool, error) {
-	result, err := r.store.db.ExecContext(ctx, commandBeginAttemptSQL,
-		now.UnixMilli(), now.UnixMilli(), commandID, owner, now.UnixMilli())
+func (r *commandRepository) BeginAttempt(ctx context.Context, commandID, owner string) (bool, error) {
+	result, err := r.store.db.ExecContext(ctx, r.commandBeginAttemptSQL(), commandID, owner)
 	if err != nil {
 		return false, fmt.Errorf("begin command attempt %s: %w", commandID, err)
 	}
@@ -282,9 +319,9 @@ func (r *commandRepository) BeginAttempt(ctx context.Context, commandID, owner s
 	return affected > 0, nil
 }
 
-func (r *commandRepository) ReleaseAttempt(ctx context.Context, commandID, owner string, next time.Time, reason string) (bool, error) {
-	result, err := r.store.db.ExecContext(ctx, commandReleaseSQL,
-		unixMilliOrZero(next), reason, time.Now().UnixMilli(), commandID, owner)
+func (r *commandRepository) ReleaseAttempt(ctx context.Context, commandID, owner string, delay time.Duration, reason string) (bool, error) {
+	result, err := r.store.db.ExecContext(ctx, r.commandReleaseSQL(),
+		delay.Milliseconds(), reason, commandID, owner)
 	if err != nil {
 		return false, fmt.Errorf("release command %s: %w", commandID, err)
 	}
@@ -295,9 +332,9 @@ func (r *commandRepository) ReleaseAttempt(ctx context.Context, commandID, owner
 	return affected > 0, nil
 }
 
-func (r *commandRepository) ReleaseOffline(ctx context.Context, commandID, owner string, attempts int, lastAttemptAt time.Time, next time.Time, reason string) (bool, error) {
-	result, err := r.store.db.ExecContext(ctx, commandReleaseOfflineSQL,
-		attempts, unixMilliOrZero(lastAttemptAt), unixMilliOrZero(next), reason, time.Now().UnixMilli(), commandID, owner)
+func (r *commandRepository) ReleaseOffline(ctx context.Context, commandID, owner string, attempts int, lastAttemptAt time.Time, delay time.Duration, reason string) (bool, error) {
+	result, err := r.store.db.ExecContext(ctx, r.commandReleaseOfflineSQL(),
+		attempts, unixMilliOrZero(lastAttemptAt), delay.Milliseconds(), reason, commandID, owner)
 	if err != nil {
 		return false, fmt.Errorf("release offline command %s: %w", commandID, err)
 	}
@@ -372,9 +409,9 @@ func normalizeSerial(value int64) uint16 {
 	return uint16(value)
 }
 
-func (r *commandRepository) ScheduleRetry(ctx context.Context, phone string, msgID, serial uint16, next time.Time, reason string) (bool, error) {
-	result, err := r.store.db.ExecContext(ctx, commandScheduleRetrySQL,
-		unixMilliOrZero(next), reason, time.Now().UnixMilli(), phone, int64(msgID), int64(serial))
+func (r *commandRepository) ScheduleRetry(ctx context.Context, phone string, msgID, serial uint16, delay time.Duration, reason string) (bool, error) {
+	result, err := r.store.db.ExecContext(ctx, r.commandScheduleRetrySQL(),
+		delay.Milliseconds(), reason, phone, int64(msgID), int64(serial))
 	if err != nil {
 		return false, fmt.Errorf("schedule command retry %s/%04X/%d: %w", phone, msgID, serial, err)
 	}
@@ -385,8 +422,8 @@ func (r *commandRepository) ScheduleRetry(ctx context.Context, phone string, msg
 	return affected > 0, nil
 }
 
-func (r *commandRepository) ExpirePending(ctx context.Context, now time.Time, reason string) (int, error) {
-	result, err := r.store.db.ExecContext(ctx, commandExpireSQL, reason, now.UnixMilli(), now.UnixMilli())
+func (r *commandRepository) ExpirePending(ctx context.Context, reason string) (int, error) {
+	result, err := r.store.db.ExecContext(ctx, r.commandExpireSQL(), reason)
 	if err != nil {
 		return 0, fmt.Errorf("expire pending commands: %w", err)
 	}
@@ -397,12 +434,24 @@ func (r *commandRepository) ExpirePending(ctx context.Context, now time.Time, re
 	return int(affected), nil
 }
 
+func (r *commandRepository) ExpireByRouting(ctx context.Context, phone string, msgID, serial uint16, reason string) (bool, error) {
+	result, err := r.store.db.ExecContext(ctx, r.commandExpireByRoutingSQL(), reason, phone, int64(msgID), int64(serial))
+	if err != nil {
+		return false, fmt.Errorf("expire command by routing %s/%04X/%d: %w", phone, msgID, serial, err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("expire command by routing rows affected %s/%04X/%d: %w", phone, msgID, serial, err)
+	}
+	return affected > 0, nil
+}
+
 func (r *commandRepository) MarkAcked(ctx context.Context, phone string, msgID, serial uint16) (bool, error) {
-	return r.finish(ctx, commandMarkAckedSQL, phone, msgID, serial)
+	return r.finish(ctx, r.commandMarkAckedSQL(), phone, msgID, serial)
 }
 
 func (r *commandRepository) MarkFailed(ctx context.Context, phone string, msgID, serial uint16, reason string) (bool, error) {
-	result, err := r.store.db.ExecContext(ctx, commandMarkFailedSQL, reason, time.Now().UnixMilli(), phone, int64(msgID), int64(serial))
+	result, err := r.store.db.ExecContext(ctx, r.commandMarkFailedSQL(), reason, phone, int64(msgID), int64(serial))
 	if err != nil {
 		return false, fmt.Errorf("mark command failed %s/%04X/%d: %w", phone, msgID, serial, err)
 	}
@@ -414,7 +463,7 @@ func (r *commandRepository) MarkFailed(ctx context.Context, phone string, msgID,
 }
 
 func (r *commandRepository) finish(ctx context.Context, stmt, phone string, msgID, serial uint16) (bool, error) {
-	result, err := r.store.db.ExecContext(ctx, stmt, time.Now().UnixMilli(), phone, int64(msgID), int64(serial))
+	result, err := r.store.db.ExecContext(ctx, stmt, phone, int64(msgID), int64(serial))
 	if err != nil {
 		return false, fmt.Errorf("mark command acked %s/%04X/%d: %w", phone, msgID, serial, err)
 	}

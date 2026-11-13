@@ -178,14 +178,19 @@ func TestProviderSnapshotAddsCounters(t *testing.T) {
 
 func TestCheckOutboxBacklog(t *testing.T) {
 	now := time.Now()
-	repo := memory.NewCommandRepository()
-	commands := []*repository.DownlinkCommand{
-		{CommandID: "expired-1", IdempotencyKey: "idem-1", Phone: "1001", MsgID: 0x8105, Serial: 1, Status: repository.CommandStatusPending, ExpiresAt: now.Add(-time.Minute)},
-		{CommandID: "expired-2", IdempotencyKey: "idem-2", Phone: "1002", MsgID: 0x8105, Serial: 2, Status: repository.CommandStatusPending, ExpiresAt: now.Add(-time.Second)},
-		{CommandID: "live", IdempotencyKey: "idem-3", Phone: "1003", MsgID: 0x8105, Serial: 3, Status: repository.CommandStatusPending, ExpiresAt: now.Add(time.Minute)},
+	repo := memory.NewCommandRepositoryWithClock(func() time.Time { return now })
+	schedules := []repository.CommandSchedule{
+		{ExpireAfter: -time.Minute},
+		{ExpireAfter: -time.Second},
+		{ExpireAfter: time.Minute},
 	}
-	for _, command := range commands {
-		_, _, err := repo.Enqueue(context.Background(), command)
+	commands := []*repository.DownlinkCommand{
+		{CommandID: "expired-1", IdempotencyKey: "idem-1", Phone: "1001", MsgID: 0x8105, Serial: 1, Status: repository.CommandStatusPending},
+		{CommandID: "expired-2", IdempotencyKey: "idem-2", Phone: "1002", MsgID: 0x8105, Serial: 2, Status: repository.CommandStatusPending},
+		{CommandID: "live", IdempotencyKey: "idem-3", Phone: "1003", MsgID: 0x8105, Serial: 3, Status: repository.CommandStatusPending},
+	}
+	for index, command := range commands {
+		_, _, err := repo.Enqueue(context.Background(), command, schedules[index])
 		require.NoError(t, err)
 	}
 

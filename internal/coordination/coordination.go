@@ -24,6 +24,9 @@ const DefaultTTL = time.Minute
 
 // Store 是任务租约与共享去重的持久化契约。
 //
+// 所有方法只接收相对 TTL，过期判定时刻由各后端自行取得：
+// SQL 后端用数据库当前时间，内存后端用进程时钟。
+//
 // Acquire 在 (name) 上尝试取得租约：
 //   - 行不存在、已过期或 owner 相同（续期）时成功；
 //   - 其它 owner 持有且未过期时返回 false。
@@ -34,10 +37,10 @@ const DefaultTTL = time.Minute
 //
 // PruneExpired 删除已过期的租约与去重行，返回删除总行数。
 type Store interface {
-	Acquire(ctx context.Context, name, owner string, now time.Time, ttl time.Duration) (bool, error)
+	Acquire(ctx context.Context, name, owner string, ttl time.Duration) (bool, error)
 	Release(ctx context.Context, name, owner string) error
-	MarkOnce(ctx context.Context, key string, now time.Time, ttl time.Duration) (bool, error)
-	PruneExpired(ctx context.Context, now time.Time) (int64, error)
+	MarkOnce(ctx context.Context, key string, ttl time.Duration) (bool, error)
+	PruneExpired(ctx context.Context) (int64, error)
 }
 
 // Runner 在 Store 上执行带续期的单实例任务。
@@ -45,7 +48,6 @@ type Runner struct {
 	store Store
 	owner string
 	ttl   time.Duration
-	now   func() time.Time
 }
 
 // NewRunner 创建任务 Runner。store 为 nil 时退化为进程内直接执行，
@@ -58,7 +60,6 @@ func NewRunner(store Store, ttl time.Duration) *Runner {
 		store: store,
 		owner: Owner(),
 		ttl:   ttl,
-		now:   time.Now,
 	}
 }
 
@@ -82,7 +83,7 @@ func (r *Runner) Run(ctx context.Context, name string, fn func(context.Context))
 		fn(ctx)
 		return true
 	}
-	acquired, err := r.store.Acquire(ctx, name, r.owner, r.now(), r.ttl)
+	acquired, err := r.store.Acquire(ctx, name, r.owner, r.ttl)
 	if err != nil {
 		log.Warn().Err(err).Str("task", name).Msg("Task lease acquire failed; skip this round")
 		return false
@@ -129,7 +130,7 @@ func (r *Runner) renew(ctx context.Context, name string, done <-chan struct{}, c
 		case <-done:
 			return
 		case <-ticker.C:
-			ok, err := r.store.Acquire(ctx, name, r.owner, r.now(), r.ttl)
+			ok, err := r.store.Acquire(ctx, name, r.owner, r.ttl)
 			if err != nil {
 				log.Warn().Err(err).Str("task", name).Msg("Task lease renew failed; will retry")
 				continue
@@ -152,19 +153,30 @@ type memoryStore struct {
 	mu     sync.Mutex
 	leases map[string]memoryLease
 	dedup  map[string]int64
+	// now 是内存后端的时钟；SQL 后端的等价物是数据库当前时间。
+	now func() time.Time
 }
 
 // NewMemoryStore 创建进程内协调存储，供单机模式与测试使用。
 func NewMemoryStore() Store {
+	return NewMemoryStoreWithClock(time.Now)
+}
+
+// NewMemoryStoreWithClock 用指定时钟创建内存协调存储，供测试推进时间。
+func NewMemoryStoreWithClock(now func() time.Time) Store {
+	if now == nil {
+		now = time.Now
+	}
 	return &memoryStore{
 		leases: make(map[string]memoryLease),
 		dedup:  make(map[string]int64),
+		now:    now,
 	}
 }
 
-func (m *memoryStore) Acquire(_ context.Context, name, owner string, now time.Time, ttl time.Duration) (bool, error) {
-	nowMs := now.UnixMilli()
-	expiresAt := now.Add(normalizeTTL(ttl)).UnixMilli()
+func (m *memoryStore) Acquire(_ context.Context, name, owner string, ttl time.Duration) (bool, error) {
+	nowMs := m.now().UnixMilli()
+	expiresAt := nowMs + normalizeTTL(ttl).Milliseconds()
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if current, ok := m.leases[name]; ok && current.expiresAt > nowMs && current.owner != owner {
@@ -183,9 +195,9 @@ func (m *memoryStore) Release(_ context.Context, name, owner string) error {
 	return nil
 }
 
-func (m *memoryStore) MarkOnce(_ context.Context, key string, now time.Time, ttl time.Duration) (bool, error) {
-	nowMs := now.UnixMilli()
-	expiresAt := now.Add(normalizeTTL(ttl)).UnixMilli()
+func (m *memoryStore) MarkOnce(_ context.Context, key string, ttl time.Duration) (bool, error) {
+	nowMs := m.now().UnixMilli()
+	expiresAt := nowMs + normalizeTTL(ttl).Milliseconds()
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if current, ok := m.dedup[key]; ok && current > nowMs {
@@ -195,8 +207,8 @@ func (m *memoryStore) MarkOnce(_ context.Context, key string, now time.Time, ttl
 	return true, nil
 }
 
-func (m *memoryStore) PruneExpired(_ context.Context, now time.Time) (int64, error) {
-	nowMs := now.UnixMilli()
+func (m *memoryStore) PruneExpired(_ context.Context) (int64, error) {
+	nowMs := m.now().UnixMilli()
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	var deleted int64
