@@ -140,7 +140,7 @@ type action struct {
 
 ```go
 type ProcessorDeps struct {
-    Storage *storage.Stores
+    Storage *database.Repositories
     Runtime *runtime.Stores
     Sinks   uplink.Dispatcher // 首期为 local-db 适配器
 }
@@ -168,7 +168,7 @@ func (mp *JT808MsgProcessor) initProcessOption() processOptions {
 | `NewJT808MsgProcessor(hooks)` | 仅 `hooks` | `NewJT808MsgProcessor(hooks, opts ...ProcessorOption)`，提供 `WithStorage/WithRuntime/WithSinks`；未注入时回退 `storage.Default()`/`runtime.Default()` |
 | `Pipeline.NewPipeline(conn, opts...)` | 仅 `WithHooks` | 增加依赖选项，透传给处理器 |
 | `TCPServer`/`UDPServer` | 无存储依赖 | 增加 `SetDeps` 或构造函数注入，创建 Pipeline 时传入 |
-| `cmd/jt808-server/main.go` | `storage.Init` 只返回 backend 字符串 | 需要拿到 `*storage.Stores`（返回二元组或改用 `storage.Open`）并下传 |
+| `cmd/jt808-server/main.go` | `database.Init` 只返回 backend 字符串 | 需要拿到 `*database.Repositories`（返回二元组或改用 `database.Open`）并下传 |
 | `internal/client/tcp_client.go` | `NewPipeline(conn)` | 首期可继续走默认回退；客户端模拟器始终使用本地内存仓储 |
 
 > 兼容策略：第一阶段保留 `storage.Default()`/`runtime.Default()` 回退，先完成签名与注入骨架，
@@ -244,9 +244,9 @@ func (mp *JT808MsgProcessor) initProcessOption() processOptions {
 
 `internal/storage` 只做装配，不承载实现：
 
-- `Open(Config)` 按 `memory|sqlite|mysql` 选择后端，返回 `*Stores`（9 个仓储字段 + `Backend` + `close`）。
+- `Open(Config)` 按 `memory|sqlite|mysql` 选择后端，返回 `*Repositories`（9 个仓储字段 + `Backend` + `close`）。
 - `Init(Config)` 把实例写入包级默认存储并返回 `*Stores`；`Default()` 未初始化时懒加载 memory。
-- `FromConfig(cfg)` 将 `storage` 段与 `retention` 段映射为 `storage.Config`，主服务与迁移工具共用。
+- `FromConfig(cfg)` 将 `database` 段与 `retention` 段映射为 `database.Config`，主服务与迁移工具共用。
 - memory 后端下 `Locations` 为 `nil`，`recordLocationHistory` 直接跳过。
 
 > 现状评价：仓储接口化已经完成。S1/S2 之后业务处理器已通过 `ProcessorDeps` 显式注入仓储与运行时，
@@ -296,8 +296,8 @@ func (mp *JT808MsgProcessor) initProcessOption() processOptions {
 `Config` 当前顶层字段：`Log`、`Server`、`Client`、`Storage`、`Retention`、`AlarmServer`、`Admin`。
 `Server` 下有 `Action.HTTP`（唯一的外部出口配置）、`AckTimeoutMS`、`MaxRetransmissions`、`Port`、`Banner`。
 
-`configs/default.yaml` 是嵌入默认配置，`storage`、`retention`、`alarmServer`、`admin` 均为顶层段。
-因此新增的上行出口配置应作为**顶层 `uplink` 段**，与 `storage`/`retention` 平级，而不是塞进 `server.action`：
+`configs/default.yaml` 是嵌入默认配置，`database`、`retention`、`alarmServer`、`admin` 均为顶层段。
+因此新增的上行出口配置应作为**顶层 `uplink` 段**，与 `database`/`retention` 平级，而不是塞进 `server.action`：
 `sink` 是业务数据出口策略，与监听端口无关。
 
 ### 2.9 每一类上行数据当前的处理归属
@@ -790,7 +790,7 @@ CREATE TABLE uplink_outbox (
 | S0 | 本文档与基线核查 | `docs/uplink-sink-design.md` | 无 | 否 | 无 | 删除文档 |
 | S1（已实施） | 注册表拆分与元数据标注：按「服务端上行 / 平台下行 / 模拟器」分组；为每个上行入口标注类别 | `internal/protocol/msg_processor.go`、相关测试 | 表结构可读性 | 是（仅注册表构造） | 低 | 还原注册表 |
 | S2（已实施） | 依赖注入骨架：`ProcessorDeps`、处理函数改方法、`initProcessOption` 改方法、Pipeline/Server/Client 传递依赖；保留 `Default()` 回退 | `msg_processor.go`、`pipeline.go`、`tcp_server.go`、`udp_server.go`、`internal/client/tcp_client.go`、`cmd/jt808-server/main.go`、测试 | 42 个处理函数 + 3 个辅助函数、81 个注册项 | 是（构造与签名） | 中（机械冲突多） | 保留旧构造函数薄封装 |
-| S3 | 归一化记录与 `local-db` 适配器：按类别产出 `Record`，`localsink` 1:1 映射现有耐用仓储，投影保持直写；行为不变 | 新增 `internal/uplink/`；`msg_processor.go`；`storage` 装配 | 六类业务写入 | 是（处理函数内部） | 中 | 每个类别独立开关，可逐类回退 |
+| S3 | 归一化记录与 `local-db` 适配器：按类别产出 `Record`，`localsink` 1:1 映射现有耐用仓储，投影保持直写；行为不变 | 新增 `internal/uplink/`；`msg_processor.go`；`database` 装配 | 六类业务写入 | 是（处理函数内部） | 中 | 每个类别独立开关，可逐类回退 |
 | S3a | 位置与报警类别 | `processMsg0200/0704`、`recordLocationHistory` | `Geo` 投影直写 + `Locations`/`Alarms` 耐用事实 | 是 | 中 | 保留旧分支 |
 | S3b | 行业上报类别 | `processIndustryReport` 的 16 个上行注册项（该函数共注册 19 个 MsgID，其中 `0x8108/0x8400/0x8900` 为下行语义；`0x0801/0x1205` 的媒体元数据归 S3d） | `Industry` 投影直写 + 目录快照走 Sink | 是 | 中 | 同上 |
 | S3c | 参数与属性类别 | `processMsg0104/0107` | `Params`、`Properties`、broker | 是 | 中 | 同上 |

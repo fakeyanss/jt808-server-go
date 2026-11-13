@@ -194,7 +194,7 @@ make run-client
 curl -s http://localhost:8008/api/device
 ```
 
-看到设备列表中出现模拟终端的手机号，说明接入、协议处理与查询链路已经打通。默认 `storage.type: memory`，重启后数据丢失；附件服务器默认开启，媒体服务与管理面默认关闭，业务 API 鉴权默认关闭。
+看到设备列表中出现模拟终端的手机号，说明接入、协议处理与查询链路已经打通。默认 `database.type: memory`，重启后数据丢失；附件服务器默认开启，媒体服务与管理面默认关闭，业务 API 鉴权默认关闭。
 
 ### 4.2 编译
 
@@ -237,7 +237,7 @@ docker compose -f deploy/docker-compose.yml up --build
 SQLite 与 MySQL 都不在服务启动时自动执行迁移。首次部署或升级后先运行独立工具：
 
 ```sh
-# 先在 configs/default.yaml 中设置 storage.type 与连接参数
+# 先在 configs/default.yaml 中设置 database.type 与连接参数
 make compile-migrate
 ./target/debug/jt808-migrate -c configs/default.yaml
 
@@ -245,7 +245,7 @@ make compile-migrate
 make run
 ```
 
-迁移文件位于 `internal/repository/migration/`，按 `<日期>_<描述>.sql` 命名。主服务启动只校验 `schema_migrations` 版本：版本落后会提示先执行 `jt808-migrate`，版本超前会拒绝启动。MySQL 场景也可以由 DBA 按文件名顺序直接执行这些 SQL。
+迁移 SQL 按后端分两套独立目录：`internal/repository/sqlite/migrations/` 与 `internal/repository/mysql/migrations/`，各含一个 `v<MAJOR>.<MINOR>.<PATCH>.sql` 文件，版本号同步推进。当前开发基线为 `v1.0.0.sql`，包含 `schema_migrations` 与全部业务表。`jt808-migrate` 会按 `database.type` 只执行对应目录。主服务启动只校验 `schema_migrations` 版本：版本落后会提示先执行 `jt808-migrate`，版本超前会拒绝启动；若检测到旧的 8 位数字版本（如 `20261118`），会明确提示重建 dev 库。MySQL 场景也可以由 DBA 按文件名顺序直接执行 `internal/repository/mysql/migrations/` 下的 SQL。
 
 **时区语义变更（`20261113_bcd_time_gmt8.sql`）**：旧版本把终端 BCD 时间当作 UTC 解析，属于“伪 UTC”。该迁移会把 `locations.report_time_ms`、`alarms.occurred_at_ms`、`media_files.location_time` 统一减去 8 小时；`media_resource_lists.items_json` 内嵌的 `startTime`/`endTime` 原地从 `Z` 标签改为显式 `+08:00`（墙钟不变、瞬时值同样减 8 小时），不清空数据。`received_at*` 等服务端时间不在迁移范围内。执行前必须备份数据库；回滚方式见迁移文件头部注释，且回滚必须在启动新版本前完成。
 
@@ -257,9 +257,10 @@ make run
 
 | 配置键 | 默认 | 说明 |
 |---|---|---|
-| `storage.type` | `memory` | `memory` / `sqlite` / `mysql`；空值等价 `memory` |
-| `storage.sqlite.path` | `./data/jt808.db` | `sqlite` 后端库文件 |
-| `storage.mysql.dsn` | 空 | `mysql` 后端 DSN，如 `user:pass@tcp(host:port)/db` |
+| `database.type` | `memory` | `memory` / `sqlite` / `mysql`；空值等价 `memory` |
+| `database.sqlite.path` | `./data/jt808.db` | `sqlite` 后端库文件 |
+| `database.sqlite.readConns` | `0`（按 CPU 数） | SQLite 只读池连接数；写池固定 1 连接，不可配置 |
+| `database.mysql.dsn` | 空 | `mysql` 后端 DSN，如 `user:pass@tcp(host:port)/db` |
 | `retention.locations.retentionDays` / `maxPerDevice` | `7` / `10000` | 定位历史保留；仅 SQL 后端生效 |
 | `retention.alarms.dedupWindowMs` / `confirmExpireMs` / `maxPerDevice` | `1800000` / `600000` / `1000` | 报警去重、确认关联与上限 |
 | `retention.alarms.retentionDays` | `0` | 报警按接收时间的定期清理；`0` 表示关闭 |
@@ -340,7 +341,7 @@ make run
 切换到 SQLite、开启鉴权与管理面、使用 durable outbox：
 
 ```yaml
-storage:
+database:
   type: "sqlite"
   sqlite:
     path: "./data/jt808.db"
@@ -481,7 +482,7 @@ curl -s http://localhost:8008/api/commands/0f8c2f6d9a1e4b7c8d3e5f60718293a4
 
 会话类接口只作用于当前进程，跨实例无效；`/locations`、`/alarms` 读取持久化历史（`memory` 后端下 `/locations` 不可用）。
 
-`/readyz` 依次检查 `storage`（SQL Ping）、`outbox_backlog`（过期 pending 命令数，默认阈值 100）、`media_disk`、`attachment_disk`、`media_upload_disk`；未启用的组件不参与判定，避免把“功能关闭”误报成“服务异常”。`/metrics` 当前导出：
+`/readyz` 依次检查 `database`（SQL Ping）、`outbox_backlog`（过期 pending 命令数，默认阈值 100）、`media_disk`、`attachment_disk`、`media_upload_disk`；未启用的组件不参与判定，避免把“功能关闭”误报成“服务异常”。`/metrics` 当前导出：
 
 - `jt808_sessions_connected`
 - `jt808_ack_pending`
@@ -510,7 +511,7 @@ curl -s http://localhost:8008/api/commands/0f8c2f6d9a1e4b7c8d3e5f60718293a4
 
 ### 6.7 运维要点
 
-数据备份按后端处理：SQLite 直接备份 `storage.sqlite.path` 指向的库文件；MySQL 使用常规逻辑或物理备份。附件与媒体目录独立于数据库，需要一并备份 `alarmServer.dir`、`mediaServer.dir` 与 `mediaUpload.dir`。压测可用 `bash scripts/loadtest.sh [持续秒数]`（默认 60 秒、200 并发模拟终端、memory 后端），结束时从 `/metrics` 采集连接数、待应答数、应答超时与 outbox 指标。
+数据备份按后端处理：SQLite 直接备份 `database.sqlite.path` 指向的库文件；MySQL 使用常规逻辑或物理备份。附件与媒体目录独立于数据库，需要一并备份 `alarmServer.dir`、`mediaServer.dir` 与 `mediaUpload.dir`。压测可用 `bash scripts/loadtest.sh [持续秒数]`（默认 60 秒、200 并发模拟终端、memory 后端），结束时从 `/metrics` 采集连接数、待应答数、应答超时与 outbox 指标。
 
 ## 7. 开发指导
 
@@ -526,9 +527,13 @@ curl -s http://localhost:8008/api/commands/0f8c2f6d9a1e4b7c8d3e5f60718293a4
 | `internal/codec` | hex、GBK、哈希、行政区划等编解码 |
 | `internal/server` | TCP/UDP 监听、会话生命周期、下行应答与重传 |
 | `internal/runtime` | 进程内运行时状态：连接注册表、心跳、跟踪、查询应答协调 |
-| `internal/repository` | 持久化仓储接口；`sqlstore` 为 SQLite/MySQL 实现 |
-| `internal/repository/migration` | 版本化 SQL 迁移文件 |
-| `internal/storage` | 存储后端装配，聚合为 `Stores` |
+| `internal/repository` | 持久化仓储契约定义（唯一来源） |
+| `internal/repository/memory` | 默认内存后端实现 |
+| `internal/repository/sqlcore` | SQL 仓储的方言无关骨架与迁移执行器 |
+| `internal/repository/sqlite` | SQLite 方言语句与迁移 SQL |
+| `internal/repository/mysql` | MySQL 方言语句与迁移 SQL |
+| `internal/repository/database` | 持久化装配层（memory / sqlite / mysql） |
+| `internal/storage` | 对象存储：BlobStore 后端、key 前缀编排、文件落地 |
 | `internal/uplink` | 上行可靠性分类与 `best_effort` / `at_least_once` 策略 |
 | `internal/command` | 下行命令 outbox 重投循环 |
 | `internal/alarmserver` | 苏标附件服务器（TCP/UDP、文件组装、保留期清理） |
@@ -554,10 +559,12 @@ curl -s http://localhost:8008/api/commands/0f8c2f6d9a1e4b7c8d3e5f60718293a4
 
 ### 7.3 迁移文件命名规范
 
-- 文件名格式为 `<日期>_<描述>.sql`，例如 `20261111_upgrade_results.sql`；
-- 同一天只能有一个迁移文件，当日追加的变更合并进同一个文件；
-- SQL 必须同时兼容 SQLite 与 MySQL：不使用方言专属子句，不使用 `TEXT`/`BLOB` 默认值；
-- 迁移由独立工具按文件名顺序执行，主服务只校验 `schema_migrations` 版本。
+- 文件名格式为 `v<MAJOR>.<MINOR>.<PATCH>.sql`，当前基线为 `v1.0.0.sql`；
+- 迁移分两套目录：`internal/repository/sqlite/migrations/` 与 `internal/repository/mysql/migrations/`，同名文件版本号必须同步推进；
+- 每个目录只写本后端的方言：SQLite 使用 `TEXT`/`BLOB` 与 `ON CONFLICT`，MySQL 使用显式 `ENGINE=InnoDB`/`utf8mb4` 与方言类型；
+- 版本按三段数值比较（`1.10.0` > `1.9.0`），不使用字符串排序；`schema_migrations.version` 存 `1.0.0` 这类字符串；
+- 开发阶段每个后端只维护一个基线文件，后续变更以新版本文件追加，不保留碎片化历史版本；
+- 迁移由独立工具按版本顺序执行对应目录，主服务只校验 `schema_migrations` 版本。
 
 ### 7.4 代码与文档约定
 

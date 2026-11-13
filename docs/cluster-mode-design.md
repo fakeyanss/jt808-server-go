@@ -688,6 +688,24 @@ gateway+media 同进程、control 独立，或 gateway+control 同进程、media
 按接入量与运维边界选择，不强制四进程
 ```
 
+### 9.1.1 角色二进制（E3a 交付）
+
+按角色部署时使用固定角色的二进制，每个二进制自己声明 `server.mode` 与 `cluster.roles`，
+配置不匹配时启动失败并直接提示应该使用哪个二进制：
+
+| 二进制 | 固定角色 |
+|---|---|
+| `jt-server-standalone` | `mode=standalone`（四角色同进程） |
+| `jt-signal` | `gateway` |
+| `jt-media` | `media` |
+| `jt-control` | `control`，允许附加 `attachment`（E3b 前临时托管） |
+
+`jt808-server` 保留为通用入口，完全按配置运行，不参与角色强校验。
+五个二进制均通过 `probes.addr` 提供 `/healthz` 与 `/readyz`（含 `jt-attachment`）。
+控制面通过 `cluster.media.nodes`（媒体节点内部 HTTP 基址）调度媒体节点：
+`GET /internal/media/status` 选点、`POST/DELETE /internal/media/sessions` 建停会话。
+完整的配置样例与最小启动命令见 [operations-runbook.md](operations-runbook.md#15-集群角色二进制部署)。
+
 ### 9.2 配置骨架
 
 ```yaml
@@ -754,7 +772,7 @@ cluster:
 | 上行出口 | 固定 `builtin` | `builtin/http/mq` 三选一；`http/mq` 必填 endpoint/token |
 | 下行契约监听 | 不启动 | `gateway` 角色必须配置且只绑内网 |
 | 媒体/附件端点分配器 | 不启动 | 承担对应角色时必须配置 |
-| `storage.type` | `memory/sqlite/mysql` | `control` 角色必须为 `mysql` |
+| `database.type` | `memory/sqlite/mysql` | `control` 角色必须为 `mysql` |
 | `commandOutbox.mode` | 现有归一化规则 | `control` 角色必须为 `durable` |
 | `api` | 现有规则 | `control` 角色沿用现有 `api.token` 规则 |
 | 共享卷 | 现有规则 | `media/attachment` 目录必须可写，启动时检查并告警 |
@@ -827,12 +845,12 @@ cluster:
 - `server.mode`：`standalone`（缺省）| `cluster`。`standalone` 隐式等于四个角色全开、全部本地，不初始化任何集群监听或客户端；显式配置 `cluster.roles` 视为矛盾配置，启动失败。
 - `cluster.roles`：`gateway` / `control` / `media` / `attachment` 的非空、去重子集。每个角色只启动自己拥有的监听：gateway → TCP/UDP + 下行入口；control → 业务 API + 上行入口；media/attachment → 各自端口。
 - 密钥：**上下行各一把独立共享密钥，不跨方向复用**。`cluster.gateway.token` 由 control 发送、gateway 校验；`cluster.control.token` 由 gateway 发送、control 校验。同一方向上“客户端凭据”与“服务端校验值”配置成同一密钥是设计选择，不是巧合：gateway 的 `uplink.http.token` 必须等于 control 的 `cluster.control.token`。cluster 下任一所需 token 为空即启动失败。
-- 文件存储：`cluster.blob.backend`（`sharedVolume` | `objectStore`）与 `cluster.blob.sharedVolume`、`cluster.blob.marker`（默认 `.jt808-shared-volume`）。cluster+media/attachment 必填；共享卷必须显式 `sharedVolume: true` 且根目录存在标记文件，否则启动失败；`objectStore` 在 E1 只做字段校验，启动时明确报“E1 未实现”，不静默降级。
+- 文件存储：`cluster.storage.backend`（`sharedVolume` | `objectStore`）与 `cluster.storage.sharedVolume`、`cluster.storage.marker`（默认 `.jt808-shared-volume`）。cluster+media/attachment 必填；共享卷必须显式 `sharedVolume: true` 且根目录存在标记文件，否则启动失败；`objectStore` 在 E1 只做字段校验，启动时明确报“E1 未实现”，不静默降级。
 
 **启动校验（fail-fast，一次性列出全部问题）**
 
 - `cluster`：roles 非空、取值合法、无重复；各角色所需监听/地址/token 齐全；media/attachment 端口齐全。
-- 存储：`gateway` 与 `control` 都要求 `storage.type=mysql`（gateway 只读设备档案与鉴权码，control 读写业务与 outbox）；`memory`/`sqlite` 一律拒绝。`media`/`attachment` 不连业务库（见下）。
+- 存储：`gateway` 与 `control` 都要求 `database.type=mysql`（gateway 只读设备档案与鉴权码，control 读写业务与 outbox）；`memory`/`sqlite` 一律拒绝。`media`/`attachment` 不连业务库（见下）。
 - outbox：`control` 要求 `commandOutbox.mode=durable`；`off`/`memory` 拒绝。gateway-only 不构造 outbox，配置忽略并 Warn。
 - 出口：gateway-only 必须 `uplink.sink=http`；gateway+control 同进程允许 `local`；同进程同时配置 `sink=http` 指向自身视为回环，拒绝。
 - **confirm-before-ack 覆盖校验**：出口策略中所有 `at_least_once` 类别，以及被强制为 confirm-before-ack 的 `0x0001`、`0x0801`，启动时必须已经注册能处理它们的 consumer；缺失则启动失败并列出缺失类别/消息。E1 不内置业务 consumer，因此默认配置下 `cluster+control` 无法启动——这是预期行为，契约验证通过测试注入 fake consumer 完成。运行期若 confirm-before-ack 事件仍找不到 consumer，回 503（绝不以 501/200 让终端持续重传或静默丢弃）。
@@ -847,7 +865,7 @@ cluster:
 | cluster | gateway | mysql（只读设备档案） | 忽略并 Warn | http | 允许 |
 | cluster | control | mysql | durable | local/http | 允许，需 consumer 覆盖校验通过 |
 | cluster | gateway+control | mysql | durable | local | 允许 |
-| cluster | gateway+media / media+attachment / 三数据面角色 | mysql（gateway）/ media、attachment 不连业务库 | 按角色 | http | 允许，但 media/attachment 必须配 `cluster.blob.backend=sharedVolume`（带共享标记）或 `objectStore`（E1 未实现，启动拒绝） |
+| cluster | gateway+media / media+attachment / 三数据面角色 | mysql（gateway）/ media、attachment 不连业务库 | 按角色 | http | 允许，但 media/attachment 必须配 `cluster.storage.backend=sharedVolume`（带共享标记）或 `objectStore`（E1 未实现，启动拒绝） |
 | cluster | media/attachment 配置普通本机目录、或 sharedVolume 缺标记 | — | — | — | 拒绝（文件不在共享存储） |
 | cluster | objectStore + `retention.orphanFiles.enabled=true` | — | — | — | 拒绝（对象存储禁用应用侧孤儿扫描） |
 | cluster | 任意含 gateway/control | memory/sqlite | — | — | 拒绝（共享状态不可用） |
@@ -1018,7 +1036,7 @@ cluster:
 
 - 3/4 失败 → 503，不 ack，终端重传；同 key 的 `Put`/`Promote` 幂等。
 - 4 成功、5 失败 → 503，重传后重走 3-5；sidecar 停留 `pending`。
-- 5 成功、6 失败 → **返回 200**（引用已建立，不需要终端重传），记 `blob_commit_failed`，由巡检补 `committed`。
+- 5 成功、6 失败 → **返回 200**（引用已建立，不需要终端重传），记 `storage_commit_failed`，由巡检补 `committed`。
 - 终端放弃重传 → sidecar `pending` 超 TTL（默认 30 分钟）→ 巡检查库：无 `media_files` 行才删对象；有行则补 `committed`。**绝不删除有引用的对象。**
 - E2 只实现 `sharedVolume`（共享卷 + 标记文件 + sidecar）；`objectStore` 仍在启动校验处明确拒绝并提示 E3。
 - 读取统一走 `BlobStore.Open(key)`，对上层暴露的 URL 不变。
@@ -1075,7 +1093,7 @@ E2 不引入协调组件；以上方案只在确实需要严格顺序时再选�
 
 - `standalone`：两个半边顺序执行，业务仍在原地；不创建任何 cluster 监听。
 - `uplink.sink: local` / `commandOutbox.mode: off`：行为不变。
-- 新增校验：`maxRequestBytes` 与 `maxBodyBytes` 的关系式；`cluster` 含 control 时归属表必须覆盖全部控制面注册项；含 control 且 `blob.backend=sharedVolume` 时标记文件必须可读写；`objectStore` 在 E2 仍拒绝。
+- 新增校验：`maxRequestBytes` 与 `maxBodyBytes` 的关系式；`cluster` 含 control 时归属表必须覆盖全部控制面注册项；含 control 且 `storage.backend=sharedVolume` 时标记文件必须可读写；`objectStore` 在 E2 仍拒绝。
 
 #### E2.10 E2 不做
 
