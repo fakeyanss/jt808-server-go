@@ -74,3 +74,8 @@ func (r *SessionDirectoryRepository) Get(_ context.Context, phone string) (*repo
 	copy := record
 	return &copy, nil
 }
+
+// Route 在内存后端恒返回未命中：内存目录没有节点信息，也无所谓跨节点下行。
+func (r *SessionDirectoryRepository) Route(_ context.Context, _, _ string) (string, bool, error) {
+	return "", false, nil
+}

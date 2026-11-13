@@ -238,3 +238,14 @@ func (statements) SelectSessionDirectory() string {
 	return `SELECT phone, gateway_id, instance_id, session_id, generation, claimed_at
 		FROM session_directory WHERE phone = ?`
 }
+
+func (statements) RouteSessionDownlink() string {
+	return `SELECT g.downlink_url
+		FROM session_directory s
+		JOIN gateway_nodes g
+			ON g.gateway_id = s.gateway_id AND g.instance_id = s.instance_id
+		WHERE s.phone = ?
+			AND g.status = 'online'
+			AND g.expires_at > CURRENT_TIMESTAMP(3)
+			AND (? = '' OR s.session_id = ?)`
+}

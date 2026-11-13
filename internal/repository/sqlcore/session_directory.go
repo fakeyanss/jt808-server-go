@@ -98,3 +98,19 @@ func (r *sessionDirectoryRepository) Get(ctx context.Context, phone string) (*re
 	}
 	return &record, nil
 }
+
+func (r *sessionDirectoryRepository) Route(ctx context.Context, phone, sessionID string) (string, bool, error) {
+	var downlinkURL string
+	err := r.store.readDB.QueryRowContext(ctx, r.store.stmts.RouteSessionDownlink(),
+		phone, sessionID, sessionID).Scan(&downlinkURL)
+	if err == stdsql.ErrNoRows {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	if downlinkURL == "" {
+		return "", false, nil
+	}
+	return downlinkURL, true, nil
+}

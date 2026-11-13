@@ -72,4 +72,8 @@ type Statements interface {
 	ValidateSessionDirectory() string
 	// SelectSessionDirectory 按 phone 查询目录快照。
 	SelectSessionDirectory() string
+	// RouteSessionDownlink 联表返回目录所属节点的 downlink_url。
+	// 条件包含 status=online、expires_at 晚于数据库当前时间，
+	// 以及 (session_id 为空 OR session_id 匹配)，全部由库裁决。
+	RouteSessionDownlink() string
 }

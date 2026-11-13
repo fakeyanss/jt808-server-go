@@ -38,4 +38,11 @@ type SessionDirectoryRepository interface {
 	Validate(ctx context.Context, phone string, owner SessionOwner, generation uint64) (bool, error)
 	// Get 返回目录快照；不存在返回 nil。
 	Get(ctx context.Context, phone string) (*SessionRecord, error)
+	// Route 解析 phone 当前可用的下行入口。
+	//
+	// 判定全部在 SQL 内完成：目录行存在、所属节点 status=online 且
+	// expires_at 晚于数据库当前时间，才返回该节点的 downlink_url。
+	// sessionID 非空时还必须与目录一致，避免旧调用方把命令发到新会话上。
+	// 查不到或节点不可用时返回 ok=false，由调用方按 offline 处理。
+	Route(ctx context.Context, phone, sessionID string) (url string, ok bool, err error)
 }
