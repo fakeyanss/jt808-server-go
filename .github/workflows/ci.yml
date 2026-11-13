@@ -34,9 +34,10 @@ jobs:
       run: |
         set -eo pipefail
         go test -race -count=1 -v \
-          ./internal/command/ \
+          ./internal/control/ \
           ./internal/repository/ \
-          ./internal/repository/sqlstore/ | tee outbox-regression.log
+          ./internal/repository/memory/ \
+          ./internal/repository/sqlite/ | tee outbox-regression.log
         grep -q -- '--- PASS: TestReplayAfterRestart' outbox-regression.log
         grep -q -- '--- PASS: TestCommandRepositoryMemoryPendingScanAndLease' outbox-regression.log
         grep -q -- '--- PASS: TestSQLiteCommandOutboxIdempotencyAndResult' outbox-regression.log
