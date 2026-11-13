@@ -79,6 +79,7 @@ type Server struct {
 	deviceLookup    func(ctx context.Context, phone string) (*model.Device, error)
 	nodes           repository.GatewayNodeRepository
 	sessions        repository.SessionDirectoryRepository
+	segments        repository.RecordingSegmentRepository
 	metrics         *observability.Metrics
 	clock           clockpkg.Clock
 
@@ -221,6 +222,13 @@ func (s *Server) SetSessionDirectoryRepository(sessions repository.SessionDirect
 	}
 }
 
+// SetRecordingSegmentRepository 挂载切片索引；设置后暴露 media 出站上报入口。
+func (s *Server) SetRecordingSegmentRepository(segments repository.RecordingSegmentRepository) {
+	if s != nil {
+		s.segments = segments
+	}
+}
+
 // Handler 返回可挂到任意 mux 的 HTTP 处理器，便于测试注入。
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
@@ -233,6 +241,9 @@ func (s *Server) Handler() http.Handler {
 	}
 	if s.sessions != nil {
 		mux.HandleFunc(gatewaynode.PathRelease, s.handleSessionRelease)
+	}
+	if s.segments != nil {
+		mux.HandleFunc(PathMediaSegment, s.handleMediaSegment)
 	}
 	return mux
 }

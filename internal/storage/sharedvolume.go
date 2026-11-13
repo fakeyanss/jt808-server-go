@@ -66,6 +66,45 @@ func NewSharedVolume(root string, requireMarker bool) (*SharedVolume, error) {
 // Root 返回共享卷根目录。
 func (s *SharedVolume) Root() string { return s.root }
 
+// ListObjects 列举共享卷指定前缀下的对象，供 control 重建切片索引。
+func (s *SharedVolume) ListObjects(ctx context.Context, prefix string) ([]contracts.BlobObject, error) {
+	clean := strings.Trim(strings.TrimSpace(prefix), "/")
+	if clean == "" {
+		return nil, errors.New("blob list prefix is empty")
+	}
+	base := filepath.Join(s.root, filepath.FromSlash(clean))
+	out := make([]contracts.BlobObject, 0)
+	err := filepath.WalkDir(base, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return ctxErr
+		}
+		if entry.IsDir() {
+			return nil
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return nil
+		}
+		relative, err := filepath.Rel(s.root, path)
+		if err != nil {
+			return nil
+		}
+		out = append(out, contracts.BlobObject{
+			Key:          filepath.ToSlash(relative),
+			Size:         info.Size(),
+			LastModified: info.ModTime(),
+		})
+		return nil
+	})
+	if errors.Is(err, os.ErrNotExist) {
+		return out, nil
+	}
+	return out, err
+}
+
 // Put 把内容写入暂存区，不使最终 key 可见。
 func (s *SharedVolume) Put(ctx context.Context, key string, r io.Reader, opts contracts.BlobOptions) (contracts.BlobInfo, error) {
 	clean, err := cleanKey(key)

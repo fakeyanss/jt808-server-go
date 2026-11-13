@@ -1,6 +1,6 @@
 # jt-media 的最小可运行配置：只承担 media 角色。
-# 写录像切片索引需要连接共享库；管控通过 mediaServer.httpPort 上的
-# /internal/media/* 调度本节点，保留期清理由 control 依据同一张索引表执行。
+# 不连业务库；管控通过 mediaServer.httpPort 上的 /internal/media/* 调度本节点。
+# 切片索引由 control 落库，media 只写对象存储并尽力出站通知 control。
 # 启动前创建共享卷标记文件（sharedVolume 校验要求真实存在）：
 #   mkdir -p data/blobs-media && touch data/blobs-media/.jt808-shared-volume
 log:
@@ -37,6 +37,11 @@ mediaServer:
   maxTCPConns: 64
   record:
     mode: "off"
+  # 切片完成后的出站通知；允许丢失，control 会扫描 media/segments/ 补齐索引。
+  segmentReport:
+    url: "http://127.0.0.1:9102/internal/v1/media/segments"
+    token: "uplink-token"
+    timeoutMs: 3000
 
 mediaUpload:
   dir: "./data/media-uploads"
@@ -66,6 +71,4 @@ cluster:
     marker: ".jt808-shared-volume"
 
 database:
-  type: "mysql"
-  mysql:
-    dsn: "root:password@tcp(127.0.0.1:3306)/jt808?parseTime=true&charset=utf8mb4"
+  type: "memory"

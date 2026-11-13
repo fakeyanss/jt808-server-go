@@ -687,6 +687,14 @@ type mediaServerConf struct {
 	Playback      *mediaPlaybackConf `yaml:"playback"`
 	RingBytes     int64              `yaml:"ringBytes"`
 	RingSeconds   int                `yaml:"ringSeconds"`
+	// SegmentReport 是切片完成后向 control 出站上报的地址；为空时不上报。
+	SegmentReport *mediaSegmentReportConf `yaml:"segmentReport"`
+}
+
+type mediaSegmentReportConf struct {
+	URL       string `yaml:"url"`
+	Token     string `yaml:"token"`
+	TimeoutMS int    `yaml:"timeoutMs"`
 }
 
 // mediaPlaybackConf 配置播放出口。
@@ -734,6 +742,15 @@ type MediaServerOptions struct {
 	RingDuration       time.Duration
 	// Playback 是播放出口配置；Output 默认 flv。
 	Playback PlaybackOptions
+	// SegmentReport 是切片索引出站上报配置。
+	SegmentReport MediaSegmentReportOptions
+}
+
+// MediaSegmentReportOptions 是切片上报 control 的归一化配置。
+type MediaSegmentReportOptions struct {
+	URL     string
+	Token   string
+	Timeout time.Duration
 }
 
 // PlaybackOptions 是播放输出的归一化配置。
@@ -846,6 +863,20 @@ func (c *Config) ParseMediaServer() (options MediaServerOptions, enabled bool, e
 	if err != nil {
 		return MediaServerOptions{}, false, err
 	}
+	report := MediaSegmentReportOptions{Timeout: 3 * time.Second}
+	if conf.SegmentReport != nil {
+		report.URL = strings.TrimSpace(conf.SegmentReport.URL)
+		report.Token = strings.TrimSpace(conf.SegmentReport.Token)
+		if report.URL != "" && !strings.HasPrefix(report.URL, "http://") && !strings.HasPrefix(report.URL, "https://") {
+			return MediaServerOptions{}, false, fmt.Errorf("mediaServer.segmentReport.url must start with http:// or https://")
+		}
+		if conf.SegmentReport.TimeoutMS < 0 {
+			return MediaServerOptions{}, false, fmt.Errorf("mediaServer.segmentReport.timeoutMs must be >= 0, got %d", conf.SegmentReport.TimeoutMS)
+		}
+		if conf.SegmentReport.TimeoutMS > 0 {
+			report.Timeout = time.Duration(conf.SegmentReport.TimeoutMS) * time.Millisecond
+		}
+	}
 	return MediaServerOptions{
 		Port:               port,
 		HTTPPort:           httpPort,
@@ -860,6 +891,7 @@ func (c *Config) ParseMediaServer() (options MediaServerOptions, enabled bool, e
 		RingBytes:          ringBytes,
 		RingDuration:       time.Duration(ringSeconds) * time.Second,
 		Playback:           playback,
+		SegmentReport:      report,
 	}, true, nil
 }
 

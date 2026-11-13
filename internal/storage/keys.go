@@ -8,9 +8,12 @@
 package storage
 
 import (
+	"errors"
 	"fmt"
 	"path"
+	"strconv"
 	"strings"
+	"time"
 )
 
 // 来源前缀。结尾统一带 "/"，拼接时不要再补分隔符。
@@ -33,9 +36,97 @@ const (
 	SourceFTP1078 = "ftp1078"
 )
 
-// MediaSegment 返回媒体切片的对象 key。
-func MediaSegment(phone string, channel uint8, date, name string) string {
-	return MediaSegments + path.Join(SafeSegment(phone), fmt.Sprintf("ch%d", channel), SafeSegment(date), SafeSegment(name))
+// MediaSegmentKeyInfo 是能从对象 key 独立解析出的切片元数据。
+//
+// 对象存储是切片的事实来源：即使 media 的上报全部丢失，control 也能仅凭
+// key 重建索引，因此终端、通道、类型、起止时间与序号必须全部编码在 key 里。
+type MediaSegmentKeyInfo struct {
+	Phone     string
+	Channel   uint8
+	Kind      string
+	StartAt   time.Time
+	EndAt     time.Time
+	Duration  time.Duration
+	Sequence  int
+	ObjectKey string
+}
+
+// MediaSegmentObjectKey 生成自带元数据的切片对象 key。
+//
+// 格式：media/segments/<phone>/ch<channel>/<kind>/<YYYYMMDD>/<startMs>_<durationMs>_<endMs>_<seq>.ts
+// 日期目录只用于人工排查，解析时以文件名里的毫秒时间为准。
+func MediaSegmentObjectKey(phone string, channel uint8, kind string, startAt time.Time, duration time.Duration, seq int) string {
+	if duration < 0 {
+		duration = 0
+	}
+	name := fmt.Sprintf("%d_%d_%d_%d.ts",
+		startAt.UnixMilli(), duration.Milliseconds(), startAt.Add(duration).UnixMilli(), seq)
+	return MediaSegments + path.Join(
+		SafeSegment(phone),
+		fmt.Sprintf("ch%d", channel),
+		SafeSegment(kind),
+		startAt.Format("20060102"),
+		name,
+	)
+}
+
+// ParseMediaSegmentKey 从对象 key 解析切片元数据。
+// 任何一段不符合约定都返回错误，调用方应跳过该对象而不是写坏索引。
+func ParseMediaSegmentKey(key string) (MediaSegmentKeyInfo, error) {
+	parts := strings.Split(strings.TrimPrefix(key, "/"), "/")
+	if len(parts) != 7 || parts[0] != "media" || parts[1] != "segments" {
+		return MediaSegmentKeyInfo{}, fmt.Errorf("invalid media segment key %q", key)
+	}
+	phone := parts[2]
+	if phone == "" {
+		return MediaSegmentKeyInfo{}, errors.New("media segment key has empty phone")
+	}
+	if !strings.HasPrefix(parts[3], "ch") {
+		return MediaSegmentKeyInfo{}, fmt.Errorf("invalid channel segment %q", parts[3])
+	}
+	channel, err := strconv.ParseUint(strings.TrimPrefix(parts[3], "ch"), 10, 8)
+	if err != nil {
+		return MediaSegmentKeyInfo{}, fmt.Errorf("invalid channel in %q: %w", key, err)
+	}
+	kind := parts[4]
+	if kind == "" {
+		return MediaSegmentKeyInfo{}, errors.New("media segment key has empty kind")
+	}
+	if len(parts[5]) != 8 {
+		return MediaSegmentKeyInfo{}, fmt.Errorf("invalid date segment %q", parts[5])
+	}
+	name := strings.TrimSuffix(parts[6], ".ts")
+	fields := strings.Split(name, "_")
+	if len(fields) != 4 {
+		return MediaSegmentKeyInfo{}, fmt.Errorf("invalid media segment file name %q", parts[6])
+	}
+	startMS, err := strconv.ParseInt(fields[0], 10, 64)
+	if err != nil || startMS <= 0 {
+		return MediaSegmentKeyInfo{}, fmt.Errorf("invalid start time in %q", parts[6])
+	}
+	durationMS, err := strconv.ParseInt(fields[1], 10, 64)
+	if err != nil || durationMS < 0 {
+		return MediaSegmentKeyInfo{}, fmt.Errorf("invalid duration in %q", parts[6])
+	}
+	endMS, err := strconv.ParseInt(fields[2], 10, 64)
+	if err != nil || endMS != startMS+durationMS {
+		return MediaSegmentKeyInfo{}, fmt.Errorf("inconsistent end time in %q", parts[6])
+	}
+	seq, err := strconv.Atoi(fields[3])
+	if err != nil || seq < 0 {
+		return MediaSegmentKeyInfo{}, fmt.Errorf("invalid sequence in %q", parts[6])
+	}
+	startAt := time.UnixMilli(startMS)
+	return MediaSegmentKeyInfo{
+		Phone:     phone,
+		Channel:   uint8(channel),
+		Kind:      kind,
+		StartAt:   startAt,
+		EndAt:     startAt.Add(time.Duration(durationMS) * time.Millisecond),
+		Duration:  time.Duration(durationMS) * time.Millisecond,
+		Sequence:  seq,
+		ObjectKey: key,
+	}, nil
 }
 
 // AttachmentPrefix 返回某个附件来源的根前缀。

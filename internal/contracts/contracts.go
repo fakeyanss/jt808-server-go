@@ -341,6 +341,21 @@ type BlobStore interface {
 	Stat(ctx context.Context, key string) (BlobInfo, error)
 }
 
+// BlobObject 是列举结果中的一个对象。
+type BlobObject struct {
+	Key          string
+	Size         int64
+	LastModified time.Time
+}
+
+// BlobLister 是可选能力：能列举指定前缀下的对象。
+//
+// control 依赖它从 media/segments/ 的对象 key 重建切片索引；
+// 不要求所有 BlobStore 实现，测试替身缺失时扫描侧会显式跳过。
+type BlobLister interface {
+	ListObjects(ctx context.Context, prefix string) ([]BlobObject, error)
+}
+
 // MediaEndpoint 是 1078 媒体节点的可达地址。
 type MediaEndpoint struct {
 	IP      string

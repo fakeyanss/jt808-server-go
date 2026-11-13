@@ -328,6 +328,7 @@ type Coordinator interface {
 | `media_upload_tasks` | 文件上传指令元数据（B，来源 0x9206） | 主键 `(phone, serial)`；FTP 参数、时间范围、报警标志等序列化为 `payload_json`；**P1 已落地** |
 | `media_upload_notices` | 文件上传完成通知（B，来源 0x1206） | 主键 `(phone, serial)`；保存上传结果 `result`；**P1 已落地** |
 | `media_files` | 0x0801 媒体文件元数据（B） | 主键 `(phone, media_id)`；索引 `(phone, location_time, received_at)`、`(received_at)`；文件落 `mediaUpload.dir`，元数据与文件由保留期清理保持一致 |
+| `recording_segments` | 平台录像切片索引（B，可重建） | 主键 `id=<phone>_<channel>_<start_ms>`；索引 `(phone, channel, start_at)`、`(end_at)`；对象 key 自带终端、通道、起止时间与序号，control 可扫描 `media/segments/` 重建，保留期按 `end_at` 清理 |
 | `media_captures` / `media_capture_items` | 0x0805 拍摄应答及明细（B） | 主键 `(phone, record_id)` / `(phone, record_id, item_index)`；索引 `(received_at)`；删除主表时同事务删除明细 |
 | `waybills` | 运单元数据（B，**后续独立任务**） | 按 phone/时间索引 |
 
