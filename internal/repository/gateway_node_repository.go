@@ -17,13 +17,26 @@ type GatewayNode struct {
 	ExpiresAt   time.Time
 }
 
+// GatewayNodeStats 是节点存活状态的观测快照。
+// Online 只统计 status=online 且未过期的节点；Expired 是仍在线但已超过
+// 过期时间的节点，用于区分“进程停了但还没被清理”的残留。
+type GatewayNodeStats struct {
+	Online  int64
+	Offline int64
+	Expired int64
+}
+
 // GatewayNodeRepository 维护网关节点的注册、心跳与注销。
 // 所有时间由数据库计算：Register/Heartbeat/Deregister 不接收应用侧时间，
 // 过期判断由 SQL 完成；Heartbeat 返回 false 表示 gateway_id/instance_id
 // 不匹配或节点不存在，调用方应重新注册而不是继续使用旧实例。
 type GatewayNodeRepository interface {
+	// Register 覆盖节点当前实例，并在同一事务内删除同 gateway_id 下
+	// 旧 instance_id 的会话目录行，避免重启后归属抖动。
 	Register(ctx context.Context, gatewayID, instanceID, downlinkURL string) error
 	Heartbeat(ctx context.Context, gatewayID, instanceID string) (bool, error)
 	Deregister(ctx context.Context, gatewayID, instanceID string) error
 	Get(ctx context.Context, gatewayID string) (*GatewayNode, error)
+	// Stats 返回节点存活统计；过期判定用数据库时间，Go 侧不参与比较。
+	Stats(ctx context.Context) (GatewayNodeStats, error)
 }

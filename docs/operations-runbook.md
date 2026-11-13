@@ -240,6 +240,35 @@ jt-control requires cluster.roles to contain "control"; current roles=[media]. u
 - 自动 `0x9208` 在 control 内识别报警后经下行契约下发，附件节点地址来自节点状态，
   不再要求 gateway 与 control 同进程；下发失败会打 `WARN` 并保留报警记录。
 
+**集群下行路由与会话目录**：
+
+- `cluster.gateway.routing` 必须显式选择：
+  - `fixed`：control 固定发往 `cluster.gateway.url`，只适用于单网关部署；
+  - `directory`：control 按 phone 查询 `session_directory`，联表 `gateway_nodes`
+    定位归属网关，`cluster.gateway.url` 必须留空。
+  - `fixed` 缺少 `url`、`directory` 仍配置 `url`、control 未配置 `routing` 都直接拒绝启动。
+- 启动日志打印实际下行模式：`downlink_mode=local|fixed|directory`
+  （`local` 表示 gateway 与 control 同进程，走进程内直连）。
+- 网关注册时会在同一事务内删除同 `gateway_id` 下旧 `instance_id` 的
+  `session_directory` 行；网关重启换实例后，旧会话不会继续被路由。
+- `session_directory` **没有 per-phone TTL**。会话是否有效由所属节点是否
+  `status=online` 且未过期推出；网关本地 JT808 心跳超时/断链后上报 release。
+- 预置会话访问自己的网关所在节点 = 一次 `INSERT IGNORE` 或 `DELETE`，因此终端重连必须
+  重新 `0x0102` 才能建立新 generation。
+- 下行找不到目录、节点离线或过期、`sessionId` 不匹配时一律返回 `offline`，
+  由 outbox 按既有重试策略重投；control 不跨节点轮询，也不猜测兜底。
+
+**集群混沌场景**：
+
+| 场景 | 预期行为 | 观测线索 |
+|---|---|---|
+| 网关进程重启（同 `gatewayId` 新实例） | 注册即清理旧实例目录行；旧 generation 上行被 `fenced`，旧实例心跳返回 `instance_stale` | `jt808_gateway_node_fenced_total` 增长；`jt808_uplink_fenced_total` 增长；`jt808_gateway_nodes_online` 不抖动 |
+| 同 `gatewayId` 两个进程同时在线 | 后注册者顶替前者的节点行并清理旧目录；部署侧应避免，否则归属会周期性抖动 | `jt808_gateway_node_fenced_total` 持续增长；注册日志中同一 `gateway_id` 频繁换 `instance_id` |
+| 网关宕机/网络分区，心跳停止 | 30 秒后节点过期；该节点下所有会话不可路由，下行返回 `offline` 并由 outbox 重试 | `jt808_gateway_nodes_expired` > 0；`jt808_downlink_offline_total` 增长 |
+| 网关下线但目录残留（bug / release 丢失） | 下行继续路由到该网关，直到 phone 重新 claim 或节点换实例；平台侧不兜底 | `jt808_downlink_directory_hit_total` 正常但终端无响应；节点仍为 online |
+| 终端跨网关重连 | 新 `0x0102` 立即改写目录并递增 generation；旧网关在下一次上行收到 `fenced` 后关闭会话 | `jt808_uplink_fenced_total` 短时增长；目录 `generation` 递增 |
+| control 重启 | 不丢目录与节点状态；启动后重新按 `directory` 模式路由 | 启动日志 `downlink_mode=directory`；`jt808_gateway_nodes_*` 与重启前一致 |
+
 **附件存储与进度**：
 
 - 附件节点只保留有界本地暂存（`alarmServer.dir/staging`），收到数据即写入，按
@@ -410,6 +439,13 @@ tar -czf /backup/jt808-files-$(date +%Y%m%d-%H%M).tgz ./data ./logs
 | `jt808_orphan_scan_failures_total` | 孤儿文件扫描累计失败次数 |
 | `jt808_orphan_scan_last_run_timestamp_seconds` / `last_run_duration_seconds` | 最近一次孤儿扫描的运行时间与耗时 |
 | `jt808_attachment_trigger_skipped_total` | `alarmServer.autoUpload` 因当前二进制没有 control 角色而未自动下发 0x9208 的次数 |
+| `jt808_gateway_nodes_online` | 当前在线且未过期的网关节点数 |
+| `jt808_gateway_nodes_offline` | 已优雅注销的网关节点数 |
+| `jt808_gateway_nodes_expired` | 仍标记 online 但已超过 `expires_at` 的节点数 |
+| `jt808_downlink_directory_hit_total` | `directory` 模式成功定位到可用归属网关的累计次数 |
+| `jt808_downlink_offline_total` | `directory` 模式判定无可用归属、直接返回 `offline` 的累计次数 |
+| `jt808_uplink_fenced_total` | 上行事件 generation 落后于目录、被丢弃的累计次数 |
+| `jt808_gateway_node_fenced_total` | 节点心跳因实例已被新注册顶替而拒绝的累计次数 |
 
 采集示例：
 
@@ -423,6 +459,9 @@ curl -fsS -H "Authorization: Bearer $ADMIN_TOKEN" http://127.0.0.1:9000/metrics
 - `jt808_outbox_expired > 0` 持续 10 分钟 → 检查终端在线率与 `commandOutbox` 配置。
 - `jt808_ack_timeouts_total` 快速增长 → 检查网络质量、`ackTimeoutMs` 与终端重传配置。
 - `jt808_attachments_active` 长期不下降 → 检查附件端口连通性与磁盘空间。
+- `jt808_gateway_nodes_expired > 0` 持续存在 → 检查网关进程与心跳链路；节点过期会让其全部会话不可路由。
+- `jt808_downlink_offline_total` 快速增长 → 对照 `jt808_gateway_nodes_*` 与会话目录，确认是终端下线还是节点失联。
+- `jt808_gateway_node_fenced_total` 持续增长 → 同一 `gatewayId` 有多实例竞争，检查部署侧唯一性约束。
 
 ---
 

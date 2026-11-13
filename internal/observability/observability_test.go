@@ -33,6 +33,11 @@ func TestWritePrometheusExposesRequiredMetrics(t *testing.T) {
 			Delivered: 12, Failed: 13, Timeouts: 14, Dropped: 15,
 			Rejected: 16, InFlight: 17, ShardQueues: []int{7, 11},
 		},
+		ClusterEvents: ClusterEventSnapshot{
+			DownlinkDirectoryHits: 18, DownlinkOffline: 19,
+			UplinkFenced: 20, GatewayNodeFenced: 21,
+		},
+		GatewayNodes: GatewayNodeSnapshot{Online: 22, Offline: 23, Expired: 24},
 	}
 	require.NoError(t, WritePrometheus(&buf, snapshot))
 
@@ -56,6 +61,13 @@ func TestWritePrometheusExposesRequiredMetrics(t *testing.T) {
 		"jt808_uplink_in_flight 17",
 		"jt808_uplink_queue_depth{shard=\"0\"} 7",
 		"jt808_uplink_queue_depth{shard=\"1\"} 11",
+		"jt808_downlink_directory_hit_total 18",
+		"jt808_downlink_offline_total 19",
+		"jt808_uplink_fenced_total 20",
+		"jt808_gateway_node_fenced_total 21",
+		"jt808_gateway_nodes_online 22",
+		"jt808_gateway_nodes_offline 23",
+		"jt808_gateway_nodes_expired 24",
 	} {
 		require.Contains(t, output, want)
 	}

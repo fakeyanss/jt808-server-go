@@ -99,16 +99,44 @@ func TestGatewayNodeRepositoryOnRealMySQL(t *testing.T) {
 	require.NoError(t, err)
 	require.False(t, ok)
 
-	// 新实例注册后旧实例心跳必须被围栏。
+	// 新实例注册后旧实例心跳必须被围栏，同 gateway_id 的旧目录行被清理。
+	const phone = "13800000997"
+	_, err = db.Exec(`DELETE FROM session_directory WHERE phone = ?`, phone)
+	require.NoError(t, err)
+	dir := openStore(t, dsn).SessionDirectoryRepository()
+	_, err = dir.Claim(ctx, phone, repository.SessionOwner{
+		GatewayID: gatewayID, InstanceID: "inst-a", SessionID: "sess-1",
+	})
+	require.NoError(t, err)
 	require.NoError(t, repo.Register(ctx, gatewayID, "inst-b", "http://gw-it:9001"))
+	record, err := dir.Get(ctx, phone)
+	require.NoError(t, err)
+	require.Nil(t, record)
 	ok, err = repo.Heartbeat(ctx, gatewayID, "inst-a")
 	require.NoError(t, err)
 	require.False(t, ok)
+
+	node, err = repo.Get(ctx, gatewayID)
+	require.NoError(t, err)
+	require.Equal(t, "inst-b", node.InstanceID)
 
 	require.NoError(t, repo.Deregister(ctx, gatewayID, "inst-b"))
 	node, err = repo.Get(ctx, gatewayID)
 	require.NoError(t, err)
 	require.Equal(t, "offline", node.Status)
+
+	stats, err := repo.Stats(ctx)
+	require.NoError(t, err)
+	require.GreaterOrEqual(t, stats.Offline, int64(1))
+
+	// 仍标记 online 但已过期的节点单独计数。
+	_, err = db.Exec(`UPDATE gateway_nodes
+		SET status = 'online', expires_at = DATE_SUB(CURRENT_TIMESTAMP(3), INTERVAL 1 SECOND)
+		WHERE gateway_id = ?`, gatewayID)
+	require.NoError(t, err)
+	stats, err = repo.Stats(ctx)
+	require.NoError(t, err)
+	require.GreaterOrEqual(t, stats.Expired, int64(1))
 
 	missing, err := repo.Get(ctx, "gw-it-missing")
 	require.NoError(t, err)

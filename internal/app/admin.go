@@ -172,6 +172,19 @@ func (d *deps) buildProbes() {
 					snapshot.MediaFileBytes = bytes
 				}
 			}
+			// 节点存活水位：过期判定在 SQL 内用数据库时间完成。
+			if storeSet != nil && storeSet.GatewayNodes != nil {
+				stats, err := storeSet.GatewayNodes.Stats(ctx)
+				if err != nil {
+					log.Warn().Err(err).Msg("Fail to collect gateway node metrics")
+				} else {
+					snapshot.GatewayNodes = observability.GatewayNodeSnapshot{
+						Online:  stats.Online,
+						Offline: stats.Offline,
+						Expired: stats.Expired,
+					}
+				}
+			}
 			if uplinkSink != nil {
 				stats := uplinkSink.Stats()
 				snapshot.Uplink = observability.UplinkSnapshot{

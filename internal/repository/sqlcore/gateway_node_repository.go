@@ -19,8 +19,23 @@ func (s *Store) GatewayNodeRepository() repository.GatewayNodeRepository {
 }
 
 func (r *gatewayNodeRepository) Register(ctx context.Context, gatewayID, instanceID, downlinkURL string) error {
-	_, err := r.store.db.ExecContext(ctx, r.store.stmts.UpsertGatewayNode(), gatewayID, instanceID, downlinkURL)
-	return err
+	tx, err := r.store.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	// 新实例注册即顶替旧实例：同一事务内清掉旧 instance 的目录行，
+	// 避免旧会话在下行路由里继续指向已经消失的进程。
+	if _, err = tx.ExecContext(ctx, r.store.stmts.DeleteStaleSessionDirectory(),
+		gatewayID, instanceID); err != nil {
+		return err
+	}
+	if _, err = tx.ExecContext(ctx, r.store.stmts.UpsertGatewayNode(),
+		gatewayID, instanceID, downlinkURL); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (r *gatewayNodeRepository) Heartbeat(ctx context.Context, gatewayID, instanceID string) (bool, error) {
@@ -84,6 +99,16 @@ func (r *gatewayNodeRepository) Get(ctx context.Context, gatewayID string) (*rep
 		return nil, err
 	}
 	return &node, nil
+}
+
+func (r *gatewayNodeRepository) Stats(ctx context.Context) (repository.GatewayNodeStats, error) {
+	var stats repository.GatewayNodeStats
+	err := r.store.readDB.QueryRowContext(ctx, r.store.stmts.SelectGatewayNodeStats()).
+		Scan(&stats.Online, &stats.Offline, &stats.Expired)
+	if err != nil {
+		return repository.GatewayNodeStats{}, err
+	}
+	return stats, nil
 }
 
 func parseDBTime(value any) (time.Time, error) {
