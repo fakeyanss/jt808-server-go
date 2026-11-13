@@ -1567,6 +1567,9 @@ const (
 	DefaultClusterUplinkMaxDecoded = 8 * 1024 * 1024
 	DefaultClusterStorageRoot      = "./data/blobs"
 	DefaultClusterStorageMarker    = ".jt808-shared-volume"
+	// DefaultClusterLeaseTolerance 是跨副本抢租约的保守容差：
+	// 接管条件为 expires_at + tolerance < now，宁可晚夺不可早夺。
+	DefaultClusterLeaseTolerance = 2 * time.Second
 )
 
 // clusterConf 配置角色拆分与两个内部 HTTP 契约。
@@ -1584,6 +1587,8 @@ type clusterConf struct {
 	// 同一个嵌入式 SQLite 文件代替共享 MySQL。
 	// 生产环境禁止开启；开启时启动打印 WARN，/readyz 返回 degraded。
 	AllowEmbeddedStorage bool `yaml:"allowEmbeddedStorage"`
+	// LeaseTolerance 是跨副本抢租约的容差，缺省 2s。
+	LeaseTolerance string `yaml:"leaseTolerance"`
 }
 
 type clusterGatewayConf struct {
@@ -1749,6 +1754,8 @@ type ClusterOptions struct {
 	// AllowEmbeddedStorage 表示集群角色使用嵌入式 SQLite 的本地联调模式，
 	// 生产禁止开启。
 	AllowEmbeddedStorage bool
+	// LeaseTolerance 是跨副本抢租约的保守容差。
+	LeaseTolerance time.Duration
 }
 
 // ObjectStoreOptions 是 S3 兼容后端的归一化配置。
@@ -1795,6 +1802,7 @@ func (c *Config) ParseServerMode() (ClusterOptions, error) {
 	options.Uplink.MaxDecodedBodyBytes = DefaultClusterUplinkMaxDecoded
 	options.Storage.Root = DefaultClusterStorageRoot
 	options.Storage.Marker = DefaultClusterStorageMarker
+	options.LeaseTolerance = DefaultClusterLeaseTolerance
 
 	if c == nil {
 		return options, nil
@@ -1841,6 +1849,14 @@ func (c *Config) ParseServerMode() (ClusterOptions, error) {
 	}
 	options.Roles = roles
 	options.AllowEmbeddedStorage = conf.AllowEmbeddedStorage
+	if raw := strings.TrimSpace(conf.LeaseTolerance); raw != "" {
+		parsed, parseErr := time.ParseDuration(raw)
+		if parseErr != nil || parsed < 0 {
+			problems = append(problems, fmt.Sprintf("cluster.leaseTolerance must be a non-negative duration, got %q", conf.LeaseTolerance))
+		} else {
+			options.LeaseTolerance = parsed
+		}
+	}
 
 	if mode == ServerModeStandalone {
 		if len(conf.Roles) > 0 {

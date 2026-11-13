@@ -76,6 +76,9 @@ type Metrics struct {
 	downlinkOffline       atomic.Int64
 	uplinkFenced          atomic.Int64
 	gatewayNodeFenced     atomic.Int64
+	// 时钟偏差探针：最近一次与数据库时间的偏差（毫秒）与超阈值告警次数。
+	clockSkewMillis atomic.Int64
+	clockSkewAlerts atomic.Int64
 }
 
 // NewMetrics 创建进程级计数器。
@@ -261,6 +264,41 @@ func (m *Metrics) ClusterEventSnapshot() ClusterEventSnapshot {
 	}
 }
 
+// ClockSkewSnapshot 是时钟偏差探针的观测结果。
+type ClockSkewSnapshot struct {
+	// SkewMillis 是最近一次数据库时间减进程时间的偏差；正数表示进程时钟偏慢。
+	SkewMillis int64
+	// Alerts 是累计偏差超阈值次数。
+	Alerts int64
+}
+
+// RecordClockSkew 记录一次时钟偏差观测，只用于展示与告警，不参与判定。
+func (m *Metrics) RecordClockSkew(skew time.Duration) {
+	if m == nil {
+		return
+	}
+	m.clockSkewMillis.Store(skew.Milliseconds())
+}
+
+// IncClockSkewAlert 记录一次偏差超阈值告警。
+func (m *Metrics) IncClockSkewAlert() {
+	if m == nil {
+		return
+	}
+	m.clockSkewAlerts.Add(1)
+}
+
+// ClockSkewSnapshot 返回时钟偏差探针的观测结果。
+func (m *Metrics) ClockSkewSnapshot() ClockSkewSnapshot {
+	if m == nil {
+		return ClockSkewSnapshot{}
+	}
+	return ClockSkewSnapshot{
+		SkewMillis: m.clockSkewMillis.Load(),
+		Alerts:     m.clockSkewAlerts.Load(),
+	}
+}
+
 // UplinkEventSnapshot 返回上行事件终态计数副本。
 func (m *Metrics) UplinkEventSnapshot() UplinkEventSnapshot {
 	if m == nil {
@@ -422,6 +460,8 @@ type Snapshot struct {
 	ClusterEvents ClusterEventSnapshot
 	// GatewayNodes 是节点存活水位；由采集时查询共享库得到。
 	GatewayNodes GatewayNodeSnapshot
+	// ClockSkew 是进程时钟与数据库时间的偏差观测。
+	ClockSkew ClockSkewSnapshot
 }
 
 // GatewayNodeSnapshot 是网关节点的存活水位。
@@ -524,6 +564,7 @@ func (p *Provider) Snapshot(ctx context.Context) Snapshot {
 	snapshot.UplinkEvent = p.Metrics.UplinkEventSnapshot()
 	snapshot.AutoUploadSkipped = p.Metrics.AutoUploadSkipped()
 	snapshot.ClusterEvents = p.Metrics.ClusterEventSnapshot()
+	snapshot.ClockSkew = p.Metrics.ClockSkewSnapshot()
 	return snapshot
 }
 
@@ -563,6 +604,8 @@ func WritePrometheus(w io.Writer, snapshot Snapshot) error {
 		{"jt808_downlink_offline_total", "Downlink requests returned offline because no live gateway owns the session.", "counter", fmt.Sprint(snapshot.ClusterEvents.DownlinkOffline)},
 		{"jt808_uplink_fenced_total", "Uplink events dropped because their generation is behind the session directory.", "counter", fmt.Sprint(snapshot.ClusterEvents.UplinkFenced)},
 		{"jt808_gateway_node_fenced_total", "Gateway node heartbeats rejected because the instance was superseded.", "counter", fmt.Sprint(snapshot.ClusterEvents.GatewayNodeFenced)},
+		{"jt808_clock_skew_ms", "Observed skew between the process clock and the database clock in milliseconds; observation only.", "gauge", fmt.Sprint(snapshot.ClockSkew.SkewMillis)},
+		{"jt808_clock_skew_alerts_total", "Clock skew probe runs whose absolute skew exceeded the alert threshold.", "counter", fmt.Sprint(snapshot.ClockSkew.Alerts)},
 	}
 	for _, line := range lines {
 		if _, err := fmt.Fprintf(w, "# HELP %s %s\n# TYPE %s %s\n%s %s\n",
@@ -714,20 +757,21 @@ func writeRetentionPrometheus(w io.Writer, snapshot RetentionSnapshot) error {
 }
 
 // OutboxStats 返回 outbox 中 pending 与已过期待投的命令数量，用于就绪判定与指标。
-func OutboxStats(ctx context.Context, commands repository.CommandRepository) (pending, expired int, err error) {
+// now 由调用方从进程时钟取得，保证多副本判定口径一致。
+func OutboxStats(ctx context.Context, commands repository.CommandRepository, now time.Time) (pending, expired int, err error) {
 	if commands == nil {
 		return 0, 0, nil
 	}
-	stats, err := commands.PendingStats(ctx)
+	stats, err := commands.PendingStats(ctx, now)
 	if err != nil {
-		return 0, 0, fmt.Errorf("pending command stats: %w", err)
+		return 0, 0, err
 	}
 	return stats.Pending, stats.Expired, nil
 }
 
 // CheckOutboxBacklog 在过期 pending 命令超过 threshold 时返回错误。
-func CheckOutboxBacklog(ctx context.Context, commands repository.CommandRepository, threshold int) error {
-	_, expired, err := OutboxStats(ctx, commands)
+func CheckOutboxBacklog(ctx context.Context, commands repository.CommandRepository, now time.Time, threshold int) error {
+	_, expired, err := OutboxStats(ctx, commands, now)
 	if err != nil {
 		return err
 	}

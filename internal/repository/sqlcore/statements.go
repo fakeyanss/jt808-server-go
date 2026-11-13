@@ -17,14 +17,11 @@ type Statements interface {
 	UpsertDeviceParams() string
 	// UpsertUpgradeResult 按 (phone, 流水号) 覆盖升级结果。
 	UpsertUpgradeResult() string
-	// DBTimeMillisExpr 返回“数据库当前时间的 Unix 毫秒”表达式。
-	// 仅用于在可移植 SQL 中生成/比较 BIGINT 毫秒时间列；
-	// 调用方不得用应用时间替代它参与判定。
-	DBTimeMillisExpr() string
+	// SelectCurrentTimeMillis 返回读取数据库当前时间（Unix 毫秒）的查询。
+	// 只允许时钟偏差探针使用，不参与任何放行或过期判定。
+	SelectCurrentTimeMillis() string
 	// InsertCommandIgnoringDuplicate 在 (phone, idempotency_key) 冲突时静默忽略，
 	// 由调用方按受影响行数区分首次入队与幂等返回。
-	// created_at/updated_at 由库当前时间生成，next_attempt_at/expires_at
-	// 由库当前时间加相对延迟生成。
 	InsertCommandIgnoringDuplicate() string
 	// EnsureCommandSerialRow 插入缺失的流水号游标行；行已存在时必须取得该行的排他锁，
 	// 供随后的 SELECT ... FOR UPDATE 串行化分配。
@@ -51,29 +48,29 @@ type Statements interface {
 	// placeholders 是调用方拼好的 "(?, ?, ...)" 列表，不含 VALUES 关键字。
 	InsertLocationsIgnoringDuplicates(placeholders string) string
 	// EnsureTaskLeaseRow 插入缺失的任务租约行；行已存在时静默忽略。
-	// 参数为 name，owner 为空、expires_at 为 0，updated_at 由库当前时间生成。
+	// 参数为 (name, updated_at)，owner 为空、expires_at 为 0。
 	EnsureTaskLeaseRow() string
 	// EnsureDedupKeyRow 插入缺失的共享去重行；行已存在时静默忽略。
-	// 参数为 dedup_key，expires_at 为 0，updated_at 由库当前时间生成。
+	// 参数为 (dedup_key, updated_at)，expires_at 为 0。
 	EnsureDedupKeyRow() string
 	// UpsertGatewayNode 按 gateway_id 写入或覆盖网关节点状态。
 	UpsertGatewayNode() string
 	// DeleteStaleSessionDirectory 删除同 gateway_id 下不属于当前 instance_id 的目录行。
 	// 参数为 (gateway_id, instance_id)，与节点 upsert 在同一事务内执行。
 	DeleteStaleSessionDirectory() string
-	// SelectGatewayNodeStats 用数据库时间统计在线、离线与已过期节点。
+	// SelectGatewayNodeStats 统计在线、离线与已过期节点；时刻由调用方传入。
 	SelectGatewayNodeStats() string
-	// HeartbeatGatewayNode 刷新节点心跳；过期时间由数据库时间计算。
+	// HeartbeatGatewayNode 刷新节点心跳；last_seen_at 与 expires_at 由应用传入。
 	HeartbeatGatewayNode() string
-	// DeregisterGatewayNode 将节点标记为离线；过期时间由数据库时间计算。
+	// DeregisterGatewayNode 将节点标记为离线；expires_at 由应用传入。
 	DeregisterGatewayNode() string
 	// SelectGatewayNode 按 gateway_id 查询节点状态。
 	SelectGatewayNode() string
 	// SelectSessionForUpdate 在事务内锁定一条会话目录行。
 	SelectSessionForUpdate() string
-	// InsertSessionDirectory 写入一条 generation=1 的会话归属。
+	// InsertSessionDirectory 写入一条 generation=1 的会话归属；claimed_at 由应用传入。
 	InsertSessionDirectory() string
-	// UpdateSessionDirectory 覆盖归属并把 generation 加一。
+	// UpdateSessionDirectory 覆盖归属并把 generation 加一；claimed_at 由应用传入。
 	UpdateSessionDirectory() string
 	// SelectSessionGeneration 读取目录当前 generation。
 	SelectSessionGeneration() string
@@ -84,7 +81,7 @@ type Statements interface {
 	// SelectSessionDirectory 按 phone 查询目录快照。
 	SelectSessionDirectory() string
 	// RouteSessionDownlink 联表返回目录所属节点的 downlink_url。
-	// 条件包含 status=online、expires_at 晚于数据库当前时间，
-	// 以及 (session_id 为空 OR session_id 匹配)，全部由库裁决。
+	// 条件包含 status=online、expires_at 晚于调用方传入的时刻，
+	// 以及 (session_id 为空 OR session_id 匹配)。
 	RouteSessionDownlink() string
 }

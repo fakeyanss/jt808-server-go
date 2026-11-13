@@ -364,4 +364,7 @@ func TestParseServerModeStandaloneDoesNotEnableRoles(t *testing.T) {
 	if len(options.Roles.List()) != 0 {
 		t.Fatalf("expected no roles, got %v", options.Roles.List())
 	}
+	if options.LeaseTolerance != DefaultClusterLeaseTolerance {
+		t.Fatalf("expected default lease tolerance %v, got %v", DefaultClusterLeaseTolerance, options.LeaseTolerance)
+	}
 }

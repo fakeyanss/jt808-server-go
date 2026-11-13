@@ -615,10 +615,10 @@ gateway_nodes (
     instance_id     VARCHAR(64) NOT NULL,   -- 进程启动生成，重启即变
     downlink_url    VARCHAR(255) NOT NULL,
     status          VARCHAR(16) NOT NULL,   -- online / offline
-    started_at      DATETIME(3) NOT NULL,
-    last_seen_at    DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3)
-                    ON UPDATE CURRENT_TIMESTAMP(3),
-    expires_at      DATETIME(3) NOT NULL
+    started_at      BIGINT NOT NULL,        -- Unix 毫秒，由应用写入
+    last_seen_at    BIGINT NOT NULL,        -- Unix 毫秒，由应用写入
+    expires_at      BIGINT NOT NULL,        -- Unix 毫秒，由应用写入
+    KEY idx_gateway_nodes_status (status, expires_at)
 )
 
 session_directory (
@@ -627,39 +627,42 @@ session_directory (
     instance_id     VARCHAR(64) NOT NULL,
     session_id      VARCHAR(128) NOT NULL,
     generation      BIGINT NOT NULL,
-    claimed_at      DATETIME(3) NOT NULL,
+    claimed_at      BIGINT NOT NULL,        -- Unix 毫秒，由应用写入
     KEY idx_session_directory_node (gateway_id, instance_id)
 )
 ```
 
-MySQL 使用上面的 `DATETIME(3)`。SQLite 没有 `DATETIME(3)`，时间列用 `TEXT` 存 ISO8601 毫秒，取值统一用 `strftime('%Y-%m-%d %H:%M:%f','now')`，因为 SQLite 的 `CURRENT_TIMESTAMP` 只到秒。两种后端各写各的语句，不做兼容层。
+时间列统一用 `BIGINT` 存 Unix 毫秒，由应用写入，两个后端语义一致。SQL 只把调用方传入的毫秒值作为参数比较，不调用 `CURRENT_TIMESTAMP` / `strftime('now')` 参与判定。
 
-- `session_directory` **不设 `expires_at`**。会话是否有效由联表推出：所属 `(gateway_id, instance_id)` 在 `gateway_nodes` 中 `status=online` 且 `expires_at > 数据库当前时间`。
-- 节点心跳 10 秒一次，`expires_at` 由数据库时间加 30 秒；连续 3 次未上报即判定死亡。
+- `session_directory` **不设 `expires_at`**。会话是否有效由联表推出：所属 `(gateway_id, instance_id)` 在 `gateway_nodes` 中 `status=online` 且 `expires_at > 应用传入的当前时刻`。
+- 节点心跳 10 秒一次，`expires_at = now + 30s`，其中 `now` 来自进程时钟；连续 3 次未上报即判定死亡。
 - 客户端心跳、TCP 半开、会话本地超时仍由网关判断；目录不复制这份状态。
-- **节点与会话的过期时间一律用数据库时间，应用侧不参与任何时间运算**：
-  - MySQL 用 `CURRENT_TIMESTAMP(3)`、`DATE_ADD(..., INTERVAL 30 SECOND)`；
-  - SQLite 用 `strftime('%Y-%m-%d %H:%M:%f','now','+30 seconds')`；
-  - 判死、下行前校验这类“要不要放行”的判断全部写成带数据库当前时间条件的 SQL，Go 侧只拿布尔结果，不写 `time.Now()` 参与比较；
-  - 这样对 VM 暂停恢复、NTP step 等时钟跳变免疫，而不是只防同步漂移。
+- **节点与会话的过期时间由应用时钟生成**：
+  - 注册/心跳时写出 `started_at / last_seen_at / expires_at` 的毫秒值；注销把 `expires_at` 压到当前时刻；
+  - 判死、下行前校验这类“要不要放行”的判断写成带参数条件的 SQL，参数是应用算出的时刻，Go 侧拿布尔结果；
+  - 时钟同步由部署保证（见 7.2.2）；应用时间避免把时间语义散进两套方言 SQL，精度也不受 SQL 排队与事务顺序影响。
 
 #### 7.2.2 时间源口径
 
-时间字段按用途分两类，取值来源不同：
+进程内只有一个时钟源：`internal/clock` 的 `Clock` 接口，生产实现为 `System()`。
+除该实现外，业务代码不直接调用 `time.Now()`；所有判定时刻都由调用方从注入的
+clock 取得后作为参数传入仓储，内存后端的注入时钟也合并到同一个抽象。
 
-1. **参与判定或过期的字段必须用数据库时间**。凡是会进入 WHERE、比较或排序条件，
-   用来决定“是否放行、是否过期、谁先被处理、是否该清理”的列，都由 SQL 的数据库
-   当前时间生成；Go 侧只拿布尔结果，不写 `time.Now()` 参与比较。理由是这类判定
-   必须跨副本一致，并且要免疫 VM 暂停恢复、NTP step 等时钟跳变；代价是每次判断
-   多一次数据库取值。
-2. **纯记录字段允许应用时间**。只用于审计、展示、排障或返回给调用方，不参与任何
-   放行、过期或清理判断的列，可以用进程 `time.Now()`。理由是它们不承担跨副本
-   一致性，应用时间足够，且省掉一次数据库取值。`devices.updated_at` 就属于这一类，
-   保持应用时间现状；`media_*`、`terminal_properties` 等档案的 `updated_at /
-   received_at` 同理。
-
-判断口径：一列只要会出现在判定条件里，就归第一类；否则归第二类。第一类不允许由
-应用侧生成后再参与比较；第二类不强制改成数据库时间。
+1. **参与判定或过期的字段用应用时间**。凡是会进入 WHERE、比较或排序条件，
+   用来决定“是否放行、是否过期、谁先被处理、是否该清理”的列，都由调用方传入
+   绝对时刻；SQL 不生成时间，只做参数比较。这样时间语义集中在应用层，不散进
+   MySQL/SQLite 两套方言，也不受 SQL 执行时刻、排队与事务顺序影响。
+2. **纯记录字段同样走进程时钟**。`updated_at`、`received_at` 等审计/展示列也由
+   仓储注入的同一个 clock 生成；它们不承担跨副本一致性，但不另开时间源。
+3. **时钟同步是部署前提**。所有副本必须启用 NTP/chrony 并保持同步；时间同步
+   失效时，租约与过期判定会同时失真。运行手册给出 NTP 检查与偏差阈值。
+4. **租约接管用保守容差**。跨副本抢租约（`command_outbox` 领取、`task_leases`
+   接管）的判定统一为 `expires_at + tolerance < now`，而不是 `expires_at < now`。
+   容差默认 2 秒，可通过 `cluster.leaseTolerance` 配置；宁可晚夺不可早夺，
+   零容差会在时钟偏差下制造双持有。
+5. **偏差探针只用于观测**。进程周期性读取数据库当前时间，与本机时钟比对，
+   偏差超阈值时记录指标并告警；探针结果不参与任何业务判定，避免观测链路
+   故障影响主流程。memory 后端没有数据库时钟，由 NTP 保证同步。
 
 #### 7.2.3 写入时机
 
@@ -912,7 +915,7 @@ cluster:
 | 会话残留 | 网关活着但单条会话未释放 | 平台侧无法仅凭目录判断，继续路由到该网关 | 明确退化：信任网关自身 JT808 心跳超时与 release |
 | 共享库不可用 | 管控无法落库 | `best-effort` 继续应答但可能丢；`confirm-before-ack` 不应答 | 与当前单机语义一致 |
 | 端点租约泄漏 | 节点崩溃未释放 | TTL 到期自动回收 | 短暂端点浪费 |
-| 时钟偏差 | 各节点时间不一致 | 过期判断由数据库时间裁决，不依赖各 control 本机时钟 | 不影响协议正确性 |
+| 时钟偏差 | 各节点时间不一致 | 所有判定用进程时钟；副本必须 NTP 同步，租约接管加 2 秒保守容差；偏差探针只观测告警 | 超阈值时可能延后接管，已由容差覆盖 |
 
 明确不承诺：
 
@@ -1227,7 +1230,7 @@ E2 不引入协调组件；以上方案只在确实需要严格顺序时再选�
   - `terminal_catalogs` 与 `attachment_files` 的宽主键可后续优化：宽业务主键会被 InnoDB 二级索引隐式携带，数据量上来后评估自增 id + 唯一键。
 
 - 节点/会话目录实现阶段（按顺序，每阶段独立验证、独立提交）：
-  1. **E4.1 节点注册与实例生命周期**：新增 `gateway_nodes` 与 `instance_id`；MySQL 用 `DATETIME(3)`、SQLite 用 ISO8601 毫秒 TEXT；网关注册、10 秒心跳、30 秒判死、优雅注销全部由数据库时间裁决，Go 只拿布尔结果；本阶段只落节点状态，不改变会话绑定与下行路由。验收：两个网关注册、杀一个后 30 秒内 status=offline；现有下行行为不变。
+  1. **E4.1 节点注册与实例生命周期**：新增 `gateway_nodes` 与 `instance_id`；时间列用 `BIGINT` 毫秒，由应用时钟写入；网关注册、10 秒心跳、30 秒判死、优雅注销全部用调用方传入的时刻做参数比较；本阶段只落节点状态，不改变会话绑定与下行路由。验收：两个网关注册、杀一个后 30 秒内 status=offline；现有下行行为不变。
   2. **E4.2 会话归属与 generation 围栏**：新增 `session_directory`；control 在 0x0102 业务路径 claim/release，claim 幂等（同一 gateway/instance/session 不递增），返回 generation；0x0102 强制同步，网关等待 claim 结果后再应答；cluster 下 claim 失败 fail-closed；上行信封与终端应答携带 generation，旧事件丢弃并回传 `fenced`，confirm 与 best-effort 两条路径都解析响应体，网关收到后关闭本地会话。验收：同 phone 双 claim 只有一个 generation 生效；重复 claim 不递增；旧 generation 事件不写库；release 丢失时节点离线后目录联表失效。
   3. **E4.3 下行路由器**：新增 `cluster.gateway.advertiseUrl` 与 `cluster.gateway.routing`；`fixed` 保留单节点直连，`directory` 按 phone 查目录、联节点表、取 `downlink_url`；无目录/离线一律 `offline`，不跨节点猜测。验收：同 phone 迁移到另一网关后下行跟随；节点过期后 outbox 重试并最终过期。
   4. **E4.4 旧实例清理、观测与运维**：网关注册时按新 `instance_id` 批量清理同 `gateway_id` 旧行；补目录命中/离线/fenced/节点过期指标与运行手册；覆盖网关重启、同号双活、节点分区等混沌场景。revoke 推送作为后续增强，不阻塞本阶段。

@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 
@@ -49,11 +50,12 @@ func TestUplinkServerFencesStaleGeneration(t *testing.T) {
 
 	sessions := memory.NewSessionDirectoryRepository()
 	server.SetSessionDirectoryRepository(sessions)
+	now := time.Now()
 	stale := repository.SessionOwner{GatewayID: "gw-1", InstanceID: "inst-a", SessionID: "sess-0"}
-	_, err := sessions.Claim(context.Background(), "13800000001", stale)
+	_, err := sessions.Claim(context.Background(), "13800000001", stale, now)
 	require.NoError(t, err)
 	owner := repository.SessionOwner{GatewayID: "gw-1", InstanceID: "inst-a", SessionID: "sess-1"}
-	generation, err := sessions.Claim(context.Background(), "13800000001", owner)
+	generation, err := sessions.Claim(context.Background(), "13800000001", owner, now)
 	require.NoError(t, err)
 	require.Equal(t, uint64(2), generation)
 	ok, err := sessions.Validate(context.Background(), "13800000001", owner, generation)
@@ -120,7 +122,7 @@ func TestUplinkServerSessionRelease(t *testing.T) {
 	t.Cleanup(httpServer.Close)
 
 	owner := repository.SessionOwner{GatewayID: "gw-1", InstanceID: "inst-a", SessionID: "sess-1"}
-	generation, err := sessions.Claim(context.Background(), "13800000003", owner)
+	generation, err := sessions.Claim(context.Background(), "13800000003", owner, time.Now())
 	require.NoError(t, err)
 
 	release := gatewaynode.ReleaseRequest{

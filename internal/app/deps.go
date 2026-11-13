@@ -14,6 +14,7 @@ import (
 	"github.com/fakeyanss/jt808-server-go/internal/adminapi"
 	"github.com/fakeyanss/jt808-server-go/internal/alarmserver"
 	"github.com/fakeyanss/jt808-server-go/internal/attachmentserver"
+	clockpkg "github.com/fakeyanss/jt808-server-go/internal/clock"
 	"github.com/fakeyanss/jt808-server-go/internal/config"
 	"github.com/fakeyanss/jt808-server-go/internal/contracts"
 	"github.com/fakeyanss/jt808-server-go/internal/control"
@@ -51,6 +52,8 @@ type deps struct {
 	uplinkPolicy  uplink.Policy
 	processorDeps protocol.ProcessorDeps
 	metrics       *observability.Metrics
+	// clock 是进程内唯一时钟源，所有判定与过期时刻都从这里取。
+	clock clockpkg.Clock
 
 	uplinkSink *uplink.HTTPSink
 	hooks      action.Hooks
@@ -86,6 +89,8 @@ type deps struct {
 	cancelSweep      context.CancelFunc
 	cancelOutbox     context.CancelFunc
 	outboxDone       <-chan struct{}
+	cancelClockSkew  context.CancelFunc
+	clockSkewDone    <-chan struct{}
 
 	udpServ         *server.UDPServer
 	alarmServ       *alarmserver.Server
@@ -113,7 +118,7 @@ func buildDeps(spec Spec, cfg *config.Config, s settings) *deps {
 	uplinkSinkOptions := s.uplinkSink
 	clusterOptions := s.options
 
-	d := &deps{spec: spec, cfg: cfg, settings: s}
+	d := &deps{spec: spec, cfg: cfg, settings: s, clock: clockpkg.System()}
 
 	standalone := clusterOptions.IsStandalone()
 	hasGateway := standalone || clusterOptions.Roles.Has(config.RoleGateway)
@@ -153,7 +158,7 @@ func buildDeps(spec Spec, cfg *config.Config, s settings) *deps {
 		switch outboxMode {
 		case config.CommandOutboxModeOff:
 		case config.CommandOutboxModeMemory:
-			commandRepo = memory.NewCommandRepository()
+			commandRepo = memory.NewCommandRepositoryWithClock(d.clock)
 		case config.CommandOutboxModeDurable:
 			commandRepo = storeSet.Commands
 		}
@@ -429,6 +434,7 @@ func buildDeps(spec Spec, cfg *config.Config, s settings) *deps {
 				Token:     clusterOptions.Gateway.Token,
 				Timeout:   clusterOptions.Downlink.Timeout,
 				Metrics:   metrics,
+				Clock:     d.clock,
 			})
 			if routerErr != nil {
 				log.Error().Err(routerErr).Msg("Fail to create session directory downlink router")
@@ -442,6 +448,7 @@ func buildDeps(spec Spec, cfg *config.Config, s settings) *deps {
 			Devices:  storeSet.Devices,
 			Metrics:  metrics,
 			Send:     downlinkSender,
+			Clock:    d.clock,
 		}, control.OutboxOptions{
 			Enabled:                outboxMode != config.CommandOutboxModeOff,
 			InitialWait:            outboxOptions.InitialWait,
@@ -450,6 +457,7 @@ func buildDeps(spec Spec, cfg *config.Config, s settings) *deps {
 			BatchSize:              outboxOptions.BatchSize,
 			MaxAttempts:            outboxOptions.MaxAttempts,
 			LeaseDuration:          outboxOptions.LeaseDuration,
+			LeaseTolerance:         clusterOptions.LeaseTolerance,
 			RetryBase:              outboxOptions.RetryBase,
 			RetryMax:               outboxOptions.RetryMax,
 			OfflineRetry:           outboxOptions.OfflineRetry,

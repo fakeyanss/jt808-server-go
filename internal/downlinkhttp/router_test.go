@@ -23,7 +23,7 @@ type stubSessionDirectory struct {
 	routeCalls int32
 }
 
-func (s *stubSessionDirectory) Claim(context.Context, string, repository.SessionOwner) (uint64, error) {
+func (s *stubSessionDirectory) Claim(context.Context, string, repository.SessionOwner, time.Time) (uint64, error) {
 	return 0, nil
 }
 
@@ -39,7 +39,7 @@ func (s *stubSessionDirectory) Get(context.Context, string) (*repository.Session
 	return nil, nil
 }
 
-func (s *stubSessionDirectory) Route(ctx context.Context, phone, sessionID string) (string, bool, error) {
+func (s *stubSessionDirectory) Route(ctx context.Context, phone, sessionID string, _ time.Time) (string, bool, error) {
 	atomic.AddInt32(&s.routeCalls, 1)
 	return s.route(ctx, phone, sessionID)
 }

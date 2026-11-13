@@ -19,7 +19,8 @@ func (d *deps) startRetention() {
 	metrics := d.metrics
 
 	retentionPolicy := cfg.RetentionPolicy()
-	leaseRunner := coordination.NewRunner(storeSet.Coordination, coordination.DefaultTTL)
+	leaseRunner := coordination.NewRunner(storeSet.Coordination, coordination.DefaultTTL,
+		d.clock, d.settings.options.LeaseTolerance)
 	cancelRetention := func() {}
 	var retentionDones []<-chan struct{}
 	var retentionCtx context.Context

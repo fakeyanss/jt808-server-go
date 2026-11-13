@@ -8,67 +8,66 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// fakeClock 让内存后端按测试推进的时间判定租约与去重过期。
-type fakeClock struct{ now time.Time }
+type staticClock struct{ now time.Time }
 
-func (c *fakeClock) Now() time.Time          { return c.now }
-func (c *fakeClock) Advance(d time.Duration) { c.now = c.now.Add(d) }
+func (c staticClock) Now() time.Time { return c.now }
 
 func TestMemoryStoreLeaseIsExclusiveAndExpires(t *testing.T) {
 	ctx := context.Background()
-	clock := &fakeClock{now: time.Unix(1_800_000_000, 0)}
-	store := NewMemoryStoreWithClock(clock.Now)
+	store := NewMemoryStore()
+	now := time.Unix(1_800_000_000, 0)
 
-	ok, err := store.Acquire(ctx, "cleanup", "replica-a", time.Minute)
+	ok, err := store.Acquire(ctx, "cleanup", "replica-a", now, time.Minute, DefaultLeaseTolerance)
 	require.NoError(t, err)
 	require.True(t, ok)
 
-	ok, err = store.Acquire(ctx, "cleanup", "replica-b", time.Minute)
+	ok, err = store.Acquire(ctx, "cleanup", "replica-b", now, time.Minute, DefaultLeaseTolerance)
 	require.NoError(t, err)
 	require.False(t, ok)
 
 	// 同一 owner 可以续期。
-	clock.Advance(30 * time.Second)
-	ok, err = store.Acquire(ctx, "cleanup", "replica-a", time.Minute)
+	ok, err = store.Acquire(ctx, "cleanup", "replica-a", now.Add(30*time.Second), time.Minute, DefaultLeaseTolerance)
 	require.NoError(t, err)
 	require.True(t, ok)
 
-	// 过期后其它副本可以接手。
-	clock.Advance(2 * time.Minute)
-	ok, err = store.Acquire(ctx, "cleanup", "replica-b", time.Minute)
+	// 到期 + 容差之后其它副本才能接手。
+	ok, err = store.Acquire(ctx, "cleanup", "replica-b",
+		now.Add(time.Minute+DefaultLeaseTolerance-time.Millisecond), time.Minute, DefaultLeaseTolerance)
+	require.NoError(t, err)
+	require.False(t, ok)
+
+	ok, err = store.Acquire(ctx, "cleanup", "replica-b", now.Add(2*time.Minute), time.Minute, DefaultLeaseTolerance)
 	require.NoError(t, err)
 	require.True(t, ok)
 }
 
 func TestMemoryStoreMarkOnceHonorsTTL(t *testing.T) {
 	ctx := context.Background()
-	clock := &fakeClock{now: time.Unix(1_800_000_000, 0)}
-	store := NewMemoryStoreWithClock(clock.Now)
+	store := NewMemoryStore()
+	now := time.Unix(1_800_000_000, 0)
 
-	first, err := store.MarkOnce(ctx, "auto-9208:phone:alarm", time.Minute)
+	first, err := store.MarkOnce(ctx, "auto-9208:phone:alarm", now, time.Minute)
 	require.NoError(t, err)
 	require.True(t, first)
 
-	clock.Advance(30 * time.Second)
-	second, err := store.MarkOnce(ctx, "auto-9208:phone:alarm", time.Minute)
+	second, err := store.MarkOnce(ctx, "auto-9208:phone:alarm", now.Add(30*time.Second), time.Minute)
 	require.NoError(t, err)
 	require.False(t, second)
 
-	clock.Advance(2 * time.Minute)
-	third, err := store.MarkOnce(ctx, "auto-9208:phone:alarm", time.Minute)
+	third, err := store.MarkOnce(ctx, "auto-9208:phone:alarm", now.Add(2*time.Minute), time.Minute)
 	require.NoError(t, err)
 	require.True(t, third)
 }
 
 func TestRunnerSkipsWhenAnotherReplicaHoldsLease(t *testing.T) {
 	ctx := context.Background()
-	clock := &fakeClock{now: time.Unix(1_800_000_000, 0)}
-	store := NewMemoryStoreWithClock(clock.Now)
-	ok, err := store.Acquire(ctx, "cleanup", "other-replica", time.Minute)
+	store := NewMemoryStore()
+	now := time.Unix(1_800_000_000, 0)
+	ok, err := store.Acquire(ctx, "cleanup", "other-replica", now, time.Minute, DefaultLeaseTolerance)
 	require.NoError(t, err)
 	require.True(t, ok)
 
-	runner := NewRunner(store, time.Minute)
+	runner := NewRunner(store, time.Minute, staticClock{now: now}, DefaultLeaseTolerance)
 	runner.owner = "this-replica"
 	called := false
 	require.False(t, runner.Run(ctx, "cleanup", func(context.Context) {

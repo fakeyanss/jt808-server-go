@@ -60,19 +60,17 @@ func (statements) UpsertUpgradeResult() string {
 		received_at = excluded.received_at`
 }
 
-// dbTimeMillisExpr 是 SQLite 的“数据库当前时间 Unix 毫秒”表达式。
-// julianday('now') 的精度足够毫秒；结果取整后与 BIGINT 毫秒列比较。
-const dbTimeMillisExpr = `CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER)`
-
-func (statements) DBTimeMillisExpr() string { return dbTimeMillisExpr }
+// SelectCurrentTimeMillis 返回一条读取数据库当前时间（Unix 毫秒）的查询，
+// 仅供时钟偏差探针观测，不参与任何判定。
+func (statements) SelectCurrentTimeMillis() string {
+	return `SELECT CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER)`
+}
 
 func (statements) InsertCommandIgnoringDuplicate() string {
 	return `INSERT INTO command_outbox
 		(command_id, idempotency_key, phone, msg_id, serial, payload, status, attempts, last_error, created_at, updated_at,
 		 last_attempt_at, next_attempt_at, expires_at, lease_owner, lease_expires_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, '', ` + dbTimeMillisExpr + `, ` + dbTimeMillisExpr + `,
-		 ?, ` + dbTimeMillisExpr + ` + ?,
-		 CASE WHEN ? = 0 THEN 0 ELSE ` + dbTimeMillisExpr + ` + ? END, '', 0)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(phone, idempotency_key) DO NOTHING`
 }
 
@@ -168,21 +166,18 @@ func (statements) InsertLocationsIgnoringDuplicates(placeholders string) string 
 
 func (statements) EnsureTaskLeaseRow() string {
 	return `INSERT OR IGNORE INTO task_leases (name, owner, expires_at, updated_at)
-		VALUES (?, '', 0, ` + dbTimeMillisExpr + `)`
+		VALUES (?, '', 0, ?)`
 }
 
 func (statements) EnsureDedupKeyRow() string {
 	return `INSERT OR IGNORE INTO dedup_keys (dedup_key, expires_at, updated_at)
-		VALUES (?, 0, ` + dbTimeMillisExpr + `)`
+		VALUES (?, 0, ?)`
 }
 
 func (statements) UpsertGatewayNode() string {
 	return `INSERT INTO gateway_nodes
 		(gateway_id, instance_id, downlink_url, status, started_at, last_seen_at, expires_at)
-		VALUES (?, ?, ?, 'online',
-			strftime('%Y-%m-%d %H:%M:%f','now'),
-			strftime('%Y-%m-%d %H:%M:%f','now'),
-			strftime('%Y-%m-%d %H:%M:%f','now','+30 seconds'))
+		VALUES (?, ?, ?, 'online', ?, ?, ?)
 		ON CONFLICT(gateway_id) DO UPDATE SET
 			instance_id = excluded.instance_id,
 			downlink_url = excluded.downlink_url,
@@ -198,24 +193,21 @@ func (statements) DeleteStaleSessionDirectory() string {
 
 func (statements) SelectGatewayNodeStats() string {
 	return `SELECT
-		COALESCE(SUM(status = 'online' AND expires_at > strftime('%Y-%m-%d %H:%M:%f','now')), 0),
+		COALESCE(SUM(status = 'online' AND expires_at > ?), 0),
 		COALESCE(SUM(status = 'offline'), 0),
-		COALESCE(SUM(status = 'online' AND expires_at <= strftime('%Y-%m-%d %H:%M:%f','now')), 0)
+		COALESCE(SUM(status = 'online' AND expires_at <= ?), 0)
 		FROM gateway_nodes`
 }
 
 func (statements) HeartbeatGatewayNode() string {
 	return `UPDATE gateway_nodes
-		SET last_seen_at = strftime('%Y-%m-%d %H:%M:%f','now'),
-			expires_at = strftime('%Y-%m-%d %H:%M:%f','now','+30 seconds'),
-			status = 'online'
+		SET last_seen_at = ?, expires_at = ?, status = 'online'
 		WHERE gateway_id = ? AND instance_id = ?`
 }
 
 func (statements) DeregisterGatewayNode() string {
 	return `UPDATE gateway_nodes
-		SET status = 'offline',
-			expires_at = strftime('%Y-%m-%d %H:%M:%f','now')
+		SET status = 'offline', expires_at = ?
 		WHERE gateway_id = ? AND instance_id = ?`
 }
 
@@ -232,14 +224,13 @@ func (statements) SelectSessionForUpdate() string {
 func (statements) InsertSessionDirectory() string {
 	return `INSERT INTO session_directory
 		(phone, gateway_id, instance_id, session_id, generation, claimed_at)
-		VALUES (?, ?, ?, ?, 1, strftime('%Y-%m-%d %H:%M:%f','now'))`
+		VALUES (?, ?, ?, ?, 1, ?)`
 }
 
 func (statements) UpdateSessionDirectory() string {
 	return `UPDATE session_directory
 		SET gateway_id = ?, instance_id = ?, session_id = ?,
-			generation = generation + 1,
-			claimed_at = strftime('%Y-%m-%d %H:%M:%f','now')
+			generation = generation + 1, claimed_at = ?
 		WHERE phone = ?`
 }
 
@@ -269,6 +260,6 @@ func (statements) RouteSessionDownlink() string {
 			ON g.gateway_id = s.gateway_id AND g.instance_id = s.instance_id
 		WHERE s.phone = ?
 			AND g.status = 'online'
-			AND g.expires_at > strftime('%Y-%m-%d %H:%M:%f','now')
+			AND g.expires_at > ?
 			AND (? = '' OR s.session_id = ?)`
 }

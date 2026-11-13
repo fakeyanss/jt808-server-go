@@ -12,6 +12,7 @@ import (
 	stdsql "database/sql"
 	"time"
 
+	"github.com/fakeyanss/jt808-server-go/internal/clock"
 	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
 	"github.com/fakeyanss/jt808-server-go/internal/repository"
 )
@@ -26,6 +27,9 @@ type Store struct {
 	readDB  *stdsql.DB
 	backend string
 	stmts   Statements
+	// clock 是进程内唯一时钟源的注入点：判定时刻由调用方传入，
+	// 这里只负责记录用途的 updated_at，避免仓储散落 time.Now()。
+	clock clock.Clock
 }
 
 // New 用已打开并完成版本校验的连接创建 SQL 仓储装配根。
@@ -34,7 +38,7 @@ func New(db, readDB *stdsql.DB, backend string, stmts Statements) *Store {
 	if readDB == nil {
 		readDB = db
 	}
-	return &Store{db: db, readDB: readDB, backend: backend, stmts: stmts}
+	return &Store{db: db, readDB: readDB, backend: backend, stmts: stmts, clock: clock.System()}
 }
 
 // DB 返回写池，供迁移工具、写路径与仓储测试执行探针 SQL。
@@ -59,6 +63,18 @@ func readContext(ctx context.Context) (context.Context, context.CancelFunc) {
 
 // Backend 返回实际 SQL 后端类型。
 func (s *Store) Backend() string { return s.backend }
+
+// CurrentTimeMillis 读取数据库当前时间（Unix 毫秒），仅供时钟偏差探针观测。
+// 它不参与任何业务判定；判定一律使用调用方从进程时钟取得的时刻。
+func (s *Store) CurrentTimeMillis(ctx context.Context) (int64, error) {
+	ctx, cancel := readContext(ctx)
+	defer cancel()
+	var millis int64
+	if err := s.readDB.QueryRowContext(ctx, s.stmts.SelectCurrentTimeMillis()).Scan(&millis); err != nil {
+		return 0, err
+	}
+	return millis, nil
+}
 
 // Statements 返回该后端的方言语句集。
 func (s *Store) Statements() Statements { return s.stmts }

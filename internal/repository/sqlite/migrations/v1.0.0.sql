@@ -434,9 +434,9 @@ CREATE TABLE IF NOT EXISTS gateway_nodes (
     instance_id TEXT NOT NULL,
     downlink_url TEXT NOT NULL,
     status TEXT NOT NULL DEFAULT 'online',
-    started_at TEXT NOT NULL,
-    last_seen_at TEXT NOT NULL,
-    expires_at TEXT NOT NULL
+    started_at INTEGER NOT NULL,
+    last_seen_at INTEGER NOT NULL,
+    expires_at INTEGER NOT NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_gateway_nodes_status ON gateway_nodes (status, expires_at);
@@ -448,7 +448,7 @@ CREATE TABLE IF NOT EXISTS session_directory (
     instance_id TEXT NOT NULL,
     session_id TEXT NOT NULL,
     generation INTEGER NOT NULL,
-    claimed_at TEXT NOT NULL
+    claimed_at INTEGER NOT NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_session_directory_node ON session_directory (gateway_id, instance_id);

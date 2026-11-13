@@ -14,6 +14,7 @@ import (
 
 	"github.com/rs/zerolog/log"
 
+	clockpkg "github.com/fakeyanss/jt808-server-go/internal/clock"
 	"github.com/fakeyanss/jt808-server-go/internal/contracts"
 	"github.com/fakeyanss/jt808-server-go/internal/gatewaynode"
 	"github.com/fakeyanss/jt808-server-go/internal/observability"
@@ -62,6 +63,8 @@ type ServerOptions struct {
 	MaxRequestBytes int64
 	// MaxDecodedBodyBytes 在解码后二次校验原始消息体；超出返回 413。
 	MaxDecodedBodyBytes int64
+	// Clock 是进程内唯一时钟源；为空时使用系统时钟。
+	Clock clockpkg.Clock
 }
 
 // Server 是管控侧上行 HTTP 入口。
@@ -77,6 +80,7 @@ type Server struct {
 	nodes           repository.GatewayNodeRepository
 	sessions        repository.SessionDirectoryRepository
 	metrics         *observability.Metrics
+	clock           clockpkg.Clock
 
 	httpServer *http.Server
 	listener   net.Listener
@@ -102,10 +106,14 @@ func NewServer(options ServerOptions) (*Server, error) {
 	if options.MaxDecodedBodyBytes <= 0 {
 		options.MaxDecodedBodyBytes = 8 * 1024 * 1024
 	}
+	if options.Clock == nil {
+		options.Clock = clockpkg.System()
+	}
 	return &Server{
 		opts:      options,
 		consumers: map[uint16]EventConsumer{},
 		dedup:     newDedupCache(options.DedupTTL, options.DedupMaxEntries),
+		clock:     options.Clock,
 		done:      make(chan struct{}),
 	}, nil
 }
@@ -304,7 +312,7 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	now := time.Now()
+	now := s.clock.Now()
 	// 0x0102 的 claim 本身幂等，必须每次都能拿到 generation；
 	// 因此不让 eventId 去重短路掉重传的鉴权请求。
 	duplicate := envelope.MsgID != 0x0102 && s.dedup.Seen(envelope.EventID, now)
@@ -594,7 +602,7 @@ func (s *Server) handleGatewayRegister(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_request", "gatewayId, instanceId and downlinkUrl are required")
 		return
 	}
-	if err := s.nodes.Register(r.Context(), req.GatewayID, req.InstanceID, req.DownlinkURL); err != nil {
+	if err := s.nodes.Register(r.Context(), req.GatewayID, req.InstanceID, req.DownlinkURL, s.clock.Now()); err != nil {
 		log.Error().Err(err).Str("gateway_id", req.GatewayID).Msg("Gateway node register failed")
 		writeError(w, http.StatusInternalServerError, "register_failed", "failed to register gateway node")
 		return
@@ -620,7 +628,7 @@ func (s *Server) handleGatewayHeartbeat(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusBadRequest, "invalid_request", "gatewayId and instanceId are required")
 		return
 	}
-	ok, err := s.nodes.Heartbeat(r.Context(), req.GatewayID, req.InstanceID)
+	ok, err := s.nodes.Heartbeat(r.Context(), req.GatewayID, req.InstanceID, s.clock.Now())
 	if err != nil {
 		log.Error().Err(err).Str("gateway_id", req.GatewayID).Msg("Gateway node heartbeat failed")
 		writeError(w, http.StatusInternalServerError, "heartbeat_failed", "failed to update gateway node")
@@ -656,7 +664,7 @@ func (s *Server) handleGatewayDeregister(w http.ResponseWriter, r *http.Request)
 		writeError(w, http.StatusBadRequest, "invalid_request", "gatewayId and instanceId are required")
 		return
 	}
-	if err := s.nodes.Deregister(r.Context(), req.GatewayID, req.InstanceID); err != nil {
+	if err := s.nodes.Deregister(r.Context(), req.GatewayID, req.InstanceID, s.clock.Now()); err != nil {
 		log.Error().Err(err).Str("gateway_id", req.GatewayID).Msg("Gateway node deregister failed")
 		writeError(w, http.StatusInternalServerError, "deregister_failed", "failed to deregister gateway node")
 		return

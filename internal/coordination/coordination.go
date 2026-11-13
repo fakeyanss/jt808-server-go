@@ -5,7 +5,8 @@
 //   - 只依赖数据库，不引入 Redis 等额外中间件；
 //   - 租约带过期时间，持有者崩溃后由其它副本在 TTL 到期后接手；
 //   - 租约续期由 Runner 负责，长任务不会因为执行时间超过 TTL 被抢走；
-//   - 去重是“首次写入成功者获得执行权”，不需要持有锁。
+//   - 去重是“首次写入成功者获得执行权”，不需要持有锁；
+//   - 所有方法接收调用方从进程时钟取得的 now，后端不自行取时间。
 package coordination
 
 import (
@@ -16,19 +17,26 @@ import (
 	"time"
 
 	"github.com/rs/zerolog/log"
+
+	"github.com/fakeyanss/jt808-server-go/internal/clock"
 )
 
 // DefaultTTL 是任务租约的默认有效期。Runner 会在 TTL/3 时续期，
 // 因此正常执行期间不会失效；持有者崩溃后最长 DefaultTTL 由其它副本接手。
 const DefaultTTL = time.Minute
 
+// DefaultLeaseTolerance 是跨副本抢租约的默认保守容差。
+// 接管条件为 expires_at + tolerance < now，宁可晚夺不可早夺，
+// 避免副本间时钟偏差导致两个进程同时认为自己持有租约。
+const DefaultLeaseTolerance = 2 * time.Second
+
 // Store 是任务租约与共享去重的持久化契约。
 //
-// 所有方法只接收相对 TTL，过期判定时刻由各后端自行取得：
-// SQL 后端用数据库当前时间，内存后端用进程时钟。
+// 所有方法接收调用方从进程时钟取得的 now；SQL 后端只把 now 作为参数比较，
+// 内存后端用 now 与自身状态比较，保证单机与集群语义一致。
 //
 // Acquire 在 (name) 上尝试取得租约：
-//   - 行不存在、已过期或 owner 相同（续期）时成功；
+//   - 行不存在、已过期（含容差）或 owner 相同（续期）时成功；
 //   - 其它 owner 持有且未过期时返回 false。
 //
 // MarkOnce 在 (key) 上尝试登记一次事件：
@@ -37,29 +45,40 @@ const DefaultTTL = time.Minute
 //
 // PruneExpired 删除已过期的租约与去重行，返回删除总行数。
 type Store interface {
-	Acquire(ctx context.Context, name, owner string, ttl time.Duration) (bool, error)
+	Acquire(ctx context.Context, name, owner string, now time.Time, ttl, tolerance time.Duration) (bool, error)
 	Release(ctx context.Context, name, owner string) error
-	MarkOnce(ctx context.Context, key string, ttl time.Duration) (bool, error)
-	PruneExpired(ctx context.Context) (int64, error)
+	MarkOnce(ctx context.Context, key string, now time.Time, ttl time.Duration) (bool, error)
+	PruneExpired(ctx context.Context, now time.Time) (int64, error)
 }
 
 // Runner 在 Store 上执行带续期的单实例任务。
 type Runner struct {
-	store Store
-	owner string
-	ttl   time.Duration
+	store     Store
+	owner     string
+	ttl       time.Duration
+	tolerance time.Duration
+	clock     clock.Clock
 }
 
 // NewRunner 创建任务 Runner。store 为 nil 时退化为进程内直接执行，
 // 仅用于单机或测试；多副本部署必须传入共享 Store。
-func NewRunner(store Store, ttl time.Duration) *Runner {
+// clk 为 nil 时使用系统时钟；tolerance<=0 时使用 DefaultLeaseTolerance。
+func NewRunner(store Store, ttl time.Duration, clk clock.Clock, tolerance time.Duration) *Runner {
 	if ttl <= 0 {
 		ttl = DefaultTTL
 	}
+	if clk == nil {
+		clk = clock.System()
+	}
+	if tolerance <= 0 {
+		tolerance = DefaultLeaseTolerance
+	}
 	return &Runner{
-		store: store,
-		owner: Owner(),
-		ttl:   ttl,
+		store:     store,
+		owner:     Owner(),
+		ttl:       ttl,
+		tolerance: tolerance,
+		clock:     clk,
 	}
 }
 
@@ -83,7 +102,7 @@ func (r *Runner) Run(ctx context.Context, name string, fn func(context.Context))
 		fn(ctx)
 		return true
 	}
-	acquired, err := r.store.Acquire(ctx, name, r.owner, r.ttl)
+	acquired, err := r.store.Acquire(ctx, name, r.owner, r.clock.Now(), r.ttl, r.tolerance)
 	if err != nil {
 		log.Warn().Err(err).Str("task", name).Msg("Task lease acquire failed; skip this round")
 		return false
@@ -130,7 +149,7 @@ func (r *Runner) renew(ctx context.Context, name string, done <-chan struct{}, c
 		case <-done:
 			return
 		case <-ticker.C:
-			ok, err := r.store.Acquire(ctx, name, r.owner, r.ttl)
+			ok, err := r.store.Acquire(ctx, name, r.owner, r.clock.Now(), r.ttl, r.tolerance)
 			if err != nil {
 				log.Warn().Err(err).Str("task", name).Msg("Task lease renew failed; will retry")
 				continue
@@ -153,33 +172,25 @@ type memoryStore struct {
 	mu     sync.Mutex
 	leases map[string]memoryLease
 	dedup  map[string]int64
-	// now 是内存后端的时钟；SQL 后端的等价物是数据库当前时间。
-	now func() time.Time
 }
 
 // NewMemoryStore 创建进程内协调存储，供单机模式与测试使用。
 func NewMemoryStore() Store {
-	return NewMemoryStoreWithClock(time.Now)
-}
-
-// NewMemoryStoreWithClock 用指定时钟创建内存协调存储，供测试推进时间。
-func NewMemoryStoreWithClock(now func() time.Time) Store {
-	if now == nil {
-		now = time.Now
-	}
 	return &memoryStore{
 		leases: make(map[string]memoryLease),
 		dedup:  make(map[string]int64),
-		now:    now,
 	}
 }
 
-func (m *memoryStore) Acquire(_ context.Context, name, owner string, ttl time.Duration) (bool, error) {
-	nowMs := m.now().UnixMilli()
-	expiresAt := nowMs + normalizeTTL(ttl).Milliseconds()
+func (m *memoryStore) Acquire(_ context.Context, name, owner string, now time.Time, ttl, tolerance time.Duration) (bool, error) {
+	nowMs := now.UnixMilli()
+	expiresAt := now.Add(normalizeTTL(ttl)).UnixMilli()
+	toleranceMs := normalizeTolerance(tolerance).Milliseconds()
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if current, ok := m.leases[name]; ok && current.expiresAt > nowMs && current.owner != owner {
+	// 与 SQL 后端一致：expires_at + 容差 < now 才允许接管。
+	if current, ok := m.leases[name]; ok && current.owner != owner &&
+		current.expiresAt+toleranceMs >= nowMs {
 		return false, nil
 	}
 	m.leases[name] = memoryLease{owner: owner, expiresAt: expiresAt}
@@ -195,9 +206,9 @@ func (m *memoryStore) Release(_ context.Context, name, owner string) error {
 	return nil
 }
 
-func (m *memoryStore) MarkOnce(_ context.Context, key string, ttl time.Duration) (bool, error) {
-	nowMs := m.now().UnixMilli()
-	expiresAt := nowMs + normalizeTTL(ttl).Milliseconds()
+func (m *memoryStore) MarkOnce(_ context.Context, key string, now time.Time, ttl time.Duration) (bool, error) {
+	nowMs := now.UnixMilli()
+	expiresAt := now.Add(normalizeTTL(ttl)).UnixMilli()
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if current, ok := m.dedup[key]; ok && current > nowMs {
@@ -207,8 +218,8 @@ func (m *memoryStore) MarkOnce(_ context.Context, key string, ttl time.Duration)
 	return true, nil
 }
 
-func (m *memoryStore) PruneExpired(_ context.Context) (int64, error) {
-	nowMs := m.now().UnixMilli()
+func (m *memoryStore) PruneExpired(_ context.Context, now time.Time) (int64, error) {
+	nowMs := now.UnixMilli()
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	var deleted int64
@@ -232,4 +243,11 @@ func normalizeTTL(ttl time.Duration) time.Duration {
 		return DefaultTTL
 	}
 	return ttl
+}
+
+func normalizeTolerance(tolerance time.Duration) time.Duration {
+	if tolerance < 0 {
+		return 0
+	}
+	return tolerance
 }

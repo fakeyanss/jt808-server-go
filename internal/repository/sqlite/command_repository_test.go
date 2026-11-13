@@ -27,7 +27,7 @@ func TestSQLiteCommandOutboxIdempotencyAndResult(t *testing.T) {
 		MsgID:          0x8105,
 		Serial:         11,
 		Payload:        []byte{0x02, 0x01},
-	}, repository.CommandSchedule{})
+	})
 	require.NoError(t, err)
 	require.True(t, created)
 	require.Equal(t, repository.CommandStatusPending, first.Status)
@@ -39,7 +39,7 @@ func TestSQLiteCommandOutboxIdempotencyAndResult(t *testing.T) {
 		Phone:          phone,
 		MsgID:          0x8105,
 		Serial:         12,
-	}, repository.CommandSchedule{})
+	})
 	require.NoError(t, err)
 	require.False(t, created)
 	require.Equal(t, "cmd-sql-1", duplicate.CommandID)
@@ -76,7 +76,8 @@ func TestSQLiteCommandOutboxReplayLifecycle(t *testing.T) {
 	commands := store.CommandRepository()
 
 	const phone = "188765477002"
-	enqueue := func(id string, serial uint16, wait, expireAfter time.Duration) {
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	enqueue := func(id string, serial uint16, next, expires time.Time) {
 		_, created, err := commands.Enqueue(ctx, &repository.DownlinkCommand{
 			CommandID:      id,
 			IdempotencyKey: id,
@@ -84,51 +85,51 @@ func TestSQLiteCommandOutboxReplayLifecycle(t *testing.T) {
 			MsgID:          0x8105,
 			Serial:         serial,
 			Payload:        []byte{0x02},
-		}, repository.CommandSchedule{InitialWait: wait, ExpireAfter: expireAfter})
+			NextAttemptAt:  next,
+			ExpiresAt:      expires,
+		})
 		require.NoError(t, err)
 		require.True(t, created)
 	}
-	enqueue("due", 41, -time.Minute, time.Hour)
-	enqueue("later", 42, time.Minute, time.Hour)
-	enqueue("expired", 43, -time.Minute, -time.Minute)
+	enqueue("due", 41, now.Add(-time.Minute), now.Add(time.Hour))
+	enqueue("later", 42, now.Add(time.Minute), now.Add(time.Hour))
+	enqueue("expired", 43, now.Add(-time.Minute), now.Add(-time.Minute))
 
-	beforeList := time.Now()
-	pending, err := commands.ListPending(ctx, repository.PendingQuery{Limit: 10})
+	pending, err := commands.ListPending(ctx, repository.PendingQuery{DueBefore: now, Limit: 10})
 	require.NoError(t, err)
 	require.Len(t, pending, 1)
 	require.Equal(t, "due", pending[0].CommandID)
-	require.True(t, pending[0].NextAttemptAt.Before(beforeList))
-	require.True(t, pending[0].ExpiresAt.After(beforeList))
+	require.True(t, pending[0].NextAttemptAt.Equal(now.Add(-time.Minute)))
+	require.True(t, pending[0].ExpiresAt.Equal(now.Add(time.Hour)))
 
 	claimed, err := commands.ClaimPending(ctx, repository.CommandClaim{
-		Owner: "node-a", Limit: 10, Lease: time.Minute,
+		Owner: "node-a", Now: now, Limit: 10, Lease: time.Minute, Tolerance: 2 * time.Second,
 	})
 	require.NoError(t, err)
 	require.Len(t, claimed, 1)
 	require.Equal(t, "due", claimed[0].CommandID)
 	require.Equal(t, "node-a", claimed[0].LeaseOwner)
-	require.True(t, claimed[0].LeaseExpiresAt.After(beforeList.Add(30*time.Second)))
+	require.True(t, claimed[0].LeaseExpiresAt.Equal(now.Add(time.Minute)))
 
 	blocked, err := commands.ClaimPending(ctx, repository.CommandClaim{
-		Owner: "node-b", Limit: 10, Lease: time.Minute,
+		Owner: "node-b", Now: now, Limit: 10, Lease: time.Minute, Tolerance: 2 * time.Second,
 	})
 	require.NoError(t, err)
 	require.Empty(t, blocked)
 
-	begun, err := commands.BeginAttempt(ctx, "due", "node-a")
+	begun, err := commands.BeginAttempt(ctx, "due", "node-a", now)
 	require.NoError(t, err)
 	require.True(t, begun)
-	begun, err = commands.BeginAttempt(ctx, "due", "node-b")
+	begun, err = commands.BeginAttempt(ctx, "due", "node-b", now)
 	require.NoError(t, err)
 	require.False(t, begun)
 
 	stored, err := commands.Get(ctx, "due")
 	require.NoError(t, err)
 	require.Equal(t, 2, stored.Attempts)
-	require.False(t, stored.LastAttemptAt.IsZero())
-	require.WithinDuration(t, time.Now(), stored.LastAttemptAt, 2*time.Second)
+	require.True(t, stored.LastAttemptAt.Equal(now))
 
-	expired, err := commands.ExpirePending(ctx, "expired before delivery")
+	expired, err := commands.ExpirePending(ctx, now, "expired before delivery")
 	require.NoError(t, err)
 	require.Equal(t, 1, expired)
 
@@ -149,8 +150,8 @@ func TestSQLiteCommandOutboxReplayLifecycle(t *testing.T) {
 	persisted, err := reopened.CommandRepository().Get(ctx, "due")
 	require.NoError(t, err)
 	require.Equal(t, 2, persisted.Attempts)
-	require.False(t, persisted.LastAttemptAt.IsZero())
-	require.True(t, persisted.ExpiresAt.After(beforeList))
+	require.True(t, persisted.LastAttemptAt.Equal(now))
+	require.True(t, persisted.ExpiresAt.Equal(now.Add(time.Hour)))
 	expiredCommand, err := reopened.CommandRepository().Get(ctx, "expired")
 	require.NoError(t, err)
 	require.Equal(t, repository.CommandStatusFailed, expiredCommand.Status)
@@ -178,7 +179,7 @@ func TestSQLiteCommandNextSerialSkipsInFlightAfterWrap(t *testing.T) {
 	_, created, err := commands.Enqueue(ctx, &repository.DownlinkCommand{
 		CommandID: "wrap-in-flight", IdempotencyKey: "wrap-in-flight",
 		Phone: phone, MsgID: 0x8105, Serial: 1, Payload: []byte{0x02},
-	}, repository.CommandSchedule{})
+	})
 	require.NoError(t, err)
 	require.True(t, created)
 
@@ -213,23 +214,25 @@ func TestSQLiteCommandReleaseOfflineRestoresAttempts(t *testing.T) {
 	commands := store.CommandRepository()
 
 	const phone = "188765477004"
+	now := time.Now().UTC().Truncate(time.Millisecond)
 	_, created, err := commands.Enqueue(ctx, &repository.DownlinkCommand{
 		CommandID: "offline", IdempotencyKey: "offline", Phone: phone,
 		MsgID: 0x8105, Serial: 7, Payload: []byte{0x02},
-	}, repository.CommandSchedule{ExpireAfter: time.Hour})
+		NextAttemptAt: now, ExpiresAt: now.Add(time.Hour),
+	})
 	require.NoError(t, err)
 	require.True(t, created)
 
 	_, err = commands.ClaimPending(ctx, repository.CommandClaim{
-		Owner: "node-a", Limit: 1, Lease: time.Minute,
+		Owner: "node-a", Now: now, Limit: 1, Lease: time.Minute, Tolerance: 2 * time.Second,
 	})
 	require.NoError(t, err)
-	begun, err := commands.BeginAttempt(ctx, "offline", "node-a")
+	begun, err := commands.BeginAttempt(ctx, "offline", "node-a", now)
 	require.NoError(t, err)
 	require.True(t, begun)
 
-	beforeRelease := time.Now()
-	released, err := commands.ReleaseOffline(ctx, "offline", "node-a", 1, time.Time{}, 15*time.Second, "device offline")
+	next := now.Add(15 * time.Second)
+	released, err := commands.ReleaseOffline(ctx, "offline", "node-a", 1, time.Time{}, next, "device offline")
 	require.NoError(t, err)
 	require.True(t, released)
 
@@ -240,5 +243,5 @@ func TestSQLiteCommandReleaseOfflineRestoresAttempts(t *testing.T) {
 	require.True(t, stored.LastAttemptAt.IsZero())
 	require.Empty(t, stored.LeaseOwner)
 	require.Equal(t, "device offline", stored.LastError)
-	require.WithinDuration(t, beforeRelease.Add(15*time.Second), stored.NextAttemptAt, 2*time.Second)
+	require.True(t, stored.NextAttemptAt.Equal(next))
 }
