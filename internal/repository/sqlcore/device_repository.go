@@ -27,8 +27,6 @@ const (
 	deviceAuthStateUpdateSQL = `UPDATE devices
 		SET imei = ?, software_version = ?, updated_at = ?
 		WHERE phone = ?`
-
-	deviceExistsSQL = `SELECT COUNT(1) FROM devices WHERE phone = ?`
 )
 
 // deviceRow 是 devices 静态行值，便于读写复用同一套列顺序。
@@ -196,15 +194,9 @@ func (r *deviceRepository) SaveAuthState(ctx context.Context, device *model.Devi
 	if err != nil {
 		return fmt.Errorf("save device auth state %s rows affected: %w", device.Phone, err)
 	}
-	if affected > 0 {
-		return nil
-	}
-	// MySQL 默认返回“实际变更行数”：值未变化时 affected=0，需再确认档案是否存在。
-	var exists int
-	if err := r.store.db.QueryRowContext(ctx, deviceExistsSQL, device.Phone).Scan(&exists); err != nil {
-		return fmt.Errorf("check device %s: %w", device.Phone, err)
-	}
-	if exists == 0 {
+	// RowsAffected 统一按“匹配行数”解释：SQLite 原生如此，
+	// MySQL 在连接层启用 clientFoundRows 后同样如此。
+	if affected == 0 {
 		return repository.ErrDeviceNotFound
 	}
 	return nil

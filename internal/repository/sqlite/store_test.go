@@ -342,3 +342,21 @@ func TestMigrateIsRepeatable(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, store.Close())
 }
+
+// SaveAuthState 依赖 RowsAffected 的“匹配行数”语义：值未变化也必须视为命中。
+func TestSaveAuthStateTreatsUnchangedRowAsMatched(t *testing.T) {
+	ctx := context.Background()
+	store := openTestSQLite(t)
+	devices := store.DeviceRepository()
+	device := sampleDevice("18876540999")
+	device.IMEI = "861234567890123"
+	device.SoftwareVersion = "V1.0.0"
+	require.NoError(t, devices.Upsert(ctx, device))
+
+	require.NoError(t, devices.SaveAuthState(ctx, device))
+	// 值完全相同：不能因为 RowsAffected=0 误判为档案不存在。
+	require.NoError(t, devices.SaveAuthState(ctx, device))
+
+	require.NoError(t, devices.DeleteByPhone(ctx, device.Phone))
+	require.ErrorIs(t, devices.SaveAuthState(ctx, device), repository.ErrDeviceNotFound)
+}
