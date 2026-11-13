@@ -44,6 +44,11 @@ type Statements interface {
 	UpsertMediaCapture() string
 	// UpsertAttachmentFile 按 (source, phone, alarm_no, file_name) 覆盖附件接收进度。
 	UpsertAttachmentFile() string
+	// UpsertAttachmentFTPTask 按 (phone, serial) 覆盖 1078 FTP 上传任务。
+	// control_seq 取较大值，迟到的旧状态更新不能回退已下发的控制序号。
+	UpsertAttachmentFTPTask() string
+	// UpsertAttachmentNode 按 node_id 写入或覆盖附件节点注册与心跳。
+	UpsertAttachmentNode() string
 	// UpsertRecordingSegment 按 id 覆盖平台录像切片索引。
 	UpsertRecordingSegment() string
 	// InsertLocationsIgnoringDuplicates 生成 (phone, dedup_key) 冲突时忽略的批量插入。

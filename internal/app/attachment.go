@@ -6,16 +6,33 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/rs/zerolog/log"
 
 	"github.com/fakeyanss/jt808-server-go/internal/alarmserver"
+	"github.com/fakeyanss/jt808-server-go/internal/attachmentnode"
 	"github.com/fakeyanss/jt808-server-go/internal/attachmentserver"
 	"github.com/fakeyanss/jt808-server-go/internal/contracts"
 	"github.com/fakeyanss/jt808-server-go/internal/control"
 	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
 	"github.com/fakeyanss/jt808-server-go/pkg/routines"
 )
+
+// attachmentControlBase 从进度上报地址反推 control 基址，复用同一 token。
+func attachmentControlBase(progressURL string) string {
+	return strings.TrimSuffix(strings.TrimSpace(progressURL), "/internal/v1/attachment/progress")
+}
+
+// advertiseHost 选择节点对 control 通告的主机名。
+func advertiseHost(ftpAdvertiseIP, uploadIP string) string {
+	for _, candidate := range []string{ftpAdvertiseIP, uploadIP} {
+		if host := strings.TrimSpace(candidate); host != "" {
+			return host
+		}
+	}
+	return "127.0.0.1"
+}
 
 // errAttachmentBlobRequired 表示附件角色缺少共享对象存储。
 // 前置依赖：config.ValidateServerMode 对 media/attachment 角色强制
@@ -157,23 +174,51 @@ func (d *deps) startAttachment() {
 		if nodeID == "" {
 			nodeID = fmt.Sprintf("%s:%d", alarmOptions.UploadIP, alarmOptions.Port)
 		}
+		var ftpConfig *attachmentserver.FTPConfig
+		ftpAdvertiseIP := ""
+		controlBase := attachmentControlBase(alarmOptions.ProgressReport.URL)
+		if clusterOptions.Attachment.FTP.Enabled {
+			ftpCfg := clusterOptions.Attachment.FTP
+			ftpAdvertiseIP = strings.TrimSpace(ftpCfg.AdvertiseIP)
+			if ftpAdvertiseIP == "" {
+				ftpAdvertiseIP = strings.TrimSpace(alarmOptions.UploadIP)
+			}
+			ftpConfig = &attachmentserver.FTPConfig{
+				Port: ftpCfg.Port, PassivePorts: ftpCfg.PassivePorts, AdvertiseIP: ftpAdvertiseIP,
+				MaxFileSize: alarmOptions.MaxFileSize, SegmentSize: alarmOptions.SegmentSizeBytes,
+			}
+			if ftpAdvertiseIP == "" {
+				log.Error().Msg("ftp1078 is enabled but no advertise ip is available (set cluster.attachment.ftp1078.advertiseIp or alarmServer.uploadIp)")
+				os.Exit(1)
+			}
+		}
+		advertiseURL := strings.TrimSpace(clusterOptions.Attachment.AdvertiseURL)
+		if advertiseURL == "" && alarmOptions.HTTPPort != 0 {
+			advertiseURL = fmt.Sprintf("http://%s:%d", advertiseHost(ftpAdvertiseIP, alarmOptions.UploadIP), alarmOptions.HTTPPort)
+		}
 		built, err := attachmentserver.New(attachmentserver.Config{
-			Dir:             alarmOptions.Dir,
-			TCPPort:         alarmOptions.Port,
-			UDPPort:         alarmOptions.UDPPort,
-			AdvertiseIP:     alarmOptions.UploadIP,
-			NodeID:          nodeID,
-			MaxFileSize:     alarmOptions.MaxFileSize,
-			MaxConcurrent:   alarmOptions.MaxConcurrent,
-			SessionTimeout:  alarmserver.DefaultSessionTimeout,
-			CompletedTTL:    alarmOptions.CompletedTTL,
-			Retention:       alarmOptions.Retention,
-			Blob:            controlBlob,
-			Progress:        progress,
-			StagingDir:      filepath.Join(alarmOptions.Dir, "staging"),
-			SegmentSize:     alarmOptions.SegmentSizeBytes,
-			MaxStagingBytes: alarmOptions.StagingMaxBytes,
-			HTTPAddr:        fmt.Sprintf(":%d", alarmOptions.HTTPPort),
+			Dir:              alarmOptions.Dir,
+			TCPPort:          alarmOptions.Port,
+			UDPPort:          alarmOptions.UDPPort,
+			AdvertiseIP:      alarmOptions.UploadIP,
+			NodeID:           nodeID,
+			MaxFileSize:      alarmOptions.MaxFileSize,
+			MaxConcurrent:    alarmOptions.MaxConcurrent,
+			SessionTimeout:   alarmserver.DefaultSessionTimeout,
+			CompletedTTL:     alarmOptions.CompletedTTL,
+			Retention:        alarmOptions.Retention,
+			Blob:             controlBlob,
+			Progress:         progress,
+			StagingDir:       filepath.Join(alarmOptions.Dir, "staging"),
+			SegmentSize:      alarmOptions.SegmentSizeBytes,
+			MaxStagingBytes:  alarmOptions.StagingMaxBytes,
+			HTTPAddr:         fmt.Sprintf(":%d", alarmOptions.HTTPPort),
+			FTP:              ftpConfig,
+			ControlBaseURL:   controlBase,
+			ControlToken:     alarmOptions.ProgressReport.Token,
+			ControlPushToken: clusterOptions.Control.Token,
+			InstanceID:       attachmentnode.NewInstanceID(),
+			AdvertiseURL:     advertiseURL,
 		})
 		if err != nil {
 			log.Error().Err(err).Msg("Fail to create attachment server")
@@ -197,6 +242,14 @@ func (d *deps) startAttachment() {
 				os.Exit(1)
 			}
 			log.Info().Str("addr", built.HTTPAddr()).Msg("Attachment internal HTTP listening")
+		}
+		if ftpConfig != nil {
+			if err := built.ListenFTP(fmt.Sprintf(":%d", ftpConfig.Port)); err != nil {
+				log.Error().Err(err).Uint16("port", ftpConfig.Port).Msg("Fail to listen ftp1078 control addr")
+				os.Exit(1)
+			}
+			log.Info().Str("addr", built.FTPAddr()).Str("advertise_ip", ftpConfig.AdvertiseIP).
+				Msg("1078 FTP upload service listening")
 		}
 		attachmentServ = built
 		routines.GoSafe(func() { attachmentServ.Start() })

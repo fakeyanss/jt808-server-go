@@ -80,6 +80,9 @@ type Metrics struct {
 	// 时钟偏差探针：最近一次与数据库时间的偏差（毫秒）与超阈值告警次数。
 	clockSkewMillis atomic.Int64
 	clockSkewAlerts atomic.Int64
+	// 1078 FTP：完成清单与切片不一致的异常次数、0x9207 推送失败次数。
+	ftp1078DoneAnomaly   atomic.Int64
+	ftpControlPushFailed atomic.Int64
 }
 
 // NewMetrics 创建进程级计数器。
@@ -190,6 +193,38 @@ func (m *Metrics) IncStorageCommitFailed() {
 		return
 	}
 	m.storageCommitFailed.Add(1)
+}
+
+// IncFTP1078DoneAnomaly 记录一次 .done 清单存在但切片不连续/缺片的异常。
+func (m *Metrics) IncFTP1078DoneAnomaly() {
+	if m == nil {
+		return
+	}
+	m.ftp1078DoneAnomaly.Add(1)
+}
+
+// FTP1078DoneAnomaly 返回完成清单异常累计次数。
+func (m *Metrics) FTP1078DoneAnomaly() int64 {
+	if m == nil {
+		return 0
+	}
+	return m.ftp1078DoneAnomaly.Load()
+}
+
+// IncFTPControlPushFailed 记录一次 0x9207 推送到附件节点失败。
+func (m *Metrics) IncFTPControlPushFailed() {
+	if m == nil {
+		return
+	}
+	m.ftpControlPushFailed.Add(1)
+}
+
+// FTPControlPushFailed 返回 0x9207 推送失败累计次数。
+func (m *Metrics) FTPControlPushFailed() int64 {
+	if m == nil {
+		return 0
+	}
+	return m.ftpControlPushFailed.Load()
 }
 
 // IncAutoUploadSkipped 记录一次 0x9208 自动触发因角色拆分而不可用的告警。
@@ -463,6 +498,14 @@ type Snapshot struct {
 	GatewayNodes GatewayNodeSnapshot
 	// ClockSkew 是进程时钟与数据库时间的偏差观测。
 	ClockSkew ClockSkewSnapshot
+	// FTP1078 是 1078 FTP 链路的异常与推送失败计数。
+	FTP1078 FTP1078Snapshot
+}
+
+// FTP1078Snapshot 是 1078 FTP 链路的累计计数。
+type FTP1078Snapshot struct {
+	DoneAnomaly       int64
+	ControlPushFailed int64
 }
 
 // GatewayNodeSnapshot 是网关节点的存活水位。
@@ -566,6 +609,10 @@ func (p *Provider) Snapshot(ctx context.Context) Snapshot {
 	snapshot.AutoUploadSkipped = p.Metrics.AutoUploadSkipped()
 	snapshot.ClusterEvents = p.Metrics.ClusterEventSnapshot()
 	snapshot.ClockSkew = p.Metrics.ClockSkewSnapshot()
+	snapshot.FTP1078 = FTP1078Snapshot{
+		DoneAnomaly:       p.Metrics.FTP1078DoneAnomaly(),
+		ControlPushFailed: p.Metrics.FTPControlPushFailed(),
+	}
 	return snapshot
 }
 
@@ -607,6 +654,8 @@ func WritePrometheus(w io.Writer, snapshot Snapshot) error {
 		{"jt808_gateway_node_fenced_total", "Gateway node heartbeats rejected because the instance was superseded.", "counter", fmt.Sprint(snapshot.ClusterEvents.GatewayNodeFenced)},
 		{"jt808_clock_skew_ms", "Observed skew between the process clock and the database clock in milliseconds; observation only.", "gauge", fmt.Sprint(snapshot.ClockSkew.SkewMillis)},
 		{"jt808_clock_skew_alerts_total", "Clock skew probe runs whose absolute skew exceeded the alert threshold.", "counter", fmt.Sprint(snapshot.ClockSkew.Alerts)},
+		{"jt808_ftp1078_done_anomaly_total", "1078 FTP uploads whose .done manifest exists but segments are not contiguous.", "counter", fmt.Sprint(snapshot.FTP1078.DoneAnomaly)},
+		{"jt808_ftp1078_control_push_failed_total", "0x9207 control pushes to attachment nodes that failed after retries.", "counter", fmt.Sprint(snapshot.FTP1078.ControlPushFailed)},
 	}
 	for _, line := range lines {
 		if _, err := fmt.Fprintf(w, "# HELP %s %s\n# TYPE %s %s\n%s %s\n",

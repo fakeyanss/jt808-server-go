@@ -472,3 +472,45 @@ CREATE TABLE IF NOT EXISTS session_directory (
 );
 
 CREATE INDEX IF NOT EXISTS idx_session_directory_node ON session_directory (gateway_id, instance_id);
+
+-- 1078 FTP 上传任务（0x9206/0x9207/0x1206）。仅 control 持有。
+-- 账号是任务级一次性凭据：secret_hash 存密码散列，终态后 revoked_at 非零。
+CREATE TABLE IF NOT EXISTS attachment_ftp_tasks (
+    phone TEXT NOT NULL,
+    serial INTEGER NOT NULL,
+    username TEXT NOT NULL,
+    secret_hash TEXT NOT NULL,
+    upload_path TEXT NOT NULL DEFAULT '',
+    channel INTEGER NOT NULL DEFAULT 0,
+    start_time INTEGER NOT NULL DEFAULT 0,
+    end_time INTEGER NOT NULL DEFAULT 0,
+    alarm_sign TEXT NOT NULL DEFAULT '',
+    media_type INTEGER NOT NULL DEFAULT 0,
+    stream_type INTEGER NOT NULL DEFAULT 0,
+    storage_type INTEGER NOT NULL DEFAULT 0,
+    task_condition INTEGER NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'issued',
+    node_id TEXT NOT NULL DEFAULT '',
+    control_seq INTEGER NOT NULL DEFAULT 0,
+    total_bytes INTEGER NOT NULL DEFAULT 0,
+    revoked_at INTEGER NOT NULL DEFAULT 0,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    completed_at INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (phone, serial)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_attachment_ftp_tasks_username ON attachment_ftp_tasks (username);
+CREATE INDEX IF NOT EXISTS idx_attachment_ftp_tasks_status ON attachment_ftp_tasks (status, updated_at);
+
+-- 附件节点注册。与 gateway_nodes 同构：心跳续期、过期判死、
+-- 新 instance_id 注册时覆盖旧实例，避免 0x9207 推到已消失的地址。
+CREATE TABLE IF NOT EXISTS attachment_nodes (
+    node_id TEXT NOT NULL PRIMARY KEY,
+    instance_id TEXT NOT NULL,
+    base_url TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'online',
+    started_at INTEGER NOT NULL,
+    last_seen_at INTEGER NOT NULL,
+    expires_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_attachment_nodes_status ON attachment_nodes (status, expires_at);

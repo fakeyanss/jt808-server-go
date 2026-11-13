@@ -14,6 +14,7 @@ import (
 
 	"github.com/rs/zerolog/log"
 
+	"github.com/fakeyanss/jt808-server-go/internal/attachmentnode"
 	clockpkg "github.com/fakeyanss/jt808-server-go/internal/clock"
 	"github.com/fakeyanss/jt808-server-go/internal/contracts"
 	"github.com/fakeyanss/jt808-server-go/internal/gatewaynode"
@@ -81,6 +82,8 @@ type Server struct {
 	sessions        repository.SessionDirectoryRepository
 	segments        repository.RecordingSegmentRepository
 	attachments     AttachmentProgressStore
+	attachmentFTP   FTPSessionStore
+	attachmentNodes repository.AttachmentNodeRepository
 	metrics         *observability.Metrics
 	clock           clockpkg.Clock
 
@@ -255,6 +258,14 @@ func (s *Server) Handler() http.Handler {
 	}
 	if s.attachments != nil {
 		mux.HandleFunc(PathAttachmentProgress, s.handleAttachmentProgress)
+	}
+	if s.attachmentFTP != nil {
+		mux.HandleFunc(attachmentnode.PathFTPLogin, s.handleAttachmentFTPLogin)
+	}
+	if s.attachmentNodes != nil {
+		mux.HandleFunc(attachmentnode.PathRegister, s.handleAttachmentNodeRegister)
+		mux.HandleFunc(attachmentnode.PathHeartbeat, s.handleAttachmentNodeHeartbeat)
+		mux.HandleFunc(attachmentnode.PathDeregister, s.handleAttachmentNodeDeregister)
 	}
 	return mux
 }

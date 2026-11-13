@@ -741,8 +741,10 @@ phone -> session_directory
 | 1078 流、SPS/PPS、文件句柄 | 媒体 | 进程内存 | 否 |
 | 媒体端点租约 | 媒体 | 内存/共享存储（TTL） | 是（仅分配需要） |
 | 媒体切片索引 | 管控 | MySQL（`recording_segments`） | 是 |
-| 附件组装、缺口记账 | 附件 | 进程内存 | 否 |
+| 附件组装、缺口记账、FTP 暂存与上传进度 | 附件 | 进程内存 + 本地暂存 | 否 |
 | 附件水位、段列表、终态 | 管控 | MySQL（`attachment_files`） | 是 |
+| 1078 FTP 上传任务与一次性凭据 | 管控 | MySQL（`attachment_ftp_tasks`） | 是 |
+| 附件节点注册与推送地址 | 管控 | MySQL（`attachment_nodes`） | 是 |
 | 附件端点租约 | 附件 | 内存/共享存储（TTL） | 是（仅分配需要） |
 | 媒体/附件文件 | 媒体/附件 | 共享卷/对象存储 | 是（读） |
 
@@ -1022,7 +1024,8 @@ cluster:
 - **事实来源**：`attachment/subia/`（以及未来的 `attachment/ftp1078/`）下的对象是切片的事实来源，`attachment_files` 只是可重建的目录。对象在、索引丢，仍可扫描重建。
 - **上报**：切片提交后向 control 的 `POST /internal/v1/attachment/progress` 出站上报，带 Bearer token，幂等 upsert；通知允许丢失。
 - **恢复点**：control 是恢复点的权威来源。附件节点断线重连或重启后先 `GET /internal/v1/attachment/progress` 取回水位与段列表；**control 不可达时不阻断接收**，退回本地 `.part.state.json` 与对象存储扫描继续工作，进度事后补齐。
-- **key 约定（硬要求）**：`attachment/<source>/<phone>/<alarmNo>/<fileName>/<offset>_<size>_<total>_<index>`。终端、报警号、文件名、偏移、段大小与文件总长必须能从 key 独立解析；无法解析的对象跳过并告警，禁止依赖上报内容。
+- **key 约定（硬要求）**：苏标 `attachment/subia/<phone>/<alarmNo>/<fileName>/<offset>_<size>_<total>_<index>`；1078 FTP `attachment/ftp1078/<phone>/<serial>/<fileName>/<offset>_<size>_<index>` 与完成清单 `<fileName>.done`（FTP 连接结束前总长未知，故切片不写 total）。终端、报警号/流水号、文件名、偏移、段大小与总长必须能从 key 独立解析；无法解析的对象跳过并告警，禁止依赖上报内容。
+- **FTP 完成判定**：`.done` 只在全部切片 Promote 后写入；扫描时清单存在但切片不连续/缺片不判完成，保持 `receiving` 并计异常指标；保留期清理必须连清单一起删除。
 - **过期、pending 回收与保留期**：全部在 control 执行。附件节点本地暂存只按 `.part` 标记与 mtime 回收，control 不保存也不删除边缘节点的本地路径。
 
 - **阶段边界**：E1 的 `cluster` 不承接业务，业务处理仍在网关进程内；**自 E2 起 `cluster` 承接业务**，控制面 handler 在管控进程执行，但媒体/附件角色与 `objectStore` 仍在 E3，因此 E2 的 `cluster` 仍不等于全量生产形态。

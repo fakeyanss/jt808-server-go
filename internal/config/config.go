@@ -1698,6 +1698,20 @@ type clusterAttachmentConf struct {
 	// NodeID 是附件节点在状态接口中回报的稳定标识；为空时按通告地址生成。
 	NodeID string                      `yaml:"nodeId"`
 	Nodes  []clusterAttachmentNodeConf `yaml:"nodes"`
+	// AdvertiseURL 是本节点登记到 control 的内部 HTTP 基址，用于接收 0x9207 推送；
+	// 为空时按 ftp1078.advertiseIp + alarmServer.httpPort 推导。
+	AdvertiseURL string `yaml:"advertiseUrl"`
+	// FTP 配置 1078 文件上传 FTP 服务；缺省关闭。
+	FTP *clusterFTPConf `yaml:"ftp1078"`
+}
+
+type clusterFTPConf struct {
+	// Port 是 FTP 控制连接端口，默认 7500。
+	Port uint16 `yaml:"port"`
+	// PassivePorts 是被动数据连接端口段，例如 "7501-7510"。
+	PassivePorts string `yaml:"passivePorts"`
+	// AdvertiseIP 是 0x9206/PASV 通告给终端的地址；为空时取控制连接本地地址。
+	AdvertiseIP string `yaml:"advertiseIp"`
 }
 
 type clusterAttachmentNodeConf struct {
@@ -1789,8 +1803,10 @@ type ClusterOptions struct {
 		Nodes  []MediaNodeOptions
 	}
 	Attachment struct {
-		NodeID string
-		Nodes  []AttachmentNodeOptions
+		NodeID       string
+		Nodes        []AttachmentNodeOptions
+		AdvertiseURL string
+		FTP          FTPOptions
 	}
 	Downlink struct {
 		Timeout     time.Duration
@@ -1841,6 +1857,22 @@ type AttachmentNodeOptions struct {
 	Name string
 	URL  string
 }
+
+// FTPOptions 是 1078 FTP 上传服务端配置。
+type FTPOptions struct {
+	Enabled      bool
+	Port         uint16
+	PassivePorts []int
+	AdvertiseIP  string
+}
+
+// DefaultFTPControlPort / DefaultFTPPassiveFrom / DefaultFTPPassiveTo 与 ftpserver 默认值保持一致，
+// 配置层不反引 ftpserver，避免角色包之间形成依赖。
+const (
+	DefaultFTPControlPort = 7500
+	DefaultFTPPassiveFrom = 7501
+	DefaultFTPPassiveTo   = 7510
+)
 
 // IsStandalone 表示进程是否运行在 standalone 形态。
 func (o ClusterOptions) IsStandalone() bool { return o.Mode == ServerModeStandalone }
@@ -1978,6 +2010,12 @@ func (c *Config) ParseServerMode() (ClusterOptions, error) {
 	}
 	if conf.Attachment != nil {
 		options.Attachment.NodeID = strings.TrimSpace(conf.Attachment.NodeID)
+		options.Attachment.AdvertiseURL = strings.TrimSpace(conf.Attachment.AdvertiseURL)
+		if options.Attachment.AdvertiseURL != "" {
+			if err := validateHTTPURL("cluster.attachment.advertiseUrl", options.Attachment.AdvertiseURL); err != nil {
+				problems = append(problems, err.Error())
+			}
+		}
 		seenNodeURL := map[string]bool{}
 		for index, raw := range conf.Attachment.Nodes {
 			url := strings.TrimSpace(raw.URL)
@@ -1999,6 +2037,24 @@ func (c *Config) ParseServerMode() (ClusterOptions, error) {
 				name = fmt.Sprintf("attachment-%d", index+1)
 			}
 			options.Attachment.Nodes = append(options.Attachment.Nodes, AttachmentNodeOptions{Name: name, URL: url})
+		}
+		if conf.Attachment.FTP != nil {
+			ftp := conf.Attachment.FTP
+			options.Attachment.FTP.Enabled = true
+			options.Attachment.FTP.Port = ftp.Port
+			if options.Attachment.FTP.Port == 0 {
+				options.Attachment.FTP.Port = DefaultFTPControlPort
+			}
+			options.Attachment.FTP.AdvertiseIP = strings.TrimSpace(ftp.AdvertiseIP)
+			ports, err := parsePortRange(ftp.PassivePorts)
+			if err != nil {
+				problems = append(problems, fmt.Sprintf("cluster.attachment.ftp1078.passivePorts: %v", err))
+			} else if len(ports) == 0 {
+				for port := DefaultFTPPassiveFrom; port <= DefaultFTPPassiveTo; port++ {
+					ports = append(ports, port)
+				}
+			}
+			options.Attachment.FTP.PassivePorts = ports
 		}
 	}
 	// 下行模式必须显式且互斥：fixed 依赖 url，directory 不允许再配 url。
@@ -2301,6 +2357,17 @@ func (c *Config) ParseServerMode() (ClusterOptions, error) {
 		} else if alarmOptions.HTTPPort == 0 {
 			problems = append(problems, "alarmServer.httpPort is required for role attachment (internal status API)")
 		}
+		if options.Attachment.FTP.Enabled {
+			// FTP 登录校验与进度上报都是节点到 control 的出站请求，必须有 control 入口。
+			if strings.TrimSpace(alarmOptions.ProgressReport.URL) == "" {
+				problems = append(problems,
+					"alarmServer.progressReport.url is required when cluster.attachment.ftp1078 is enabled (control login/progress endpoint)")
+			}
+			if options.Attachment.FTP.AdvertiseIP == "" && strings.TrimSpace(alarmOptions.UploadIP) == "" {
+				problems = append(problems,
+					"cluster.attachment.ftp1078.advertiseIp or alarmServer.uploadIp is required so terminals can reach the FTP server")
+			}
+		}
 	}
 
 	if len(problems) > 0 {
@@ -2313,6 +2380,41 @@ func (c *Config) ParseServerMode() (ClusterOptions, error) {
 func (c *Config) ValidateServerMode() error {
 	_, err := c.ParseServerMode()
 	return err
+}
+
+// parsePortRange 解析 FTP 被动端口段：支持 "a-b"、单端口与逗号分隔组合。
+func parsePortRange(raw string) ([]int, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil, nil
+	}
+	seen := map[int]bool{}
+	var ports []int
+	for _, part := range strings.Split(raw, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		lowText, highText, hasRange := strings.Cut(part, "-")
+		low, err := strconv.Atoi(strings.TrimSpace(lowText))
+		if err != nil || low < 1 || low > 65535 {
+			return nil, fmt.Errorf("invalid port %q", part)
+		}
+		high := low
+		if hasRange {
+			high, err = strconv.Atoi(strings.TrimSpace(highText))
+			if err != nil || high < low || high > 65535 {
+				return nil, fmt.Errorf("invalid port range %q", part)
+			}
+		}
+		for port := low; port <= high; port++ {
+			if !seen[port] {
+				seen[port] = true
+				ports = append(ports, port)
+			}
+		}
+	}
+	return ports, nil
 }
 
 // validateListenAddr 校验监听地址 host:port；允许空 host（表示全部网卡）。

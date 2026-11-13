@@ -13,14 +13,19 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/rs/zerolog/log"
 
 	"github.com/fakeyanss/jt808-server-go/internal/alarmserver"
+	"github.com/fakeyanss/jt808-server-go/internal/attachmentnode"
+	"github.com/fakeyanss/jt808-server-go/internal/clock"
 	"github.com/fakeyanss/jt808-server-go/internal/contracts"
+	"github.com/fakeyanss/jt808-server-go/internal/ftpserver"
 	"github.com/fakeyanss/jt808-server-go/internal/storage"
 	"github.com/fakeyanss/jt808-server-go/pkg/routines"
 )
@@ -49,6 +54,28 @@ type Config struct {
 	MaxStagingBytes int64
 
 	HTTPAddr string
+
+	// FTP 是 1078 文件上传服务端配置；为空表示不启用。
+	FTP *FTPConfig
+	// ControlBaseURL 是节点出站访问 control 的基址（登录与进度）。
+	ControlBaseURL string
+	// ControlToken 是节点到 control 的 Bearer token。
+	ControlToken string
+	// ControlPushToken 是 control 推送到本节点时携带的 Bearer token。
+	ControlPushToken string
+	// InstanceID 是本次进程启动的唯一标识，用于节点注册。
+	InstanceID string
+	// AdvertiseURL 是 control 可达的本节点内部 HTTP 基址。
+	AdvertiseURL string
+}
+
+// FTPConfig 是 1078 FTP 服务端的监听参数。
+type FTPConfig struct {
+	Port         uint16
+	PassivePorts []int
+	AdvertiseIP  string
+	MaxFileSize  int64
+	SegmentSize  int64
 }
 
 // Server 是附件节点：协议监听 + 内部状态 HTTP。
@@ -60,6 +87,11 @@ type Server struct {
 	done  chan struct{}
 	once  sync.Once
 	wg    sync.WaitGroup
+
+	ftp      *ftpserver.Server
+	reporter *attachmentnode.Reporter
+	// reporterCancel 停止心跳并在退出时注销节点。
+	reporterCancel context.CancelFunc
 }
 
 // New 创建附件节点。
@@ -87,11 +119,32 @@ func New(cfg Config) (*Server, error) {
 			NodeID:          cfg.NodeID,
 		},
 	}
-	return &Server{
+	srv := &Server{
 		cfg:   cfg,
 		alarm: alarmserver.NewServer(alarmCfg),
 		done:  make(chan struct{}),
-	}, nil
+	}
+	if cfg.FTP != nil {
+		control := ftpserver.NewHTTPControl(cfg.ControlBaseURL, cfg.ControlToken, cfg.NodeID)
+		ftp, err := ftpserver.New(ftpserver.Config{
+			Dir:             filepath.Join(cfg.StagingDir, "ftp1078"),
+			ControlPort:     cfg.FTP.Port,
+			PassivePorts:    cfg.FTP.PassivePorts,
+			AdvertiseIP:     cfg.FTP.AdvertiseIP,
+			NodeID:          cfg.NodeID,
+			SegmentSize:     cfg.FTP.SegmentSize,
+			MaxStagingBytes: cfg.MaxStagingBytes,
+			MaxConcurrent:   cfg.MaxConcurrent,
+			Blob:            cfg.Blob,
+			Control:         control,
+			Clock:           clock.System(),
+		})
+		if err != nil {
+			return nil, err
+		}
+		srv.ftp = ftp
+	}
+	return srv, nil
 }
 
 // AlarmServer 返回底层协议服务器，供测试或装配层读取监听地址。
@@ -126,6 +179,22 @@ func (s *Server) HTTPAddr() string {
 	return s.ln.Addr().String()
 }
 
+// ListenFTP 监听 1078 FTP 控制端口。
+func (s *Server) ListenFTP(addr string) error {
+	if s.ftp == nil {
+		return nil
+	}
+	return s.ftp.Listen(addr)
+}
+
+// FTPAddr 返回 FTP 控制连接实际监听地址。
+func (s *Server) FTPAddr() string {
+	if s.ftp == nil {
+		return ""
+	}
+	return s.ftp.Addr()
+}
+
 // Start 启动协议监听与内部 HTTP，由调用方放入独立 goroutine。
 func (s *Server) Start() {
 	if s.ln != nil {
@@ -138,12 +207,54 @@ func (s *Server) Start() {
 		})
 	}
 	s.alarm.Start()
+	if s.ftp != nil {
+		if s.ftp.Addr() != "" {
+			s.wg.Add(1)
+			routines.GoSafe(func() {
+				defer s.wg.Done()
+				s.ftp.Start()
+			})
+		}
+		s.startReporter()
+	}
 }
 
-// Stop 关闭协议监听与内部 HTTP。
+func (s *Server) startReporter() {
+	base := strings.TrimSpace(s.cfg.ControlBaseURL)
+	advertise := strings.TrimSpace(s.cfg.AdvertiseURL)
+	if base == "" || advertise == "" {
+		log.Warn().Str("node", s.cfg.NodeID).
+			Msg("Attachment node registration is skipped: control or advertise url is missing; 0x9207 cannot be pushed")
+		return
+	}
+	reporter, err := attachmentnode.NewReporter(attachmentnode.ReporterOptions{
+		BaseURL: base, Token: s.cfg.ControlToken, NodeID: s.cfg.NodeID,
+		InstanceID: s.cfg.InstanceID, AdvertiseURL: advertise,
+	})
+	if err != nil {
+		log.Error().Err(err).Msg("Fail to create attachment node reporter")
+		return
+	}
+	s.reporter = reporter
+	ctx, cancel := context.WithCancel(context.Background())
+	s.reporterCancel = cancel
+	s.wg.Add(1)
+	routines.GoSafe(func() {
+		defer s.wg.Done()
+		reporter.Run(ctx)
+	})
+}
+
+// Stop 关闭协议监听、FTP 服务与内部 HTTP。
 func (s *Server) Stop() {
 	s.once.Do(func() {
 		close(s.done)
+		if s.reporterCancel != nil {
+			s.reporterCancel()
+		}
+		if s.ftp != nil {
+			s.ftp.Stop()
+		}
 		if s.http != nil {
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			_ = s.http.Shutdown(ctx)
@@ -165,7 +276,41 @@ func (s *Server) ActiveFiles(_ context.Context) (int, error) {
 func (s *Server) routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/internal/attachment/status", s.handleStatus)
+	if s.ftp != nil {
+		mux.HandleFunc(attachmentnode.PathFTPControl, s.handleFTPControl)
+	}
 	return mux
+}
+
+// handleFTPControl 接收 control 推送的 0x9207 控制指令。
+//
+// 节点按 seq 去重：重复推送不会让同一次暂停被执行两次。
+func (s *Server) handleFTPControl(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"err": "use POST"})
+		return
+	}
+	if token := strings.TrimSpace(s.cfg.ControlPushToken); token != "" {
+		auth := strings.TrimSpace(r.Header.Get("Authorization"))
+		if auth != "Bearer "+token {
+			writeJSON(w, http.StatusUnauthorized, map[string]any{"err": "invalid or missing bearer token"})
+			return
+		}
+	}
+	var command ftpserver.ControlCommand
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<16)).Decode(&command); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"err": err.Error()})
+		return
+	}
+	if command.Phone == "" || command.Action > ftpserver.ControlCancel {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"err": "phone and action (0..2) are required"})
+		return
+	}
+	applied := s.ftp.ApplyControl(command)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"status": "ok", "applied": applied, "phone": command.Phone,
+		"serial": command.Serial, "seq": command.Seq,
+	})
 }
 
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
@@ -182,7 +327,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	if available < 0 {
 		available = 0
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
+	body := map[string]any{
 		"nodeId":        s.cfg.NodeID,
 		"active":        active,
 		"maxConcurrent": maxConcurrent,
@@ -191,7 +336,15 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		"tcpPort":       s.tcpPort(),
 		"udpPort":       s.udpPort(),
 		"stagingDir":    s.cfg.StagingDir,
-	})
+	}
+	if s.ftp != nil {
+		body["ftp1078"] = map[string]any{
+			"addr":        s.ftp.Addr(),
+			"advertiseIp": s.cfg.FTP.AdvertiseIP,
+			"active":      s.ftp.ActiveTransfers(),
+		}
+	}
+	writeJSON(w, http.StatusOK, body)
 }
 
 func (s *Server) advertiseIP() string {

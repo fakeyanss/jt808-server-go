@@ -62,6 +62,44 @@ func TestAttachmentSegmentObjectKeyRoundTrip(t *testing.T) {
 	require.Equal(t, key, info.ObjectKey)
 }
 
+// FTP 切片 key 不写总长（连接结束前未知），但必须还原偏移、大小与序号。
+func TestAttachmentFTPSegmentKeyRoundTrip(t *testing.T) {
+	key := AttachmentFTPSegmentObjectKey("13800138000", "42", "alarm.mp4", 8, 8, 1)
+	require.Equal(t, "attachment/ftp1078/13800138000/42/alarm.mp4/000000000008_000000000008_00000001", key)
+
+	info, err := ParseAttachmentSegmentKey(key)
+	require.NoError(t, err)
+	require.Equal(t, SourceFTP1078, info.Source)
+	require.Equal(t, "13800138000", info.Phone)
+	require.Equal(t, "42", info.AlarmNo)
+	require.Equal(t, "alarm.mp4", info.FileName)
+	require.EqualValues(t, 8, info.Offset)
+	require.EqualValues(t, 8, info.Size)
+	require.EqualValues(t, 0, info.TotalSize)
+	require.Equal(t, 1, info.Index)
+}
+
+func TestParseAttachmentDoneKey(t *testing.T) {
+	key := AttachmentDoneObjectKey(SourceFTP1078, "13800138000", "42", "alarm.mp4")
+	require.Equal(t, "attachment/ftp1078/13800138000/42/alarm.mp4.done", key)
+	require.True(t, IsAttachmentDoneKey(key))
+
+	info, err := ParseAttachmentDoneKey(key)
+	require.NoError(t, err)
+	require.Equal(t, SourceFTP1078, info.Source)
+	require.Equal(t, "13800138000", info.Phone)
+	require.Equal(t, "42", info.AlarmNo)
+	require.Equal(t, "alarm.mp4", info.FileName)
+
+	// 清单不是切片，切片解析必须拒绝，避免把 .done 当成 0 字节对象。
+	_, err = ParseAttachmentSegmentKey(key)
+	require.Error(t, err)
+
+	// 苏标来源没有清单对象语义。
+	_, err = ParseAttachmentDoneKey("attachment/subia/1/A1/clip.bin.done")
+	require.Error(t, err)
+}
+
 func TestParseAttachmentSegmentKeyRejectsBrokenMetadata(t *testing.T) {
 	cases := []string{
 		"attachment/subia/13800138000/A1/clip.bin/0_8_4_0",        // 段超出总长
