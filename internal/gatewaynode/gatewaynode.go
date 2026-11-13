@@ -17,6 +17,7 @@ const (
 	PathRegister   = "/internal/v1/gateway/register"
 	PathHeartbeat  = "/internal/v1/gateway/heartbeat"
 	PathDeregister = "/internal/v1/gateway/deregister"
+	PathRelease    = "/internal/v1/session/release"
 )
 
 // RegisterRequest 是网关注册请求。
@@ -30,6 +31,16 @@ type RegisterRequest struct {
 type HeartbeatRequest struct {
 	GatewayID  string `json:"gatewayId"`
 	InstanceID string `json:"instanceId"`
+}
+
+// ReleaseRequest 是终端断开时网关上报的会话释放请求。
+// generation 必须与 claim 时一致，避免旧连接删掉新归属。
+type ReleaseRequest struct {
+	GatewayID  string `json:"gatewayId"`
+	InstanceID string `json:"instanceId"`
+	Phone      string `json:"phone"`
+	SessionID  string `json:"sessionId"`
+	Generation uint64 `json:"generation"`
 }
 
 // StatusResponse 是注册/心跳的通用响应。

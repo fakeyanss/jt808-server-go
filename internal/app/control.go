@@ -98,6 +98,7 @@ func (d *deps) setupControl() {
 		executor := control.NewBusinessExecutor(control.BusinessOptions{
 			ProcessorDeps: processorDeps,
 			Devices:       storeSet.Devices,
+			Sessions:      storeSet.SessionDirectory,
 			Files:         storeSet.MediaFiles,
 			Blob:          controlBlob,
 			MediaUpload:   mediaUploadStore,
@@ -122,6 +123,7 @@ func (d *deps) setupControl() {
 			return storeSet.Devices.GetByPhone(ctx, phone)
 		})
 		srv.SetGatewayNodeRepository(storeSet.GatewayNodes)
+		srv.SetSessionDirectoryRepository(storeSet.SessionDirectory)
 		// 缺失 confirm-before-ack consumer 时启动失败，并一次性列出缺失项。
 		if err := srv.ValidateCoverage(uplinkPolicy); err != nil {
 			log.Error().Err(err).Msg("Uplink consumer coverage validation failed")

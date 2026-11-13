@@ -35,16 +35,20 @@ const (
 // Body 是已解码的原始消息体，管控用 DecodeMessageBody 单次解码，避免与网关
 // 形成两套解码实现；Payload/PayloadRaw 只作为诊断快照保留。
 type UplinkEvent struct {
-	EventID     string
-	Phone       string
-	MsgID       uint16
-	RawMsgID    uint16
-	Serial      uint16
-	OccurredAt  time.Time
-	GatewayID   string
+	EventID    string
+	Phone      string
+	MsgID      uint16
+	RawMsgID   uint16
+	Serial     uint16
+	OccurredAt time.Time
+	GatewayID  string
+	// InstanceID 是网关进程实例标识，与 GatewayID 一起确定会话归属。
+	InstanceID  string
 	SessionID   string
 	Transport   string
 	Reliability Reliability
+	// Generation 是会话 claim 得到的围栏版本；鉴权前为 0，不做归属校验。
+	Generation uint64
 
 	// 协议头信息，供管控重建报文头并解码消息体。
 	ProtocolVersion     string
@@ -66,6 +70,10 @@ type UplinkResult struct {
 	Accepted bool
 	Reply    []byte
 	Reason   string
+	// Generation 是 0x0102 claim 后的会话版本，网关据此绑定本地会话。
+	Generation uint64
+	// Fenced 表示事件 generation 已落后于目录，网关应关闭本地会话。
+	Fenced bool
 }
 
 // UplinkSink 是网关向上的统一出口。
@@ -86,6 +94,7 @@ type TerminalReply struct {
 	Result     uint8     `json:"result"`
 	GatewayID  string    `json:"gatewayId,omitempty"`
 	SessionID  string    `json:"sessionId,omitempty"`
+	Generation uint64    `json:"generation,omitempty"`
 	ReceivedAt time.Time `json:"receivedAt,omitempty"`
 	// Source 标记来源（transport / http），仅用于日志与排查。
 	Source string `json:"source,omitempty"`

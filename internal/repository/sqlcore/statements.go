@@ -58,4 +58,18 @@ type Statements interface {
 	DeregisterGatewayNode() string
 	// SelectGatewayNode 按 gateway_id 查询节点状态。
 	SelectGatewayNode() string
+	// SelectSessionForUpdate 在事务内锁定一条会话目录行。
+	SelectSessionForUpdate() string
+	// InsertSessionDirectory 写入一条 generation=1 的会话归属。
+	InsertSessionDirectory() string
+	// UpdateSessionDirectory 覆盖归属并把 generation 加一。
+	UpdateSessionDirectory() string
+	// SelectSessionGeneration 读取目录当前 generation。
+	SelectSessionGeneration() string
+	// DeleteSessionDirectory 按 owner 与 generation 精确删除目录行。
+	DeleteSessionDirectory() string
+	// ValidateSessionDirectory 用一次查询判断事件 generation 是否仍有效。
+	ValidateSessionDirectory() string
+	// SelectSessionDirectory 按 phone 查询目录快照。
+	SelectSessionDirectory() string
 }

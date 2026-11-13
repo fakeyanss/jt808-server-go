@@ -555,3 +555,44 @@ func TestHTTPSinkDifferentShardsRunConcurrently(t *testing.T) {
 	require.True(t, got[phoneA])
 	require.True(t, got[phoneB])
 }
+
+func TestHTTPSinkConfirmParsesGeneration(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"outcome":"accepted","generation":7}`))
+	}))
+	defer server.Close()
+
+	sink := newTestSink(t, server.URL, nil)
+	runTestSink(t, sink)
+	result, err := sink.Deliver(context.Background(), testEvent(contracts.ReliabilityConfirmBeforeAck))
+	require.NoError(t, err)
+	require.True(t, result.Accepted)
+	require.Equal(t, uint64(7), result.Generation)
+}
+
+func TestHTTPSinkBestEffortFencedClosesSession(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"outcome":"fenced","fenced":true}`))
+	}))
+	defer server.Close()
+
+	fenced := make(chan string, 1)
+	sink := newTestSink(t, server.URL, func(options *HTTPSinkOptions) {
+		options.OnFenced = func(phone, sessionID string) {
+			fenced <- phone + "/" + sessionID
+		}
+	})
+	runTestSink(t, sink)
+	result, err := sink.Deliver(context.Background(), testEvent(contracts.ReliabilityBestEffort))
+	require.NoError(t, err)
+	require.True(t, result.Accepted)
+
+	select {
+	case got := <-fenced:
+		require.Equal(t, "188765499021/session-test", got)
+	case <-time.After(2 * time.Second):
+		t.Fatal("best-effort fenced response did not trigger OnFenced")
+	}
+}

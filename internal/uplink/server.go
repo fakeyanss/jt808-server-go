@@ -74,6 +74,7 @@ type Server struct {
 	dedup           *dedupCache
 	deviceLookup    func(ctx context.Context, phone string) (*model.Device, error)
 	nodes           repository.GatewayNodeRepository
+	sessions        repository.SessionDirectoryRepository
 
 	httpServer *http.Server
 	listener   net.Listener
@@ -193,6 +194,13 @@ func (s *Server) SetGatewayNodeRepository(nodes repository.GatewayNodeRepository
 	}
 }
 
+// SetSessionDirectoryRepository 挂载会话目录；设置后事件与终端应答按 generation 围栏。
+func (s *Server) SetSessionDirectoryRepository(sessions repository.SessionDirectoryRepository) {
+	if s != nil {
+		s.sessions = sessions
+	}
+}
+
 // Handler 返回可挂到任意 mux 的 HTTP 处理器，便于测试注入。
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
@@ -202,6 +210,9 @@ func (s *Server) Handler() http.Handler {
 		mux.HandleFunc(gatewaynode.PathRegister, s.handleGatewayRegister)
 		mux.HandleFunc(gatewaynode.PathHeartbeat, s.handleGatewayHeartbeat)
 		mux.HandleFunc(gatewaynode.PathDeregister, s.handleGatewayDeregister)
+	}
+	if s.sessions != nil {
+		mux.HandleFunc(gatewaynode.PathRelease, s.handleSessionRelease)
 	}
 	return mux
 }
@@ -282,13 +293,29 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 	}
 
 	now := time.Now()
-	if s.dedup.Seen(envelope.EventID, now) {
+	// 0x0102 的 claim 本身幂等，必须每次都能拿到 generation；
+	// 因此不让 eventId 去重短路掉重传的鉴权请求。
+	duplicate := envelope.MsgID != 0x0102 && s.dedup.Seen(envelope.EventID, now)
+	if duplicate {
 		writeJSON(w, http.StatusOK, map[string]any{"outcome": "duplicate"})
 		return
 	}
 
 	confirm := strings.EqualFold(envelope.Reliability, string(contracts.ReliabilityConfirmBeforeAck)) ||
 		strings.EqualFold(envelope.Reliability, string(AtLeastOnce))
+
+	// 鉴权后的上行与终端应答都带 generation；落后于目录的一律 fenced。
+	fenced, err := s.fencedByDirectory(r.Context(), envelope)
+	if err != nil {
+		log.Error().Err(err).Str("event_id", envelope.EventID).Msg("Failed to validate session generation")
+		writeError(w, http.StatusServiceUnavailable, "fence_check_failed", err.Error())
+		return
+	}
+	if fenced {
+		s.dedup.Add(envelope.EventID, now)
+		writeJSON(w, http.StatusOK, map[string]any{"outcome": "fenced", "fenced": true})
+		return
+	}
 
 	// 0x0001 终端应答是控制侧拿 ack 的主路径，必须走统一入口。
 	if envelope.Reply != nil {
@@ -372,10 +399,70 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 	if result.Reason != "" {
 		body["reason"] = result.Reason
 	}
+	if result.Generation > 0 {
+		body["generation"] = result.Generation
+	}
+	if result.Fenced {
+		body["fenced"] = true
+	}
 	if len(result.Reply) > 0 {
 		body["reply"] = base64.StdEncoding.EncodeToString(result.Reply)
 	}
 	writeJSON(w, http.StatusOK, body)
+}
+
+// fencedByDirectory 判断事件是否已经被目录围栏。
+// 鉴权前（generation=0）不做归属校验；0x0102 本身负责建立归属。
+func (s *Server) fencedByDirectory(ctx context.Context, envelope HTTPEnvelope) (bool, error) {
+	if s.sessions == nil || envelope.Generation == 0 || envelope.MsgID == 0x0102 {
+		return false, nil
+	}
+	if strings.TrimSpace(envelope.Phone) == "" {
+		return false, nil
+	}
+	owner := repository.SessionOwner{
+		GatewayID:  envelope.GatewayID,
+		InstanceID: envelope.InstanceID,
+		SessionID:  envelope.SessionID,
+	}
+	valid, err := s.sessions.Validate(ctx, envelope.Phone, owner, envelope.Generation)
+	if err != nil {
+		return false, err
+	}
+	return !valid, nil
+}
+
+func (s *Server) handleSessionRelease(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "use POST")
+		return
+	}
+	if !s.authorized(r) {
+		writeError(w, http.StatusUnauthorized, "unauthorized", "invalid or missing bearer token")
+		return
+	}
+	var req gatewaynode.ReleaseRequest
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_json", err.Error())
+		return
+	}
+	if strings.TrimSpace(req.GatewayID) == "" || strings.TrimSpace(req.InstanceID) == "" ||
+		strings.TrimSpace(req.Phone) == "" || strings.TrimSpace(req.SessionID) == "" || req.Generation == 0 {
+		writeError(w, http.StatusBadRequest, "invalid_request",
+			"gatewayId, instanceId, phone, sessionId and generation are required")
+		return
+	}
+	owner := repository.SessionOwner{
+		GatewayID:  req.GatewayID,
+		InstanceID: req.InstanceID,
+		SessionID:  req.SessionID,
+	}
+	if err := s.sessions.Release(r.Context(), req.Phone, owner, req.Generation); err != nil {
+		log.Error().Err(err).Str("phone", req.Phone).Msg("Session release failed")
+		writeError(w, http.StatusInternalServerError, "release_failed", "failed to release session")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"status": "released"})
 }
 
 func (s *Server) handleDeviceLookup(w http.ResponseWriter, r *http.Request) {
@@ -437,7 +524,9 @@ func envelopeToEvent(envelope HTTPEnvelope) (contracts.UplinkEvent, error) {
 		RawMsgID:            envelope.RawMsgID,
 		Serial:              envelope.Serial,
 		GatewayID:           envelope.GatewayID,
+		InstanceID:          envelope.InstanceID,
 		SessionID:           envelope.SessionID,
+		Generation:          envelope.Generation,
 		Transport:           envelope.Transport,
 		Reliability:         contracts.Reliability(envelope.Reliability),
 		ProtocolVersion:     envelope.ProtocolVersion,

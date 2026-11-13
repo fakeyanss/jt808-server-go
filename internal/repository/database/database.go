@@ -73,6 +73,8 @@ type Repositories struct {
 	Coordination coordination.Store
 	// GatewayNodes 是网关注册与健康状态，仅 E4.1 使用。
 	GatewayNodes repository.GatewayNodeRepository
+	// SessionDirectory 是 phone 归属索引，仅 E4.2 使用。
+	SessionDirectory repository.SessionDirectoryRepository
 
 	// Backend 记录实际启用的后端，供启动日志与运维排查使用。
 	Backend string
@@ -104,6 +106,7 @@ type sqlBackend interface {
 	RetentionStore() repository.RetentionStore
 	CoordinationStore() coordination.Store
 	GatewayNodeRepository() repository.GatewayNodeRepository
+	SessionDirectoryRepository() repository.SessionDirectoryRepository
 }
 
 // NewMemory 创建一组互相独立的内存仓储，供测试与新代码注入。
@@ -115,23 +118,24 @@ func newRepositories(backend string) *Repositories {
 	// 文件与拍摄应答共用同一实现，才能在同一次查询里判断 mediaId 是否已落盘。
 	mediaFiles := memory.NewMediaFileRepository()
 	return &Repositories{
-		Devices:         memory.NewDeviceRepository(),
-		Geo:             memory.NewGeoRepository(),
-		Params:          memory.NewDeviceParamsRepository(),
-		Properties:      memory.NewTerminalPropertiesRepository(),
-		Alarms:          memory.NewAlarmRepository(),
-		Regions:         memory.NewRegionRepository(),
-		Industry:        memory.NewIndustryRepository(),
-		Media:           memory.NewMediaMetadataRepository(),
-		MediaFiles:      mediaFiles,
-		MediaCaptures:   mediaFiles,
-		MediaSearches:   memory.NewMediaSearchRepository(),
-		UpgradeResults:  memory.NewUpgradeResultRepository(),
-		Commands:        memory.NewCommandRepository(),
-		AttachmentFiles: memory.NewAttachmentFileRepository(),
-		Coordination:    coordination.NewMemoryStore(),
-		GatewayNodes:    memory.NewGatewayNodeRepository(),
-		Backend:         backend,
+		Devices:          memory.NewDeviceRepository(),
+		Geo:              memory.NewGeoRepository(),
+		Params:           memory.NewDeviceParamsRepository(),
+		Properties:       memory.NewTerminalPropertiesRepository(),
+		Alarms:           memory.NewAlarmRepository(),
+		Regions:          memory.NewRegionRepository(),
+		Industry:         memory.NewIndustryRepository(),
+		Media:            memory.NewMediaMetadataRepository(),
+		MediaFiles:       mediaFiles,
+		MediaCaptures:    mediaFiles,
+		MediaSearches:    memory.NewMediaSearchRepository(),
+		UpgradeResults:   memory.NewUpgradeResultRepository(),
+		Commands:         memory.NewCommandRepository(),
+		AttachmentFiles:  memory.NewAttachmentFileRepository(),
+		Coordination:     coordination.NewMemoryStore(),
+		GatewayNodes:     memory.NewGatewayNodeRepository(),
+		SessionDirectory: memory.NewSessionDirectoryRepository(),
+		Backend:          backend,
 	}
 }
 
@@ -188,6 +192,7 @@ func openSQL(handle sqlBackend, backend string, cfg Config) (*Repositories, erro
 	repos.Retention = handle.RetentionStore()
 	repos.Coordination = handle.CoordinationStore()
 	repos.GatewayNodes = handle.GatewayNodeRepository()
+	repos.SessionDirectory = handle.SessionDirectoryRepository()
 	repos.close = handle.Close
 	repos.check = handle.Ping
 	return repos, nil

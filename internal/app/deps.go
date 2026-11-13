@@ -189,6 +189,18 @@ func buildDeps(spec Spec, cfg *config.Config, s settings) *deps {
 			OnUnknownDeviceDropped: func(phone string) {
 				metrics.IncUplinkUnknownDropped()
 			},
+			OnFenced: func(phone, sessionID string) {
+				// best-effort 事件被 control 围栏：立即关闭本地会话，不再接收该 phone 的上行。
+				session, lookupErr := processorDeps.Runtime.Conn.Get(context.Background(), sessionID)
+				if lookupErr != nil || session == nil {
+					return
+				}
+				session.ClosePending()
+				if session.Conn != nil {
+					_ = session.Conn.Close()
+				}
+				processorDeps.Runtime.Conn.Unbind(context.Background(), sessionID)
+			},
 		})
 		if err != nil {
 			log.Error().Err(err).Msg("Fail to initialize uplink HTTP sink")
@@ -217,17 +229,35 @@ func buildDeps(spec Spec, cfg *config.Config, s settings) *deps {
 				Msg("Fail to derive control base URL for gateway node registration")
 			os.Exit(1)
 		}
+		instanceID := gatewaynode.NewInstanceID()
 		reporter, reporterErr := gatewaynode.NewReporter(gatewaynode.ReporterOptions{
 			BaseURL:     baseURL,
 			Token:       uplinkSinkOptions.HTTP.Token,
 			GatewayID:   clusterOptions.Gateway.NodeID,
-			InstanceID:  gatewaynode.NewInstanceID(),
+			InstanceID:  instanceID,
 			DownlinkURL: clusterOptions.Gateway.AdvertiseURL,
 			Interval:    gatewaynode.HeartbeatInterval,
 		})
 		if reporterErr != nil {
 			log.Error().Err(reporterErr).Msg("Fail to create gateway node reporter")
 			os.Exit(1)
+		}
+		// 上行信封的网关身份必须与节点注册一致，control 才能把 claim 落到正确节点。
+		processorDeps.GatewayID = clusterOptions.Gateway.NodeID
+		processorDeps.InstanceID = instanceID
+		// 会话断开时上报 release；失败不影响连接关闭，目录残留由节点过期兜底。
+		processorDeps.OnSessionClosed = func(sessionID, phone string, generation uint64) {
+			if phone == "" || generation == 0 {
+				return
+			}
+			go func() {
+				releaseCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+				defer cancel()
+				if err := reporter.Release(releaseCtx, phone, sessionID, generation); err != nil {
+					log.Warn().Err(err).Str("phone", phone).Str("session", sessionID).
+						Msg("Session release failed; directory will expire with node liveness")
+				}
+			}()
 		}
 		d.nodeReporter = reporter
 		log.Info().

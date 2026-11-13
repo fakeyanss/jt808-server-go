@@ -144,8 +144,8 @@ func TestBuildUplinkEventIsStableAcrossRetransmission(t *testing.T) {
 	}
 	data := &model.ProcessData{Incoming: incoming}
 
-	first := buildUplinkEvent(context.Background(), 0x0200, data, contracts.ReliabilityBestEffort, "gw-test")
-	second := buildUplinkEvent(context.Background(), 0x0200, data, contracts.ReliabilityBestEffort, "gw-test")
+	first := buildUplinkEvent(context.Background(), 0x0200, data, contracts.ReliabilityBestEffort, "gw-test", "")
+	second := buildUplinkEvent(context.Background(), 0x0200, data, contracts.ReliabilityBestEffort, "gw-test", "")
 	require.Equal(t, first.EventID, second.EventID)
 	require.Equal(t, int64(1793505600000), first.OccurredAt.UnixMilli())
 	// eventId 是内容哈希，重传同一报文必须得到同一值。
@@ -165,7 +165,7 @@ func TestBuildUplinkEventTerminalReply(t *testing.T) {
 		Result:             1,
 	}
 	event := buildUplinkEvent(context.Background(), 0x0001, &model.ProcessData{Incoming: reply},
-		contracts.ReliabilityBestEffort, "gw-test")
+		contracts.ReliabilityBestEffort, "gw-test", "")
 
 	require.NotNil(t, event.Reply)
 	require.Equal(t, "188765499021", event.Reply.Phone)
@@ -192,11 +192,30 @@ func TestBuildUplinkEventMediaUsesRawPayload(t *testing.T) {
 		FragmentData:        []byte{0xff, 0xd8, 0xff},
 	}
 	event := buildUplinkEvent(context.Background(), 0x0801, &model.ProcessData{Incoming: media},
-		contracts.ReliabilityBestEffort, "gw-test")
+		contracts.ReliabilityBestEffort, "gw-test", "")
 
 	require.Equal(t, []byte{0xff, 0xd8, 0xff}, event.PayloadRaw)
 	payload, ok := event.Payload.(map[string]any)
 	require.True(t, ok)
 	require.Equal(t, uint32(9), payload["multiMediaId"])
 	require.Equal(t, uint32(9), event.Meta["mediaId"])
+}
+
+func TestApplySessionOutcomeBindsGenerationAndFences(t *testing.T) {
+	session := &model.Session{ID: "sess-1"}
+	ctx := context.WithValue(context.Background(), model.SessionCtxKey{}, session)
+	processor := &JT808MsgProcessor{}
+
+	processor.applySessionOutcome(ctx, contracts.UplinkResult{Generation: 5})
+	if got := session.Generation(); got != 5 {
+		t.Fatalf("generation = %d, want 5", got)
+	}
+	if session.ShouldCloseAfterResponse() {
+		t.Fatal("session must stay open before fencing")
+	}
+
+	processor.applySessionOutcome(ctx, contracts.UplinkResult{Fenced: true})
+	if !session.ShouldCloseAfterResponse() {
+		t.Fatal("fenced session must close after current response")
+	}
 }

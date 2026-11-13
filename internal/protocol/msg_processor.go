@@ -55,6 +55,8 @@ type ProcessorDeps struct {
 	UplinkSink contracts.UplinkSink
 	// GatewayID 是事件信封里的网关标识，仅出口启用时需要。
 	GatewayID string
+	// InstanceID 是网关进程实例标识，与 GatewayID 一起用于会话归属 claim。
+	InstanceID string
 	// MediaUpload 为空表示 0x0801 只保留行业内存快照，不落盘也不写媒体文件仓储。
 	MediaUpload *mediaupload.Store
 	// AuthProvider 是 cluster 下网关的只读鉴权来源；为空时回退本地档案。
@@ -65,6 +67,9 @@ type ProcessorDeps struct {
 	UplinkMaxBodyBytes int64
 	// OnOversized 是超限事件的旁路回调，用于指标与日志。
 	OnOversized func(msgID uint16, phone string, size int)
+	// OnSessionClosed 在网关本地会话关闭后回调；cluster 用它上报 release。
+	// phone 为空或 generation 为 0 时表示该会话没有成功 claim，不需要 release。
+	OnSessionClosed func(sessionID, phone string, generation uint64)
 	// QueryResponse 把网关收到的查询应答体交给下行等待表。
 	QueryResponse func(msgID uint16, header *model.MsgHeader, body []byte)
 	// Blob 是管控侧 0x0801 的文件写入契约；为空时回退 mediaUpload。
@@ -512,6 +517,12 @@ func NewJT808MsgProcessor(hooks actionpkg.Hooks, opts ...ProcessorOption) *JT808
 	if settings.deps.GatewayID != "" {
 		deps.GatewayID = settings.deps.GatewayID
 	}
+	if settings.deps.InstanceID != "" {
+		deps.InstanceID = settings.deps.InstanceID
+	}
+	if settings.deps.OnSessionClosed != nil {
+		deps.OnSessionClosed = settings.deps.OnSessionClosed
+	}
 	if settings.deps.MediaUpload != nil {
 		deps.MediaUpload = settings.deps.MediaUpload
 	}
@@ -707,7 +718,7 @@ func (mp *JT808MsgProcessor) deliverUplink(ctx context.Context, msgID uint16, da
 		}
 	}
 	reliability := uplinkReliability(mp.deps.Uplink, msgID, data.Incoming)
-	event := buildUplinkEvent(ctx, msgID, data, reliability, mp.deps.GatewayID)
+	event := buildUplinkEvent(ctx, msgID, data, reliability, mp.deps.GatewayID, mp.deps.InstanceID)
 	result, err := mp.deps.UplinkSink.Deliver(ctx, event)
 	switch {
 	case err != nil:
@@ -715,7 +726,29 @@ func (mp *JT808MsgProcessor) deliverUplink(ctx context.Context, msgID uint16, da
 	case !result.Accepted:
 		return fmt.Errorf("uplink sink rejected event %s: %s", event.EventID, result.Reason)
 	}
+	mp.applySessionOutcome(ctx, result)
 	return nil
+}
+
+// applySessionOutcome 把 control 返回的 claim/fenced 结果落到本地会话。
+// 0x0102 的 claim 结果在这里绑定 generation；fenced 表示本会话已被新归属顶替，
+// 当前应答仍要发出（confirm 路径），随后由服务层关闭连接。
+func (mp *JT808MsgProcessor) applySessionOutcome(ctx context.Context, result contracts.UplinkResult) {
+	session, ok := ctx.Value(model.SessionCtxKey{}).(*model.Session)
+	if !ok || session == nil {
+		return
+	}
+	if result.Generation > 0 {
+		session.SetGeneration(result.Generation)
+	}
+	if result.Fenced {
+		log.Warn().
+			Str("session", session.ID).
+			Str("phone", session.Phone()).
+			Uint64("generation", session.Generation()).
+			Msg("Session was fenced by control; closing after current response")
+		session.MarkCloseAfterResponse()
+	}
 }
 
 // protocolHalf 返回“两边都要”消息在网关侧的协议半边。
@@ -1067,6 +1100,7 @@ func (mp *JT808MsgProcessor) bindPhoneSession(ctx context.Context, phone string,
 		log.Warn().Err(err).Str("phone", phone).Str("session", session.ID).Msg("Fail to bind phone after authentication")
 		return err
 	}
+	session.SetPhone(phone)
 	if superseded == nil || superseded.ID == session.ID {
 		return nil
 	}

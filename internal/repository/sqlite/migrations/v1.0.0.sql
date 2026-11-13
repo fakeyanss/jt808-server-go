@@ -440,3 +440,15 @@ CREATE TABLE IF NOT EXISTS gateway_nodes (
 );
 
 CREATE INDEX IF NOT EXISTS idx_gateway_nodes_status ON gateway_nodes (status, expires_at);
+
+-- 会话归属目录（E4.2）。不设 per-phone 有效期：会话有效性由 gateway_nodes 联表推出。
+CREATE TABLE IF NOT EXISTS session_directory (
+    phone TEXT NOT NULL PRIMARY KEY,
+    gateway_id TEXT NOT NULL,
+    instance_id TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    generation INTEGER NOT NULL,
+    claimed_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_session_directory_node ON session_directory (gateway_id, instance_id);

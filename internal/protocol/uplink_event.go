@@ -28,6 +28,7 @@ func buildUplinkEvent(
 	data *model.ProcessData,
 	reliability contracts.Reliability,
 	gatewayID string,
+	instanceID string,
 ) contracts.UplinkEvent {
 	in := data.Incoming
 	header := in.GetHeader()
@@ -36,6 +37,7 @@ func buildUplinkEvent(
 	packetCount := 1
 	reassembled := true
 	sessionID := ""
+	generation := uint64(0)
 	transport := ""
 	protocolVersion := ""
 	headerAttr := uint16(0)
@@ -64,6 +66,7 @@ func buildUplinkEvent(
 	}
 	if session, ok := ctx.Value(model.SessionCtxKey{}).(*model.Session); ok && session != nil {
 		sessionID = session.ID
+		generation = session.Generation()
 		transport = string(session.Transport)
 	}
 
@@ -77,7 +80,9 @@ func buildUplinkEvent(
 		Serial:              serial,
 		OccurredAt:          occurredAt,
 		GatewayID:           gatewayID,
+		InstanceID:          instanceID,
 		SessionID:           sessionID,
+		Generation:          generation,
 		Transport:           transport,
 		Reliability:         reliability,
 		ProtocolVersion:     protocolVersion,
@@ -111,6 +116,7 @@ func buildUplinkEvent(
 			Result:       reply.Result,
 			GatewayID:    gatewayID,
 			SessionID:    sessionID,
+			Generation:   generation,
 			ReceivedAt:   time.Now(),
 			Source:       "http",
 		}
@@ -170,6 +176,10 @@ func uplinkReliability(policy *uplink.Policy, msgID uint16, incoming model.JT808
 	if msgID == 0x0001 {
 		// 通用应答是 outbox 的唯一收尾信号：必须确认管控已受理，否则命令会
 		// 一直 pending 直到重投上限。管控不可用时由终端重传换取一致性。
+		return contracts.ReliabilityConfirmBeforeAck
+	}
+	if msgID == 0x0102 {
+		// 鉴权必须先完成 control claim 再应答：claim 失败时不能给终端成功应答。
 		return contracts.ReliabilityConfirmBeforeAck
 	}
 	if policy != nil && policy.AtLeastOnce(msgID, incoming) {

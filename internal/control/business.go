@@ -29,6 +29,8 @@ type BusinessOptions struct {
 	ProcessorDeps protocol.ProcessorDeps
 	// Devices 用于 409 unknown_device 判定；为空时跳过预检。
 	Devices repository.DeviceRepository
+	// Sessions 是会话归属目录；为空时不做 claim/fencing（standalone 或未启用）。
+	Sessions repository.SessionDirectoryRepository
 	// Files 是媒体文件元数据仓储。
 	Files repository.MediaFileRepository
 	// Blob 是 sharedVolume 文件后端；为空时 0x0801 回退到本地媒体目录。
@@ -130,6 +132,11 @@ func (b *BusinessExecutor) ConsumeEvent(ctx context.Context, event contracts.Upl
 	if event.MsgID == 0x0801 && b.opts.Blob != nil {
 		return b.ingestMedia(ctx, event, incoming)
 	}
+
+	generation, err := b.claimSession(ctx, event, incoming)
+	if err != nil {
+		return contracts.UplinkResult{}, err
+	}
 	if err := b.proc.ApplyControlBusiness(ctx, event.MsgID, data); err != nil {
 		if errors.Is(err, repository.ErrDeviceNotFound) {
 			return contracts.UplinkResult{}, &uplink.StatusError{
@@ -140,7 +147,48 @@ func (b *BusinessExecutor) ConsumeEvent(ctx context.Context, event contracts.Upl
 		}
 		return contracts.UplinkResult{}, err
 	}
-	return contracts.UplinkResult{Accepted: true}, nil
+	return contracts.UplinkResult{Accepted: true, Generation: generation}, nil
+}
+
+// claimSession 在 0x0102 业务路径内为会话建立归属。
+//
+// 先校验鉴权码再 claim：鉴权不通过时不建立目录，避免伪造报文覆盖归属。
+// claim 幂等，重复的 0x0102 返回同一 generation。
+func (b *BusinessExecutor) claimSession(ctx context.Context, event contracts.UplinkEvent, incoming model.JT808Msg) (uint64, error) {
+	if b.opts.Sessions == nil || event.MsgID != 0x0102 {
+		return 0, nil
+	}
+	in, ok := incoming.(*model.Msg0102)
+	if !ok || in == nil {
+		return 0, nil
+	}
+	if b.opts.Devices == nil {
+		return 0, fmt.Errorf("session claim requires device repository")
+	}
+	device, err := b.opts.Devices.GetByPhone(ctx, event.Phone)
+	if errors.Is(err, repository.ErrDeviceNotFound) {
+		return 0, &uplink.StatusError{
+			Status:  http.StatusConflict,
+			Code:    "unknown_device",
+			Message: "device is not registered",
+		}
+	}
+	if err != nil {
+		return 0, err
+	}
+	if in.AuthCode != device.AuthCode {
+		return 0, &uplink.StatusError{
+			Status:  http.StatusForbidden,
+			Code:    "auth_rejected",
+			Message: "authentication code does not match control state",
+		}
+	}
+	owner := repository.SessionOwner{
+		GatewayID:  event.GatewayID,
+		InstanceID: event.InstanceID,
+		SessionID:  event.SessionID,
+	}
+	return b.opts.Sessions.Claim(ctx, event.Phone, owner)
 }
 
 // ingestMedia 按“写文件 → 写库 → 标记已提交”的顺序处理 0x0801。
