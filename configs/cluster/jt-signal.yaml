@@ -46,6 +46,9 @@ uplink:
     queueSize: 1024
     workers: 4
     maxAttempts: 1
+    # 缓存过期且 control 不可达时，按缓存档案继续放行的宽限期（毫秒）。
+    # 默认 30 分钟；从未查到过档案的终端始终拒绝，宽限期耗尽后回到拒绝。
+    # authGraceMs: 1800000
 
 cluster:
   roles:

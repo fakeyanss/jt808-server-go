@@ -1001,7 +1001,8 @@ func (mp *JT808MsgProcessor) processMsg0002(_ context.Context, data *model.Proce
 }
 
 // checkDeviceExists 校验终端档案：集群网关查 control（AuthProvider），
-// 其余装配回退本地仓储。管控不可达时返回错误，保持鉴权 fail-closed 的语义。
+// 其余装配回退本地仓储。AuthProvider 在 control 不可达时按有界宽限放行
+// （见 HTTPAuthProvider）；无缓存或宽限耗尽仍返回错误。
 func (mp *JT808MsgProcessor) checkDeviceExists(ctx context.Context, phone string) error {
 	if mp.deps.AuthProvider != nil {
 		if _, err := mp.deps.AuthProvider.Device(ctx, phone); err != nil {

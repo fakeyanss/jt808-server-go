@@ -178,6 +178,14 @@ jt-control requires cluster.roles to contain "control"; current roles=[media]. u
 只有 `jt-control` 连接共享 MySQL；`jt-signal` / `jt-media` / `jt-attachment` 是数据面节点，不连数据库，全部元数据经 HTTP 与 control 交互。
 所有集群角色必须指向**同一套** `cluster.storage`（同一个 `root`，或同一个 `objectStore` 桶）。
 
+**网关鉴权降级（有界）**：`jt-signal` 的设备档案查询走 control 的只读接口，结果在本地缓存。
+缓存新鲜时直接命中；缓存过期且 control 不可达（网络错误或 5xx）时，在该条目的宽限期内
+继续按缓存档案放行；**从未查到过档案的终端始终拒绝**；control 返回 404 时清缓存并拒绝；
+宽限期耗尽或 control 明确返回其他错误时回到拒绝。宽限期由 `uplink.http.authGraceMs`
+配置（毫秒，默认 `1800000` = 30 分钟，范围 1–86400000）；control 恢复后网关重新拉取，
+自动回到正常路径。排障时关注 WARN 日志 “gateway serves cached device profile within the
+configured grace period” 与恢复日志。
+
 > `cluster.allowEmbeddedStorage` 是 **dev-only** 开关，只允许本地联调时让多个角色进程共用一个 SQLite 文件。
 > 开启后启动打印 WARN，`/readyz` 返回 `degraded`（HTTP 200，但 `status` 不是 `ready`）。
 > **生产环境禁止开启**，集群部署必须使用共享 MySQL。
@@ -225,7 +233,7 @@ jt-control requires cluster.roles to contain "control"; current roles=[media]. u
 
 `/readyz` 的检查项按角色装配：
 
-- `database`：数据库连通（gateway / control / attachment）。
+- `database`：数据库连通（仅 control；数据面角色不连库）。
 - `outbox_backlog`：过期 pending 命令未超过阈值（control，且 outbox 开启）。
 - `control_endpoint`：`uplink.http.url` 的 host 可解析（gateway-only）。
 - `media_nodes`：以媒体节点注册表为准，至少一个节点在线、未过期且仍有容量（码率与端点数）；注册表为空时退回 `cluster.media.nodes` 静态清单的连通性检查（control 且没有本地媒体）。

@@ -113,6 +113,11 @@ main ──●──────────────────────
   的只读查询（`AuthProvider`），0x0003 注销只清本地会话状态、不再删除档案；启动校验拒绝
   数据面角色配置任何非 `memory` 的数据库段；`configs/cluster/jt-signal.yaml` 已删除 `database`
   与 `commandOutbox` 段。
+  - **鉴权有界降级**：缓存新鲜时直接命中；缓存过期且 control 不可达（网络错误或 5xx）时，
+    在该条目的宽限期内按缓存档案放行，避免控制面抖动把在网终端批量踢下线；从未查到过档案的
+    终端始终拒绝；control 返回 404 视为档案不存在，清缓存并拒绝，不进入宽限；宽限期耗尽或
+    control 明确返回其他错误时回到拒绝。宽限期由 `uplink.http.authGraceMs` 配置（毫秒，
+    默认 30 分钟，范围 1–86400000），control 恢复后重新拉取并回到正常路径。
 - control：独占 MySQL，迁移、索引补齐（`attachment-maintenance` / `attachment-index`）与
   保留期清理都在 control 的租约任务里。
 - **启动校验强制不变量**：`cluster.roles` 不含 `control` 时，`database.type` 只能为空或
