@@ -458,6 +458,16 @@ func defaultGatewayID() string {
 	return fmt.Sprintf("%s-%d", host, os.Getpid())
 }
 
+// defaultGatewayNodeID 生成稳定的网关节点标识：仅主机名。
+// 进程重启时 nodeId 不变，由 instanceId 表达实例更替；同机多网关需显式配置 nodeId。
+func defaultGatewayNodeID() string {
+	host, err := os.Hostname()
+	if err != nil || strings.TrimSpace(host) == "" {
+		return "jt808-gateway"
+	}
+	return host
+}
+
 func firstNonEmpty(value, fallback string) string {
 	if trimmed := strings.TrimSpace(value); trimmed != "" {
 		return trimmed
@@ -1572,8 +1582,12 @@ type clusterConf struct {
 type clusterGatewayConf struct {
 	// Addr 是网关侧下行 HTTP 入口的监听地址。
 	Addr string `yaml:"addr"`
-	// URL 是管控侧调用下行入口的基址；control 角色必填。
+	// URL 是管控侧调用下行入口的基址；control 角色必填；gateway 角色可作为 advertiseUrl 的兼容回退。
 	URL string `yaml:"url"`
+	// NodeID 是网关节点标识，必须全局唯一；为空时默认主机名。
+	NodeID string `yaml:"nodeId"`
+	// AdvertiseURL 是网关告诉 control 的下行入口地址；为空时回退到 URL。
+	AdvertiseURL string `yaml:"advertiseUrl"`
 	// Token 是 control -> gateway 的共享密钥；gateway 校验、control 发送。
 	Token string `yaml:"token"`
 }
@@ -1685,9 +1699,11 @@ type ClusterOptions struct {
 	Mode    string
 	Roles   RoleSet
 	Gateway struct {
-		Addr  string
-		URL   string
-		Token string
+		Addr         string
+		URL          string
+		NodeID       string
+		AdvertiseURL string
+		Token        string
 	}
 	Control struct {
 		Addr  string
@@ -1834,7 +1850,15 @@ func (c *Config) ParseServerMode() (ClusterOptions, error) {
 	if conf.Gateway != nil {
 		options.Gateway.Addr = strings.TrimSpace(conf.Gateway.Addr)
 		options.Gateway.URL = strings.TrimSpace(conf.Gateway.URL)
+		options.Gateway.NodeID = strings.TrimSpace(conf.Gateway.NodeID)
+		options.Gateway.AdvertiseURL = strings.TrimSpace(conf.Gateway.AdvertiseURL)
 		options.Gateway.Token = strings.TrimSpace(conf.Gateway.Token)
+		if options.Gateway.NodeID == "" {
+			options.Gateway.NodeID = defaultGatewayNodeID()
+		}
+		if options.Gateway.AdvertiseURL == "" {
+			options.Gateway.AdvertiseURL = options.Gateway.URL
+		}
 	}
 	if conf.Control != nil {
 		options.Control.Addr = strings.TrimSpace(conf.Control.Addr)
@@ -1898,6 +1922,11 @@ func (c *Config) ParseServerMode() (ClusterOptions, error) {
 		}
 		if options.Gateway.Token == "" {
 			problems = append(problems, "cluster.gateway.token is required for role gateway")
+		}
+		if options.Gateway.AdvertiseURL == "" {
+			problems = append(problems, "cluster.gateway.advertiseUrl is required for role gateway")
+		} else if err := validateHTTPURL("cluster.gateway.advertiseUrl", options.Gateway.AdvertiseURL); err != nil {
+			problems = append(problems, err.Error())
 		}
 	}
 	if roles.Has(RoleControl) {

@@ -71,6 +71,8 @@ type Repositories struct {
 	Retention repository.RetentionStore
 	// Coordination 提供任务租约与共享 TTL 去重；memory 后端为进程内实现。
 	Coordination coordination.Store
+	// GatewayNodes 是网关注册与健康状态，仅 E4.1 使用。
+	GatewayNodes repository.GatewayNodeRepository
 
 	// Backend 记录实际启用的后端，供启动日志与运维排查使用。
 	Backend string
@@ -101,6 +103,7 @@ type sqlBackend interface {
 	LocationRepository(policy repository.LocationRetention) repository.LocationRepository
 	RetentionStore() repository.RetentionStore
 	CoordinationStore() coordination.Store
+	GatewayNodeRepository() repository.GatewayNodeRepository
 }
 
 // NewMemory 创建一组互相独立的内存仓储，供测试与新代码注入。
@@ -127,6 +130,7 @@ func newRepositories(backend string) *Repositories {
 		Commands:        memory.NewCommandRepository(),
 		AttachmentFiles: memory.NewAttachmentFileRepository(),
 		Coordination:    coordination.NewMemoryStore(),
+		GatewayNodes:    memory.NewGatewayNodeRepository(),
 		Backend:         backend,
 	}
 }
@@ -183,6 +187,7 @@ func openSQL(handle sqlBackend, backend string, cfg Config) (*Repositories, erro
 	repos.Locations = handle.LocationRepository(cfg.LocationRetention)
 	repos.Retention = handle.RetentionStore()
 	repos.Coordination = handle.CoordinationStore()
+	repos.GatewayNodes = handle.GatewayNodeRepository()
 	repos.close = handle.Close
 	repos.check = handle.Ping
 	return repos, nil

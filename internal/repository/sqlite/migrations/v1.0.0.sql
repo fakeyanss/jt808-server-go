@@ -427,3 +427,16 @@ CREATE TABLE IF NOT EXISTS dedup_keys (
     expires_at INTEGER NOT NULL DEFAULT 0,
     updated_at INTEGER NOT NULL DEFAULT 0
 );
+
+-- 网关节点注册（E4.1）。时间列存 ISO8601 毫秒 TEXT，过期判断由 SQL 的 strftime 裁决。
+CREATE TABLE IF NOT EXISTS gateway_nodes (
+    gateway_id TEXT NOT NULL PRIMARY KEY,
+    instance_id TEXT NOT NULL,
+    downlink_url TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'online',
+    started_at TEXT NOT NULL,
+    last_seen_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_gateway_nodes_status ON gateway_nodes (status, expires_at);

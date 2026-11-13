@@ -442,3 +442,16 @@ CREATE TABLE IF NOT EXISTS dedup_keys (
     updated_at BIGINT NOT NULL DEFAULT 0,
     PRIMARY KEY (dedup_key)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+-- 网关节点注册（E4.1）。时间列用 DATETIME(3)，过期判断全部由数据库时间裁决。
+CREATE TABLE IF NOT EXISTS gateway_nodes (
+    gateway_id VARCHAR(64) NOT NULL,
+    instance_id VARCHAR(64) NOT NULL,
+    downlink_url VARCHAR(255) NOT NULL,
+    status VARCHAR(16) NOT NULL DEFAULT 'online',
+    started_at DATETIME(3) NOT NULL,
+    last_seen_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+    expires_at DATETIME(3) NOT NULL,
+    PRIMARY KEY (gateway_id),
+    KEY idx_gateway_nodes_status (status, expires_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;

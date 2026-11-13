@@ -167,3 +167,39 @@ func (statements) EnsureDedupKeyRow() string {
 	return `INSERT OR IGNORE INTO dedup_keys (dedup_key, expires_at, updated_at)
 		VALUES (?, 0, ?)`
 }
+
+func (statements) UpsertGatewayNode() string {
+	return `INSERT INTO gateway_nodes
+		(gateway_id, instance_id, downlink_url, status, started_at, last_seen_at, expires_at)
+		VALUES (?, ?, ?, 'online',
+			strftime('%Y-%m-%d %H:%M:%f','now'),
+			strftime('%Y-%m-%d %H:%M:%f','now'),
+			strftime('%Y-%m-%d %H:%M:%f','now','+30 seconds'))
+		ON CONFLICT(gateway_id) DO UPDATE SET
+			instance_id = excluded.instance_id,
+			downlink_url = excluded.downlink_url,
+			status = excluded.status,
+			started_at = excluded.started_at,
+			last_seen_at = excluded.last_seen_at,
+			expires_at = excluded.expires_at`
+}
+
+func (statements) HeartbeatGatewayNode() string {
+	return `UPDATE gateway_nodes
+		SET last_seen_at = strftime('%Y-%m-%d %H:%M:%f','now'),
+			expires_at = strftime('%Y-%m-%d %H:%M:%f','now','+30 seconds'),
+			status = 'online'
+		WHERE gateway_id = ? AND instance_id = ?`
+}
+
+func (statements) DeregisterGatewayNode() string {
+	return `UPDATE gateway_nodes
+		SET status = 'offline',
+			expires_at = strftime('%Y-%m-%d %H:%M:%f','now')
+		WHERE gateway_id = ? AND instance_id = ?`
+}
+
+func (statements) SelectGatewayNode() string {
+	return `SELECT gateway_id, instance_id, downlink_url, status, started_at, last_seen_at, expires_at
+		FROM gateway_nodes WHERE gateway_id = ?`
+}

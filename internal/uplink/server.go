@@ -15,6 +15,7 @@ import (
 	"github.com/rs/zerolog/log"
 
 	"github.com/fakeyanss/jt808-server-go/internal/contracts"
+	"github.com/fakeyanss/jt808-server-go/internal/gatewaynode"
 	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
 	"github.com/fakeyanss/jt808-server-go/internal/repository"
 )
@@ -72,6 +73,7 @@ type Server struct {
 	replyHandler    contracts.TerminalReplyHandler
 	dedup           *dedupCache
 	deviceLookup    func(ctx context.Context, phone string) (*model.Device, error)
+	nodes           repository.GatewayNodeRepository
 
 	httpServer *http.Server
 	listener   net.Listener
@@ -184,11 +186,23 @@ func (s *Server) ValidateCoverage(policy Policy) error {
 	return nil
 }
 
+// SetGatewayNodeRepository 挂载网关注册接口；未设置时不暴露节点路由。
+func (s *Server) SetGatewayNodeRepository(nodes repository.GatewayNodeRepository) {
+	if s != nil {
+		s.nodes = nodes
+	}
+}
+
 // Handler 返回可挂到任意 mux 的 HTTP 处理器，便于测试注入。
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc(PathUplink, s.handle)
 	mux.HandleFunc(PathDeviceLookup, s.handleDeviceLookup)
+	if s.nodes != nil {
+		mux.HandleFunc(gatewaynode.PathRegister, s.handleGatewayRegister)
+		mux.HandleFunc(gatewaynode.PathHeartbeat, s.handleGatewayHeartbeat)
+		mux.HandleFunc(gatewaynode.PathDeregister, s.handleGatewayDeregister)
+	}
 	return mux
 }
 
@@ -456,6 +470,94 @@ func envelopeToEvent(envelope HTTPEnvelope) (contracts.UplinkEvent, error) {
 		event.PayloadRaw = decoded
 	}
 	return event, nil
+}
+
+func (s *Server) handleGatewayRegister(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "use POST")
+		return
+	}
+	if !s.authorized(r) {
+		writeError(w, http.StatusUnauthorized, "unauthorized", "invalid or missing bearer token")
+		return
+	}
+	var req gatewaynode.RegisterRequest
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_json", err.Error())
+		return
+	}
+	if strings.TrimSpace(req.GatewayID) == "" || strings.TrimSpace(req.InstanceID) == "" ||
+		strings.TrimSpace(req.DownlinkURL) == "" {
+		writeError(w, http.StatusBadRequest, "invalid_request", "gatewayId, instanceId and downlinkUrl are required")
+		return
+	}
+	if err := s.nodes.Register(r.Context(), req.GatewayID, req.InstanceID, req.DownlinkURL); err != nil {
+		log.Error().Err(err).Str("gateway_id", req.GatewayID).Msg("Gateway node register failed")
+		writeError(w, http.StatusInternalServerError, "register_failed", "failed to register gateway node")
+		return
+	}
+	writeJSON(w, http.StatusOK, gatewaynode.StatusResponse{Status: "online"})
+}
+
+func (s *Server) handleGatewayHeartbeat(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "use POST")
+		return
+	}
+	if !s.authorized(r) {
+		writeError(w, http.StatusUnauthorized, "unauthorized", "invalid or missing bearer token")
+		return
+	}
+	var req gatewaynode.HeartbeatRequest
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_json", err.Error())
+		return
+	}
+	if strings.TrimSpace(req.GatewayID) == "" || strings.TrimSpace(req.InstanceID) == "" {
+		writeError(w, http.StatusBadRequest, "invalid_request", "gatewayId and instanceId are required")
+		return
+	}
+	ok, err := s.nodes.Heartbeat(r.Context(), req.GatewayID, req.InstanceID)
+	if err != nil {
+		log.Error().Err(err).Str("gateway_id", req.GatewayID).Msg("Gateway node heartbeat failed")
+		writeError(w, http.StatusInternalServerError, "heartbeat_failed", "failed to update gateway node")
+		return
+	}
+	if !ok {
+		writeJSON(w, http.StatusConflict, gatewaynode.StatusResponse{
+			Status:  "fenced",
+			Code:    "instance_stale",
+			Message: "gateway instance is no longer current",
+		})
+		return
+	}
+	writeJSON(w, http.StatusOK, gatewaynode.StatusResponse{Status: "online"})
+}
+
+func (s *Server) handleGatewayDeregister(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "use POST")
+		return
+	}
+	if !s.authorized(r) {
+		writeError(w, http.StatusUnauthorized, "unauthorized", "invalid or missing bearer token")
+		return
+	}
+	var req gatewaynode.HeartbeatRequest
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_json", err.Error())
+		return
+	}
+	if strings.TrimSpace(req.GatewayID) == "" || strings.TrimSpace(req.InstanceID) == "" {
+		writeError(w, http.StatusBadRequest, "invalid_request", "gatewayId and instanceId are required")
+		return
+	}
+	if err := s.nodes.Deregister(r.Context(), req.GatewayID, req.InstanceID); err != nil {
+		log.Error().Err(err).Str("gateway_id", req.GatewayID).Msg("Gateway node deregister failed")
+		writeError(w, http.StatusInternalServerError, "deregister_failed", "failed to deregister gateway node")
+		return
+	}
+	writeJSON(w, http.StatusOK, gatewaynode.StatusResponse{Status: "offline"})
 }
 
 func writeJSON(w http.ResponseWriter, status int, body any) {

@@ -30,6 +30,8 @@ func (d *deps) shutdown() {
 	uplinkSinkDone := d.uplinkSinkDone
 	cancelRetention := d.cancelRetention
 	retentionDones := d.retentionDones
+	cancelNodeReport := d.cancelNodeReport
+	nodeReporter := d.nodeReporter
 	alarmServ := d.alarmServ
 	attachmentServ := d.attachmentServ
 	mediaServ := d.mediaServ
@@ -46,7 +48,20 @@ func (d *deps) shutdown() {
 		log.Warn().Msg("Timed out waiting for business API to shut down")
 	}
 
-	// 2. 停止两个内部 HTTP 入口，避免关机过程中继续受理下发/上行。
+	// 2. 先注销网关节点，再停两个内部 HTTP 入口：注销请求需要 control 的上行入口仍在监听，
+	//    同时避免关机过程中继续受理下发/上行。
+	if cancelNodeReport != nil {
+		cancelNodeReport()
+	}
+	if nodeReporter != nil {
+		select {
+		case <-nodeReporter.Done():
+		case <-time.After(5 * time.Second):
+			log.Warn().Msg("Timed out waiting for gateway node deregistration")
+		}
+	}
+
+	// 停止两个内部 HTTP 入口，避免关机过程中继续受理下发/上行。
 	if downlinkServer != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		if err := downlinkServer.Stop(ctx); err != nil {

@@ -18,6 +18,7 @@ import (
 	"github.com/fakeyanss/jt808-server-go/internal/contracts"
 	"github.com/fakeyanss/jt808-server-go/internal/control"
 	"github.com/fakeyanss/jt808-server-go/internal/downlinkhttp"
+	"github.com/fakeyanss/jt808-server-go/internal/gatewaynode"
 	"github.com/fakeyanss/jt808-server-go/internal/media"
 	"github.com/fakeyanss/jt808-server-go/internal/mediaupload"
 	"github.com/fakeyanss/jt808-server-go/internal/observability"
@@ -78,6 +79,8 @@ type deps struct {
 
 	downlinkServer   *downlinkhttp.Server
 	uplinkServer     *uplink.Server
+	nodeReporter     *gatewaynode.Reporter
+	cancelNodeReport context.CancelFunc
 	controlBlob      contracts.BlobStore
 	businessExecutor *control.BusinessExecutor
 	cancelSweep      context.CancelFunc
@@ -204,6 +207,33 @@ func buildDeps(spec Spec, cfg *config.Config, s settings) *deps {
 			Msg("Uplink HTTP sink enabled")
 	} else {
 		log.Info().Str("mode", uplinkSinkOptions.Mode).Msg("Uplink sink configured")
+	}
+
+	// 集群网关把节点状态登记到 control；standalone 或非 HTTP 出口不注册。
+	if hasGateway && !standalone && uplinkSinkOptions.Mode == config.UplinkSinkHTTP {
+		baseURL, baseErr := controlBaseURL(uplinkSinkOptions.HTTP.URL)
+		if baseErr != nil {
+			log.Error().Err(baseErr).Str("uplink_url", uplinkSinkOptions.HTTP.URL).
+				Msg("Fail to derive control base URL for gateway node registration")
+			os.Exit(1)
+		}
+		reporter, reporterErr := gatewaynode.NewReporter(gatewaynode.ReporterOptions{
+			BaseURL:     baseURL,
+			Token:       uplinkSinkOptions.HTTP.Token,
+			GatewayID:   clusterOptions.Gateway.NodeID,
+			InstanceID:  gatewaynode.NewInstanceID(),
+			DownlinkURL: clusterOptions.Gateway.AdvertiseURL,
+			Interval:    gatewaynode.HeartbeatInterval,
+		})
+		if reporterErr != nil {
+			log.Error().Err(reporterErr).Msg("Fail to create gateway node reporter")
+			os.Exit(1)
+		}
+		d.nodeReporter = reporter
+		log.Info().
+			Str("gateway_id", clusterOptions.Gateway.NodeID).
+			Str("advertise_url", clusterOptions.Gateway.AdvertiseURL).
+			Msg("Gateway node reporter enabled")
 	}
 
 	var hooks action.Hooks = action.Noop{}
@@ -413,4 +443,18 @@ func buildDeps(spec Spec, cfg *config.Config, s settings) *deps {
 	d.outbox = outbox
 	d.controlDownlink = controlDownlink
 	return d
+}
+
+// controlBaseURL 从上行出口地址推导 control 内部接口的基址。
+// uplink.http.url 指向上行入口，节点注册/心跳与它同源，去掉路径后缀即可复用同一地址与 token。
+func controlBaseURL(endpoint string) (string, error) {
+	parsed, err := url.Parse(strings.TrimSpace(endpoint))
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return "", fmt.Errorf("invalid uplink endpoint %q", endpoint)
+	}
+	base := parsed.Scheme + "://" + parsed.Host
+	prefix := strings.TrimRight(parsed.Path, "/")
+	prefix = strings.TrimSuffix(prefix, uplink.PathUplink)
+	prefix = strings.TrimRight(prefix, "/")
+	return base + prefix, nil
 }
