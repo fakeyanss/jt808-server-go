@@ -47,7 +47,7 @@ func TestBuildUplinkEventCarriesRawPacketMetadata(t *testing.T) {
 	})
 	data := &model.ProcessData{Incoming: &model.Msg0200{Header: header, Time: "261112103000"}}
 
-	event := buildUplinkEvent(ctx, 0x0200, data, contracts.ReliabilityBestEffort, "gw-test")
+	event := buildUplinkEvent(ctx, 0x0200, data, contracts.ReliabilityBestEffort, "gw-test", "")
 	require.Equal(t, uint16(0x0200), event.RawMsgID)
 	require.Equal(t, "2019", event.ProtocolVersion)
 	require.Equal(t, header.Attr.Encode(), event.HeaderAttr)

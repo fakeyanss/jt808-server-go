@@ -75,6 +75,11 @@ type Session struct {
 	closed       bool
 	// closeAfterResponse 用于拒绝冒名连接：应答帧发送完成后由服务层关闭连接。
 	closeAfterResponse bool
+
+	// stateMu 保护 phone/generation：前者在鉴权成功时绑定，后者来自 control claim。
+	stateMu    sync.Mutex
+	phone      string
+	generation uint64
 }
 
 const (
@@ -89,6 +94,35 @@ type pendingPacket struct {
 	done       chan struct{}
 }
 
+// SetPhone 在鉴权成功后记录会话归属的手机号。
+func (s *Session) SetPhone(phone string) {
+	s.stateMu.Lock()
+	s.phone = phone
+	s.stateMu.Unlock()
+}
+
+// Phone 返回会话绑定的手机号；未鉴权时为空。
+func (s *Session) Phone() string {
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
+	return s.phone
+}
+
+// SetGeneration 记录 control claim 返回的会话版本。
+func (s *Session) SetGeneration(generation uint64) {
+	s.stateMu.Lock()
+	s.generation = generation
+	s.stateMu.Unlock()
+}
+
+// Generation 返回会话当前版本；未 claim 时为 0。
+func (s *Session) Generation() uint64 {
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
+	return s.generation
+}
+
+// TrackReliable 记录一条等待终端应答的可靠报文。
 func (s *Session) TrackReliable(msgID, serial uint16, phone string, frame []byte) {
 	if msgID == 0x0001 || msgID == 0x8001 {
 		return

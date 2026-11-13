@@ -35,6 +35,9 @@ type HTTPSinkOptions struct {
 	MaxAttempts int
 	// OnUnknownDeviceDropped 在 409 重投仍失败时回调，用于指标与告警。
 	OnUnknownDeviceDropped func(phone string)
+	// OnFenced 在 best-effort 响应携带 fenced 时回调；网关据此关闭本地会话。
+	// confirm 路径通过 UplinkResult.Fenced 同步返回，不走该回调。
+	OnFenced func(phone, sessionID string)
 }
 
 // HTTPSinkStats 是 HTTP 出口的累计计数与当前水位。
@@ -61,7 +64,9 @@ type HTTPEnvelope struct {
 	Serial              uint16                   `json:"serial"`
 	OccurredAtMS        int64                    `json:"occurredAtMs"`
 	GatewayID           string                   `json:"gatewayId"`
+	InstanceID          string                   `json:"instanceId,omitempty"`
 	SessionID           string                   `json:"sessionId"`
+	Generation          uint64                   `json:"generation,omitempty"`
 	Transport           string                   `json:"transport"`
 	Reliability         string                   `json:"reliability"`
 	ProtocolVersion     string                   `json:"protocolVersion,omitempty"`
@@ -108,6 +113,7 @@ type HTTPSink struct {
 	closed    atomic.Bool
 
 	onUnknownDropped func(phone string)
+	onFenced         func(phone, sessionID string)
 	regMu            sync.Mutex
 	registrations    map[string]cachedRegistration
 	unknownSince     map[string]time.Time
@@ -180,6 +186,7 @@ func NewHTTPSink(options HTTPSinkOptions) (*HTTPSink, error) {
 		// confirm-before-ack 的并发上限与队列容量一致，避免无界 goroutine。
 		slot:             make(chan struct{}, options.QueueSize),
 		onUnknownDropped: options.OnUnknownDeviceDropped,
+		onFenced:         options.OnFenced,
 		registrations:    map[string]cachedRegistration{},
 		unknownSince:     map[string]time.Time{},
 	}, nil
@@ -363,9 +370,13 @@ func (s *HTTPSink) handleUnknownDevice(ctx context.Context, envelope HTTPEnvelop
 		return contracts.UplinkResult{Reason: "unknown_device"}, fmt.Errorf("uplink http sink: unknown device (cooldown): %w", cause)
 	}
 	if registration, ok := s.registration(envelope.Phone); ok && registration.EventID != envelope.EventID {
-		if _, retryErr := s.postWithRetryStatus(ctx, registration); retryErr == nil {
-			if status, err := s.postWithRetryStatus(ctx, envelope); err == nil {
-				return contracts.UplinkResult{Accepted: true}, nil
+		if _, _, retryErr := s.postWithRetryStatus(ctx, registration); retryErr == nil {
+			if status, resp, err := s.postWithRetryStatus(ctx, envelope); err == nil {
+				return contracts.UplinkResult{
+					Accepted:   true,
+					Generation: resp.Generation,
+					Fenced:     resp.Fenced,
+				}, nil
 			} else if status != http.StatusConflict {
 				return contracts.UplinkResult{Reason: err.Error()}, err
 			}
@@ -454,8 +465,11 @@ func (s *HTTPSink) runJob(job sinkJob) {
 	defer cancel()
 
 	if job.result == nil {
-		if err := s.postWithRetry(postCtx, job.envelope); err != nil {
+		resp, err := s.postWithRetry(postCtx, job.envelope)
+		if err != nil {
 			log.Warn().Err(err).Str("event_id", job.envelope.EventID).Msg("uplink http sink best-effort delivery failed")
+		} else if resp.Fenced {
+			s.notifyFenced(job.envelope)
 		}
 		return
 	}
@@ -467,9 +481,13 @@ func (s *HTTPSink) runJob(job sinkJob) {
 }
 
 func (s *HTTPSink) deliverConfirm(ctx context.Context, envelope HTTPEnvelope) (contracts.UplinkResult, error) {
-	status, err := s.postWithRetryStatus(ctx, envelope)
+	status, resp, err := s.postWithRetryStatus(ctx, envelope)
 	if err == nil {
-		return contracts.UplinkResult{Accepted: true}, nil
+		return contracts.UplinkResult{
+			Accepted:   true,
+			Generation: resp.Generation,
+			Fenced:     resp.Fenced,
+		}, nil
 	}
 	if status == http.StatusConflict && envelope.MsgID != 0x0100 {
 		return s.handleUnknownDevice(ctx, envelope, err)
@@ -477,18 +495,25 @@ func (s *HTTPSink) deliverConfirm(ctx context.Context, envelope HTTPEnvelope) (c
 	return contracts.UplinkResult{Reason: err.Error()}, err
 }
 
-func (s *HTTPSink) postWithRetry(ctx context.Context, envelope HTTPEnvelope) error {
-	_, err := s.postWithRetryStatus(ctx, envelope)
-	return err
+func (s *HTTPSink) postWithRetry(ctx context.Context, envelope HTTPEnvelope) (controlResponse, error) {
+	_, resp, err := s.postWithRetryStatus(ctx, envelope)
+	return resp, err
 }
 
 // postWithRetryStatus 与 postWithRetry 相同，但把最后一次 HTTP 状态码带回，
 // 供 409 unknown_device 判定使用。
-func (s *HTTPSink) postWithRetryStatus(ctx context.Context, envelope HTTPEnvelope) (int, error) {
+// controlResponse 是 control 上行入口返回的最小结果，confirm 与 best-effort 共用。
+type controlResponse struct {
+	Outcome    string `json:"outcome"`
+	Generation uint64 `json:"generation"`
+	Fenced     bool   `json:"fenced"`
+}
+
+func (s *HTTPSink) postWithRetryStatus(ctx context.Context, envelope HTTPEnvelope) (int, controlResponse, error) {
 	body, err := json.Marshal(envelope)
 	if err != nil {
 		s.failed.Add(1)
-		return 0, fmt.Errorf("marshal uplink event: %w", err)
+		return 0, controlResponse{}, fmt.Errorf("marshal uplink event: %w", err)
 	}
 
 	attempts := s.maxAttempts
@@ -496,6 +521,7 @@ func (s *HTTPSink) postWithRetryStatus(ctx context.Context, envelope HTTPEnvelop
 		attempts = 1
 	}
 	var lastErr error
+	var lastResp controlResponse
 	var lastElapsed time.Duration
 	lastStatus := 0
 	for attempt := 0; attempt < attempts; attempt++ {
@@ -504,14 +530,15 @@ func (s *HTTPSink) postWithRetryStatus(ctx context.Context, envelope HTTPEnvelop
 			case <-time.After(httpSinkRetryDelay):
 			case <-ctx.Done():
 				s.recordFailure(envelope, lastErr, lastElapsed)
-				return lastStatus, lastErr
+				return lastStatus, lastResp, lastErr
 			}
 		}
 		start := time.Now()
-		status, err := s.post(ctx, body, envelope.EventID)
+		status, resp, err := s.post(ctx, body, envelope.EventID)
 		elapsed := time.Since(start)
 		lastElapsed = elapsed
 		lastStatus = status
+		lastResp = resp
 		if err == nil && status >= 200 && status < 300 {
 			s.delivered.Add(1)
 			log.Debug().
@@ -519,7 +546,7 @@ func (s *HTTPSink) postWithRetryStatus(ctx context.Context, envelope HTTPEnvelop
 				Int("status", status).
 				Dur("elapsed", elapsed).
 				Msg("uplink http sink delivered event")
-			return status, nil
+			return status, resp, nil
 		}
 		if err != nil {
 			lastErr = err
@@ -532,13 +559,13 @@ func (s *HTTPSink) postWithRetryStatus(ctx context.Context, envelope HTTPEnvelop
 	}
 
 	s.recordFailure(envelope, lastErr, lastElapsed)
-	return lastStatus, lastErr
+	return lastStatus, lastResp, lastErr
 }
 
-func (s *HTTPSink) post(ctx context.Context, body []byte, eventID string) (int, error) {
+func (s *HTTPSink) post(ctx context.Context, body []byte, eventID string) (int, controlResponse, error) {
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, s.url, bytes.NewReader(body))
 	if err != nil {
-		return 0, fmt.Errorf("build uplink request: %w", err)
+		return 0, controlResponse{}, fmt.Errorf("build uplink request: %w", err)
 	}
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("Authorization", "Bearer "+s.token)
@@ -546,11 +573,29 @@ func (s *HTTPSink) post(ctx context.Context, body []byte, eventID string) (int, 
 
 	response, err := s.client.Do(request)
 	if err != nil {
-		return 0, err
+		return 0, controlResponse{}, err
 	}
 	defer response.Body.Close()
-	_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 4096))
-	return response.StatusCode, nil
+	payload, _ := io.ReadAll(io.LimitReader(response.Body, 4096))
+	var resp controlResponse
+	if len(payload) > 0 {
+		// 响应体只承载 generation/fenced 这类提示；解析失败不影响状态码语义。
+		_ = json.Unmarshal(payload, &resp)
+	}
+	return response.StatusCode, resp, nil
+}
+
+// notifyFenced 处理 best-effort 响应里的 fenced：记录并关闭本地会话。
+func (s *HTTPSink) notifyFenced(envelope HTTPEnvelope) {
+	log.Warn().
+		Str("event_id", envelope.EventID).
+		Str("phone", envelope.Phone).
+		Str("session_id", envelope.SessionID).
+		Uint16("msg_id", envelope.MsgID).
+		Msg("Uplink event fenced by control; closing local session")
+	if s.onFenced != nil {
+		s.onFenced(envelope.Phone, envelope.SessionID)
+	}
 }
 
 func (s *HTTPSink) recordFailure(envelope HTTPEnvelope, err error, elapsed time.Duration) {
@@ -582,7 +627,9 @@ func BuildHTTPEnvelope(event contracts.UplinkEvent) (HTTPEnvelope, error) {
 		RawMsgID:            event.RawMsgID,
 		Serial:              event.Serial,
 		GatewayID:           event.GatewayID,
+		InstanceID:          event.InstanceID,
 		SessionID:           event.SessionID,
+		Generation:          event.Generation,
 		Transport:           event.Transport,
 		Reliability:         string(event.Reliability),
 		ProtocolVersion:     event.ProtocolVersion,

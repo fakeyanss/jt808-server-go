@@ -115,6 +115,59 @@ func TestGatewayNodeRepositoryOnRealMySQL(t *testing.T) {
 	require.Nil(t, missing)
 }
 
+// 会话目录同样只用数据库时间；claim 幂等与 generation 递增必须在真库验证。
+func TestSessionDirectoryOnRealMySQL(t *testing.T) {
+	ctx := context.Background()
+	dsn := mysqlTestDSN(t)
+	requireMigrated(t, dsn)
+	db := openRaw(t, dsn)
+	dir := openStore(t, dsn).SessionDirectoryRepository()
+
+	const phone = "13800000999"
+	_, err := db.Exec(`DELETE FROM session_directory WHERE phone = ?`, phone)
+	require.NoError(t, err)
+
+	ownerA := repository.SessionOwner{GatewayID: "gw-1", InstanceID: "inst-a", SessionID: "sess-1"}
+	generation, err := dir.Claim(ctx, phone, ownerA)
+	require.NoError(t, err)
+	require.Equal(t, uint64(1), generation)
+
+	generation, err = dir.Claim(ctx, phone, ownerA)
+	require.NoError(t, err)
+	require.Equal(t, uint64(1), generation, "同一 owner 重复 claim 不得递增")
+
+	record, err := dir.Get(ctx, phone)
+	require.NoError(t, err)
+	require.NotNil(t, record)
+	require.Equal(t, ownerA, record.SessionOwner)
+	require.WithinDuration(t, time.Now(), record.ClaimedAt, time.Minute)
+
+	ownerB := repository.SessionOwner{GatewayID: "gw-1", InstanceID: "inst-a", SessionID: "sess-2"}
+	generation, err = dir.Claim(ctx, phone, ownerB)
+	require.NoError(t, err)
+	require.Equal(t, uint64(2), generation)
+
+	valid, err := dir.Validate(ctx, phone, ownerA, 1)
+	require.NoError(t, err)
+	require.False(t, valid)
+	valid, err = dir.Validate(ctx, phone, ownerB, 2)
+	require.NoError(t, err)
+	require.True(t, valid)
+	valid, err = dir.Validate(ctx, phone, ownerB, 1)
+	require.NoError(t, err)
+	require.False(t, valid)
+
+	require.NoError(t, dir.Release(ctx, phone, ownerA, 1))
+	record, err = dir.Get(ctx, phone)
+	require.NoError(t, err)
+	require.NotNil(t, record)
+
+	require.NoError(t, dir.Release(ctx, phone, ownerB, 2))
+	record, err = dir.Get(ctx, phone)
+	require.NoError(t, err)
+	require.Nil(t, record)
+}
+
 // openRaw 打开一个独立的原始连接池，用于观察/构造 SQL 层状态。
 func openRaw(t *testing.T, dsn string) *sql.DB {
 	t.Helper()
@@ -185,13 +238,13 @@ func TestMigrateBaselineOnRealMySQL(t *testing.T) {
 	require.NoError(t, db.QueryRow(`SELECT COUNT(*) FROM schema_migrations`).Scan(&versionCount))
 	require.Equal(t, 1, versionCount)
 
-	// 表清单：22 张业务表，device_runtime 已在基线内删除。
+	// 表清单：23 张业务表，device_runtime 已在基线内删除。
 	expectedTables := []string{
 		"alarms", "attachment_files", "command_outbox", "command_serial", "dedup_keys",
 		"device_params", "devices", "gateway_nodes", "locations", "media_capture_items",
 		"media_captures", "media_files", "media_resource_lists", "media_search_results",
 		"media_upload_notices", "media_upload_tasks", "region_items", "schema_migrations",
-		"task_leases", "terminal_catalogs", "terminal_properties", "upgrade_results",
+		"session_directory", "task_leases", "terminal_catalogs", "terminal_properties", "upgrade_results",
 	}
 	actual := listTables(t, db)
 	require.Equal(t, expectedTables, actual)

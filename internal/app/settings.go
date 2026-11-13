@@ -54,6 +54,15 @@ func loadSettings(cfg *config.Config, spec Spec) settings {
 		log.Error().Err(err).Msg("Server role mismatch")
 		os.Exit(1)
 	}
+	// 集群网关必须把上行投给 control 才能完成会话 claim；local 出口会绕过 claim，
+	// 等同于关闭 generation 围栏，启动时直接拒绝。
+	if !clusterOptions.IsStandalone() && clusterOptions.Roles.Has(config.RoleGateway) &&
+		uplinkSinkOptions.Mode != config.UplinkSinkHTTP {
+		log.Error().
+			Str("uplink_sink", uplinkSinkOptions.Mode).
+			Msg("cluster gateway requires uplink.sink=http so session claims go through control")
+		os.Exit(1)
+	}
 
 	probeAddr, probeEnabled, probeErr := cfg.ParseProbes()
 	if probeErr != nil {

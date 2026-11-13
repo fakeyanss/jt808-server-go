@@ -201,3 +201,40 @@ func (statements) SelectGatewayNode() string {
 	return `SELECT gateway_id, instance_id, downlink_url, status, started_at, last_seen_at, expires_at
 		FROM gateway_nodes WHERE gateway_id = ?`
 }
+
+func (statements) SelectSessionForUpdate() string {
+	return `SELECT generation, gateway_id, instance_id, session_id
+		FROM session_directory WHERE phone = ? FOR UPDATE`
+}
+
+func (statements) InsertSessionDirectory() string {
+	return `INSERT INTO session_directory
+		(phone, gateway_id, instance_id, session_id, generation, claimed_at)
+		VALUES (?, ?, ?, ?, 1, CURRENT_TIMESTAMP(3))`
+}
+
+func (statements) UpdateSessionDirectory() string {
+	return `UPDATE session_directory
+		SET gateway_id = ?, instance_id = ?, session_id = ?,
+			generation = generation + 1, claimed_at = CURRENT_TIMESTAMP(3)
+		WHERE phone = ?`
+}
+
+func (statements) SelectSessionGeneration() string {
+	return `SELECT generation FROM session_directory WHERE phone = ?`
+}
+
+func (statements) DeleteSessionDirectory() string {
+	return `DELETE FROM session_directory
+		WHERE phone = ? AND gateway_id = ? AND instance_id = ? AND session_id = ? AND generation = ?`
+}
+
+func (statements) ValidateSessionDirectory() string {
+	return `SELECT 1 FROM session_directory
+		WHERE phone = ? AND gateway_id = ? AND instance_id = ? AND session_id = ? AND generation <= ?`
+}
+
+func (statements) SelectSessionDirectory() string {
+	return `SELECT phone, gateway_id, instance_id, session_id, generation, claimed_at
+		FROM session_directory WHERE phone = ?`
+}

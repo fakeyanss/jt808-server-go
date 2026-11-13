@@ -118,6 +118,18 @@ func (r *Reporter) Run(ctx context.Context) {
 	}
 }
 
+// Release 上报一条会话释放；generation 与 claim 时一致才允许删除归属。
+func (r *Reporter) Release(ctx context.Context, phone, sessionID string, generation uint64) error {
+	body := ReleaseRequest{
+		GatewayID:  r.gatewayID,
+		InstanceID: r.instanceID,
+		Phone:      phone,
+		SessionID:  sessionID,
+		Generation: generation,
+	}
+	return r.post(ctx, PathRelease, body, http.StatusOK)
+}
+
 func (r *Reporter) register(ctx context.Context) error {
 	body := RegisterRequest{
 		GatewayID:   r.gatewayID,

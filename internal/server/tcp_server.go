@@ -244,6 +244,9 @@ func serveSession(session *model.Session, hooks action.Hooks, deps protocol.Proc
 		session.ClosePending()
 		session.Conn.Close()
 		deps.Runtime.Conn.Unbind(context.Background(), session.ID)
+		if deps.OnSessionClosed != nil {
+			deps.OnSessionClosed(session.ID, session.Phone(), session.Generation())
+		}
 		hooks.OnDisconnect(context.Background(), action.DisconnectEvent{SessionID: session.ID, Transport: string(session.GetTransProto())})
 		log.Debug().Str("id", session.ID).Msg("Closing connection from remote.")
 	}()

@@ -7,11 +7,13 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
-// shutdown 集中表达退出顺序：业务入口 → 内部 HTTP → 接入 → 投递/出口 → 清理 → 落盘 → 管理面 → 数据库。
+// shutdown 集中表达退出顺序：业务入口 → 接入 → 节点注销/内部 HTTP → 投递/出口 → 清理 → 落盘 → 管理面 → 数据库。
 //
 // 不是简单的“启动逆序”，以下顺序是显式约束：
-//   - 业务 API 与两个内部 HTTP 入口先停，避免关机过程中再受理新的下发/上行；
+//   - 业务 API 先停，避免关机过程中再受理新的下发；
 //   - 终端接入（TCP/UDP）早于 outbox/出口停止，先切断新上行再排空投递；
+//   - 节点注销与内部 HTTP 入口在终端断开之后：连接关闭要触发会话 release，
+//     而 release 与注销请求都需要 control 的上行入口仍在监听；
 //   - 清理任务晚于 outbox/出口停止、早于存储关闭，避免与关闭中的库竞争；
 //   - 媒体/附件写入在清理之后停止，保证文件句柄与已收数据落盘；
 //   - 管理面与探针尽量后停，保持关机窗口内可观测；
@@ -48,7 +50,20 @@ func (d *deps) shutdown() {
 		log.Warn().Msg("Timed out waiting for business API to shut down")
 	}
 
-	// 2. 先注销网关节点，再停两个内部 HTTP 入口：注销请求需要 control 的上行入口仍在监听，
+	// 2. 停止接入新终端并关闭存量会话；连接关闭会触发会话 release，
+	//    因此必须早于节点注销与内部 HTTP 入口关闭。
+	shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), 10*time.Second)
+	if serv != nil {
+		if err := serv.Shutdown(shutdownCtx); err != nil {
+			log.Warn().Err(err).Msg("Fail to shutdown TCP server")
+		}
+	}
+	cancelShutdown()
+	if udpServ != nil {
+		udpServ.Stop()
+	}
+
+	// 3. 注销网关节点，再停两个内部 HTTP 入口：注销请求需要 control 的上行入口仍在监听，
 	//    同时避免关机过程中继续受理下发/上行。
 	if cancelNodeReport != nil {
 		cancelNodeReport()
@@ -77,19 +92,7 @@ func (d *deps) shutdown() {
 		cancel()
 	}
 
-	// 3. 停止接入新终端并关闭存量会话，后续不再产生新的上行写入。
-	shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), 10*time.Second)
-	if serv != nil {
-		if err := serv.Shutdown(shutdownCtx); err != nil {
-			log.Warn().Err(err).Msg("Fail to shutdown TCP server")
-		}
-	}
-	cancelShutdown()
-	if udpServ != nil {
-		udpServ.Stop()
-	}
-
-	// 3. 取消重投循环并等待当前 tick 收尾；未投递的命令留在 outbox 等下次启动。
+	// 4. 取消重投循环并等待当前 tick 收尾；未投递的命令留在 outbox 等下次启动。
 	cancelSweep()
 	cancelOutbox()
 	if outboxDone != nil {

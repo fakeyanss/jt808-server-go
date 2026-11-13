@@ -287,6 +287,58 @@ func TestRegistrationAndAuthStateAreOrderIndependent(t *testing.T) {
 	require.Equal(t, "京A12345", authFirst.Plate)
 }
 
+// TestBusinessExecutorClaimsSessionGeneration 覆盖 0x0102 claim：
+// 同一 owner 重复鉴权不递增，换 session 才递增。
+func TestBusinessExecutorClaimsSessionGeneration(t *testing.T) {
+	const phone = "188765410002"
+	ctx := context.Background()
+	stores := database.NewMemory()
+	executor := NewBusinessExecutor(BusinessOptions{
+		Devices:       stores.Devices,
+		Sessions:      stores.SessionDirectory,
+		ProcessorDeps: protocol.ProcessorDeps{Repos: stores},
+	})
+	_, err := executor.ConsumeEvent(ctx, contracts.UplinkEvent{
+		EventID:         "evt-reg-gen",
+		MsgID:           0x0100,
+		Phone:           phone,
+		ProtocolVersion: "2019",
+		Body:            registrationBody2019(),
+	})
+	require.NoError(t, err)
+
+	auth := func(eventID, sessionID string) contracts.UplinkEvent {
+		return contracts.UplinkEvent{
+			EventID:         eventID,
+			MsgID:           0x0102,
+			Phone:           phone,
+			SessionID:       sessionID,
+			GatewayID:       "gw-1",
+			InstanceID:      "inst-a",
+			Generation:      0,
+			ProtocolVersion: "2019",
+			Body:            authBody2019(authCode2019(phone), "123456789012345", "V1.0.0"),
+		}
+	}
+
+	first, err := executor.ConsumeEvent(ctx, auth("evt-auth-1", "sess-1"))
+	require.NoError(t, err)
+	require.Equal(t, uint64(1), first.Generation)
+
+	repeat, err := executor.ConsumeEvent(ctx, auth("evt-auth-2", "sess-1"))
+	require.NoError(t, err)
+	require.Equal(t, uint64(1), repeat.Generation, "同一 owner 重复 claim 不得递增")
+
+	next, err := executor.ConsumeEvent(ctx, auth("evt-auth-3", "sess-2"))
+	require.NoError(t, err)
+	require.Equal(t, uint64(2), next.Generation, "换 session 必须递增")
+
+	oldOwner := repository.SessionOwner{GatewayID: "gw-1", InstanceID: "inst-a", SessionID: "sess-1"}
+	valid, err := stores.SessionDirectory.Validate(ctx, phone, oldOwner, 1)
+	require.NoError(t, err)
+	require.False(t, valid)
+}
+
 // registrationBody2019 构造 2019 版本 0x0100 报文体（厂商 11、型号 30、终端 ID 30）。
 func registrationBody2019() []byte {
 	var body []byte
