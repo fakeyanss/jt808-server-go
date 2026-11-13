@@ -11,12 +11,13 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/rs/zerolog/log"
 
 	"github.com/fakeyanss/jt808-server-go/internal/contracts"
-	"github.com/fakeyanss/jt808-server-go/internal/repository"
 	"github.com/fakeyanss/jt808-server-go/internal/storage"
 )
 
@@ -24,11 +25,11 @@ const blobOpTimeout = 2 * time.Minute
 
 // registerBlobFile 建立对象存储模式的文件状态。
 //
-// 检查顺序：共享库已有完成记录 → 直接复用；已有接收记录 → 恢复水位与段列表；
-// 新文件 → 检查暂存区总量后落一条 receiving 记录。
+// 恢复点以 control 为权威：先向 control 查询该文件的进度；control 不可达时
+// 不阻断接收，退回本地暂存标记 + 对象存储 key 扫描重建进度。
 func (a *Assembler) registerBlobFile(info AttachmentInfo, date, dir string, entry AttachmentEntry, fileType uint8) (*fileState, error) {
 	store := a.cfg.Storage
-	if store == nil || store.Blob == nil || store.Files == nil {
+	if store == nil || store.Blob == nil {
 		return nil, ErrObjectStoreUnavailable
 	}
 	st := newFileState(a, info, date, dir, entry, fileType)
@@ -37,38 +38,46 @@ func (a *Assembler) registerBlobFile(info AttachmentInfo, date, dir string, entr
 	st.finalPath = ""
 	st.createdAt = a.nowTime()
 
+	// 本地暂存标记是本节点自己的事实：保存已落暂存但尚未成对象的覆盖区间。
+	if persisted, err := readPersistedState(statePath(st.partPath)); err == nil && persisted.Size == st.size {
+		st.ranges = normalizeRanges(persisted.Ranges, st.size)
+		if st.fileType == 0 && persisted.FileType != 0 {
+			st.fileType = persisted.FileType
+		}
+		if persisted.LastActivity > 0 {
+			st.lastActivity = time.Unix(0, persisted.LastActivity)
+		}
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), blobOpTimeout)
 	defer cancel()
 
-	key := repository.AttachmentFileKey{
+	key := contracts.AttachmentProgressKey{
 		Source: store.Source, Phone: info.Phone, AlarmNo: info.AlarmNo, FileName: entry.FileName,
 	}
-	existing, err := store.Files.Get(ctx, key)
-	switch {
-	case err == nil:
-		if existing.Status == repository.AttachmentStatusCompleted {
-			st.completed = true
-			st.meta = metadataFromRecord(existing)
-			st.completedAt = existing.CompletedAt
+	restored := false
+	if progress, err := a.loadProgress(ctx, key); err != nil {
+		log.Warn().Err(err).Str("phone", info.Phone).Str("file", entry.FileName).
+			Msg("Attachment progress is unavailable from control; falling back to object storage scan")
+	} else if progress != nil {
+		restored = st.applyProgress(progress)
+	}
+	if !restored {
+		if segments, completed, err := a.scanCommittedSegments(ctx, key, st.size); err != nil {
+			log.Warn().Err(err).Str("phone", info.Phone).Str("file", entry.FileName).
+				Msg("Fail to rebuild attachment progress from object keys")
+		} else if len(segments) > 0 {
+			st.applyScannedSegments(segments, completed)
+			restored = true
+		}
+	}
+	if restored {
+		if st.completed {
+			st.meta = st.buildMeta()
 			return st, nil
 		}
-		st.createdAt = existing.CreatedAt
-		st.segments = append([]repository.AttachmentSegment(nil), existing.Segments...)
-		st.flushCursor = existing.Watermark
-		st.ranges = normalizeRanges(decodeRanges(existing.Ranges), st.size)
-		st.covered = coveredBytes(st.ranges)
-		if len(st.segments) == 0 && st.flushCursor > 0 {
-			// 段列表缺失时以水位为唯一可信来源，避免重复上传同一前缀。
-			st.flushCursor = 0
-		}
-		if len(st.ranges) == 0 && len(st.segments) > 0 {
-			// ranges 列缺失时用已提交段还原覆盖区间，断线重连不必重传整段。
-			ranges := make([]byteRange, 0, len(st.segments))
-			for _, segment := range st.segments {
-				ranges = append(ranges, byteRange{Offset: segment.Offset, Length: segment.Size})
-			}
-			st.ranges = normalizeRanges(ranges, st.size)
-			st.covered = coveredBytes(st.ranges)
+		if err := os.MkdirAll(filepath.Dir(st.partPath), 0o750); err != nil {
+			return nil, fmt.Errorf("create attachment staging dir: %w", err)
 		}
 		st.markActive()
 		reserve := st.size - st.flushCursor
@@ -76,16 +85,17 @@ func (a *Assembler) registerBlobFile(info AttachmentInfo, date, dir string, entr
 			reserve = 0
 		}
 		if !a.reserveStaging(reserve) {
+			st.markInactive()
 			return nil, ErrStagingCapacity
 		}
+		// 恢复后的进度同时回填 control：扫描重建的记录不影响下一次恢复。
+		st.reportLocked(contracts.AttachmentStatusReceiving)
 		return st, nil
-	case !isNotFound(err):
-		return nil, err
 	}
 
 	if max := a.cfg.MaxConcurrent; max > 0 && a.ActiveReceiving() >= max {
 		// 新文件在登记阶段拒绝，状态接口显示的 available 才与实际准入一致；
-		// 已有接收记录的重连不受此限制。
+		// 已有进度的重连不受此限制。
 		return nil, ErrTooManySessions
 	}
 	if !a.reserveStaging(st.size) {
@@ -94,32 +104,121 @@ func (a *Assembler) registerBlobFile(info AttachmentInfo, date, dir string, entr
 	st.markActive()
 	if err := os.MkdirAll(filepath.Dir(st.partPath), 0o750); err != nil {
 		a.releaseStaging(st.size)
+		st.markInactive()
 		return nil, fmt.Errorf("create attachment staging dir: %w", err)
-	}
-	record := &repository.AttachmentFile{
-		Source:      store.Source,
-		Phone:       info.Phone,
-		TerminalID:  info.TerminalID,
-		AlarmSign:   hex.EncodeToString(info.AlarmSign),
-		AlarmNo:     info.AlarmNo,
-		FileName:    entry.FileName,
-		FileType:    fileType,
-		TotalSize:   st.size,
-		StagingPath: st.partPath,
-		StagingBase: store.StagingDir,
-		Status:      repository.AttachmentStatusReceiving,
-		CreatedAt:   st.createdAt,
-	}
-	if _, err := store.Files.Save(ctx, record); err != nil {
-		a.releaseStaging(st.size)
-		return nil, err
 	}
 	st.mu.Lock()
 	_ = st.persistBlobMarkerLocked()
 	st.mu.Unlock()
+	st.reportLocked(contracts.AttachmentStatusReceiving)
 	log.Info().Str("phone", info.Phone).Str("file", entry.FileName).Int64("size", st.size).
 		Str("staging", st.partPath).Msg("Attachment file registered for object storage")
 	return st, nil
+}
+
+// loadProgress 向 control 查询恢复点；未配置上报通道时视为没有记录。
+func (a *Assembler) loadProgress(ctx context.Context, key contracts.AttachmentProgressKey) (*contracts.AttachmentProgress, error) {
+	store := a.cfg.Storage
+	if store == nil || store.Progress == nil {
+		return nil, nil
+	}
+	progress, err := store.Progress.Load(ctx, key)
+	if err != nil {
+		if err == contracts.ErrAttachmentProgressNotFound {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return progress, nil
+}
+
+// applyProgress 采纳 control 返回的恢复点；总长不一致时不采纳，按新文件重收。
+func (st *fileState) applyProgress(progress *contracts.AttachmentProgress) bool {
+	if progress == nil {
+		return false
+	}
+	if progress.TotalSize > 0 && progress.TotalSize != st.size {
+		log.Warn().Str("phone", st.phone).Str("file", st.fileName).
+			Int64("progressSize", progress.TotalSize).Int64("reportSize", st.size).
+			Msg("Ignore attachment progress with mismatched total size")
+		return false
+	}
+	if st.fileType == 0 && progress.FileType != 0 {
+		st.fileType = progress.FileType
+	}
+	if !progress.CreatedAt.IsZero() {
+		st.createdAt = progress.CreatedAt
+	}
+	st.segments = toSegments(progress.Segments)
+	st.ranges = mergeSegmentRanges(st.ranges, st.segments, st.size)
+	st.covered = coveredBytes(st.ranges)
+	st.flushCursor = contiguousPrefix(st.segments)
+	if progress.Status == contracts.AttachmentStatusCompleted || st.flushCursor >= st.size && st.size > 0 {
+		st.completed = true
+		st.completedAt = progress.CompletedAt
+		if st.completedAt.IsZero() {
+			st.completedAt = st.owner.nowTime()
+		}
+	}
+	return true
+}
+
+// applyScannedSegments 采纳对象存储扫描结果。
+func (st *fileState) applyScannedSegments(segments []contracts.AttachmentProgressSegment, completed bool) {
+	st.segments = segments
+	st.ranges = mergeSegmentRanges(st.ranges, st.segments, st.size)
+	st.covered = coveredBytes(st.ranges)
+	st.flushCursor = contiguousPrefix(st.segments)
+	if completed {
+		st.completed = true
+		st.completedAt = st.owner.nowTime()
+	}
+}
+
+// scanCommittedSegments 按对象 key 重建单个文件的切片列表。
+//
+// 只依赖 key 内的终端、报警号、文件名、偏移、大小与总长，不依赖任何上报内容。
+func (a *Assembler) scanCommittedSegments(ctx context.Context, key contracts.AttachmentProgressKey, size int64) ([]contracts.AttachmentProgressSegment, bool, error) {
+	store := a.cfg.Storage
+	if store == nil || store.Blob == nil {
+		return nil, false, nil
+	}
+	lister, ok := store.Blob.(contracts.BlobLister)
+	if !ok {
+		return nil, false, nil
+	}
+	prefix := fmt.Sprintf("%s%s/%s/%s/",
+		storage.AttachmentPrefix(key.Source), storage.SafeSegment(key.Phone),
+		storage.SafeSegment(key.AlarmNo), storage.SafeSegment(key.FileName))
+	objects, err := lister.ListObjects(ctx, prefix)
+	if err != nil {
+		return nil, false, fmt.Errorf("list attachment segments: %w", err)
+	}
+	segments := make([]contracts.AttachmentProgressSegment, 0, len(objects))
+	for _, object := range objects {
+		info, parseErr := storage.ParseAttachmentSegmentKey(object.Key)
+		if parseErr != nil {
+			log.Warn().Err(parseErr).Str("key", object.Key).Msg("Skip attachment object with invalid key metadata")
+			continue
+		}
+		if info.Source != key.Source || info.Phone != storage.SafeSegment(key.Phone) ||
+			info.AlarmNo != storage.SafeSegment(key.AlarmNo) || info.FileName != storage.SafeSegment(key.FileName) {
+			continue
+		}
+		if info.TotalSize != size {
+			continue
+		}
+		segments = append(segments, contracts.AttachmentProgressSegment{
+			Index:  info.Index,
+			Key:    info.ObjectKey,
+			Offset: info.Offset,
+			Size:   info.Size,
+			State:  string(contracts.BlobStatePending),
+		})
+	}
+	sort.Slice(segments, func(i, j int) bool { return segments[i].Index < segments[j].Index })
+	completed := size > 0 && contiguousPrefix(segments) >= size
+	return segments, completed, nil
 }
 
 // reserveStaging 预留暂存额度；超过上限时返回 false，由调用方拒绝登记。
@@ -207,7 +306,9 @@ func (st *fileState) flushReadyLocked() error {
 			return fmt.Errorf("read attachment staging: %w", err)
 		}
 		sum := md5.Sum(payload)
-		key := storage.AttachmentSegment(st.store.Source, st.phone, st.alarmNo, st.fileName, len(st.segments))
+		index := len(st.segments)
+		key := storage.AttachmentSegmentObjectKey(
+			st.store.Source, st.phone, st.alarmNo, st.fileName, start, end-start, st.size, index)
 		info, err := st.store.Blob.Put(ctx, key, bytes.NewReader(payload), contracts.BlobOptions{
 			ContentType: "application/octet-stream",
 			MD5:         hex.EncodeToString(sum[:]),
@@ -221,15 +322,13 @@ func (st *fileState) flushReadyLocked() error {
 		if _, err := st.store.Blob.Promote(ctx, info); err != nil {
 			return fmt.Errorf("promote attachment segment %s: %w", key, err)
 		}
-		st.segments = append(st.segments, repository.AttachmentSegment{
-			Index: len(st.segments), Key: key, Offset: start, Size: end - start,
-			MD5: hex.EncodeToString(sum[:]), State: "pending",
+		st.segments = append(st.segments, contracts.AttachmentProgressSegment{
+			Index: index, Key: key, Offset: start, Size: end - start,
+			MD5: hex.EncodeToString(sum[:]), State: string(contracts.BlobStatePending),
 		})
 		st.flushCursor = end
 		st.owner.releaseStaging(end - start)
-		if err := st.saveBlobRecordLocked(ctx, repository.AttachmentStatusReceiving); err != nil {
-			return err
-		}
+		st.reportLocked(contracts.AttachmentStatusReceiving)
 		log.Debug().Str("phone", st.phone).Str("file", st.fileName).Str("key", key).
 			Int64("offset", start).Int64("size", end-start).Msg("Attachment segment staged to object store")
 	}
@@ -239,16 +338,13 @@ func (st *fileState) flushReadyLocked() error {
 	return nil
 }
 
-// finalizeBlobLocked 在所有切片提交后把文件标记为完成，并清理本地暂存。
+// finalizeBlobLocked 在所有切片提交后把对象标记为已提交，并上报完成。
 func (st *fileState) finalizeBlobLocked(ctx context.Context) error {
 	for i := range st.segments {
 		if err := st.store.Blob.MarkCommitted(ctx, st.segments[i].Key); err != nil {
 			return fmt.Errorf("mark attachment segment committed: %w", err)
 		}
-		st.segments[i].State = "committed"
-	}
-	if err := st.saveBlobRecordLocked(ctx, repository.AttachmentStatusCompleted); err != nil {
-		return err
+		st.segments[i].State = string(contracts.BlobStateCommitted)
 	}
 	st.closeFileLocked()
 	_ = os.Remove(st.partPath)
@@ -256,30 +352,26 @@ func (st *fileState) finalizeBlobLocked(ctx context.Context) error {
 	st.completed = true
 	st.completedAt = st.owner.nowTime()
 	st.markInactive()
-	st.meta = Metadata{
-		Phone:              st.phone,
-		TerminalID:         st.terminalID,
-		AlarmNo:            st.alarmNo,
-		AlarmSignHex:       hex.EncodeToString(st.alarmSign),
-		FileName:           st.fileName,
-		FileType:           st.fileType,
-		Size:               st.size,
-		CompletedAt:        st.completedAt,
-		FileNameConformant: validateAttachmentFileNameFormat(st.fileName) == nil,
-		AlarmSignValid:     validateAlarmSign(st.alarmSign) == nil,
-	}
+	st.meta = st.buildMeta()
+	st.reportLocked(contracts.AttachmentStatusCompleted)
 	st.owner.completed.Add(1)
 	log.Info().Str("phone", st.phone).Str("file", st.fileName).Int64("size", st.size).
 		Int("segments", len(st.segments)).Msg("Attachment file completed in object store")
 	return nil
 }
 
-func (st *fileState) saveBlobRecordLocked(ctx context.Context, status string) error {
-	if st.store == nil || st.store.Files == nil {
-		return ErrObjectStoreUnavailable
+// reportLocked 把当前进度压入异步上报队列。队列满时丢弃，control 可扫描补齐。
+func (st *fileState) reportLocked(status string) {
+	if st.store == nil {
+		return
 	}
+	st.owner.enqueueProgress(st.snapshotLocked(status))
+}
+
+// snapshotLocked 生成一份不共享内部切片的进度快照。
+func (st *fileState) snapshotLocked(status string) contracts.AttachmentProgress {
 	ranges, _ := json.Marshal(st.ranges)
-	record := &repository.AttachmentFile{
+	progress := contracts.AttachmentProgress{
 		Source:        st.store.Source,
 		Phone:         st.phone,
 		TerminalID:    st.terminalID,
@@ -293,21 +385,39 @@ func (st *fileState) saveBlobRecordLocked(ctx context.Context, status string) er
 		StagingPath:   st.partPath,
 		StagingBase:   st.store.StagingDir,
 		Ranges:        ranges,
-		Segments:      append([]repository.AttachmentSegment(nil), st.segments...),
+		Segments:      append([]contracts.AttachmentProgressSegment(nil), st.segments...),
 		Status:        status,
 		CreatedAt:     st.createdAt,
+		UpdatedAt:     st.owner.nowTime(),
 	}
-	if status == repository.AttachmentStatusCompleted {
-		record.CompletedAt = st.owner.nowTime()
-		record.StagingPath = ""
+	if status == contracts.AttachmentStatusCompleted {
+		progress.CompletedAt = st.completedAt
 	}
-	_, err := st.store.Files.Save(ctx, record)
-	return err
+	if status != contracts.AttachmentStatusReceiving {
+		// 暂存路径只对上报节点有效，终态后不再让 control 持有该引用。
+		progress.StagingPath = ""
+	}
+	return progress
+}
+
+func (st *fileState) buildMeta() Metadata {
+	return Metadata{
+		Phone:              st.phone,
+		TerminalID:         st.terminalID,
+		AlarmNo:            st.alarmNo,
+		AlarmSignHex:       hex.EncodeToString(st.alarmSign),
+		FileName:           st.fileName,
+		FileType:           st.fileType,
+		Size:               st.size,
+		CompletedAt:        st.completedAt,
+		FileNameConformant: validateAttachmentFileNameFormat(st.fileName) == nil,
+		AlarmSignValid:     validateAlarmSign(st.alarmSign) == nil,
+	}
 }
 
 // failBlobLocked 标记失败并清理本地暂存；已提交的切片保留，供排查与断点续传。
 func (st *fileState) failBlobLocked() {
-	if st.store == nil || st.store.Files == nil {
+	if st.store == nil {
 		return
 	}
 	st.closeFileLocked()
@@ -318,12 +428,7 @@ func (st *fileState) failBlobLocked() {
 	if remaining > 0 {
 		st.owner.releaseStaging(remaining)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), blobOpTimeout)
-	defer cancel()
-	if err := st.saveBlobRecordLocked(ctx, repository.AttachmentStatusExpired); err != nil {
-		log.Warn().Err(err).Str("phone", st.phone).Str("file", st.fileName).
-			Msg("Fail to mark attachment file expired")
-	}
+	st.reportLocked(contracts.AttachmentStatusExpired)
 }
 
 func (st *fileState) persistBlobMarkerLocked() error {
@@ -362,31 +467,53 @@ func decodeRanges(raw []byte) []byteRange {
 	return ranges
 }
 
+// mergeSegmentRanges 把已提交切片视为已覆盖区间，再与本地暂存区间合并。
+//
+// 重启后本地暂存可能丢失，但对象切片仍在；把它们并入覆盖集合，
+// 0x9212 才不会要求终端重传已经上传过的字节。
+func mergeSegmentRanges(ranges []byteRange, segments []contracts.AttachmentProgressSegment, size int64) []byteRange {
+	merged := append([]byteRange(nil), ranges...)
+	for _, segment := range segments {
+		if segment.Size <= 0 {
+			continue
+		}
+		merged = append(merged, byteRange{Offset: segment.Offset, Length: segment.Size})
+	}
+	return normalizeRanges(merged, size)
+}
+
+// contiguousPrefix 返回按序切片覆盖到的连续字节前缀。
+func contiguousPrefix(segments []contracts.AttachmentProgressSegment) int64 {
+	if len(segments) == 0 {
+		return 0
+	}
+	sorted := append([]contracts.AttachmentProgressSegment(nil), segments...)
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Offset < sorted[j].Offset })
+	var cursor int64
+	for _, segment := range sorted {
+		if segment.Offset > cursor {
+			break
+		}
+		if end := segment.Offset + segment.Size; end > cursor {
+			cursor = end
+		}
+	}
+	return cursor
+}
+
+func toSegments(items []contracts.AttachmentProgressSegment) []contracts.AttachmentProgressSegment {
+	if len(items) == 0 {
+		return nil
+	}
+	return append([]contracts.AttachmentProgressSegment(nil), items...)
+}
+
 func blobStagingPath(root string, info AttachmentInfo, fileName string) string {
 	// 暂存文件名保留可读部分并附加原始文件名的短哈希，避免不同文件名
 	// 经过安全字符替换后落到同一个暂存路径。
 	sum := sha1.Sum([]byte(fileName))
 	return filepath.Join(root, sanitizeLabel(info.Phone), sanitizeLabel(alarmDate(info.AlarmSign, info.Date)),
 		sanitizeLabel(info.AlarmNo), sanitizeLabel(fileName)+"-"+hex.EncodeToString(sum[:4])+partSuffix)
-}
-
-func isNotFound(err error) bool {
-	return err == repository.ErrAttachmentFileNotFound
-}
-
-func metadataFromRecord(record *repository.AttachmentFile) Metadata {
-	return Metadata{
-		Phone:              record.Phone,
-		TerminalID:         record.TerminalID,
-		AlarmNo:            record.AlarmNo,
-		AlarmSignHex:       record.AlarmSign,
-		FileName:           record.FileName,
-		FileType:           record.FileType,
-		Size:               record.TotalSize,
-		CompletedAt:        record.CompletedAt,
-		FileNameConformant: validateAttachmentFileNameFormat(record.FileName) == nil,
-		AlarmSignValid:     record.AlarmSign != "",
-	}
 }
 
 func (st *fileState) markActive() {
@@ -414,99 +541,10 @@ func (a *Assembler) ActiveReceiving() int {
 	return int(value)
 }
 
-// selectBlob 从共享库读取已完成附件。
-func (a *Assembler) selectBlob(phone string) []Metadata {
-	store := a.cfg.Storage
-	if store == nil || store.Files == nil {
-		return nil
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), blobOpTimeout)
-	defer cancel()
-	var records []*repository.AttachmentFile
-	var err error
-	if phone == "" {
-		records, err = store.Files.ListCompletedSource(ctx, store.Source, 1000)
-	} else {
-		records, err = store.Files.ListByPhone(ctx, store.Source, phone, 1000)
-	}
-	if err != nil {
-		log.Warn().Err(err).Msg("Fail to list attachment metadata from shared store")
-		return nil
-	}
-	result := make([]Metadata, 0, len(records))
-	for _, record := range records {
-		if record.Status != repository.AttachmentStatusCompleted {
-			continue
-		}
-		result = append(result, metadataFromRecord(record))
-	}
-	return result
-}
-
-// findBlobMetadata 从共享库读取指定文件的完成元数据。
-func (a *Assembler) findBlobMetadata(phone, fileName string) (Metadata, error) {
-	store := a.cfg.Storage
-	if store == nil || store.Files == nil {
-		return Metadata{}, ErrObjectStoreUnavailable
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), blobOpTimeout)
-	defer cancel()
-	record, err := store.Files.FindByFileName(ctx, store.Source, phone, fileName)
-	if err != nil {
-		return Metadata{}, ErrFileNotRegistered
-	}
-	if record.Status != repository.AttachmentStatusCompleted {
-		return Metadata{}, ErrFileNotRegistered
-	}
-	return metadataFromRecord(record), nil
-}
-
-// expireReceivingBlob 把长时间无进展的 receiving 记录转为 expired。
+// reconcileBlob 清理本节点暂存区的崩溃残留。
 //
-// 终端半路消失时不会再有进度更新；这些记录此前会一直停在 receiving，
-// pending 回收因为“有业务行”而跳过，对象段与本地暂存长期占用。
-// 转为 expired 后由 pruneBlobRetention 的终态路径统一回收。
-// 只处理共享库中确实超时的行；本进程活跃文件的 updated_at 会随进度刷新。
-func (a *Assembler) expireReceivingBlob(now time.Time, timeout time.Duration) int {
-	store := a.cfg.Storage
-	if store == nil || store.Files == nil {
-		return 0
-	}
-	if timeout <= 0 {
-		timeout = DefaultSessionTimeout
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), blobOpTimeout)
-	defer cancel()
-	rows, err := store.Files.ListReceivingUpdatedBefore(ctx, now.Add(-timeout), 500)
-	if err != nil {
-		log.Warn().Err(err).Msg("Fail to list stale attachment receiving records")
-		return 0
-	}
-	removed := 0
-	for _, row := range rows {
-		if row.StagingPath != "" {
-			_ = os.Remove(row.StagingPath)
-			_ = os.Remove(statePath(row.StagingPath))
-		}
-		row.Status = repository.AttachmentStatusExpired
-		row.StagingPath = ""
-		if _, saveErr := store.Files.Save(ctx, row); saveErr != nil {
-			log.Warn().Err(saveErr).Str("phone", row.Phone).Str("file", row.FileName).
-				Msg("Fail to mark stale attachment record expired")
-			continue
-		}
-		removed++
-	}
-	return removed
-}
-
-// reconcileBlob 清理崩溃残留。
-//
-// 规则：
-//   - 共享库里超过宽限期仍未完成的记录 → 标记 failed 并删除暂存文件；
-//   - 暂存目录里没有对应接收记录的 .part/.state → 超过宽限期直接删除。
-//
-// 宽限期内的记录保留，终端重连后按同一业务键恢复水位继续接收。
+// 附件节点不连库，无法按业务行判断归属；只按 .part 标记与修改时间回收，
+// 宽限期内的残留保留，终端重连后可继续使用同一暂存文件。
 func (a *Assembler) reconcileBlob() error {
 	store := a.cfg.Storage
 	if store == nil {
@@ -519,51 +557,20 @@ func (a *Assembler) reconcileBlob() error {
 	if grace <= 0 {
 		grace = DefaultSessionTimeout
 	}
-	cutoff := a.nowTime().Add(-grace)
-	ctx, cancel := context.WithTimeout(context.Background(), blobOpTimeout)
-	defer cancel()
-
-	rows, err := store.Files.ListReceivingUpdatedBefore(ctx, cutoff, 1000)
-	if err != nil {
-		return err
-	}
-	for _, row := range rows {
-		if row.StagingPath != "" {
-			_ = os.Remove(row.StagingPath)
-			_ = os.Remove(statePath(row.StagingPath))
-		}
-		row.Status = repository.AttachmentStatusFailed
-		row.StagingPath = ""
-		if _, saveErr := store.Files.Save(ctx, row); saveErr != nil {
-			log.Warn().Err(saveErr).Str("phone", row.Phone).Str("file", row.FileName).
-				Msg("Fail to mark stale attachment record failed")
-		}
-	}
-	return a.removeOrphanStaging(cutoff)
+	return a.removeOrphanStaging(a.nowTime().Add(-grace))
 }
 
 func (a *Assembler) removeOrphanStaging(cutoff time.Time) error {
 	root := a.cfg.Storage.StagingDir
-	referenced := map[string]bool{}
-	// 宽限期内的接收记录是有效暂存，不删除。
-	ctx, cancel := context.WithTimeout(context.Background(), blobOpTimeout)
-	defer cancel()
-	rows, err := a.cfg.Storage.Files.ListReceivingUpdatedBefore(ctx, a.nowTime(), 10000)
-	if err == nil {
-		for _, row := range rows {
-			if row.StagingPath != "" {
-				referenced[row.StagingPath] = true
-			}
-		}
-	}
+	active := a.ActivePaths()
 	return filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return nil
 		}
-		if entry.IsDir() || !(len(entry.Name()) > len(partSuffix) && entry.Name()[len(entry.Name())-len(partSuffix):] == partSuffix) {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), partSuffix) {
 			return nil
 		}
-		if referenced[path] {
+		if _, ok := active[path]; ok {
 			return nil
 		}
 		info, statErr := entry.Info()
@@ -575,95 +582,4 @@ func (a *Assembler) removeOrphanStaging(cutoff time.Time) error {
 		_ = os.Remove(statePath(path))
 		return nil
 	})
-}
-
-// pruneBlobPending 只回收附件来源前缀下、超过宽限期且不再被元数据引用的 pending 对象。
-//
-// 与媒体侧共用 `_pending/` 根前缀，因此必须按 attachment/ 前缀扫描，
-// 并回查 attachment_files 的段列表；否则媒体侧的全量扫描会误删附件。
-func (a *Assembler) pruneBlobPending() {
-	store := a.cfg.Storage
-	if store == nil || store.Files == nil || store.Blob == nil {
-		return
-	}
-	sweeper, ok := store.Blob.(interface {
-		SweepPendingPrefix(context.Context, string, time.Duration, func(string) bool)
-	})
-	if !ok {
-		return
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), blobOpTimeout)
-	defer cancel()
-	cutoff := time.Hour
-	if a.cfg.SessionTimeout > cutoff {
-		cutoff = a.cfg.SessionTimeout
-	}
-	sweeper.SweepPendingPrefix(ctx, storage.AttachmentPrefix(store.Source), cutoff, func(key string) bool {
-		referenced, err := store.Files.ReferencedSegment(ctx, store.Source, key)
-		if err != nil {
-			// 查询失败时保守保留对象，宁可多留一轮。
-			return true
-		}
-		return referenced
-	})
-}
-
-// pruneBlobRetention 只清理附件来源前缀与 attachment_files 表。
-func (a *Assembler) pruneBlobRetention(now time.Time) int {
-	store := a.cfg.Storage
-	if store == nil || store.Files == nil || store.Blob == nil || a.cfg.Retention <= 0 {
-		return 0
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), blobOpTimeout)
-	defer cancel()
-	removed := 0
-	// 半成品（failed/expired）也按保留期回收其已提交切片，避免残留 pending 对象。
-	for {
-		rows, err := store.Files.ListTerminalBefore(ctx, store.Source, now.Add(-a.cfg.Retention), 100)
-		if err != nil {
-			log.Warn().Err(err).Msg("Fail to list stale attachment records")
-			break
-		}
-		if len(rows) == 0 {
-			break
-		}
-		for _, row := range rows {
-			a.deleteAttachmentRecord(ctx, row)
-			removed++
-		}
-		if len(rows) < 100 {
-			break
-		}
-	}
-	for {
-		rows, err := store.Files.ListCompletedBefore(ctx, store.Source, now.Add(-a.cfg.Retention), 100)
-		if err != nil {
-			log.Warn().Err(err).Msg("Fail to list expired attachment records")
-			return removed
-		}
-		if len(rows) == 0 {
-			return removed
-		}
-		for _, row := range rows {
-			a.deleteAttachmentRecord(ctx, row)
-			removed++
-		}
-		if len(rows) < 100 {
-			return removed
-		}
-	}
-}
-
-// deleteAttachmentRecord 删除元数据行与它引用的全部切片对象。
-func (a *Assembler) deleteAttachmentRecord(ctx context.Context, row *repository.AttachmentFile) {
-	store := a.cfg.Storage
-	for _, segment := range row.Segments {
-		if err := store.Blob.Delete(ctx, segment.Key); err != nil {
-			log.Warn().Err(err).Str("key", segment.Key).Msg("Fail to delete attachment object")
-		}
-	}
-	if err := store.Files.Delete(ctx, row.Key()); err != nil {
-		log.Warn().Err(err).Str("phone", row.Phone).Str("file", row.FileName).
-			Msg("Fail to delete attachment record")
-	}
 }

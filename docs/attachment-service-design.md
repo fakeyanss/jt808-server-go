@@ -11,11 +11,15 @@
 | `jt-signal` | `gateway` | MySQL（设备档案/命令查询） |
 | `jt-control` | `control` | MySQL、objectStore、附件节点、媒体节点 |
 | `jt-media` | `media` | objectStore |
-| `jt-attachment` | `attachment` | MySQL、objectStore |
+| `jt-attachment` | `attachment` | objectStore（不连 MySQL） |
 
 - 附件不再并入 control；`jt-control` 的固定角色收紧为仅 `control`。
 - `jt-server-standalone` 保持全量，附件仍在本进程内（本地目录模式）。
 - 每个二进制必须配置 `probes.addr`，提供 `/healthz` 与 `/readyz`。
+
+**为什么附件节点不连业务库**：附件节点可能下沉到边缘、离终端更近，而 control 在中心，
+两者不在同一内网。让附件节点直连中心库意味着把数据库端口对边缘开放，现场无法通过网络审批。
+因此元数据面集中在 control，附件节点只出站访问对象存储与 control。
 
 ## 2. 存储后端
 
@@ -39,7 +43,7 @@
 `SweepPending` 增加前缀参数，回收范围限定在该来源的前缀内：
 
 - control 侧只扫描 `_pending/media/segments/`，业务行联查 `recording_segments`；
-- attachment 侧只扫描 `_pending/attachment/`，业务行联查 `attachment_files` 的段列表。
+- control 侧只扫描 `_pending/attachment/`，业务行联查 `attachment_files` 的段列表。
 
 理由：attachment 的 pending 标记与 media 共用 `_pending/` 根前缀；若沿用“全局扫描 + 只查
 `media_files`”，已提交的附件会被误判为孤儿。前缀隔离同时满足按来源做生命周期规则。
@@ -47,14 +51,16 @@
 ### 2.4 保留期按来源执行
 
 - media 的 retention / orphan scan 只看 `media/segments/` 前缀与 `recording_segments` 表。
-- attachment 节点只看 `attachment/` 前缀与 `attachment_files` 表，并在自己的进程内执行；
-  control 的 retention 不再触碰附件。
+- attachment 的 retention / pending / 过期标记只看 `attachment/` 前缀与 `attachment_files` 表，
+  **统一在 control 执行**；附件节点不连库，无法判定对象是否仍被业务行引用。
 - 一个来源的文件只由一处清理。
 
 ## 3. 附件接入与存储解耦
 
 接入层（苏标附件协议，未来 FTP）与存储后端解耦：收到数据即写本地暂存区，
-按阈值切片上传对象存储；接入层不保存业务状态，状态在 MySQL。
+按阈值切片上传对象存储；接入层不保存业务状态，状态由 control 落库。
+
+**定位：对象存储是切片的事实来源，`attachment_files` 是可重建的索引。**
 
 ### 3.1 流式与本地暂存
 
@@ -77,37 +83,57 @@
 
 ### 3.3 暂存区崩溃残留与容量
 
-- 每个暂存文件配一条 DB 记录（`attachment_files`），并写本地 `.part` 标记。
-- 启动时对账：DB 记录超过宽限期且无活跃连接 → 删除暂存文件与记录；无 DB 记录的 `.part`
-  → 超过宽限期直接删除。
+- 每个暂存文件写本地 `.part` 标记，并随进度刷新 `.part.state.json`。
+- 启动时只按本地规则对账：无活跃会话且超过宽限期的 `.part` → 直接删除；
+  **不依赖数据库记录**，因为附件节点可能部署在边缘、对中心库不可见。
 - 暂存区总量上限 `staging.maxBytes`：达到上限后**拒绝新连接**（返回明确错误并拒绝文件登记），
   不排队、不写满磁盘；已有连接继续完成。
 
-### 3.4 元数据与续传
+### 3.4 元数据、恢复点与续传
 
-`attachment_files` 至少包含：
+`attachment_files` 由 control 维护，至少包含：
 
 - `source`（`subia` / `ftp1078`）、`phone`、`terminal_id`
 - `alarm_sign`、`alarm_no`、`alarm_serial`、`file_name`、`file_type`
 - `total_size`、`received_bytes`、`watermark`
-- `staging_path`、`staging_base`
-- `segments`（JSON：序号、对象 key、大小、状态）
+- `staging_path`、`staging_base`（仅排查用，终态清空）
+- `segments`（JSON：序号、对象 key、偏移、大小、状态）
 - `status`（`receiving` / `completed` / `failed` / `expired`）
 - `created_at`、`updated_at`、`completed_at`
 
-断线重连或进程重启后按 `phone + alarm_no + file_name` 恢复水位与切片列表。
+**对象 key 自带元数据（硬要求）**：
+
+```text
+attachment/<source>/<phone>/<alarmNo>/<fileName>/<offset>_<size>_<total>_<index>
+```
+
+终端、报警号、文件名、偏移、段大小与文件总长全部编码在 key 里。control 只扫描前缀
+就能重建“覆盖到哪、是否完整”的进度，不依赖任何上报内容；无法解析的 key 跳过并告警。
+
+**恢复点以 control 为权威**：
+
+1. 附件节点断线重连或重启后，先 `GET /internal/v1/attachment/progress` 取回水位与段列表；
+2. control 不可达时**不阻断接收**：以本地 `.part.state.json` 的暂存区间 +
+   `attachment/` 前缀扫描到的已 `Promote` 段继续工作，进度事后由出站上报补齐；
+3. 总长与恢复点不一致时按新文件重收，避免把旧文件的切片拼进新文件。
+
+进度上报走 `POST /internal/v1/attachment/progress`（Bearer token、幂等 upsert）。
+上报允许丢失，control 周期性扫描 `attachment/` 前缀补齐索引。
 
 ## 4. 角色协作
 
 ### 4.1 附件节点
 
 - 自己监听 TCP + UDP，自行解析 0x7e 转义、校验与消息头（复用 alarmserver 的接入实现）。
-- 自己写入 objectStore（集群）或本地目录（standalone），自己执行保留期清理。
+- 自己写入 objectStore（集群）或本地目录（standalone）。
+- **不装配任何 repository，不连数据库**：水位、段列表、终态、过期与保留期都由 control 负责。
 - 内部 HTTP：
   - `GET /internal/attachment/status`：本进程活跃文件数、并发上限、剩余额度、TCP/UDP 端口、通告 IP。
-  - `GET /internal/attachment/files`：按手机号/报警号/文件名查询共享库里的进度。
-  - 活跃数只统计本进程会话，避免多节点共用一张表时互相扣减额度。
-- 不依赖 control 进程内对象。
+  - 活跃数只统计本进程会话，避免多节点部署时互相扣减额度。
+- 出站 HTTP：
+  - `POST /internal/v1/attachment/progress` 上报进度快照；
+  - `GET /internal/v1/attachment/progress` 查询恢复点。
+- 不依赖 control 进程内对象，也不要求 control 反向连接附件节点。
 
 ### 4.2 控制面
 
@@ -116,8 +142,10 @@
   `503 {code: no_attachment_node_configured | no_attachment_node_available, message}`。
 - 自动触发：报警识别在 control；控制面收到带报警位的 0x0200 后，按报警 ID 去重，
   选附件节点并**经 downlink 下发 0x9208**。不再依赖 gateway 与 control 同进程。
-- 附件进度与完成元数据直接查共享库；文件内容通过共享 objectStore 读取，
+- 附件进度与完成元数据由 control 落库并查询；文件内容通过共享 objectStore 读取，
   与媒体走同一条 `BlobStore.OpenRange` 路径。
+- control 侧周期任务：receiving 超时转 expired、`_pending/attachment/` 回收、
+  按保留期删除对象与行、扫描 `attachment/` 前缀补齐缺失索引。
 
 ## 5. 端口规划
 
@@ -130,7 +158,7 @@
 | 1078 媒体 HTTP | 7301 | media 内部 HTTP + FLV |
 | 附件 TCP | 7400 | attachment |
 | 附件 UDP | 7401 | attachment |
-| 附件内部 HTTP | 7402 | attachment status/files |
+| 附件内部 HTTP | 7402 | attachment status（进度走 control 的 9102） |
 | 未来 1078 FTP 控制 | 7500 | 预留，不实现 |
 | 未来 1078 FTP 数据 | 7501 | 预留，不实现 |
 | gateway 下行契约 | 9101 | signal |

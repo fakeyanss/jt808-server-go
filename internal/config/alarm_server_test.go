@@ -36,6 +36,7 @@ func TestParseAlarmServerDefaults(t *testing.T) {
 		Retention:        DefaultAlarmServerRetentionDays * 24 * time.Hour,
 		SegmentSizeBytes: DefaultAlarmServerSegmentSize,
 		StagingMaxBytes:  DefaultAlarmServerStagingMax,
+		ProgressReport:   MediaSegmentReportOptions{Timeout: 3 * time.Second},
 	}, options)
 }
 
@@ -103,6 +104,7 @@ func TestParseAlarmServerExplicitValues(t *testing.T) {
 		Retention:        DefaultAlarmServerRetentionDays * 24 * time.Hour,
 		SegmentSizeBytes: DefaultAlarmServerSegmentSize,
 		StagingMaxBytes:  DefaultAlarmServerStagingMax,
+		ProgressReport:   MediaSegmentReportOptions{Timeout: 3 * time.Second},
 	}, options)
 }
 

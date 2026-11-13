@@ -7,6 +7,7 @@ import (
 
 	"github.com/rs/zerolog/log"
 
+	"github.com/fakeyanss/jt808-server-go/internal/alarmserver"
 	"github.com/fakeyanss/jt808-server-go/internal/config"
 	"github.com/fakeyanss/jt808-server-go/internal/contracts"
 	"github.com/fakeyanss/jt808-server-go/internal/control"
@@ -32,7 +33,11 @@ func (d *deps) setupControl() {
 	controlDownlink := d.controlDownlink
 	storeSet := d.storeSet
 	processorDeps := d.processorDeps
-	leaseRunner := coordination.NewRunner(storeSet.Coordination, coordination.DefaultTTL, d.clock, clusterOptions.LeaseTolerance)
+	// 数据面节点（media/attachment）没有共享库，也不参与租约；只有 control 需要。
+	var leaseRunner *coordination.Runner
+	if storeSet != nil {
+		leaseRunner = coordination.NewRunner(storeSet.Coordination, coordination.DefaultTTL, d.clock, clusterOptions.LeaseTolerance)
+	}
 
 	var uplinkServer *uplink.Server
 	var controlBlob contracts.BlobStore
@@ -128,6 +133,10 @@ func (d *deps) setupControl() {
 		srv.SetGatewayNodeRepository(storeSet.GatewayNodes)
 		srv.SetSessionDirectoryRepository(storeSet.SessionDirectory)
 		srv.SetRecordingSegmentRepository(storeSet.RecordingSegments)
+		// 附件节点不连库：进度上报与恢复点查询都走这个入口。
+		if progressStore := control.NewAttachmentProgressStore(storeSet.AttachmentFiles, d.clock); progressStore != nil {
+			srv.SetAttachmentProgressStore(progressStore)
+		}
 		srv.SetMetrics(metrics)
 		// 缺失 confirm-before-ack consumer 时启动失败，并一次性列出缺失项。
 		if err := srv.ValidateCoverage(uplinkPolicy); err != nil {
@@ -147,6 +156,36 @@ func (d *deps) setupControl() {
 		sweepCtx, cancel := context.WithCancel(context.Background())
 		cancelSweep = cancel
 		indexer := control.NewRecordingIndexer(storeSet.RecordingSegments, controlBlob)
+		// 附件索引维护：附件节点不连库，过期标记、pending 回收、保留期与扫描补齐都在 control。
+		attachmentMaint := control.NewAttachmentMaintenance(storeSet.AttachmentFiles, controlBlob,
+			control.AttachmentMaintenanceOptions{
+				SessionTimeout: alarmserver.DefaultSessionTimeout,
+				Retention:      alarmOptions.Retention,
+			}, d.clock)
+		runAttachmentMaintenance := func(ctx context.Context) {
+			if attachmentMaint == nil {
+				return
+			}
+			if expired, err := attachmentMaint.ExpireReceiving(ctx); err != nil {
+				log.Warn().Err(err).Msg("Expire stale attachment receiving records failed")
+			} else if expired > 0 {
+				log.Info().Int("expired", expired).Msg("Marked stale attachment receiving records expired")
+			}
+			attachmentMaint.SweepPending(ctx)
+			if removed, err := attachmentMaint.PruneRetention(ctx); err != nil {
+				log.Warn().Err(err).Msg("Prune expired attachment records failed")
+			} else if removed > 0 {
+				log.Info().Int("removed", removed).Msg("Pruned expired attachment records and objects")
+			}
+		}
+		runAttachmentBackfill := func(ctx context.Context) {
+			if attachmentMaint == nil {
+				return
+			}
+			if _, err := attachmentMaint.Backfill(ctx); err != nil {
+				log.Warn().Err(err).Msg("Backfill attachment index failed")
+			}
+		}
 		routines.GoSafe(func() {
 			if indexer != nil {
 				leaseRunner.Run(sweepCtx, "media-segment-index", func(ctx context.Context) {
@@ -155,6 +194,8 @@ func (d *deps) setupControl() {
 					}
 				})
 			}
+			leaseRunner.Run(sweepCtx, "attachment-maintenance", runAttachmentMaintenance)
+			leaseRunner.Run(sweepCtx, "attachment-index", runAttachmentBackfill)
 			ticker := time.NewTicker(10 * time.Minute)
 			defer ticker.Stop()
 			for {
@@ -175,6 +216,8 @@ func (d *deps) setupControl() {
 							}
 						})
 					}
+					leaseRunner.Run(sweepCtx, "attachment-maintenance", runAttachmentMaintenance)
+					leaseRunner.Run(sweepCtx, "attachment-index", runAttachmentBackfill)
 				}
 			}
 		})

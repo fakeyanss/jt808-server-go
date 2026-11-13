@@ -3,7 +3,8 @@
 // 它复用 alarmserver 的协议接入实现（0x7e 转义、校验、0x1210/0x1211/0x1212），
 // 但存储走对象存储模式：本地只保留有界暂存窗口，按段提交到全集群共享的 objectStore。
 //
-// 控制面只通过共享库与内部 HTTP 观察进度，不依赖本进程内的任何对象。
+// 附件节点不连数据库：水位、段列表与终态由 control 落库，节点通过出站 HTTP
+// 上报进度并在重连时向 control 查询恢复点；control 不可达时退回对象存储扫描。
 package attachmentserver
 
 import (
@@ -13,7 +14,6 @@ import (
 	"net"
 	"net/http"
 	"strconv"
-	"strings"
 	"sync"
 	"time"
 
@@ -21,7 +21,7 @@ import (
 
 	"github.com/fakeyanss/jt808-server-go/internal/alarmserver"
 	"github.com/fakeyanss/jt808-server-go/internal/contracts"
-	"github.com/fakeyanss/jt808-server-go/internal/repository"
+	"github.com/fakeyanss/jt808-server-go/internal/storage"
 	"github.com/fakeyanss/jt808-server-go/pkg/routines"
 )
 
@@ -38,8 +38,9 @@ type Config struct {
 	CompletedTTL   time.Duration
 	Retention      time.Duration
 
-	Files repository.AttachmentFileRepository
-	Blob  contracts.BlobStore
+	Blob contracts.BlobStore
+	// Progress 是向 control 上报进度/查询恢复点的出站通道；为空时只写对象存储。
+	Progress contracts.AttachmentProgressSink
 	// StagingDir 是本地暂存根目录；集群下必须有足够空间容纳有界窗口。
 	StagingDir string
 	// SegmentSize 是单个对象切片大小。
@@ -63,9 +64,6 @@ type Server struct {
 
 // New 创建附件节点。
 func New(cfg Config) (*Server, error) {
-	if cfg.Files == nil {
-		return nil, fmt.Errorf("attachment files repository is required")
-	}
 	if cfg.Blob == nil {
 		return nil, fmt.Errorf("attachment blob store is required: cluster attachment writes to the shared object store")
 	}
@@ -81,8 +79,8 @@ func New(cfg Config) (*Server, error) {
 		Retention:      cfg.Retention,
 		Storage: &alarmserver.StorageConfig{
 			Blob:            cfg.Blob,
-			Files:           cfg.Files,
-			Source:          repository.AttachmentSourceSubia,
+			Progress:        cfg.Progress,
+			Source:          storage.SourceSubia,
 			SegmentSize:     cfg.SegmentSize,
 			StagingDir:      cfg.StagingDir,
 			MaxStagingBytes: cfg.MaxStagingBytes,
@@ -167,7 +165,6 @@ func (s *Server) ActiveFiles(_ context.Context) (int, error) {
 func (s *Server) routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/internal/attachment/status", s.handleStatus)
-	mux.HandleFunc("/internal/attachment/files", s.handleFiles)
 	return mux
 }
 
@@ -195,40 +192,6 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		"udpPort":       s.udpPort(),
 		"stagingDir":    s.cfg.StagingDir,
 	})
-}
-
-func (s *Server) handleFiles(w http.ResponseWriter, r *http.Request) {
-	if s.cfg.Files == nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"err": "attachment repository is not configured"})
-		return
-	}
-	phone := strings.TrimSpace(r.URL.Query().Get("phone"))
-	alarmNo := strings.TrimSpace(r.URL.Query().Get("alarmNo"))
-	fileName := strings.TrimSpace(r.URL.Query().Get("fileName"))
-	var (
-		rows []*repository.AttachmentFile
-		err  error
-	)
-	switch {
-	case fileName != "" && phone != "":
-		var row *repository.AttachmentFile
-		row, err = s.cfg.Files.FindByFileName(r.Context(), repository.AttachmentSourceSubia, phone, fileName)
-		if row != nil {
-			rows = []*repository.AttachmentFile{row}
-		}
-	case alarmNo != "" && phone != "":
-		rows, err = s.cfg.Files.ListByAlarm(r.Context(), repository.AttachmentSourceSubia, phone, alarmNo)
-	case phone != "":
-		rows, err = s.cfg.Files.ListByPhone(r.Context(), repository.AttachmentSourceSubia, phone, 200)
-	default:
-		writeJSON(w, http.StatusBadRequest, map[string]any{"err": "phone is required"})
-		return
-	}
-	if err != nil && err != repository.ErrAttachmentFileNotFound {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"err": err.Error()})
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"count": len(rows), "items": rows})
 }
 
 func (s *Server) advertiseIP() string {

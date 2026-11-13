@@ -138,9 +138,9 @@ func buildDeps(spec Spec, cfg *config.Config, s settings) *deps {
 		log.Warn().Msg("cluster.allowEmbeddedStorage is dev-only: cluster roles are sharing an embedded sqlite file; production must use MySQL")
 	}
 
-	// gateway/control/attachment 需要共享库；附件节点也要写共享库，控制面才能查询进度。
+	// 只有 gateway/control 需要共享库；media/attachment 是数据面节点，不连数据库。
 	var storeSet *database.Repositories
-	if hasGateway || hasControl || hasAttachment {
+	if hasGateway || hasControl {
 		initialized, err := database.Init(database.FromConfig(cfg))
 		if err != nil {
 			log.Error().Err(err).Msg("Fail to initialize database backend")

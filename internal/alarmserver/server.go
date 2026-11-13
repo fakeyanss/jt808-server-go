@@ -306,7 +306,6 @@ func (s *Server) cleanupLoop() {
 	}
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
-	var lastPrune time.Time
 	for {
 		select {
 		case <-s.done:
@@ -314,34 +313,20 @@ func (s *Server) cleanupLoop() {
 		case now := <-ticker.C:
 			s.assembler.CleanupStale(now, s.cfg.SessionTimeout)
 			s.assembler.CleanupCompleted(now, s.cfg.CompletedTTL)
-			// 每小时扫一次：pending 回收始终按来源前缀执行；保留期清理只做附件来源。
-			if lastPrune.IsZero() || now.Sub(lastPrune) >= time.Hour {
-				lastPrune = now
-				if s.cfg.Storage != nil {
-					if expired := s.assembler.expireReceivingBlob(now, s.cfg.SessionTimeout); expired > 0 {
-						log.Info().Int("expired", expired).Msg("Marked stale attachment receiving records expired")
-					}
-					s.assembler.pruneBlobPending()
-				}
-				if s.cfg.Retention > 0 {
-					s.pruneExpiredFiles(now)
-				}
+			// 对象存储模式的过期、pending 回收与保留期清理都在 control 执行：
+			// 附件节点不连库，无法判定哪些对象仍被业务行引用。
+			if s.cfg.Retention > 0 && s.cfg.Storage == nil {
+				s.pruneExpiredFiles(now)
 			}
 		}
 	}
 }
 
 // pruneExpiredFiles 删除超过保留期且不在组装中的附件文件。
+//
+// 只在本地目录模式（standalone）执行；对象存储模式的保留期由 control 负责。
 func (s *Server) pruneExpiredFiles(now time.Time) {
-	if s.cfg.Retention <= 0 {
-		return
-	}
-	if s.cfg.Storage != nil {
-		// 对象存储模式只清理附件来源前缀与 attachment_files 表，不触碰媒体来源。
-		if removed := s.assembler.pruneBlobRetention(now); removed > 0 {
-			log.Info().Int("removed", removed).Str("staging", s.cfg.Storage.StagingDir).
-				Msg("Pruned expired attachment records and objects")
-		}
+	if s.cfg.Retention <= 0 || s.cfg.Storage != nil {
 		return
 	}
 	cutoff := now.Add(-s.cfg.Retention)

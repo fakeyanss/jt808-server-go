@@ -12,18 +12,16 @@ import (
 
 	"github.com/fakeyanss/jt808-server-go/internal/contracts"
 	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
-	"github.com/fakeyanss/jt808-server-go/internal/repository"
-	"github.com/fakeyanss/jt808-server-go/internal/repository/memory"
 	"github.com/fakeyanss/jt808-server-go/internal/storage"
 )
 
-// 附件协议接入 + 对象存储切片：真实 TCP 帧进来，最终在共享库看到 completed，
+// 附件协议接入 + 对象存储切片：真实 TCP 帧进来，最终向 control 上报 completed，
 // 每个切片对象为 committed，本地暂存被清理。
 func TestServerEndToEndObjectStorageSegments(t *testing.T) {
 	root := t.TempDir()
 	volume, err := storage.NewSharedVolume(filepath.Join(root, "blob"), false)
 	require.NoError(t, err)
-	files := memory.NewAttachmentFileRepository()
+	sink := newFakeProgressSink()
 	srv := NewServer(Config{
 		Dir:            filepath.Join(root, "alarms"),
 		MaxFileSize:    16 * 1024 * 1024,
@@ -31,8 +29,8 @@ func TestServerEndToEndObjectStorageSegments(t *testing.T) {
 		SessionTimeout: time.Minute,
 		Storage: &StorageConfig{
 			Blob:            volume,
-			Files:           files,
-			Source:          repository.AttachmentSourceSubia,
+			Progress:        sink,
+			Source:          storage.SourceSubia,
 			SegmentSize:     2 * DefaultBlockSize,
 			StagingDir:      filepath.Join(root, "staging"),
 			MaxStagingBytes: 1 << 30,
@@ -85,14 +83,11 @@ func TestServerEndToEndObjectStorageSegments(t *testing.T) {
 	retransmit := receive9212(t, reader)
 	require.Equal(t, uint8(0), retransmit.Result)
 
-	record, err := files.Get(context.Background(), repository.AttachmentFileKey{
-		Source: repository.AttachmentSourceSubia, Phone: phone, AlarmNo: "ALARM-OBJ-1", FileName: fileName,
-	})
-	require.NoError(t, err)
-	require.Equal(t, repository.AttachmentStatusCompleted, record.Status)
-	require.EqualValues(t, size, record.ReceivedBytes)
-	require.Len(t, record.Segments, 2)
-	for _, segment := range record.Segments {
+	key := contracts.AttachmentProgressKey{Source: storage.SourceSubia, Phone: phone, AlarmNo: "ALARM-OBJ-1", FileName: fileName}
+	progress := sink.waitStatus(t, key, contracts.AttachmentStatusCompleted)
+	require.EqualValues(t, size, progress.ReceivedBytes)
+	require.Len(t, progress.Segments, 2)
+	for _, segment := range progress.Segments {
 		stored, statErr := volume.Stat(context.Background(), segment.Key)
 		require.NoError(t, statErr)
 		require.Equal(t, contracts.BlobStateCommitted, stored.State)

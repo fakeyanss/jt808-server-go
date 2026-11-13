@@ -5,7 +5,7 @@ import (
 	"time"
 
 	"github.com/fakeyanss/jt808-server-go/internal/contracts"
-	"github.com/fakeyanss/jt808-server-go/internal/repository"
+	"github.com/fakeyanss/jt808-server-go/internal/storage"
 )
 
 const (
@@ -52,11 +52,13 @@ var (
 // StorageConfig 是附件对象存储模式。
 //
 // 设置后附件不再把完整文件落本地盘：收到数据写入有界本地暂存区，
-// 每个切片窗口到齐后切段上传对象存储，并把水位与段列表写入共享库。
+// 每个切片窗口到齐后切段上传对象存储，进度通过 Progress 出站上报 control。
+// 附件节点不持有任何仓储：水位、段列表与终态都由 control 落库。
 type StorageConfig struct {
-	Blob   contracts.BlobStore
-	Files  repository.AttachmentFileRepository
-	Source string
+	Blob contracts.BlobStore
+	// Progress 是进度上报与恢复点查询通道；为空时只写对象存储、不对外报进度。
+	Progress contracts.AttachmentProgressSink
+	Source   string
 	// SegmentSize 是单个对象切片大小；<=0 时使用 DefaultSegmentSize。
 	SegmentSize int64
 	// StagingDir 是本地暂存根目录；崩溃残留按 .part 标记 + 宽限期扫描清理。
@@ -79,7 +81,7 @@ func (c *StorageConfig) Normalize() {
 		c.SegmentSize = DefaultSegmentSize
 	}
 	if c.Source == "" {
-		c.Source = repository.AttachmentSourceSubia
+		c.Source = storage.SourceSubia
 	}
 }
 

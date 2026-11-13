@@ -518,6 +518,9 @@ type alarmServerConf struct {
 	// UploadIP 是 0x9208 中携带的附件服务器 IP，autoUpload 开启时必填。
 	// 端口不单独配置，始终使用 port / udpPort 的实际监听端口。
 	UploadIP string `yaml:"uploadIP"`
+	// ProgressReport 是集群附件节点向 control 上报进度、查询恢复点的地址。
+	// 附件节点不连库，未配置时只能靠对象存储扫描恢复。
+	ProgressReport *mediaSegmentReportConf `yaml:"progressReport"`
 }
 
 // AlarmServerOptions 是附件服务器的归一化配置。
@@ -535,6 +538,8 @@ type AlarmServerOptions struct {
 	// SegmentSizeBytes / StagingMaxBytes 只在集群对象存储模式使用。
 	SegmentSizeBytes int64
 	StagingMaxBytes  int64
+	// ProgressReport 是附件进度上报 control 的出站配置；URL 为空表示不上报。
+	ProgressReport MediaSegmentReportOptions
 }
 
 // ParseAlarmServer 解析并校验 alarmServer 配置。
@@ -621,6 +626,20 @@ func (c *Config) ParseAlarmServer() (options AlarmServerOptions, enabled bool, e
 		retentionDays = *conf.RetentionDays
 	}
 	uploadIP := strings.TrimSpace(conf.UploadIP)
+	progressReport := MediaSegmentReportOptions{Timeout: 3 * time.Second}
+	if conf.ProgressReport != nil {
+		progressReport.URL = strings.TrimSpace(conf.ProgressReport.URL)
+		progressReport.Token = strings.TrimSpace(conf.ProgressReport.Token)
+		if progressReport.URL != "" && !strings.HasPrefix(progressReport.URL, "http://") && !strings.HasPrefix(progressReport.URL, "https://") {
+			return AlarmServerOptions{}, false, fmt.Errorf("alarmServer.progressReport.url must start with http:// or https://")
+		}
+		if conf.ProgressReport.TimeoutMS < 0 {
+			return AlarmServerOptions{}, false, fmt.Errorf("alarmServer.progressReport.timeoutMs must be >= 0, got %d", conf.ProgressReport.TimeoutMS)
+		}
+		if conf.ProgressReport.TimeoutMS > 0 {
+			progressReport.Timeout = time.Duration(conf.ProgressReport.TimeoutMS) * time.Millisecond
+		}
+	}
 	if conf.AutoUpload {
 		if port == 0 && udpPort == 0 {
 			// control-only 的自动触发从 cluster.attachment.nodes 取附件节点地址，
@@ -635,6 +654,7 @@ func (c *Config) ParseAlarmServer() (options AlarmServerOptions, enabled bool, e
 				UploadIP:         uploadIP,
 				SegmentSizeBytes: segmentSize,
 				StagingMaxBytes:  stagingMax,
+				ProgressReport:   progressReport,
 			}, true, nil
 		}
 		if uploadIP == "" {
@@ -657,6 +677,7 @@ func (c *Config) ParseAlarmServer() (options AlarmServerOptions, enabled bool, e
 		UploadIP:         uploadIP,
 		SegmentSizeBytes: segmentSize,
 		StagingMaxBytes:  stagingMax,
+		ProgressReport:   progressReport,
 	}, true, nil
 }
 
@@ -2206,8 +2227,9 @@ func (c *Config) ParseServerMode() (ClusterOptions, error) {
 		}
 	}
 
-	// 存储：gateway/control/attachment 需要共享库（附件进度要能被控制面查询）。
-	if roles.Has(RoleGateway) || roles.Has(RoleControl) || roles.Has(RoleAttachment) {
+	// 存储：只有 gateway/control 需要共享库。
+	// media / attachment 是数据面节点，不连数据库，只与 control 做 HTTP 交互。
+	if roles.Has(RoleGateway) || roles.Has(RoleControl) {
 		backend := strings.ToLower(strings.TrimSpace(c.Database.Type))
 		if backend == "" {
 			backend = "memory"
@@ -2216,7 +2238,7 @@ func (c *Config) ParseServerMode() (ClusterOptions, error) {
 			allowEmbedded := c.Cluster != nil && c.Cluster.AllowEmbeddedStorage && backend == "sqlite"
 			if !allowEmbedded {
 				problems = append(problems, fmt.Sprintf(
-					"database.type must be mysql when roles include gateway/control/attachment, got %q "+
+					"database.type must be mysql when roles include gateway/control, got %q "+
 						"(cluster.allowEmbeddedStorage with sqlite is dev-only; production must use mysql)", backend))
 			}
 		}
