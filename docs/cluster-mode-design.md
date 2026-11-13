@@ -643,7 +643,25 @@ MySQL 使用上面的 `DATETIME(3)`。SQLite 没有 `DATETIME(3)`，时间列用
   - 判死、下行前校验这类“要不要放行”的判断全部写成带数据库当前时间条件的 SQL，Go 侧只拿布尔结果，不写 `time.Now()` 参与比较；
   - 这样对 VM 暂停恢复、NTP step 等时钟跳变免疫，而不是只防同步漂移。
 
-#### 7.2.2 写入时机
+#### 7.2.2 时间源口径
+
+时间字段按用途分两类，取值来源不同：
+
+1. **参与判定或过期的字段必须用数据库时间**。凡是会进入 WHERE、比较或排序条件，
+   用来决定“是否放行、是否过期、谁先被处理、是否该清理”的列，都由 SQL 的数据库
+   当前时间生成；Go 侧只拿布尔结果，不写 `time.Now()` 参与比较。理由是这类判定
+   必须跨副本一致，并且要免疫 VM 暂停恢复、NTP step 等时钟跳变；代价是每次判断
+   多一次数据库取值。
+2. **纯记录字段允许应用时间**。只用于审计、展示、排障或返回给调用方，不参与任何
+   放行、过期或清理判断的列，可以用进程 `time.Now()`。理由是它们不承担跨副本
+   一致性，应用时间足够，且省掉一次数据库取值。`devices.updated_at` 就属于这一类，
+   保持应用时间现状；`media_*`、`terminal_properties` 等档案的 `updated_at /
+   received_at` 同理。
+
+判断口径：一列只要会出现在判定条件里，就归第一类；否则归第二类。第一类不允许由
+应用侧生成后再参与比较；第二类不强制改成数据库时间。
+
+#### 7.2.3 写入时机
 
 `session_directory` 只有三个写入时机，全部由 control 执行：
 
@@ -655,7 +673,7 @@ MySQL 使用上面的 `DATETIME(3)`。SQLite 没有 `DATETIME(3)`，时间列用
 
 网关注册、心跳、注销走 control 内部 API，复用 gateway → control 的 token。上行信封需要携带 `gateway_id / instance_id`：当前终端应答信封已有 `gatewayId`，通用上行信封在 E4.2 补齐；否则 control 无法在 0x0102 业务路径内完成 claim。
 
-#### 7.2.3 claim 与 fail-closed
+#### 7.2.4 claim 与 fail-closed
 
 - 0x0102 的 claim 在 control 业务路径内完成，不额外增加一次网关到 control 的同步调用；上行响应需要携带 generation，网关在本地绑定 phone 时保存。
 - **0x0102 固定为强制同步**：网关必须等 control 返回 claim/generation 后才能应答终端。注意当前代码里的 `ackFirstMsgIDs` 表示“先应答后业务”，与这里的目标相反；实现时应让 0x0102 留在 confirm-before-ack 路径（业务完成后再回 `0x8001`），不要把它放进提前应答的 map。如果团队把“ack-first 列表”定义为“必须先拿到控制面结果的列表”，则 0x0102 属于该列表；代码层面以 confirm-before-ack 为准。
@@ -664,7 +682,7 @@ MySQL 使用上面的 `DATETIME(3)`。SQLite 没有 `DATETIME(3)`，时间列用
 - standalone 保持现状，不要求会话目录。
 - 鉴权前的报文 generation 为 0，不做归属校验；鉴权后的上行业务事件和终端应答必须携带本地会话 generation。
 
-#### 7.2.4 围栏
+#### 7.2.5 围栏
 
 - 上行信封和终端应答都带 `generation`；control 只接受不低于 `session_directory.generation` 的事件。
 - 小于当前值的事件按过期事件丢弃，并在上行应答里返回 `fenced`；网关收到 `fenced` 后关闭本地会话，不再接收该 phone 的新上行。
@@ -672,7 +690,7 @@ MySQL 使用上面的 `DATETIME(3)`。SQLite 没有 `DATETIME(3)`，时间列用
 - 第一阶段**不做 control 向旧网关推 revoke**，旧网关依靠下一次上行应答中的 `fenced` 自行关闭；因此 confirm-before-ack 事件天然能收到，best-effort 事件要求 sink 解析响应体并处理 `fenced`，这是实现前必须补上的前提。
 - 跨节点顶替时，新 claim 立即把目录指向新节点；旧网关在收到 `fenced` 前可能仍有在途事件，这些事件会被 generation 挡住，不会覆盖新状态。
 
-#### 7.2.5 下行路由
+#### 7.2.6 下行路由
 
 ```text
 phone -> session_directory
@@ -687,7 +705,7 @@ phone -> session_directory
 - 新增 `cluster.gateway.advertiseUrl`：网关告诉 control 的下行入口地址，与监听 `addr` 分开。
 - `gateway_id` 必须全局唯一；同一 `gateway_id` 启动两个进程会互相清理目录行并造成归属抖动，部署侧需要强约束。
 
-#### 7.2.6 明确退化点
+#### 7.2.7 明确退化点
 
 - 网关进程活着、但某条会话本应失效而未失效时，平台侧**兜不住**：`session_directory` 没有 per-phone TTL，control 无法仅凭目录判断该会话已死。系统信任网关自身的 JT808 心跳超时/断链判定，由网关在本地清理会话时上报 release。
 - 如果由于网关 bug、网络半开未被 TCP 发现、release 丢失等原因导致目录残留，下行会继续路由到该网关，直到该 phone 重新 claim 或网关以新 `instance_id` 重新注册。这是本方案用“归属跟节点走”换来的确定性代价。
