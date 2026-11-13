@@ -3,6 +3,7 @@ package api
 import (
 	"errors"
 	"fmt"
+	"io"
 	"mime"
 	"net/http"
 	"os"
@@ -14,6 +15,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"github.com/fakeyanss/jt808-server-go/internal/codec/hex"
+	"github.com/fakeyanss/jt808-server-go/internal/contracts"
 	"github.com/fakeyanss/jt808-server-go/internal/mediaupload"
 	"github.com/fakeyanss/jt808-server-go/internal/repository"
 )
@@ -32,7 +34,7 @@ const mediaTimeLayout = "2006-01-02 15:04:05"
 // 鉴权沿用业务 API 的 token 中间件；这里只做参数校验与仓储/文件读取。
 // 注意：0x0801 位置体只有报警标志位、没有报警流水号，
 // 列表的 alarmOnly 只能按报警类别过滤，无法按某一条报警精确关联。
-func registerMediaRoutes(api *gin.RouterGroup, devices repository.DeviceRepository, files repository.MediaFileRepository, captures repository.MediaCaptureRepository, searches repository.MediaSearchRepository, uploads *mediaupload.Store) {
+func registerMediaRoutes(api *gin.RouterGroup, devices repository.DeviceRepository, files repository.MediaFileRepository, captures repository.MediaCaptureRepository, searches repository.MediaSearchRepository, uploads *mediaupload.Store, blob contracts.BlobStore) {
 	group := api.Group("/device/:phone/media")
 	group.GET("/files", func(c *gin.Context) {
 		phone, ok := requireMediaDevice(c, devices)
@@ -91,10 +93,33 @@ func registerMediaRoutes(api *gin.RouterGroup, devices repository.DeviceReposito
 			c.JSON(http.StatusInternalServerError, gin.H{"err": err.Error()})
 			return
 		}
-		if uploads == nil {
+		if uploads == nil && blob == nil {
 			c.JSON(http.StatusServiceUnavailable, gin.H{"err": "media upload store is not configured"})
 			return
 		}
+		name := filepath.Base(file.RelativePath)
+		contentType := mime.TypeByExtension(filepath.Ext(name))
+		if contentType == "" {
+			contentType = "application/octet-stream"
+		}
+		c.Header("Content-Type", contentType)
+		c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=%q", name))
+
+		// objectStore 模式下文件只存在于对象存储：必须与附件走同一条 BlobStore 读取路径，
+		// 否则这里会去本地盘找文件并稳定返回 404。
+		if blob != nil {
+			reader, err := blob.OpenRange(c.Request.Context(), file.RelativePath, 0, file.FileSize)
+			if err != nil {
+				c.JSON(http.StatusNotFound, gin.H{"err": "media file content missing in blob store", "detail": err.Error()})
+				return
+			}
+			defer reader.Close()
+			c.Header("Content-Length", strconv.FormatInt(file.FileSize, 10))
+			c.Status(http.StatusOK)
+			_, _ = io.Copy(c.Writer, reader)
+			return
+		}
+
 		handle, err := uploads.Open(file.RelativePath)
 		if err != nil {
 			if errors.Is(err, os.ErrNotExist) {
@@ -110,13 +135,6 @@ func registerMediaRoutes(api *gin.RouterGroup, devices repository.DeviceReposito
 			c.JSON(http.StatusInternalServerError, gin.H{"err": err.Error()})
 			return
 		}
-		name := filepath.Base(file.RelativePath)
-		contentType := mime.TypeByExtension(filepath.Ext(name))
-		if contentType == "" {
-			contentType = "application/octet-stream"
-		}
-		c.Header("Content-Type", contentType)
-		c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=%q", name))
 		// ServeContent 负责 Range、If-Modified-Since 与 Content-Length。
 		http.ServeContent(c.Writer, c.Request, name, info.ModTime(), handle)
 	})

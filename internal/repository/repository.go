@@ -6,9 +6,9 @@ import (
 	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
 )
 
-// 本文件定义持久化仓储的业务契约。
+// 本文件定义持久化仓储的业务契约，是接口的唯一来源。
 // 分类沿用 docs/storage-abstraction-design.md：B 耐用态、C 派生投影。
-// 具体实现均为非导出的内存实现，业务层只依赖接口；装配入口在 internal/storage。
+// 内存实现在 repository/memory，SQL 实现在 sqlcore + sqlite/mysql，装配入口在 repository/database。
 
 // DeviceRepository 设备主数据仓储（B 类）。
 // 实现必须返回快照，调用方修改返回值不得影响仓储内部状态。
@@ -49,26 +49,4 @@ type TerminalPropertiesRepository interface {
 	Get(ctx context.Context, phone string) (*model.TerminalProperties, error)
 	Replace(ctx context.Context, properties *model.TerminalProperties) error
 	Delete(ctx context.Context, phone string) error
-}
-
-// 编译期确认内存实现满足接口。
-var (
-	_ DeviceRepository             = (*memoryDeviceRepository)(nil)
-	_ GeoRepository                = (*memoryGeoRepository)(nil)
-	_ DeviceParamsRepository       = (*memoryDeviceParamsRepository)(nil)
-	_ TerminalPropertiesRepository = (*memoryTerminalPropertiesRepository)(nil)
-)
-
-// NewDeviceRepository 创建独立的内存设备仓储，便于测试与新代码注入。
-func NewDeviceRepository() DeviceRepository { return newMemoryDeviceRepository() }
-
-// NewGeoRepository 创建独立的内存定位热读仓储。
-func NewGeoRepository() GeoRepository { return newMemoryGeoRepository() }
-
-// NewDeviceParamsRepository 创建独立的内存参数仓储。
-func NewDeviceParamsRepository() DeviceParamsRepository { return newMemoryDeviceParamsRepository() }
-
-// NewTerminalPropertiesRepository 创建独立的内存属性仓储。
-func NewTerminalPropertiesRepository() TerminalPropertiesRepository {
-	return newMemoryTerminalPropertiesRepository()
 }

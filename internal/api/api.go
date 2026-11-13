@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"strconv"
@@ -24,9 +25,9 @@ import (
 	"github.com/fakeyanss/jt808-server-go/internal/protocol"
 	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
 	"github.com/fakeyanss/jt808-server-go/internal/repository"
+	"github.com/fakeyanss/jt808-server-go/internal/repository/database"
 	"github.com/fakeyanss/jt808-server-go/internal/runtime"
 	"github.com/fakeyanss/jt808-server-go/internal/server"
-	"github.com/fakeyanss/jt808-server-go/internal/storage"
 )
 
 // Queryer 把查询类下行交给网关并等待终端应答体。
@@ -38,20 +39,20 @@ type Queryer interface {
 // Run 启动业务 API。downlink 为下行契约实现；sender 是豁免清单（查询/只读/幂等）
 // 的单发通道，二者在 control-only 下均可跨进程工作。未启用 outbox 时下行入口
 // 直接发送，不提供命令状态查询。
-func Run(ctx context.Context, serv *server.TCPServer, cfg *config.Config, apiOptions config.APIOptions, alarmServ *alarmserver.Server, downlink contracts.Downlink, sender contracts.DownlinkSender, mediaUpload *mediaupload.Store, queryer Queryer, playback contracts.PlaybackLibrary) {
+func Run(ctx context.Context, serv *server.TCPServer, cfg *config.Config, apiOptions config.APIOptions, alarmServ *alarmserver.Server, attachments repository.AttachmentFileRepository, attachmentAllocator contracts.AttachmentAllocator, blob contracts.BlobStore, downlink contracts.Downlink, sender contracts.DownlinkSender, mediaUpload *mediaupload.Store, queryer Queryer, playback contracts.PlaybackLibrary) {
 	// web server structure
 	gin.SetMode(gin.ReleaseMode)
 	router := gin.Default()
 	// 顺序为审计 → 限流 → 鉴权：审计能看到被拒绝的请求，限流在鉴权前挡住洪峰。
 	router.Use(httpguard.Audit(), httpguard.RateLimit(apiOptions.RatePerSecond, apiOptions.Burst), httpguard.Auth(apiOptions.Token))
 	api := router.Group("/api")
-	devices := storage.Default().Devices
-	geo := storage.Default().Geo
+	devices := database.Default().Devices
+	geo := database.Default().Geo
 	connRegistry := runtime.Default().Conn
 	outboxEnabled := downlink != nil && downlink.Enabled()
 
 	// 0x0801 媒体文件、0x0805 拍摄记录与 0x0802 检索结果查询；文件下载由 mediaUpload 读取共享卷。
-	registerMediaRoutes(api, devices, storage.Default().MediaFiles, storage.Default().MediaCaptures, storage.Default().MediaSearches, mediaUpload)
+	registerMediaRoutes(api, devices, database.Default().MediaFiles, database.Default().MediaCaptures, database.Default().MediaSearches, mediaUpload, blob)
 
 	// 播放会话（实时/终端回放）与平台录像覆盖查询；媒体节点返回播放地址。
 	registerPlaybackRoutes(api, devices, connRegistry, downlink, playback)
@@ -102,7 +103,7 @@ func Run(ctx context.Context, serv *server.TCPServer, cfg *config.Config, apiOpt
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
 		}
-		industry := storage.Default().Industry
+		industry := database.Default().Industry
 		var result any
 		switch c.Param("kind") {
 		case "driver":
@@ -122,7 +123,7 @@ func Run(ctx context.Context, serv *server.TCPServer, cfg *config.Config, apiOpt
 		case "transparent", "peripheral":
 			result = industry.TransparentUp(phone)
 		case "upgrade-result":
-			upgrade, err := storage.Default().UpgradeResults.Latest(c.Request.Context(), phone)
+			upgrade, err := database.Default().UpgradeResults.Latest(c.Request.Context(), phone)
 			if errors.Is(err, repository.ErrUpgradeResultNotFound) {
 				c.JSON(http.StatusNotFound, gin.H{"err": "no report received"})
 				return
@@ -1123,7 +1124,7 @@ func Run(ctx context.Context, serv *server.TCPServer, cfg *config.Config, apiOpt
 			return
 		}
 		msg := &model.Msg8203{Header: model.GenMsgHeader(device, 0x8203, nextDownlinkSerial(session)), AlarmSerial: request.AlarmSerial, AlarmType: request.AlarmType}
-		if err := storage.Default().Alarms.RegisterConfirmation(c.Request.Context(), phone, msg.Header.SerialNumber, request.AlarmSerial, request.AlarmType); err != nil {
+		if err := database.Default().Alarms.RegisterConfirmation(c.Request.Context(), phone, msg.Header.SerialNumber, request.AlarmSerial, request.AlarmType); err != nil {
 			log.Error().Err(err).Str("phone", phone).Msg("register alarm confirmation")
 			c.JSON(http.StatusInternalServerError, gin.H{"err": err.Error()})
 			return
@@ -1138,7 +1139,7 @@ func Run(ctx context.Context, serv *server.TCPServer, cfg *config.Config, apiOpt
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
 		}
-		alarms, err := storage.Default().Alarms.List(c.Request.Context(), phone)
+		alarms, err := database.Default().Alarms.List(c.Request.Context(), phone)
 		if err != nil {
 			log.Error().Err(err).Str("phone", phone).Msg("list alarms")
 			c.JSON(http.StatusInternalServerError, gin.H{"err": err.Error()})
@@ -1178,13 +1179,10 @@ func Run(ctx context.Context, serv *server.TCPServer, cfg *config.Config, apiOpt
 	})
 
 	// 苏标主动安全附件：下发 0x9208 报警附件上传指令。
+	// 附件节点可以与 control 分离：没有本地 alarmServ 时按配置的节点清单选点。
 	api.POST("/device/:phone/attachments/upload", func(c *gin.Context) {
-		if alarmServ == nil {
-			c.JSON(http.StatusServiceUnavailable, gin.H{"err": "alarm server is not enabled"})
-			return
-		}
 		var request struct {
-			IP           string `json:"ip" binding:"required"`
+			IP           string `json:"ip"`
 			TCPPort      uint16 `json:"tcpPort"`
 			UDPPort      uint16 `json:"udpPort"`
 			AlarmSignHex string `json:"alarmSignHex" binding:"required"`
@@ -1193,11 +1191,6 @@ func Run(ctx context.Context, serv *server.TCPServer, cfg *config.Config, apiOpt
 		}
 		if err := c.ShouldBindJSON(&request); err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
-			return
-		}
-		ip := strings.TrimSpace(request.IP)
-		if ip == "" || len(ip) > 255 {
-			c.JSON(http.StatusBadRequest, gin.H{"err": "ip must contain 1 to 255 bytes"})
 			return
 		}
 		alarmSign, err := hex.DecodeString(strings.TrimSpace(request.AlarmSignHex))
@@ -1217,31 +1210,6 @@ func Run(ctx context.Context, serv *server.TCPServer, cfg *config.Config, apiOpt
 				return
 			}
 		}
-		// 未显式指定端口时回落到附件服务器的实际监听端口，
-		// 保证 0x9208 通告的地址不会指向没有监听的协议端口。
-		resolvePort := func(addr string) uint16 {
-			if addr == "" {
-				return 0
-			}
-			_, portText, splitErr := net.SplitHostPort(addr)
-			parsed, parseErr := strconv.Atoi(portText)
-			if splitErr != nil || parseErr != nil || parsed < 1 || parsed > 65535 {
-				return 0
-			}
-			return uint16(parsed)
-		}
-		tcpPort := request.TCPPort
-		if tcpPort == 0 {
-			tcpPort = resolvePort(alarmServ.Addr())
-		}
-		udpPort := request.UDPPort
-		if udpPort == 0 {
-			udpPort = resolvePort(alarmServ.UDPAddr())
-		}
-		if tcpPort == 0 && udpPort == 0 {
-			c.JSON(http.StatusServiceUnavailable, gin.H{"err": "alarm server has no tcp or udp listener"})
-			return
-		}
 
 		phone := c.Param("phone")
 		device, err := devices.GetByPhone(c.Request.Context(), phone)
@@ -1249,6 +1217,65 @@ func Run(ctx context.Context, serv *server.TCPServer, cfg *config.Config, apiOpt
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
 		}
+
+		ip := strings.TrimSpace(request.IP)
+		tcpPort := request.TCPPort
+		udpPort := request.UDPPort
+		if alarmServ != nil {
+			// 同进程附件节点：未显式指定端口时回落到实际监听端口。
+			resolvePort := func(addr string) uint16 {
+				if addr == "" {
+					return 0
+				}
+				_, portText, splitErr := net.SplitHostPort(addr)
+				parsed, parseErr := strconv.Atoi(portText)
+				if splitErr != nil || parseErr != nil || parsed < 1 || parsed > 65535 {
+					return 0
+				}
+				return uint16(parsed)
+			}
+			if tcpPort == 0 {
+				tcpPort = resolvePort(alarmServ.Addr())
+			}
+			if udpPort == 0 {
+				udpPort = resolvePort(alarmServ.UDPAddr())
+			}
+		} else {
+			if attachmentAllocator == nil {
+				c.JSON(http.StatusServiceUnavailable, gin.H{
+					"code": contracts.AttachmentCodeNoNodes,
+					"err":  "no attachment node is configured: set cluster.attachment.nodes or run role attachment",
+				})
+				return
+			}
+			lease, allocErr := attachmentAllocator.Allocate(c.Request.Context(), contracts.AttachmentLeaseRequest{
+				Phone: phone, AlarmID: request.AlarmNo,
+			})
+			if allocErr != nil {
+				code := contracts.AttachmentCodeNodesUnavailable
+				var unavailable *contracts.AttachmentUnavailableError
+				if errors.As(allocErr, &unavailable) {
+					code = unavailable.Code
+				}
+				c.JSON(http.StatusServiceUnavailable, gin.H{"code": code, "err": allocErr.Error()})
+				return
+			}
+			ip = lease.Endpoint.IP
+			tcpPort = lease.Endpoint.TCPPort
+			udpPort = lease.Endpoint.UDPPort
+		}
+		if ip == "" || len(ip) > 255 {
+			c.JSON(http.StatusBadRequest, gin.H{"err": "ip must contain 1 to 255 bytes"})
+			return
+		}
+		if tcpPort == 0 && udpPort == 0 {
+			c.JSON(http.StatusServiceUnavailable, gin.H{
+				"code": contracts.AttachmentCodeNodesUnavailable,
+				"err":  "attachment node has no tcp or udp listener",
+			})
+			return
+		}
+
 		session, err := downlinkSession(c.Request.Context(), connRegistry, device, outboxEnabled)
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
@@ -1268,31 +1295,50 @@ func Run(ctx context.Context, serv *server.TCPServer, cfg *config.Config, apiOpt
 			c.JSON(http.StatusInternalServerError, gin.H{"err": err.Error()})
 			return
 		}
-		writeCommandAccepted(c, command, created, gin.H{"messageId": "0x9208", "tcpPort": tcpPort, "udpPort": udpPort})
+		writeCommandAccepted(c, command, created, gin.H{"messageId": "0x9208", "ip": ip, "tcpPort": tcpPort, "udpPort": udpPort})
 	})
 
-	// 苏标主动安全附件：查询已完成附件的元数据。
+	// 苏标主动安全附件：查询进度与完成元数据。
+	// 集群下读共享库，能同时看到 receiving 与 completed 两种状态；standalone 退回进程内组装器。
 	api.GET("/device/:phone/attachments", func(c *gin.Context) {
-		if alarmServ == nil {
-			c.JSON(http.StatusServiceUnavailable, gin.H{"err": "alarm server is not enabled"})
-			return
-		}
 		phone := c.Param("phone")
 		if _, err := devices.GetByPhone(c.Request.Context(), phone); err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
+			return
+		}
+		if attachments != nil {
+			items, err := attachments.ListByPhone(c.Request.Context(), repository.AttachmentSourceSubia, phone, 200)
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"err": err.Error()})
+				return
+			}
+			c.JSON(http.StatusOK, gin.H{"phone": phone, "count": len(items), "items": items})
+			return
+		}
+		if alarmServ == nil {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"err": "attachment service is not enabled"})
 			return
 		}
 		c.JSON(http.StatusOK, alarmServ.Assembler().Select(phone))
 	})
 
 	api.GET("/device/:phone/attachments/:fileName", func(c *gin.Context) {
-		if alarmServ == nil {
-			c.JSON(http.StatusServiceUnavailable, gin.H{"err": "alarm server is not enabled"})
-			return
-		}
 		phone := c.Param("phone")
 		if _, err := devices.GetByPhone(c.Request.Context(), phone); err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
+			return
+		}
+		if attachments != nil {
+			record, err := attachments.FindByFileName(c.Request.Context(), repository.AttachmentSourceSubia, phone, c.Param("fileName"))
+			if err != nil {
+				c.JSON(http.StatusNotFound, gin.H{"err": "attachment file not found"})
+				return
+			}
+			c.JSON(http.StatusOK, record)
+			return
+		}
+		if alarmServ == nil {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"err": "attachment service is not enabled"})
 			return
 		}
 		meta, err := alarmServ.Assembler().FindMetadata(phone, c.Param("fileName"))
@@ -1301,6 +1347,54 @@ func Run(ctx context.Context, serv *server.TCPServer, cfg *config.Config, apiOpt
 			return
 		}
 		c.JSON(http.StatusOK, meta)
+	})
+
+	// 附件内容读取与媒体走同一条存储路径：集群从共享 objectStore 按段拼接，
+	// standalone 直接读本地目录，避免“元数据存在但内容 404”。
+	api.GET("/device/:phone/attachments/:fileName/content", func(c *gin.Context) {
+		phone := c.Param("phone")
+		if _, err := devices.GetByPhone(c.Request.Context(), phone); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
+			return
+		}
+		fileName := c.Param("fileName")
+		c.Header("Content-Type", "application/octet-stream")
+		c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=%q", fileName))
+		if attachments != nil {
+			record, err := attachments.FindByFileName(c.Request.Context(), repository.AttachmentSourceSubia, phone, fileName)
+			if err != nil || record.Status != repository.AttachmentStatusCompleted {
+				c.JSON(http.StatusNotFound, gin.H{"err": "attachment file is not completed"})
+				return
+			}
+			if blob == nil {
+				c.JSON(http.StatusServiceUnavailable, gin.H{"err": "object store is not configured"})
+				return
+			}
+			c.Status(http.StatusOK)
+			for _, segment := range record.Segments {
+				reader, openErr := blob.OpenRange(c.Request.Context(), segment.Key, 0, segment.Size)
+				if openErr != nil {
+					log.Warn().Err(openErr).Str("key", segment.Key).Msg("Fail to read attachment segment")
+					return
+				}
+				_, copyErr := io.Copy(c.Writer, reader)
+				_ = reader.Close()
+				if copyErr != nil {
+					return
+				}
+			}
+			return
+		}
+		if alarmServ == nil {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"err": "attachment service is not enabled"})
+			return
+		}
+		meta, err := alarmServ.Assembler().FindMetadata(phone, fileName)
+		if err != nil || meta.Path == "" {
+			c.JSON(http.StatusNotFound, gin.H{"err": "attachment file is not found"})
+			return
+		}
+		http.ServeFile(c.Writer, c.Request, meta.Path)
 	})
 
 	httpAddr := ":" + cfg.Server.Port.HTTPPort

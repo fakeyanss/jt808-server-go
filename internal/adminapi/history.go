@@ -43,7 +43,7 @@ func listLocations(c *gin.Context, deps Dependencies) {
 	if deps.Locations == nil {
 		// memory 后端只保留热读环形缓冲，不保存定位历史。
 		writeJSONError(c, http.StatusServiceUnavailable, codeUnavailable,
-			"location history is not available for the current storage backend")
+			"location history is not available for the current database backend")
 		return
 	}
 	query, ok := parseHistoryQuery(c)

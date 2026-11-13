@@ -314,10 +314,15 @@ func (s *Server) cleanupLoop() {
 		case now := <-ticker.C:
 			s.assembler.CleanupStale(now, s.cfg.SessionTimeout)
 			s.assembler.CleanupCompleted(now, s.cfg.CompletedTTL)
-			// 每小时扫一次附件目录；保留期为 0 时不清理。
-			if s.cfg.Retention > 0 && (lastPrune.IsZero() || now.Sub(lastPrune) >= time.Hour) {
+			// 每小时扫一次：pending 回收始终按来源前缀执行；保留期清理只做附件来源。
+			if lastPrune.IsZero() || now.Sub(lastPrune) >= time.Hour {
 				lastPrune = now
-				s.pruneExpiredFiles(now)
+				if s.cfg.Storage != nil {
+					s.assembler.pruneBlobPending()
+				}
+				if s.cfg.Retention > 0 {
+					s.pruneExpiredFiles(now)
+				}
 			}
 		}
 	}
@@ -326,6 +331,14 @@ func (s *Server) cleanupLoop() {
 // pruneExpiredFiles 删除超过保留期且不在组装中的附件文件。
 func (s *Server) pruneExpiredFiles(now time.Time) {
 	if s.cfg.Retention <= 0 {
+		return
+	}
+	if s.cfg.Storage != nil {
+		// 对象存储模式只清理附件来源前缀与 attachment_files 表，不触碰媒体来源。
+		if removed := s.assembler.pruneBlobRetention(now); removed > 0 {
+			log.Info().Int("removed", removed).Str("staging", s.cfg.Storage.StagingDir).
+				Msg("Pruned expired attachment records and objects")
+		}
 		return
 	}
 	cutoff := now.Add(-s.cfg.Retention)

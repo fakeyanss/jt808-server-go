@@ -13,6 +13,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/fakeyanss/jt808-server-go/internal/repository"
+	"github.com/fakeyanss/jt808-server-go/internal/repository/memory"
 )
 
 func TestWritePrometheusExposesRequiredMetrics(t *testing.T) {
@@ -119,18 +120,33 @@ func TestOrphanMetricsExposed(t *testing.T) {
 }
 
 func TestProviderReadyReportsEachCheck(t *testing.T) {
-	failing := errors.New("storage unavailable")
+	failing := errors.New("database unavailable")
 	provider := &Provider{Checks: []Check{
-		{Name: "storage", Fn: func(context.Context) error { return failing }},
+		{Name: "database", Fn: func(context.Context) error { return failing }},
 		{Name: "outbox", Fn: func(context.Context) error { return nil }},
 	}}
 
 	results := provider.Ready(context.Background())
 	require.Len(t, results, 2)
-	require.Equal(t, "outbox", results[0].Name)
+	require.Equal(t, "database", results[0].Name)
+	require.ErrorIs(t, results[0].Err, failing)
+	require.Equal(t, "outbox", results[1].Name)
+	require.True(t, results[1].OK())
+}
+
+// 降级检查不算失败：OK 仍为 true，但必须能被调用方识别为 degraded。
+func TestProviderReadyReportsDegraded(t *testing.T) {
+	provider := &Provider{Checks: []Check{
+		{Name: "embedded_database", Fn: func(context.Context) error {
+			return Degraded("cluster is running on embedded sqlite")
+		}},
+	}}
+
+	results := provider.Ready(context.Background())
+	require.Len(t, results, 1)
 	require.True(t, results[0].OK())
-	require.Equal(t, "storage", results[1].Name)
-	require.ErrorIs(t, results[1].Err, failing)
+	require.True(t, results[0].IsDegraded())
+	require.ErrorContains(t, results[0].Err, "embedded sqlite")
 }
 
 func TestProviderSnapshotAddsCounters(t *testing.T) {
@@ -149,7 +165,7 @@ func TestProviderSnapshotAddsCounters(t *testing.T) {
 
 func TestCheckOutboxBacklog(t *testing.T) {
 	now := time.Now()
-	repo := repository.NewCommandRepository()
+	repo := memory.NewCommandRepository()
 	commands := []*repository.DownlinkCommand{
 		{CommandID: "expired-1", IdempotencyKey: "idem-1", Phone: "1001", MsgID: 0x8105, Serial: 1, Status: repository.CommandStatusPending, ExpiresAt: now.Add(-time.Minute)},
 		{CommandID: "expired-2", IdempotencyKey: "idem-2", Phone: "1002", MsgID: 0x8105, Serial: 2, Status: repository.CommandStatusPending, ExpiresAt: now.Add(-time.Second)},

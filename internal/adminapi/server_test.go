@@ -98,14 +98,14 @@ func TestAdminUnknownRouteUsesJSONError(t *testing.T) {
 func TestAdminReadyzReflectsFailedChecks(t *testing.T) {
 	serv := NewServer(testOptions("secret", 10, 20), Dependencies{
 		Probes: &observability.Provider{Checks: []observability.Check{
-			{Name: "storage", Fn: func(context.Context) error { return errors.New("database is down") }},
+			{Name: "database", Fn: func(context.Context) error { return errors.New("database is down") }},
 		}},
 	})
 
 	recorder := doRequest(t, serv.Handler(), http.MethodGet, "/readyz", "")
 	require.Equal(t, http.StatusServiceUnavailable, recorder.Code)
 	require.Contains(t, recorder.Body.String(), `"status":"not ready"`)
-	require.Contains(t, recorder.Body.String(), `"name":"storage"`)
+	require.Contains(t, recorder.Body.String(), `"name":"database"`)
 	require.Contains(t, recorder.Body.String(), "database is down")
 }
 

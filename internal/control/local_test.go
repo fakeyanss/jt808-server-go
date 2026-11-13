@@ -14,7 +14,7 @@ import (
 	"github.com/fakeyanss/jt808-server-go/internal/mediaupload"
 	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
 	"github.com/fakeyanss/jt808-server-go/internal/repository"
-	"github.com/fakeyanss/jt808-server-go/internal/storage"
+	"github.com/fakeyanss/jt808-server-go/internal/repository/database"
 )
 
 func TestLocalUplinkSinkDelivers(t *testing.T) {
@@ -36,7 +36,7 @@ func TestLocalUplinkSinkRequiresHandler(t *testing.T) {
 func TestLocalAuthProviderReadsDevice(t *testing.T) {
 	ctx := context.Background()
 	const phone = "188765499001"
-	devices := storage.Default().Devices
+	devices := database.Default().Devices
 	require.NoError(t, devices.Upsert(ctx, &model.Device{Phone: phone, AuthCode: "AUTH-1"}))
 	t.Cleanup(func() { _ = devices.DeleteByPhone(ctx, phone) })
 

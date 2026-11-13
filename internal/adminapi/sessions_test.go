@@ -13,6 +13,7 @@ import (
 
 	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
 	"github.com/fakeyanss/jt808-server-go/internal/repository"
+	"github.com/fakeyanss/jt808-server-go/internal/repository/memory"
 	"github.com/fakeyanss/jt808-server-go/internal/runtime"
 )
 
@@ -28,7 +29,7 @@ func newSessionFixture(t *testing.T) *sessionFixture {
 	t.Helper()
 	fixture := &sessionFixture{
 		registry:  runtime.NewConnectionRegistry(),
-		devices:   repository.NewDeviceRepository(),
+		devices:   memory.NewDeviceRepository(),
 		heartbeat: runtime.NewHeartbeatRegistry(),
 	}
 	fixture.server = NewServer(testOptions("secret", 100, 200), Dependencies{

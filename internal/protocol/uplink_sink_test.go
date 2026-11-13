@@ -11,7 +11,7 @@ import (
 
 	"github.com/fakeyanss/jt808-server-go/internal/contracts"
 	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
-	"github.com/fakeyanss/jt808-server-go/internal/storage"
+	"github.com/fakeyanss/jt808-server-go/internal/repository/database"
 	"github.com/fakeyanss/jt808-server-go/internal/uplink"
 )
 
@@ -46,9 +46,9 @@ func (f *fakeUplinkSink) last(t *testing.T) contracts.UplinkEvent {
 	return f.events[len(f.events)-1]
 }
 
-func newUplinkTestStores(t *testing.T) *storage.Stores {
+func newUplinkTestStores(t *testing.T) *database.Repositories {
 	t.Helper()
-	stores := storage.NewMemory()
+	stores := database.NewMemory()
 	require.NoError(t, stores.Devices.Upsert(context.Background(), &model.Device{
 		Phone: "188765499021", Keepalive: time.Minute,
 	}))

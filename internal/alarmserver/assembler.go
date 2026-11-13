@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"github.com/rs/zerolog/log"
+
+	"github.com/fakeyanss/jt808-server-go/internal/repository"
 )
 
 // byteRange 表示附件文件中已连续覆盖的字节区间 [Offset, Offset+Length)。
@@ -97,6 +99,18 @@ type fileState struct {
 	completed bool
 	removed   bool
 	meta      Metadata
+
+	// store 非空表示该文件使用对象存储模式：本地只有暂存窗口，文件按切片提交。
+	store *StorageConfig
+	// segments 是已提交的对象切片；flushCursor 是已提交到的字节偏移。
+	segments    []repository.AttachmentSegment
+	flushCursor int64
+	// stagedMax 是本地暂存文件写到的最高偏移，用于暂存区总量统计。
+	stagedMax int64
+	// createdAt 是业务行创建时间，后续进度更新必须保持不变。
+	createdAt time.Time
+	// counted 表示该文件已计入 active；每个文件最多减一次。
+	counted bool
 }
 
 func newFileState(owner *Assembler, info AttachmentInfo, date, dir string, entry AttachmentEntry, fileType uint8) *fileState {
@@ -211,15 +225,24 @@ func (st *fileState) ensureOpenLocked() error {
 	if err := st.owner.acquire(); err != nil {
 		return err
 	}
+	if st.store != nil {
+		if err := os.MkdirAll(filepath.Dir(st.partPath), 0o750); err != nil {
+			st.owner.release()
+			return err
+		}
+	}
 	file, err := os.OpenFile(st.partPath, os.O_CREATE|os.O_RDWR, 0o644)
 	if err != nil {
 		st.owner.release()
 		return err
 	}
-	if err := file.Truncate(st.size); err != nil {
-		_ = file.Close()
-		st.owner.release()
-		return err
+	// 对象存储模式是稀疏暂存：只按实际写入扩展，不预先按总大小打洞占用 inode。
+	if st.store == nil {
+		if err := file.Truncate(st.size); err != nil {
+			_ = file.Close()
+			st.owner.release()
+			return err
+		}
 	}
 	st.file = file
 	return nil
@@ -237,6 +260,9 @@ func (st *fileState) closeFileLocked() {
 }
 
 func (st *fileState) persistLocked() error {
+	if st.store != nil {
+		return st.persistBlobMarkerLocked()
+	}
 	return writePersistedState(st.partPath, persistedState{
 		FileName:     st.fileName,
 		FileType:     st.fileType,
@@ -255,6 +281,9 @@ func (st *fileState) writeAt(offset int64, data []byte) error {
 	st.mu.Lock()
 	defer st.mu.Unlock()
 
+	if st.store != nil {
+		return st.blobWriteLocked(offset, data)
+	}
 	if st.removed {
 		return ErrFileNotRegistered
 	}
@@ -286,6 +315,10 @@ func (st *fileState) completeLocked() bool {
 }
 
 func (st *fileState) finishLocked() error {
+	if st.store != nil {
+		// 对象存储模式的完成收尾在 finalizeBlobLocked 内完成。
+		return nil
+	}
 	if st.completed {
 		return nil
 	}
@@ -347,6 +380,16 @@ func (st *fileState) check() (CompletionResult, error) {
 	if st.completed {
 		return CompletionResult{Complete: true}, nil
 	}
+	if st.store != nil {
+		// 对象存储模式下 0x1212 是重试上传窗口的机会：窗口补齐但上次上传失败时在这里补传。
+		if err := st.flushReadyLocked(); err != nil {
+			return CompletionResult{}, err
+		}
+		if st.completed {
+			return CompletionResult{Complete: true}, nil
+		}
+		return CompletionResult{Complete: false, Missing: st.missingLocked()}, nil
+	}
 	if st.completeLocked() {
 		if err := st.finishLocked(); err != nil {
 			return CompletionResult{}, err
@@ -373,6 +416,13 @@ func (st *fileState) expire(now time.Time, timeout time.Duration) bool {
 	}
 	if now.Sub(st.lastActivity) < timeout {
 		return false
+	}
+	if st.store != nil {
+		st.removed = true
+		st.failBlobLocked()
+		log.Warn().Str("phone", st.phone).Str("file", st.fileName).Int64("size", st.size).
+			Msg("Discard attachment file without progress (object storage mode)")
+		return true
 	}
 	st.closeFileLocked()
 	if err := os.Remove(st.partPath); err != nil && !os.IsNotExist(err) {
@@ -416,11 +466,18 @@ type Assembler struct {
 	active atomic.Int64
 	// completed 统计进程启动后完成落盘的附件数量，供指标采集。
 	completed atomic.Int64
+	// staging 是对象存储模式下本地暂存区的当前占用字节数。
+	staging atomic.Int64
+	// receiving 是本进程正在接收的附件数量，供附件节点状态接口回报剩余额度。
+	receiving atomic.Int64
 	// now 可注入时钟，测试据此验证完成态 TTL，无需等待真实时间。
 	now func() time.Time
 }
 
 func NewAssembler(cfg Config) *Assembler {
+	if cfg.Storage != nil {
+		cfg.Storage.Normalize()
+	}
 	return &Assembler{
 		cfg:   cfg.Normalize(),
 		files: make(map[string]*fileState),
@@ -561,6 +618,21 @@ func (a *Assembler) registerFile(info AttachmentInfo, date, dir string, entry At
 		return existing, nil
 	}
 	a.mu.Unlock()
+
+	if a.cfg.Storage != nil {
+		st, err := a.registerBlobFile(info, date, dir, entry, fileType)
+		if err != nil {
+			return nil, err
+		}
+		a.mu.Lock()
+		if existing, ok := a.files[key]; ok {
+			a.mu.Unlock()
+			return existing, nil
+		}
+		a.files[key] = st
+		a.mu.Unlock()
+		return st, nil
+	}
 
 	finalPath := filepath.Join(dir, entry.FileName)
 	if fi, err := os.Stat(finalPath); err == nil && fi.Size() == int64(entry.FileSize) {
@@ -727,6 +799,9 @@ func (a *Assembler) Close() {
 //   - 位图已完整：补做 rename 与元数据生成；
 //   - 有 .part 无状态：无法恢复块信息，删除并告警。
 func (a *Assembler) Reconcile() error {
+	if a.cfg.Storage != nil {
+		return a.reconcileBlob()
+	}
 	if err := os.MkdirAll(a.cfg.Dir, 0o755); err != nil {
 		return fmt.Errorf("create attachment root: %w", err)
 	}
@@ -815,6 +890,9 @@ func (a *Assembler) Reconcile() error {
 // Select 返回已完成的附件元数据，phone 为空时返回全部。
 // 内存态之外还会扫描落盘元数据，保证进程重启后历史附件仍可查询。
 func (a *Assembler) Select(phone string) []Metadata {
+	if a.cfg.Storage != nil {
+		return a.selectBlob(phone)
+	}
 	merged := make(map[string]Metadata)
 	a.mu.Lock()
 	for _, st := range a.files {
@@ -858,6 +936,18 @@ func (a *Assembler) Select(phone string) []Metadata {
 
 // FindMetadata 返回指定手机号与文件名的已完成附件元数据。
 func (a *Assembler) FindMetadata(phone, fileName string) (Metadata, error) {
+	if a.cfg.Storage != nil {
+		if st := a.lookup(phone, fileName); st != nil {
+			st.mu.Lock()
+			completed := st.completed
+			meta := st.meta
+			st.mu.Unlock()
+			if completed {
+				return meta, nil
+			}
+		}
+		return a.findBlobMetadata(phone, fileName)
+	}
 	if st := a.lookup(phone, fileName); st != nil {
 		st.mu.Lock()
 		completed := st.completed

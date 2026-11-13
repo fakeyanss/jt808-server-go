@@ -57,11 +57,17 @@ func NewServer(opts config.AdminOptions, deps Dependencies) *Server {
 		results := deps.Probes.Ready(c.Request.Context())
 		checks := make([]gin.H, 0, len(results))
 		ready := true
+		degraded := false
 		for _, result := range results {
 			check := gin.H{"name": result.Name, "ok": result.OK()}
 			if result.Err != nil {
 				check["error"] = result.Err.Error()
-				ready = false
+				if result.IsDegraded() {
+					check["degraded"] = true
+					degraded = true
+				} else {
+					ready = false
+				}
 			}
 			checks = append(checks, check)
 		}
@@ -70,6 +76,8 @@ func NewServer(opts config.AdminOptions, deps Dependencies) *Server {
 		if !ready {
 			status = http.StatusServiceUnavailable
 			state = "not ready"
+		} else if degraded {
+			state = "degraded"
 		}
 		c.JSON(status, gin.H{"status": state, "checks": checks})
 	})

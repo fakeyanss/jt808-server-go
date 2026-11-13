@@ -15,6 +15,7 @@ import (
 	"github.com/fakeyanss/jt808-server-go/internal/mediaupload"
 	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
 	"github.com/fakeyanss/jt808-server-go/internal/repository"
+	"github.com/fakeyanss/jt808-server-go/internal/repository/memory"
 )
 
 // apiGeoBody 构造 0x0801 的 28 字节位置体。
@@ -35,14 +36,14 @@ func newMediaAPITestServer(t *testing.T) (*gin.Engine, repository.MediaFileRepos
 	gin.SetMode(gin.TestMode)
 
 	const phone = "188765432113"
-	devices := repository.NewDeviceRepository()
+	devices := memory.NewDeviceRepository()
 	require.NoError(t, devices.Upsert(context.Background(), &model.Device{Phone: phone, Plate: "京A12345"}))
 
-	files := repository.NewMediaFileRepository()
+	files := memory.NewMediaFileRepository()
 	store, err := mediaupload.NewStore(t.TempDir())
 	require.NoError(t, err)
 
-	searches := repository.NewMediaSearchRepository()
+	searches := memory.NewMediaSearchRepository()
 	require.NoError(t, searches.Replace(context.Background(), phone, 41, []repository.MediaSearchRecord{{
 		MediaID: 8001, MediaType: 0, ChannelID: 1, EventID: 1,
 		Latitude: 30000000, Longitude: 120000000,
@@ -51,7 +52,7 @@ func newMediaAPITestServer(t *testing.T) (*gin.Engine, repository.MediaFileRepos
 	}}))
 
 	router := gin.New()
-	registerMediaRoutes(router.Group("/api"), devices, files, files, searches, store)
+	registerMediaRoutes(router.Group("/api"), devices, files, files, searches, store, nil)
 
 	saveMedia := func(mediaID uint32, channel uint8, alarmSign uint32, bcdTime string, data []byte) {
 		file, saveErr := store.Save(&model.Msg0801{

@@ -92,6 +92,11 @@ admin:
     burst: 20
     keyBy: "credential"
 
+# 独立的存活/就绪探针监听。只暴露 /healthz 与 /readyz，不承载业务接口、不做鉴权。
+# 通用入口未配置时不启动，保持既有行为；四个角色二进制必须配置。
+probes:
+  addr: ""
+
 # 业务 API 鉴权、限流与审计。
 # token 为空表示鉴权关闭，仅建议在可信内网临时使用；生产环境必须配置。
 # 变更类请求（POST/PUT/PATCH/DELETE）与鉴权失败会写入审计日志。
@@ -229,6 +234,14 @@ cluster:
     addr: ""
     # gateway -> control 共享密钥。role=control 必填，且必须与 uplink.http.token 一致。
     token: ""
+  media:
+    # 本进程作为媒体节点时，在 /internal/media/status 里回报的节点标识；为空时按播出地址推导。
+    nodeId: ""
+    # 管控可调度的媒体节点清单；control 角色用，地址为媒体节点 mediaServer.httpPort 基址。
+    # 无本地媒体且列表为空时，播放接口返回 no_media_node_configured，/readyz 的 media_nodes 失败。
+    nodes: []
+    # - name: "media-1"
+    #   url: "http://10.0.0.12:7301"
   downlink:
     # sync_ack 等待上限；默认 8s，不得超过 ackTimeoutMs × (maxRetransmissions+1)。
     timeoutMs: 8000
@@ -242,7 +255,7 @@ cluster:
     dedupMaxEntries: 100000
     # 单个上行请求体上限；超出返回 413。
     maxBodyBytes: 4194304
-  blob:
+  storage:
     # local | sharedVolume | objectStore。
     # media/attachment 角色必须使用 sharedVolume（带标记）或 objectStore（E1 未实现，启动拒绝）。
     backend: "local"
@@ -252,11 +265,13 @@ cluster:
     marker: ".jt808-shared-volume"
     root: "./data/blobs"
 
-# 持久化后端：memory | sqlite | mysql，缺省 memory（行为与旧版本一致）
-storage:
+# 持久化数据库：memory | sqlite | mysql，缺省 memory（行为与旧版本一致）
+database:
   type: "memory"
   sqlite:
     path: "./data/jt808.db"
+    # 只读连接池大小；0 表示按 CPU 数。写池固定 1 连接，不是调优参数。
+    readConns: 0
   mysql:
     dsn: ""
     # sqlite / mysql 均不在服务启动时执行迁移；首次部署或升级后先执行独立工具：

@@ -161,7 +161,7 @@ type Config struct {
 	Log           *logConf           `yaml:"log"`
 	Server        *serverConf        `yaml:"server"`
 	Client        *clientConf        `yaml:"client"`
-	Storage       *storageConf       `yaml:"storage"`
+	Database      *databaseConf      `yaml:"database"`
 	Retention     *retentionConf     `yaml:"retention"`
 	AlarmServer   *alarmServerConf   `yaml:"alarmServer"`
 	MediaServer   *mediaServerConf   `yaml:"mediaServer"`
@@ -171,6 +171,7 @@ type Config struct {
 	CommandOutbox *commandOutboxConf `yaml:"commandOutbox"`
 	Uplink        *uplinkConf        `yaml:"uplink"`
 	Cluster       *clusterConf       `yaml:"cluster"`
+	Probes        *probesConf        `yaml:"probes"`
 }
 
 // 业务 API 的默认限流参数；token 为空表示未开启鉴权，启动时会打警告。
@@ -470,6 +471,10 @@ const (
 	// DefaultAlarmServerRetentionDays 是已完成附件文件的默认落盘保留天数。
 	DefaultAlarmServerRetentionDays = 7
 	DefaultAlarmServerCompletedTTL  = 20 * time.Minute
+	// DefaultAlarmServerSegmentSize 是集群附件单个对象切片大小（8 MiB）。
+	DefaultAlarmServerSegmentSize = 8 * 1024 * 1024
+	// DefaultAlarmServerStagingMax 是附件节点本地暂存区总量上限（2 GiB）。
+	DefaultAlarmServerStagingMax = 2 * 1024 * 1024 * 1024
 )
 
 // alarmServerConf 配置苏标主动安全附件服务器。
@@ -477,8 +482,10 @@ const (
 // 0x9208 通告的端口直接取自这两个监听端口，未配置的一侧以 0 表示不可用，
 // 避免通告地址与实际监听不一致。
 type alarmServerConf struct {
-	Port          string `yaml:"port"`
-	UDPPort       string `yaml:"udpPort"`
+	Port    string `yaml:"port"`
+	UDPPort string `yaml:"udpPort"`
+	// HTTPPort 是附件节点内部状态接口端口；集群 role attachment 必填。
+	HTTPPort      string `yaml:"httpPort"`
 	Dir           string `yaml:"dir"`
 	MaxFileSize   int64  `yaml:"maxFileSize"`
 	MaxConcurrent int    `yaml:"maxConcurrent"`
@@ -487,6 +494,12 @@ type alarmServerConf struct {
 	CompletedTTL string `yaml:"completedTTL"`
 	// RetentionDays 是已完成附件文件的落盘保留天数；显式 0 表示不清理。
 	RetentionDays *int `yaml:"retentionDays"`
+	// SegmentSizeBytes 是集群附件切片的单个对象大小；默认 8 MiB。
+	// standalone 本地模式忽略该字段。
+	SegmentSizeBytes int64 `yaml:"segmentSizeBytes"`
+	// StagingMaxBytes 是附件节点本地暂存区总量上限；默认 2 GiB。
+	// 到顶后拒绝新的文件登记（返回失败应答），不排队、不写满磁盘。
+	StagingMaxBytes int64 `yaml:"stagingMaxBytes"`
 	// AutoUpload 控制报警首次上报时是否自动下发 0x9208。
 	// 默认 false，保持既有手动下发行为不变。
 	AutoUpload bool `yaml:"autoUpload"`
@@ -499,6 +512,7 @@ type alarmServerConf struct {
 type AlarmServerOptions struct {
 	Port          uint16 // TCP 监听与通告端口，0 表示未启用
 	UDPPort       uint16 // UDP 监听与通告端口，0 表示未启用
+	HTTPPort      uint16 // 内部状态接口端口，0 表示未启用
 	Dir           string
 	MaxFileSize   int64
 	MaxConcurrent int
@@ -506,6 +520,9 @@ type AlarmServerOptions struct {
 	Retention     time.Duration
 	AutoUpload    bool
 	UploadIP      string
+	// SegmentSizeBytes / StagingMaxBytes 只在集群对象存储模式使用。
+	SegmentSizeBytes int64
+	StagingMaxBytes  int64
 }
 
 // ParseAlarmServer 解析并校验 alarmServer 配置。
@@ -540,6 +557,10 @@ func (c *Config) ParseAlarmServer() (options AlarmServerOptions, enabled bool, e
 	if err != nil {
 		return AlarmServerOptions{}, false, err
 	}
+	httpPort, err := parsePort("httpPort", strings.TrimSpace(conf.HTTPPort))
+	if err != nil {
+		return AlarmServerOptions{}, false, err
+	}
 	dir := strings.TrimSpace(conf.Dir)
 	if dir == "" {
 		dir = DefaultAlarmServerDir
@@ -566,6 +587,20 @@ func (c *Config) ParseAlarmServer() (options AlarmServerOptions, enabled bool, e
 		}
 		completedTTL = parsed
 	}
+	if conf.SegmentSizeBytes < 0 {
+		return AlarmServerOptions{}, false, fmt.Errorf("alarmServer.segmentSizeBytes must be >= 0, got %d", conf.SegmentSizeBytes)
+	}
+	segmentSize := conf.SegmentSizeBytes
+	if segmentSize == 0 {
+		segmentSize = DefaultAlarmServerSegmentSize
+	}
+	if conf.StagingMaxBytes < 0 {
+		return AlarmServerOptions{}, false, fmt.Errorf("alarmServer.stagingMaxBytes must be >= 0, got %d", conf.StagingMaxBytes)
+	}
+	stagingMax := conf.StagingMaxBytes
+	if stagingMax == 0 {
+		stagingMax = DefaultAlarmServerStagingMax
+	}
 	retentionDays := DefaultAlarmServerRetentionDays
 	if conf.RetentionDays != nil {
 		if *conf.RetentionDays < 0 {
@@ -575,26 +610,41 @@ func (c *Config) ParseAlarmServer() (options AlarmServerOptions, enabled bool, e
 	}
 	uploadIP := strings.TrimSpace(conf.UploadIP)
 	if conf.AutoUpload {
+		if port == 0 && udpPort == 0 {
+			// control-only 的自动触发从 cluster.attachment.nodes 取附件节点地址，
+			// 不需要本进程监听附件端口，也不要求 uploadIP。
+			return AlarmServerOptions{
+				Dir:              dir,
+				MaxFileSize:      maxFileSize,
+				MaxConcurrent:    maxConcurrent,
+				CompletedTTL:     completedTTL,
+				Retention:        time.Duration(retentionDays) * 24 * time.Hour,
+				AutoUpload:       true,
+				UploadIP:         uploadIP,
+				SegmentSizeBytes: segmentSize,
+				StagingMaxBytes:  stagingMax,
+			}, true, nil
+		}
 		if uploadIP == "" {
-			return AlarmServerOptions{}, false, fmt.Errorf("alarmServer.uploadIP is required when alarmServer.autoUpload is enabled")
+			return AlarmServerOptions{}, false, fmt.Errorf("alarmServer.uploadIP is required when alarmServer.autoUpload is enabled with a local attachment listener")
 		}
 		if len([]byte(uploadIP)) > 255 {
 			return AlarmServerOptions{}, false, fmt.Errorf("alarmServer.uploadIP must contain at most 255 bytes")
 		}
-		if port == 0 && udpPort == 0 {
-			return AlarmServerOptions{}, false, fmt.Errorf("alarmServer.port or alarmServer.udpPort is required when alarmServer.autoUpload is enabled")
-		}
 	}
 	return AlarmServerOptions{
-		Port:          uint16(port),
-		UDPPort:       uint16(udpPort),
-		Dir:           dir,
-		MaxFileSize:   maxFileSize,
-		MaxConcurrent: maxConcurrent,
-		CompletedTTL:  completedTTL,
-		Retention:     time.Duration(retentionDays) * 24 * time.Hour,
-		AutoUpload:    conf.AutoUpload,
-		UploadIP:      uploadIP,
+		Port:             uint16(port),
+		UDPPort:          uint16(udpPort),
+		HTTPPort:         uint16(httpPort),
+		Dir:              dir,
+		MaxFileSize:      maxFileSize,
+		MaxConcurrent:    maxConcurrent,
+		CompletedTTL:     completedTTL,
+		Retention:        time.Duration(retentionDays) * 24 * time.Hour,
+		AutoUpload:       conf.AutoUpload,
+		UploadIP:         uploadIP,
+		SegmentSizeBytes: segmentSize,
+		StagingMaxBytes:  stagingMax,
 	}, true, nil
 }
 
@@ -917,6 +967,22 @@ type AdminOptions struct {
 	RatePerSecond float64
 	Burst         int
 	KeyBy         string
+}
+
+// ParseProbes 解析独立的存活/就绪探针监听地址。
+// 未配置时返回 enabled=false：通用入口保持既有行为，不新增监听。
+func (c *Config) ParseProbes() (addr string, enabled bool, err error) {
+	if c == nil || c.Probes == nil {
+		return "", false, nil
+	}
+	addr = strings.TrimSpace(c.Probes.Addr)
+	if addr == "" {
+		return "", false, nil
+	}
+	if err := validateListenAddr("probes.addr", addr); err != nil {
+		return "", false, err
+	}
+	return addr, true, nil
 }
 
 // ParseAdmin 解析并校验 admin 配置。
@@ -1480,18 +1546,25 @@ const (
 	DefaultClusterUplinkMaxBody    = 8 * 1024 * 1024
 	DefaultClusterUplinkMaxRequest = 12 * 1024 * 1024
 	DefaultClusterUplinkMaxDecoded = 8 * 1024 * 1024
-	DefaultClusterBlobRoot         = "./data/blobs"
-	DefaultClusterBlobMarker       = ".jt808-shared-volume"
+	DefaultClusterStorageRoot      = "./data/blobs"
+	DefaultClusterStorageMarker    = ".jt808-shared-volume"
 )
 
 // clusterConf 配置角色拆分与两个内部 HTTP 契约。
 type clusterConf struct {
-	Roles    []string             `yaml:"roles"`
-	Gateway  *clusterGatewayConf  `yaml:"gateway"`
-	Control  *clusterControlConf  `yaml:"control"`
-	Downlink *clusterDownlinkConf `yaml:"downlink"`
-	Uplink   *clusterUplinkConf   `yaml:"uplink"`
-	Blob     *clusterBlobConf     `yaml:"blob"`
+	Roles   []string            `yaml:"roles"`
+	Gateway *clusterGatewayConf `yaml:"gateway"`
+	Control *clusterControlConf `yaml:"control"`
+	Media   *clusterMediaConf   `yaml:"media"`
+	// Attachment 是控制面可选的附件节点清单；附件角色自己监听 TCP/UDP。
+	Attachment *clusterAttachmentConf `yaml:"attachment"`
+	Downlink   *clusterDownlinkConf   `yaml:"downlink"`
+	Uplink     *clusterUplinkConf     `yaml:"uplink"`
+	Storage    *clusterStorageConf    `yaml:"storage"`
+	// AllowEmbeddedStorage 是仅用于本地开发联调的开关：允许集群角色共用
+	// 同一个嵌入式 SQLite 文件代替共享 MySQL。
+	// 生产环境禁止开启；开启时启动打印 WARN，/readyz 返回 degraded。
+	AllowEmbeddedStorage bool `yaml:"allowEmbeddedStorage"`
 }
 
 type clusterGatewayConf struct {
@@ -1511,6 +1584,43 @@ type clusterControlConf struct {
 	Token string `yaml:"token"`
 }
 
+// clusterMediaConf 配置媒体节点侧标识与管控侧的节点清单。
+//
+// nodeId 由媒体节点在 /internal/media/status 中回报；nodes 是管控挑选媒体节点的
+// 唯一依据，地址必须是媒体节点内部 HTTP 的基址（即 mediaServer.httpPort）。
+type clusterMediaConf struct {
+	NodeID string                 `yaml:"nodeId"`
+	Nodes  []clusterMediaNodeConf `yaml:"nodes"`
+}
+
+type clusterMediaNodeConf struct {
+	// Name 是节点在日志与错误信息里的可读名字；为空时按序号生成。
+	Name string `yaml:"name"`
+	// URL 是媒体节点内部 HTTP 基址，例如 http://10.0.0.12:7201。
+	URL string `yaml:"url"`
+}
+
+// clusterAttachmentConf 配置附件节点清单。
+//
+// nodes 是控制面选择附件节点的唯一依据；地址必须是附件节点内部 HTTP 基址
+// （默认 7402），节点通过 /internal/attachment/status 通告 TCP/UDP 端口。
+type clusterAttachmentConf struct {
+	// NodeID 是附件节点在状态接口中回报的稳定标识；为空时按通告地址生成。
+	NodeID string                      `yaml:"nodeId"`
+	Nodes  []clusterAttachmentNodeConf `yaml:"nodes"`
+}
+
+type clusterAttachmentNodeConf struct {
+	Name string `yaml:"name"`
+	URL  string `yaml:"url"`
+}
+
+// probesConf 配置独立的存活/就绪探针监听。
+// 只暴露 /healthz 与 /readyz，不承载任何业务接口或鉴权。
+type probesConf struct {
+	Addr string `yaml:"addr"`
+}
+
 type clusterDownlinkConf struct {
 	TimeoutMS int    `yaml:"timeoutMs"`
 	IDTTL     string `yaml:"idempotencyTTL"`
@@ -1528,7 +1638,7 @@ type clusterUplinkConf struct {
 	MaxDecodedBodyBytes int `yaml:"maxDecodedBodyBytes"`
 }
 
-type clusterBlobConf struct {
+type clusterStorageConf struct {
 	Backend string `yaml:"backend"`
 	// SharedVolume 必须显式为 true，避免把本机独占目录误当成共享卷。
 	SharedVolume bool                    `yaml:"sharedVolume"`
@@ -1581,6 +1691,14 @@ type ClusterOptions struct {
 		Addr  string
 		Token string
 	}
+	Media struct {
+		NodeID string
+		Nodes  []MediaNodeOptions
+	}
+	Attachment struct {
+		NodeID string
+		Nodes  []AttachmentNodeOptions
+	}
 	Downlink struct {
 		Timeout     time.Duration
 		IDTTL       time.Duration
@@ -1593,13 +1711,16 @@ type ClusterOptions struct {
 		MaxRequestBytes     int64
 		MaxDecodedBodyBytes int64
 	}
-	Blob struct {
+	Storage struct {
 		Backend      string
 		SharedVolume bool
 		Marker       string
 		Root         string
 		ObjectStore  ObjectStoreOptions
 	}
+	// AllowEmbeddedStorage 表示集群角色使用嵌入式 SQLite 的本地联调模式，
+	// 生产禁止开启。
+	AllowEmbeddedStorage bool
 }
 
 // ObjectStoreOptions 是 S3 兼容后端的归一化配置。
@@ -1612,6 +1733,18 @@ type ObjectStoreOptions struct {
 	PathStyle bool
 	Prefix    string
 	Retries   int
+}
+
+// MediaNodeOptions 是一个可被管控调度的媒体节点。
+type MediaNodeOptions struct {
+	Name string
+	URL  string
+}
+
+// AttachmentNodeOptions 是一个可被控制面调度的附件节点。
+type AttachmentNodeOptions struct {
+	Name string
+	URL  string
 }
 
 // IsStandalone 表示进程是否运行在 standalone 形态。
@@ -1632,8 +1765,8 @@ func (c *Config) ParseServerMode() (ClusterOptions, error) {
 	options.Uplink.MaxBodyBytes = DefaultClusterUplinkMaxBody
 	options.Uplink.MaxRequestBytes = DefaultClusterUplinkMaxRequest
 	options.Uplink.MaxDecodedBodyBytes = DefaultClusterUplinkMaxDecoded
-	options.Blob.Root = DefaultClusterBlobRoot
-	options.Blob.Marker = DefaultClusterBlobMarker
+	options.Storage.Root = DefaultClusterStorageRoot
+	options.Storage.Marker = DefaultClusterStorageMarker
 
 	if c == nil {
 		return options, nil
@@ -1679,6 +1812,7 @@ func (c *Config) ParseServerMode() (ClusterOptions, error) {
 		roles[role] = true
 	}
 	options.Roles = roles
+	options.AllowEmbeddedStorage = conf.AllowEmbeddedStorage
 
 	if mode == ServerModeStandalone {
 		if len(conf.Roles) > 0 {
@@ -1703,6 +1837,56 @@ func (c *Config) ParseServerMode() (ClusterOptions, error) {
 	if conf.Control != nil {
 		options.Control.Addr = strings.TrimSpace(conf.Control.Addr)
 		options.Control.Token = strings.TrimSpace(conf.Control.Token)
+	}
+	if conf.Media != nil {
+		options.Media.NodeID = strings.TrimSpace(conf.Media.NodeID)
+		seenNodeURL := map[string]bool{}
+		for index, raw := range conf.Media.Nodes {
+			url := strings.TrimSpace(raw.URL)
+			name := strings.TrimSpace(raw.Name)
+			if url == "" {
+				problems = append(problems, fmt.Sprintf("cluster.media.nodes[%d].url is required", index))
+				continue
+			}
+			if err := validateHTTPURL(fmt.Sprintf("cluster.media.nodes[%d].url", index), url); err != nil {
+				problems = append(problems, err.Error())
+				continue
+			}
+			if seenNodeURL[url] {
+				problems = append(problems, fmt.Sprintf("cluster.media.nodes[%d].url duplicates %q", index, url))
+				continue
+			}
+			seenNodeURL[url] = true
+			if name == "" {
+				name = fmt.Sprintf("media-%d", index+1)
+			}
+			options.Media.Nodes = append(options.Media.Nodes, MediaNodeOptions{Name: name, URL: url})
+		}
+	}
+	if conf.Attachment != nil {
+		options.Attachment.NodeID = strings.TrimSpace(conf.Attachment.NodeID)
+		seenNodeURL := map[string]bool{}
+		for index, raw := range conf.Attachment.Nodes {
+			url := strings.TrimSpace(raw.URL)
+			name := strings.TrimSpace(raw.Name)
+			if url == "" {
+				problems = append(problems, fmt.Sprintf("cluster.attachment.nodes[%d].url is required", index))
+				continue
+			}
+			if err := validateHTTPURL(fmt.Sprintf("cluster.attachment.nodes[%d].url", index), url); err != nil {
+				problems = append(problems, err.Error())
+				continue
+			}
+			if seenNodeURL[url] {
+				problems = append(problems, fmt.Sprintf("cluster.attachment.nodes[%d].url duplicates %q", index, url))
+				continue
+			}
+			seenNodeURL[url] = true
+			if name == "" {
+				name = fmt.Sprintf("attachment-%d", index+1)
+			}
+			options.Attachment.Nodes = append(options.Attachment.Nodes, AttachmentNodeOptions{Name: name, URL: url})
+		}
 	}
 	if roles.Has(RoleGateway) {
 		if options.Gateway.Addr == "" {
@@ -1812,17 +1996,17 @@ func (c *Config) ParseServerMode() (ClusterOptions, error) {
 	}
 
 	// 文件存储。
-	if blob := conf.Blob; blob != nil {
-		options.Blob.Backend = strings.ToLower(strings.TrimSpace(blob.Backend))
-		options.Blob.SharedVolume = blob.SharedVolume
-		if marker := strings.TrimSpace(blob.Marker); marker != "" {
-			options.Blob.Marker = marker
+	if storageConf := conf.Storage; storageConf != nil {
+		options.Storage.Backend = strings.ToLower(strings.TrimSpace(storageConf.Backend))
+		options.Storage.SharedVolume = storageConf.SharedVolume
+		if marker := strings.TrimSpace(storageConf.Marker); marker != "" {
+			options.Storage.Marker = marker
 		}
-		if root := strings.TrimSpace(blob.Root); root != "" {
-			options.Blob.Root = root
+		if root := strings.TrimSpace(storageConf.Root); root != "" {
+			options.Storage.Root = root
 		}
-		if store := blob.ObjectStore; store != nil {
-			options.Blob.ObjectStore = ObjectStoreOptions{
+		if store := storageConf.ObjectStore; store != nil {
+			options.Storage.ObjectStore = ObjectStoreOptions{
 				Endpoint:  strings.TrimSpace(store.Endpoint),
 				Region:    strings.TrimSpace(store.Region),
 				Bucket:    strings.TrimSpace(store.Bucket),
@@ -1833,90 +2017,94 @@ func (c *Config) ParseServerMode() (ClusterOptions, error) {
 				Retries:   store.Retries,
 			}
 			if store.PathStyle != nil {
-				options.Blob.ObjectStore.PathStyle = *store.PathStyle
+				options.Storage.ObjectStore.PathStyle = *store.PathStyle
 			}
-			if options.Blob.ObjectStore.Region == "" {
-				options.Blob.ObjectStore.Region = "us-east-1"
+			if options.Storage.ObjectStore.Region == "" {
+				options.Storage.ObjectStore.Region = "us-east-1"
 			}
 		}
 	}
 	needsBlob := roles.Has(RoleMedia) || roles.Has(RoleAttachment) ||
-		(roles.Has(RoleControl) && options.Blob.Backend == BlobBackendObjectStore)
+		(roles.Has(RoleControl) && options.Storage.Backend == BlobBackendObjectStore)
 	if needsBlob {
-		switch options.Blob.Backend {
+		switch options.Storage.Backend {
 		case BlobBackendSharedVolume:
-			if !options.Blob.SharedVolume {
-				problems = append(problems, "cluster.blob.sharedVolume must be true when cluster.blob.backend=sharedVolume")
+			if !options.Storage.SharedVolume {
+				problems = append(problems, "cluster.storage.sharedVolume must be true when cluster.storage.backend=sharedVolume")
 			}
-			markerPath := filepath.Join(options.Blob.Root, options.Blob.Marker)
+			markerPath := filepath.Join(options.Storage.Root, options.Storage.Marker)
 			if _, err := os.Stat(markerPath); err != nil {
 				problems = append(problems, fmt.Sprintf(
-					"cluster.blob marker %q is required for sharedVolume backend: %v", markerPath, err))
+					"cluster.storage marker %q is required for sharedVolume backend: %v", markerPath, err))
 			}
 		case BlobBackendObjectStore:
-			store := options.Blob.ObjectStore
+			store := options.Storage.ObjectStore
 			if store.Endpoint == "" {
-				problems = append(problems, "cluster.blob.objectStore.endpoint is required when backend=objectStore")
+				problems = append(problems, "cluster.storage.objectStore.endpoint is required when backend=objectStore")
 			}
 			if store.Bucket == "" {
-				problems = append(problems, "cluster.blob.objectStore.bucket is required when backend=objectStore")
+				problems = append(problems, "cluster.storage.objectStore.bucket is required when backend=objectStore")
 			}
 			if store.AccessKey == "" || store.SecretKey == "" {
-				problems = append(problems, "cluster.blob.objectStore.accessKey and secretKey are required when backend=objectStore")
+				problems = append(problems, "cluster.storage.objectStore.accessKey and secretKey are required when backend=objectStore")
 			}
 			if store.Retries < 0 || store.Retries > 10 {
-				problems = append(problems, fmt.Sprintf("cluster.blob.objectStore.retries must be in [0,10], got %d", store.Retries))
+				problems = append(problems, fmt.Sprintf("cluster.storage.objectStore.retries must be in [0,10], got %d", store.Retries))
 			}
 		default:
-			problems = append(problems, "cluster.blob.backend must be sharedVolume or objectStore for roles media/attachment")
+			problems = append(problems, "cluster.storage.backend must be sharedVolume or objectStore for roles media/attachment")
 		}
 	}
-	if options.Blob.Backend == BlobBackendObjectStore {
+	if options.Storage.Backend == BlobBackendObjectStore {
 		if policy := c.RetentionPolicy(); policy.OrphanFiles.Enabled {
-			problems = append(problems, "retention.orphanFiles.enabled must be false when cluster.blob.backend=objectStore (use bucket lifecycle)")
+			problems = append(problems, "retention.orphanFiles.enabled must be false when cluster.storage.backend=objectStore (use bucket lifecycle)")
 		}
 	}
 
 	// control 在 E2 用 sharedVolume 承接 0x0801 落盘。共享卷根必须等于媒体下载目录，
 	// 下载接口才能按同一相对路径打开文件；标记文件必须已存在且可写。
-	if roles.Has(RoleControl) && options.Blob.Backend == BlobBackendSharedVolume {
+	if roles.Has(RoleControl) && options.Storage.Backend == BlobBackendSharedVolume {
 		mediaUploadOptions, _ := c.ParseMediaUpload()
 		uploadRoot, err := filepath.Abs(mediaUploadOptions.Dir)
 		if err != nil {
 			problems = append(problems, fmt.Sprintf("mediaUpload.dir is invalid for role control: %v", err))
 		}
-		if conf.Blob == nil || strings.TrimSpace(conf.Blob.Root) == "" {
-			options.Blob.Root = mediaUploadOptions.Dir
+		if conf.Storage == nil || strings.TrimSpace(conf.Storage.Root) == "" {
+			options.Storage.Root = mediaUploadOptions.Dir
 		}
-		blobRoot, err := filepath.Abs(options.Blob.Root)
+		storageRoot, err := filepath.Abs(options.Storage.Root)
 		if err != nil {
-			problems = append(problems, fmt.Sprintf("cluster.blob.root is invalid for role control: %v", err))
-		} else if uploadRoot != blobRoot {
+			problems = append(problems, fmt.Sprintf("cluster.storage.root is invalid for role control: %v", err))
+		} else if uploadRoot != storageRoot {
 			problems = append(problems, fmt.Sprintf(
-				"cluster.blob.root (%s) must equal mediaUpload.dir (%s) for role control", blobRoot, uploadRoot))
+				"cluster.storage.root (%s) must equal mediaUpload.dir (%s) for role control", storageRoot, uploadRoot))
 		}
-		if !options.Blob.SharedVolume {
-			problems = append(problems, "cluster.blob.sharedVolume must be true when cluster.blob.backend=sharedVolume")
+		if !options.Storage.SharedVolume {
+			problems = append(problems, "cluster.storage.sharedVolume must be true when cluster.storage.backend=sharedVolume")
 		}
-		markerPath := filepath.Join(options.Blob.Root, options.Blob.Marker)
+		markerPath := filepath.Join(options.Storage.Root, options.Storage.Marker)
 		file, err := os.OpenFile(markerPath, os.O_RDWR, 0)
 		if err != nil {
 			problems = append(problems, fmt.Sprintf(
-				"cluster.blob marker %q must exist and be writable for role control: %v", markerPath, err))
+				"cluster.storage marker %q must exist and be writable for role control: %v", markerPath, err))
 		} else {
 			_ = file.Close()
 		}
 	}
 
-	// 存储：gateway/control 需要共享库。
-	if roles.Has(RoleGateway) || roles.Has(RoleControl) {
-		backend := strings.ToLower(strings.TrimSpace(c.Storage.Type))
+	// 存储：gateway/control/attachment 需要共享库（附件进度要能被控制面查询）。
+	if roles.Has(RoleGateway) || roles.Has(RoleControl) || roles.Has(RoleAttachment) {
+		backend := strings.ToLower(strings.TrimSpace(c.Database.Type))
 		if backend == "" {
 			backend = "memory"
 		}
 		if backend != "mysql" {
-			problems = append(problems, fmt.Sprintf(
-				"storage.type must be mysql when roles include gateway/control, got %q", backend))
+			allowEmbedded := c.Cluster != nil && c.Cluster.AllowEmbeddedStorage && backend == "sqlite"
+			if !allowEmbedded {
+				problems = append(problems, fmt.Sprintf(
+					"database.type must be mysql when roles include gateway/control/attachment, got %q "+
+						"(cluster.allowEmbeddedStorage with sqlite is dev-only; production must use mysql)", backend))
+			}
 		}
 	}
 
@@ -1926,7 +2114,7 @@ func (c *Config) ParseServerMode() (ClusterOptions, error) {
 		if err != nil {
 			problems = append(problems, err.Error())
 		} else {
-			backend := strings.ToLower(strings.TrimSpace(c.Storage.Type))
+			backend := strings.ToLower(strings.TrimSpace(c.Database.Type))
 			if backend == "" {
 				backend = "memory"
 			}
@@ -1974,6 +2162,8 @@ func (c *Config) ParseServerMode() (ClusterOptions, error) {
 			problems = append(problems, err.Error())
 		} else if !enabled || (alarmOptions.Port == 0 && alarmOptions.UDPPort == 0) {
 			problems = append(problems, "alarmServer.port or alarmServer.udpPort is required for role attachment")
+		} else if alarmOptions.HTTPPort == 0 {
+			problems = append(problems, "alarmServer.httpPort is required for role attachment (internal status API)")
 		}
 	}
 
@@ -1983,7 +2173,7 @@ func (c *Config) ParseServerMode() (ClusterOptions, error) {
 	return options, nil
 }
 
-// ValidateServerMode 在 storage.Init 之前做 fail-fast 校验。
+// ValidateServerMode 在 database.Init 之前做 fail-fast 校验。
 func (c *Config) ValidateServerMode() error {
 	_, err := c.ParseServerMode()
 	return err
@@ -2036,8 +2226,8 @@ func loopbackToAddr(rawURL, listenAddr string) bool {
 	return strings.EqualFold(urlHost, listenHost)
 }
 
-// storageConf 配置持久化后端；type 缺省为 memory。
-type storageConf struct {
+// databaseConf 配置持久化数据库后端；type 缺省为 memory。
+type databaseConf struct {
 	Type   string      `yaml:"type"`
 	SQLite *sqliteConf `yaml:"sqlite"`
 	MySQL  *mysqlConf  `yaml:"mysql"`
@@ -2045,6 +2235,9 @@ type storageConf struct {
 
 type sqliteConf struct {
 	Path string `yaml:"path"`
+	// ReadConns 是只读连接池大小；0 表示按 CPU 数。
+	// 写池固定为 1 个连接，不可配置。
+	ReadConns int `yaml:"readConns"`
 }
 
 type mysqlConf struct {
@@ -2055,6 +2248,23 @@ var (
 	configOnce sync.Once
 	config     *Config
 )
+
+// rejectLegacyKeys 拒绝已改名的旧配置段。
+//
+// viper 默认忽略未知字段；若不显式检查，旧配置里的 storage 段会被静默丢弃，
+// 服务仍按默认后端启动，改名根本没有生效。
+func rejectLegacyKeys(v *viper.Viper) error {
+	if v.InConfig("storage") {
+		return errors.New(`config section "storage" has been renamed to "database": ` +
+			`move storage.type, storage.sqlite.* and storage.mysql.dsn under the top-level "database" section`)
+	}
+	if v.InConfig("cluster.blob") {
+		return errors.New(`config key "cluster.blob" has been renamed to "cluster.storage": ` +
+			`move cluster.blob.backend, cluster.blob.sharedVolume, cluster.blob.root, ` +
+			`cluster.blob.marker and cluster.blob.objectStore.* under the "cluster.storage" section`)
+	}
+	return nil
+}
 
 func Load(confFilePath string) *Config {
 	configOnce.Do(func() {
@@ -2080,6 +2290,12 @@ func Load(confFilePath string) *Config {
 
 		if err != nil {
 			panic(errors.Wrap(err, "Fail to read config with viper"))
+		}
+
+		// 旧的 storage 段已整体改名为 database；必须显式报错，
+		// 不能让未知字段被静默忽略后继续用默认后端启动。
+		if err := rejectLegacyKeys(viper.GetViper()); err != nil {
+			panic(err)
 		}
 
 		err = viper.Unmarshal(config)

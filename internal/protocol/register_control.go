@@ -144,7 +144,7 @@ func (mp *JT808MsgProcessor) processRegisterBusiness(ctx context.Context, data *
 	if !ok || in == nil {
 		return nil
 	}
-	devices := mp.deps.Storage.Devices
+	devices := mp.deps.Repos.Devices
 
 	existing, err := devices.GetByPhone(ctx, in.Header.PhoneNumber)
 	if err != nil && !errors.Is(err, repository.ErrDeviceNotFound) {
@@ -224,7 +224,7 @@ func (mp *JT808MsgProcessor) processAuthBusiness(ctx context.Context, data *mode
 	if !ok || in == nil {
 		return nil
 	}
-	devices := mp.deps.Storage.Devices
+	devices := mp.deps.Repos.Devices
 	phone := in.Header.PhoneNumber
 	device, err := devices.GetByPhone(ctx, phone)
 	if errors.Is(err, repository.ErrDeviceNotFound) {

@@ -8,6 +8,7 @@ package observability
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -71,7 +72,9 @@ type Metrics struct {
 	uplinkUnknownDropped atomic.Int64
 	uplinkOversized      atomic.Int64
 	mediaTypeRejected    atomic.Int64
-	blobCommitFailed     atomic.Int64
+	storageCommitFailed  atomic.Int64
+	// 0x9208 自动触发因角色拆分未装配的次数；>0 表示附件上行需要人工触发。
+	autoUploadSkipped atomic.Int64
 }
 
 // NewMetrics 创建进程级计数器。
@@ -149,7 +152,7 @@ type UplinkEventSnapshot struct {
 	UnknownDeviceDropped int64
 	Oversized            int64
 	MediaTypeRejected    int64
-	BlobCommitFailed     int64
+	StorageCommitFailed  int64
 }
 
 // IncUplinkUnknownDropped 记录一次 409 unknown_device 重投后仍失败的丢弃。
@@ -176,12 +179,28 @@ func (m *Metrics) IncMediaTypeRejected() {
 	m.mediaTypeRejected.Add(1)
 }
 
-// IncBlobCommitFailed 记录一次文件已落库但提交标记失败的告警。
-func (m *Metrics) IncBlobCommitFailed() {
+// IncStorageCommitFailed 记录一次文件已落库但提交标记失败的告警。
+func (m *Metrics) IncStorageCommitFailed() {
 	if m == nil {
 		return
 	}
-	m.blobCommitFailed.Add(1)
+	m.storageCommitFailed.Add(1)
+}
+
+// IncAutoUploadSkipped 记录一次 0x9208 自动触发因角色拆分而不可用的告警。
+func (m *Metrics) IncAutoUploadSkipped() {
+	if m == nil {
+		return
+	}
+	m.autoUploadSkipped.Add(1)
+}
+
+// AutoUploadSkipped 返回 0x9208 自动触发被跳过的累计次数。
+func (m *Metrics) AutoUploadSkipped() int64 {
+	if m == nil {
+		return 0
+	}
+	return m.autoUploadSkipped.Load()
 }
 
 // UplinkEventSnapshot 返回上行事件终态计数副本。
@@ -193,7 +212,7 @@ func (m *Metrics) UplinkEventSnapshot() UplinkEventSnapshot {
 		UnknownDeviceDropped: m.uplinkUnknownDropped.Load(),
 		Oversized:            m.uplinkOversized.Load(),
 		MediaTypeRejected:    m.mediaTypeRejected.Load(),
-		BlobCommitFailed:     m.blobCommitFailed.Load(),
+		StorageCommitFailed:  m.storageCommitFailed.Load(),
 	}
 }
 
@@ -339,6 +358,8 @@ type Snapshot struct {
 	TerminalReply TerminalReplySnapshot
 	// UplinkEvent 是上行事件在控制面被丢弃/拒收的累计指标。
 	UplinkEvent UplinkEventSnapshot
+	// AutoUploadSkipped 是 0x9208 自动触发因角色拆分被跳过的累计次数。
+	AutoUploadSkipped int64
 }
 
 // UplinkSnapshot 是上行出口的累计计数与当前水位。
@@ -358,14 +379,34 @@ type Check struct {
 	Fn   func(context.Context) error
 }
 
+// Degradation 表示检查通过但环境处于降级状态。
+//
+// 典型场景：集群模式使用 cluster.allowEmbeddedStorage 的 SQLite。
+// 该配置只允许本地联调，进程仍可服务，但 /readyz 必须暴露 degraded，
+// 避免被误当成可以投入生产的部署形态。
+type Degradation struct {
+	Reason string
+}
+
+// Error 实现 error；降级不是失败，调用方需用 IsDegraded 判定。
+func (d *Degradation) Error() string { return d.Reason }
+
+// Degraded 构造一条降级原因。
+func Degraded(reason string) error { return &Degradation{Reason: reason} }
+
 // Result 是单条检查的执行结果。
 type Result struct {
 	Name string
 	Err  error
+	// Degraded 为 true 表示检查通过但环境处于降级状态。
+	Degraded bool
 }
 
-// OK 返回全部检查是否通过。
-func (r Result) OK() bool { return r.Err == nil }
+// OK 返回检查是否未失败；降级仍算通过。
+func (r Result) OK() bool { return r.Err == nil || r.Degraded }
+
+// IsDegraded 返回该检查是否处于降级状态。
+func (r Result) IsDegraded() bool { return r.Degraded }
 
 // Provider 组合计数器、就绪检查与指标采集函数。
 // 所有字段都可能为空：未启用对应组件时跳过该项，而不是判定失败。
@@ -385,7 +426,13 @@ func (p *Provider) Ready(ctx context.Context) []Result {
 		if check.Fn == nil {
 			continue
 		}
-		results = append(results, Result{Name: check.Name, Err: check.Fn(ctx)})
+		err := check.Fn(ctx)
+		result := Result{Name: check.Name, Err: err}
+		if err != nil {
+			var degradation *Degradation
+			result.Degraded = errors.As(err, &degradation)
+		}
+		results = append(results, result)
 	}
 	sort.SliceStable(results, func(i, j int) bool { return results[i].Name < results[j].Name })
 	return results
@@ -405,6 +452,7 @@ func (p *Provider) Snapshot(ctx context.Context) Snapshot {
 	snapshot.Orphan = p.Metrics.OrphanSnapshot()
 	snapshot.TerminalReply = p.Metrics.TerminalReplySnapshot()
 	snapshot.UplinkEvent = p.Metrics.UplinkEventSnapshot()
+	snapshot.AutoUploadSkipped = p.Metrics.AutoUploadSkipped()
 	return snapshot
 }
 
@@ -436,7 +484,8 @@ func WritePrometheus(w io.Writer, snapshot Snapshot) error {
 		{"jt808_uplink_unknown_device_dropped_total", "Uplink events dropped after a 409 unknown_device redelivery.", "counter", fmt.Sprint(snapshot.UplinkEvent.UnknownDeviceDropped)},
 		{"jt808_uplink_oversized_total", "Uplink events dropped because the message body exceeded maxBodyBytes.", "counter", fmt.Sprint(snapshot.UplinkEvent.Oversized)},
 		{"jt808_media_type_rejected_total", "0x0801 uploads rejected because the media type is not an image.", "counter", fmt.Sprint(snapshot.UplinkEvent.MediaTypeRejected)},
-		{"jt808_blob_commit_failed_total", "Media files written but not confirmed as committed.", "counter", fmt.Sprint(snapshot.UplinkEvent.BlobCommitFailed)},
+		{"jt808_storage_commit_failed_total", "Media files written but not confirmed as committed.", "counter", fmt.Sprint(snapshot.UplinkEvent.StorageCommitFailed)},
+		{"jt808_attachment_trigger_skipped_total", "0x9208 automatic upload triggers skipped because gateway and control are in separate processes.", "counter", fmt.Sprint(snapshot.AutoUploadSkipped)},
 	}
 	for _, line := range lines {
 		if _, err := fmt.Fprintf(w, "# HELP %s %s\n# TYPE %s %s\n%s %s\n",

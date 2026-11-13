@@ -198,6 +198,10 @@ func (o *Outbox) Submit(ctx context.Context, request contracts.DownlinkRequest) 
 	}
 
 	request.Serial = serial
+	// 下行 HTTP 契约必须显式携带 phone：网关不解析编码后的消息头来路由。
+	// 遗漏时首次下发会被网关以 400 invalid_request 拒绝，而重投路径又从命令记录里
+	// 恢复了 phone，表现为“第一次必失败、重投才成功”的假象。
+	request.Phone = header.PhoneNumber
 	header.SerialNumber = serial
 	encoded, err := request.Message.Encode()
 	if err != nil {

@@ -11,13 +11,14 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/fakeyanss/jt808-server-go/internal/blob"
 	"github.com/fakeyanss/jt808-server-go/internal/codec/hash"
 	"github.com/fakeyanss/jt808-server-go/internal/codec/hex"
 	"github.com/fakeyanss/jt808-server-go/internal/contracts"
 	"github.com/fakeyanss/jt808-server-go/internal/protocol"
 	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
 	"github.com/fakeyanss/jt808-server-go/internal/repository"
+	"github.com/fakeyanss/jt808-server-go/internal/repository/database"
+	"github.com/fakeyanss/jt808-server-go/internal/repository/memory"
 	"github.com/fakeyanss/jt808-server-go/internal/storage"
 	"github.com/fakeyanss/jt808-server-go/internal/uplink"
 )
@@ -40,11 +41,11 @@ func mediaBody(mediaID uint32, mediaType uint8, payload []byte) []byte {
 	return append(body, payload...)
 }
 
-func newTestBlob(t *testing.T) *blob.SharedVolume {
+func newTestBlob(t *testing.T) *storage.SharedVolume {
 	t.Helper()
 	root := t.TempDir()
-	require.NoError(t, os.WriteFile(filepath.Join(root, blob.MarkerFile), nil, 0o640))
-	volume, err := blob.NewSharedVolume(root, true)
+	require.NoError(t, os.WriteFile(filepath.Join(root, storage.MarkerFile), nil, 0o640))
+	volume, err := storage.NewSharedVolume(root, true)
 	require.NoError(t, err)
 	return volume
 }
@@ -52,16 +53,16 @@ func newTestBlob(t *testing.T) *blob.SharedVolume {
 func registerTestDevice(t *testing.T, phone string) {
 	t.Helper()
 	ctx := context.Background()
-	require.NoError(t, storage.Default().Devices.Upsert(ctx, &model.Device{Phone: phone, AuthCode: "AUTH"}))
-	t.Cleanup(func() { _ = storage.Default().Devices.DeleteByPhone(ctx, phone) })
+	require.NoError(t, database.Default().Devices.Upsert(ctx, &model.Device{Phone: phone, AuthCode: "AUTH"}))
+	t.Cleanup(func() { _ = database.Default().Devices.DeleteByPhone(ctx, phone) })
 }
 
 // 档案不存在时返回 409 unknown_device，供网关做有界重投。
 func TestBusinessExecutorRejectsUnknownDevice(t *testing.T) {
 	var unknown int
 	executor := NewBusinessExecutor(BusinessOptions{
-		Devices: storage.Default().Devices,
-		Files:   storage.Default().MediaFiles,
+		Devices: database.Default().Devices,
+		Files:   database.Default().MediaFiles,
 		OnUnknownDevice: func(string) {
 			unknown++
 		},
@@ -86,8 +87,8 @@ func TestBusinessExecutorAcksNonImageMedia(t *testing.T) {
 	var rejected int
 	volume := newTestBlob(t)
 	executor := NewBusinessExecutor(BusinessOptions{
-		Devices: storage.Default().Devices,
-		Files:   storage.Default().MediaFiles,
+		Devices: database.Default().Devices,
+		Files:   database.Default().MediaFiles,
 		Blob:    volume,
 		OnMediaTypeRejected: func(string, uint8) {
 			rejected++
@@ -104,7 +105,7 @@ func TestBusinessExecutorAcksNonImageMedia(t *testing.T) {
 	require.True(t, result.Accepted)
 	require.Equal(t, 1, rejected)
 
-	_, err = storage.Default().MediaFiles.Get(context.Background(), phone, 9101)
+	_, err = database.Default().MediaFiles.Get(context.Background(), phone, 9101)
 	require.ErrorIs(t, err, repository.ErrMediaFileNotFound)
 }
 
@@ -114,8 +115,8 @@ func TestBusinessExecutorIngestsImageMedia(t *testing.T) {
 	registerTestDevice(t, phone)
 	volume := newTestBlob(t)
 	executor := NewBusinessExecutor(BusinessOptions{
-		Devices: storage.Default().Devices,
-		Files:   storage.Default().MediaFiles,
+		Devices: database.Default().Devices,
+		Files:   database.Default().MediaFiles,
 		Blob:    volume,
 	})
 
@@ -128,7 +129,7 @@ func TestBusinessExecutorIngestsImageMedia(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, result.Accepted)
 
-	file, err := storage.Default().MediaFiles.Get(context.Background(), phone, 9102)
+	file, err := database.Default().MediaFiles.Get(context.Background(), phone, 9102)
 	require.NoError(t, err)
 	require.Equal(t, int64(len("jpeg-bytes")), file.FileSize)
 
@@ -144,7 +145,7 @@ func TestBusinessExecutorKeepsPendingWhenSaveFails(t *testing.T) {
 	volume := newTestBlob(t)
 	// 先建文件再 mock 写库，确保 Save 失败发生在 Promote 之后。
 	executor := NewBusinessExecutor(BusinessOptions{
-		Devices: storage.Default().Devices,
+		Devices: database.Default().Devices,
 		Files:   failingMediaFiles{},
 		Blob:    volume,
 	})
@@ -157,7 +158,7 @@ func TestBusinessExecutorKeepsPendingWhenSaveFails(t *testing.T) {
 	})
 	require.Error(t, err)
 
-	info, statErr := volume.Stat(context.Background(), phone+"/20261112/9103.jpg")
+	info, statErr := volume.Stat(context.Background(), "media/uploads/"+phone+"/20261112/9103.jpg")
 	require.NoError(t, statErr)
 	require.Equal(t, contracts.BlobStatePending, info.State)
 }
@@ -169,10 +170,10 @@ func TestBusinessExecutorAcceptsWhenCommitMarkerFails(t *testing.T) {
 	volume := &failingCommitBlob{SharedVolume: newTestBlob(t)}
 	var commitFailed int
 	executor := NewBusinessExecutor(BusinessOptions{
-		Devices: storage.Default().Devices,
-		Files:   storage.Default().MediaFiles,
+		Devices: database.Default().Devices,
+		Files:   database.Default().MediaFiles,
 		Blob:    volume,
-		OnBlobCommitFailed: func(string, uint32) {
+		OnStorageCommitFailed: func(string, uint32) {
 			commitFailed++
 		},
 	})
@@ -190,7 +191,7 @@ func TestBusinessExecutorAcceptsWhenCommitMarkerFails(t *testing.T) {
 
 // 网关归属的消息被投到管控时直接接受，不制造重投。
 func TestBusinessExecutorIgnoresGatewayOwnedEvents(t *testing.T) {
-	executor := NewBusinessExecutor(BusinessOptions{Devices: storage.Default().Devices})
+	executor := NewBusinessExecutor(BusinessOptions{Devices: database.Default().Devices})
 	result, err := executor.ConsumeEvent(context.Background(), contracts.UplinkEvent{
 		EventID: "evt-gateway",
 		MsgID:   0x0002,
@@ -204,7 +205,7 @@ func TestBusinessExecutorIgnoresGatewayOwnedEvents(t *testing.T) {
 // 入口直接交给 outbox，不在业务执行器里重复处理。
 func TestBusinessExecutorAcceptsTerminalReplyHalf(t *testing.T) {
 	ctx := context.Background()
-	devices := repository.NewDeviceRepository()
+	devices := memory.NewDeviceRepository()
 	require.NoError(t, devices.Upsert(ctx, &model.Device{Phone: "188765400006"}))
 	executor := NewBusinessExecutor(BusinessOptions{Devices: devices})
 	result, err := executor.ConsumeEvent(ctx, contracts.UplinkEvent{
@@ -247,11 +248,11 @@ func TestRegistrationAndAuthStateAreOrderIndependent(t *testing.T) {
 	run := func(t *testing.T, authFirst bool) *model.Device {
 		t.Helper()
 		ctx := context.Background()
-		stores := storage.NewMemory()
+		stores := database.NewMemory()
 		devices := stores.Devices
 		executor := NewBusinessExecutor(BusinessOptions{
 			Devices:       devices,
-			ProcessorDeps: protocol.ProcessorDeps{Storage: stores},
+			ProcessorDeps: protocol.ProcessorDeps{Repos: stores},
 		})
 		if authFirst {
 			_, err := executor.ConsumeEvent(ctx, auth())
@@ -334,7 +335,7 @@ func (failingMediaFiles) List(context.Context, string, repository.MediaFileFilte
 func (failingMediaFiles) Stats(context.Context) (int64, int64, error) { return 0, 0, nil }
 
 type failingCommitBlob struct {
-	*blob.SharedVolume
+	*storage.SharedVolume
 }
 
 func (b *failingCommitBlob) MarkCommitted(context.Context, string) error {

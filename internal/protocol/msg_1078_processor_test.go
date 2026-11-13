@@ -5,7 +5,7 @@ import (
 	"testing"
 
 	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
-	"github.com/fakeyanss/jt808-server-go/internal/storage"
+	"github.com/fakeyanss/jt808-server-go/internal/repository/database"
 	"github.com/stretchr/testify/require"
 )
 
@@ -76,7 +76,7 @@ func TestProcess1078MediaMetadataPersists(t *testing.T) {
 	require.NoError(t, err)
 	require.Nil(t, result)
 
-	storedList, err := storage.Default().Media.ResourceList(ctx, phone)
+	storedList, err := database.Default().Media.ResourceList(ctx, phone)
 	require.NoError(t, err)
 	require.NotNil(t, storedList)
 	require.Equal(t, uint32(1), storedList.MediaCount)
@@ -98,7 +98,7 @@ func TestProcess1078MediaMetadataPersists(t *testing.T) {
 	require.NoError(t, err)
 	require.IsType(t, &model.Msg0001{}, result.Outgoing)
 
-	storedTask, err := storage.Default().Media.UploadTask(ctx, phone, 32)
+	storedTask, err := database.Default().Media.UploadTask(ctx, phone, 32)
 	require.NoError(t, err)
 	require.NotNil(t, storedTask)
 	require.Equal(t, "127.0.0.1", storedTask.ServerIP)
@@ -110,7 +110,7 @@ func TestProcess1078MediaMetadataPersists(t *testing.T) {
 	_, err = NewJT808MsgProcessor(nil).Process(ctx, &model.PacketData{Header: noticeHeader, Body: noticeBody})
 	require.NoError(t, err)
 
-	storedNotice, err := storage.Default().Media.UploadNotice(ctx, phone, 32)
+	storedNotice, err := database.Default().Media.UploadNotice(ctx, phone, 32)
 	require.NoError(t, err)
 	require.NotNil(t, storedNotice)
 	require.Equal(t, uint8(0), storedNotice.Result)
@@ -126,7 +126,7 @@ func TestProcess1078UplinkSignalingRecordsState(t *testing.T) {
 	require.NoError(t, err)
 	require.Nil(t, result)
 
-	status := storage.Default().Industry.MediaStatus(phone)
+	status := database.Default().Industry.MediaStatus(phone)
 	require.NotNil(t, status)
 	require.Equal(t, uint8(1), status.LogicChannelID)
 	require.Equal(t, uint8(5), status.PacketLossRate)
@@ -137,7 +137,7 @@ func TestProcess1078UplinkSignalingRecordsState(t *testing.T) {
 	_, err = NewJT808MsgProcessor(nil).Process(context.Background(), &model.PacketData{Header: noticeHeader, Body: noticeBody})
 	require.NoError(t, err)
 
-	stored := storage.Default().Industry.FileUploadNotice(phone)
+	stored := database.Default().Industry.FileUploadNotice(phone)
 	require.NotNil(t, stored)
 	require.Equal(t, uint16(15), stored.AnswerSerialNumber)
 	require.Equal(t, uint8(1), stored.Result)

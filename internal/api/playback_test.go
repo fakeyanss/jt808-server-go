@@ -16,8 +16,8 @@ import (
 	"github.com/fakeyanss/jt808-server-go/internal/contracts"
 	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
 	"github.com/fakeyanss/jt808-server-go/internal/repository"
+	"github.com/fakeyanss/jt808-server-go/internal/repository/database"
 	"github.com/fakeyanss/jt808-server-go/internal/runtime"
-	"github.com/fakeyanss/jt808-server-go/internal/storage"
 )
 
 type fakeStopDownlink struct {
@@ -108,9 +108,9 @@ type playbackTestEnv struct {
 func newPlaybackTestEnv(t *testing.T, downlink *fakeStopDownlink, playback *fakePlaybackLibrary) *playbackTestEnv {
 	t.Helper()
 	gin.SetMode(gin.TestMode)
-	stores, err := storage.Open(storage.Config{Type: storage.BackendMemory})
+	stores, err := database.Open(database.Config{Type: database.BackendMemory})
 	require.NoError(t, err)
-	t.Cleanup(func() { _ = stores.Close() })
+	t.Cleanup(func() { _ = database.Close() })
 
 	registry := runtime.NewConnectionRegistry()
 	router := gin.New()

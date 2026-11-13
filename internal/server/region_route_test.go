@@ -10,8 +10,8 @@ import (
 	"github.com/fakeyanss/jt808-server-go/internal/client"
 	"github.com/fakeyanss/jt808-server-go/internal/protocol"
 	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
+	"github.com/fakeyanss/jt808-server-go/internal/repository/database"
 	"github.com/fakeyanss/jt808-server-go/internal/runtime"
-	"github.com/fakeyanss/jt808-server-go/internal/storage"
 )
 
 // startSimulatorServer brings up a TCP server and a registered client simulator
@@ -49,7 +49,7 @@ func startSimulatorServerWith(t *testing.T, configure func(*TCPServer)) (*TCPSer
 	var device *model.Device
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
-		device, _ = storage.Default().Devices.GetByPhone(context.Background(), phone)
+		device, _ = database.Default().Devices.GetByPhone(context.Background(), phone)
 		if device != nil && device.Status == model.DeviceStatusOnline {
 			break
 		}
@@ -58,7 +58,7 @@ func startSimulatorServerWith(t *testing.T, configure func(*TCPServer)) (*TCPSer
 	require.NotNil(t, device)
 	require.Equal(t, model.DeviceStatusOnline, device.Status)
 	t.Cleanup(func() {
-		storage.Default().Devices.DeleteByPhone(context.Background(), phone)
+		database.Default().Devices.DeleteByPhone(context.Background(), phone)
 		protocol.NewKeepaliveTimer().Cancel(phone)
 	})
 	return server, cli, device
@@ -69,7 +69,7 @@ func TestRegionRouteSetQueryDeleteRoundTrip(t *testing.T) {
 	session, err := runtime.Default().Conn.Get(context.Background(), device.SessionID)
 	require.NoError(t, err)
 
-	catalog := storage.Default().Regions
+	catalog := database.Default().Regions
 
 	// --- Set a circle area ---
 	setCircle := &model.MsgRegionRouteSet{

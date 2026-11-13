@@ -3,8 +3,6 @@ package repository
 import (
 	"context"
 	"errors"
-	"fmt"
-	"sync"
 	"time"
 )
 
@@ -27,37 +25,3 @@ type UpgradeResultRepository interface {
 	Save(ctx context.Context, result *UpgradeResult) error
 	Latest(ctx context.Context, phone string) (*UpgradeResult, error)
 }
-
-// memoryUpgradeResultRepository 是 UpgradeResultRepository 的内存实现。
-type memoryUpgradeResultRepository struct {
-	mu      sync.RWMutex
-	results map[string]UpgradeResult
-}
-
-// NewUpgradeResultRepository 创建独立的内存升级结果仓储。
-func NewUpgradeResultRepository() UpgradeResultRepository {
-	return &memoryUpgradeResultRepository{results: map[string]UpgradeResult{}}
-}
-
-func (r *memoryUpgradeResultRepository) Save(_ context.Context, result *UpgradeResult) error {
-	if result == nil || result.Phone == "" {
-		return fmt.Errorf("save upgrade result: nil result or empty phone")
-	}
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.results[result.Phone] = *result
-	return nil
-}
-
-func (r *memoryUpgradeResultRepository) Latest(_ context.Context, phone string) (*UpgradeResult, error) {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	result, ok := r.results[phone]
-	if !ok {
-		return nil, ErrUpgradeResultNotFound
-	}
-	copy := result
-	return &copy, nil
-}
-
-var _ UpgradeResultRepository = (*memoryUpgradeResultRepository)(nil)

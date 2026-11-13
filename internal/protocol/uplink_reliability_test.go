@@ -12,8 +12,8 @@ import (
 	"github.com/fakeyanss/jt808-server-go/internal/contracts"
 	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
 	"github.com/fakeyanss/jt808-server-go/internal/repository"
+	"github.com/fakeyanss/jt808-server-go/internal/repository/database"
 	"github.com/fakeyanss/jt808-server-go/internal/runtime"
-	"github.com/fakeyanss/jt808-server-go/internal/storage"
 	"github.com/fakeyanss/jt808-server-go/internal/uplink"
 )
 
@@ -52,14 +52,14 @@ func (r *recordingLocationRepo) ListPage(context.Context, repository.HistoryQuer
 
 // runUplinkPipeline 启动一次完整上行链路，返回应答帧通道。
 // peerEnd 上的读取协程只取第一帧（通用应答），用于判断本轮是否应答。
-func runUplinkPipeline(t *testing.T, stores *storage.Stores, policy uplink.Policy, alarmSign uint32) (error, <-chan []byte, func()) {
+func runUplinkPipeline(t *testing.T, stores *database.Repositories, policy uplink.Policy, alarmSign uint32) (error, <-chan []byte, func()) {
 	t.Helper()
 	return runUplinkPipelineWithSink(t, stores, policy, alarmSign, nil)
 }
 
 func runUplinkPipelineWithSink(
 	t *testing.T,
-	stores *storage.Stores,
+	stores *database.Repositories,
 	policy uplink.Policy,
 	alarmSign uint32,
 	sink contracts.UplinkSink,
@@ -81,7 +81,7 @@ func runUplinkPipelineWithSink(
 	require.NoError(t, err)
 
 	pipeline := NewPipeline(serverEnd, WithDeps(ProcessorDeps{
-		Storage:    stores,
+		Repos:      stores,
 		Runtime:    runtime.NewStores(),
 		Uplink:     &policy,
 		UplinkSink: sink,
@@ -108,7 +108,7 @@ func runUplinkPipelineWithSink(
 
 // 落库成功时才发出 0x8001 通用应答。
 func TestAtLeastOnceAcksAfterLocationPersisted(t *testing.T) {
-	stores := storage.NewMemory()
+	stores := database.NewMemory()
 	require.NoError(t, stores.Devices.Upsert(context.Background(), &model.Device{Phone: "188765499021", Keepalive: time.Minute}))
 	repo := &recordingLocationRepo{}
 	stores.Locations = repo
@@ -131,7 +131,7 @@ func TestAtLeastOnceAcksAfterLocationPersisted(t *testing.T) {
 
 // 落库失败时本轮不发出任何应答，让终端按协议重传。
 func TestAtLeastOnceSkipsAckWhenLocationPersistFails(t *testing.T) {
-	stores := storage.NewMemory()
+	stores := database.NewMemory()
 	require.NoError(t, stores.Devices.Upsert(context.Background(), &model.Device{Phone: "188765499021", Keepalive: time.Minute}))
 	stores.Locations = failingLocationRepo{}
 
@@ -149,7 +149,7 @@ func TestAtLeastOnceSkipsAckWhenLocationPersistFails(t *testing.T) {
 
 // best_effort 保留旧语义：先应答，落库失败只记日志、不影响连接。
 func TestBestEffortAcksBeforeLocationPersistFailure(t *testing.T) {
-	stores := storage.NewMemory()
+	stores := database.NewMemory()
 	require.NoError(t, stores.Devices.Upsert(context.Background(), &model.Device{Phone: "188765499021", Keepalive: time.Minute}))
 	stores.Locations = failingLocationRepo{}
 
