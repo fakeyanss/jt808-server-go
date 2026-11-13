@@ -232,6 +232,44 @@ func TestLocationReportWritesGeo(t *testing.T) {
 	require.Equal(t, phone, geo.Phone)
 }
 
+// 旧位置不能把新在线态改成休眠：只有不早于最新定位的 ACC 关上报才推导 Sleeping。
+func TestLocationReportStaleAccOffDoesNotRegressStatus(t *testing.T) {
+	const phone = "188765499003"
+	ctx := context.Background()
+	devices := database.Default().Devices
+	require.NoError(t, devices.Upsert(ctx, &model.Device{
+		Phone: phone, Keepalive: time.Minute, Status: model.DeviceStatusOnline,
+	}))
+	t.Cleanup(func() {
+		_ = devices.DeleteByPhone(ctx, phone)
+		_ = database.Default().Geo.Delete(ctx, phone)
+	})
+
+	processor := NewJT808MsgProcessor(nil)
+	send := func(statusSign uint32, when [6]byte) {
+		body := locationReportBody(0)
+		binary.BigEndian.PutUint32(body[4:8], statusSign)
+		copy(body[22:28], when[:])
+		header := &model.MsgHeader{MsgID: 0x0200, SerialNumber: 32, PhoneNumber: phone, Attr: &model.MsgBodyAttr{}}
+		_, err := processor.Process(ctx, &model.PacketData{Header: header, Body: body})
+		require.NoError(t, err)
+	}
+
+	// ACC 开，位置时间 12:00。
+	send(1, [6]byte{0x26, 0x11, 0x01, 0x12, 0x00, 0x00})
+	// 晚到的旧位置 11:00，ACC 关；不得把在线态改成休眠。
+	send(0, [6]byte{0x26, 0x11, 0x01, 0x11, 0x00, 0x00})
+	device, err := devices.GetByPhone(ctx, phone)
+	require.NoError(t, err)
+	require.Equal(t, model.DeviceStatusOnline, device.Status)
+
+	// 更新的位置 13:00，ACC 关；允许推导休眠。
+	send(0, [6]byte{0x26, 0x11, 0x01, 0x13, 0x00, 0x00})
+	device, err = devices.GetByPhone(ctx, phone)
+	require.NoError(t, err)
+	require.Equal(t, model.DeviceStatusSleeping, device.Status)
+}
+
 func TestSimulatorRepliesToRegionDriverRecorderAndMultimediaCommands(t *testing.T) {
 	tests := []struct {
 		id       uint16

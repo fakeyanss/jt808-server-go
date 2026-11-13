@@ -26,11 +26,22 @@ func newMemoryGeoRepository() *memoryGeoRepository {
 }
 
 // Append 将一条定位写入设备环形缓冲。
+//
+// 以终端位置时间为单调基准：晚到的旧定位不覆盖更新值。时间相等视为同一
+// 时刻，保留最后到达者；终端时钟回拨时，最新快照会停在回拨前的最大时间，
+// 直到终端时间重新超过它，避免旧上报把新状态改回去。
 func (cache *memoryGeoRepository) Append(_ context.Context, geo *model.DeviceGeo) error {
 	if geo == nil {
 		return nil
 	}
-	cache.ring(geo.Phone).Write(geo)
+	cache.mutex.Lock()
+	defer cache.mutex.Unlock()
+
+	rb := cache.ringLocked(geo.Phone)
+	if latest, ok := rb.Latest().(*model.DeviceGeo); ok && latest != nil && geo.Time.Before(latest.Time) {
+		return nil
+	}
+	rb.Write(geo)
 	return nil
 }
 
@@ -47,6 +58,11 @@ func (cache *memoryGeoRepository) Latest(_ context.Context, phone string) (*mode
 func (cache *memoryGeoRepository) ring(phone string) *container.RingBuffer {
 	cache.mutex.Lock()
 	defer cache.mutex.Unlock()
+	return cache.ringLocked(phone)
+}
+
+// ringLocked 与 ring 相同，但要求调用方已持有 cache.mutex。
+func (cache *memoryGeoRepository) ringLocked(phone string) *container.RingBuffer {
 	if rb, ok := cache.cacheByPhone[phone]; ok {
 		return rb
 	}
