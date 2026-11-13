@@ -92,13 +92,15 @@ type deps struct {
 	// mediaNodeReporter 是独立 media 进程向 control 注册与心跳的上报器。
 	mediaNodeReporter     *medianode.Reporter
 	cancelMediaNodeReport context.CancelFunc
-	controlBlob           contracts.BlobStore
-	businessExecutor      *control.BusinessExecutor
-	cancelSweep           context.CancelFunc
-	cancelOutbox          context.CancelFunc
-	outboxDone            <-chan struct{}
-	cancelClockSkew       context.CancelFunc
-	clockSkewDone         <-chan struct{}
+	// cancelMediaReconcile 停止媒体端点占用的定期对账。
+	cancelMediaReconcile context.CancelFunc
+	controlBlob          contracts.BlobStore
+	businessExecutor     *control.BusinessExecutor
+	cancelSweep          context.CancelFunc
+	cancelOutbox         context.CancelFunc
+	outboxDone           <-chan struct{}
+	cancelClockSkew      context.CancelFunc
+	clockSkewDone        <-chan struct{}
 
 	udpServ         *server.UDPServer
 	alarmServ       *alarmserver.Server

@@ -81,6 +81,23 @@ func TestMediaNodeRepositoryReserveAndHeartbeat(t *testing.T) {
 	if stored.InstanceID != "i2" || stored.EndpointsUsed != 0 {
 		t.Fatalf("re-register must reset instance and endpoints: %+v", stored)
 	}
+
+	// 对账以节点实际会话数校准占用，且过期节点不再校准。
+	if err := repo.SetEndpointsUsed(ctx, "media-1", "i2", 3, now); err != nil {
+		t.Fatalf("set endpoints used: %v", err)
+	}
+	stored, _ = repo.Get(ctx, "media-1")
+	if stored.EndpointsUsed != 3 {
+		t.Fatalf("expected reconciled endpoints_used=3, got %d", stored.EndpointsUsed)
+	}
+	expired := now.Add(2 * repository.MediaNodeTTL)
+	if err := repo.SetEndpointsUsed(ctx, "media-1", "i2", 9, expired); err != nil {
+		t.Fatalf("set endpoints used on expired node: %v", err)
+	}
+	stored, _ = repo.Get(ctx, "media-1")
+	if stored.EndpointsUsed != 3 {
+		t.Fatalf("expired node must not be reconciled, got %d", stored.EndpointsUsed)
+	}
 }
 
 func TestMediaNodeRepositorySkipsExpiredNodes(t *testing.T) {

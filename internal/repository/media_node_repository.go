@@ -84,6 +84,9 @@ type MediaNodeRepository interface {
 	Reserve(ctx context.Context, nodeID, instanceID string, slots int64, now time.Time) (bool, error)
 	// Release 归还端点；已用量不会被减成负数。
 	Release(ctx context.Context, nodeID, instanceID string, slots int64, now time.Time) error
+	// SetEndpointsUsed 用节点实际活跃会话数校准端点占用（定期对账）。
+	// 占位是“分配决定”，节点事实以 /internal/media/status 为准；过期节点不再校准。
+	SetEndpointsUsed(ctx context.Context, nodeID, instanceID string, used int64, now time.Time) error
 	Stats(ctx context.Context, now time.Time) (MediaNodeStats, error)
 }
 

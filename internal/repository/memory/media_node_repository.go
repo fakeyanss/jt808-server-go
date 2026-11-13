@@ -135,6 +135,21 @@ func (r *MediaNodeRepository) Release(_ context.Context, nodeID, instanceID stri
 	return nil
 }
 
+func (r *MediaNodeRepository) SetEndpointsUsed(_ context.Context, nodeID, instanceID string, used int64, now time.Time) error {
+	if used < 0 {
+		used = 0
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	node, ok := r.nodes[nodeID]
+	if !ok || node.InstanceID != instanceID || node.Status != "online" || !node.ExpiresAt.After(now) {
+		return nil
+	}
+	node.EndpointsUsed = used
+	r.nodes[nodeID] = node
+	return nil
+}
+
 func (r *MediaNodeRepository) Stats(_ context.Context, now time.Time) (repository.MediaNodeStats, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()

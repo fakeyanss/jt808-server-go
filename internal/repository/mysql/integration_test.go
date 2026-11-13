@@ -204,6 +204,12 @@ func TestMediaNodeRepositoryOnRealMySQL(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, int64(0), node.EndpointsUsed)
 
+	// 对账用节点实际会话数校准端点占用。
+	require.NoError(t, repo.SetEndpointsUsed(ctx, nodeID, "inst-a", 3, now.Add(3*time.Second)))
+	node, err = repo.Get(ctx, nodeID)
+	require.NoError(t, err)
+	require.Equal(t, int64(3), node.EndpointsUsed)
+
 	// 过期节点不参与 ListOnline 与占位。
 	_, err = db.Exec(`UPDATE media_nodes SET expires_at = ? WHERE node_id = ?`, now.UnixMilli(), nodeID)
 	require.NoError(t, err)

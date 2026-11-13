@@ -179,6 +179,26 @@ func (d *deps) setupControl() {
 		log.Info().Str("addr", srv.Addr()).Msg("Uplink HTTP server listening")
 	}
 
+	// 媒体端点占用对账：占位是分配决定，定期用节点实际活跃会话数校准计数。
+	if d.remoteMedia != nil && storeSet != nil && storeSet.MediaNodes != nil {
+		reconcileCtx, cancelReconcile := context.WithCancel(context.Background())
+		d.cancelMediaReconcile = cancelReconcile
+		reconciler := d.remoteMedia
+		routines.GoSafe(func() {
+			reconciler.Reconcile(reconcileCtx)
+			ticker := time.NewTicker(time.Minute)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-reconcileCtx.Done():
+					return
+				case <-ticker.C:
+					reconciler.Reconcile(reconcileCtx)
+				}
+			}
+		})
+	}
+
 	// 共享卷 pending 对象巡检：写文件与写库之间中断时，无元数据引用的对象会被清理。
 	if controlBlob != nil && businessExecutor != nil {
 		sweepCtx, cancel := context.WithCancel(context.Background())
