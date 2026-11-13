@@ -19,8 +19,8 @@ import (
 	"github.com/fakeyanss/jt808-server-go/internal/mediaupload"
 	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
 	"github.com/fakeyanss/jt808-server-go/internal/repository"
+	"github.com/fakeyanss/jt808-server-go/internal/repository/database"
 	"github.com/fakeyanss/jt808-server-go/internal/runtime"
-	"github.com/fakeyanss/jt808-server-go/internal/storage"
 	"github.com/fakeyanss/jt808-server-go/internal/uplink"
 )
 
@@ -46,7 +46,7 @@ type action struct {
 // ProcessorDeps 聚合消息处理器的显式依赖。
 // 字段为零值时由构造函数回退到包级默认单例，保证既有装配路径行为不变。
 type ProcessorDeps struct {
-	Storage *storage.Stores
+	Repos   *database.Repositories
 	Runtime *runtime.Stores
 	// Uplink 为空表示上行可靠性未配置（全部 best_effort）。
 	Uplink *uplink.Policy
@@ -86,7 +86,7 @@ func WithProcessorDeps(deps ProcessorDeps) ProcessorOption {
 }
 
 func defaultProcessorDeps() ProcessorDeps {
-	return ProcessorDeps{Storage: storage.Default(), Runtime: runtime.Default()}
+	return ProcessorDeps{Repos: database.Default(), Runtime: runtime.Default()}
 }
 
 // 表驱动，初始化消息处理方法组。
@@ -497,8 +497,8 @@ func NewJT808MsgProcessor(hooks actionpkg.Hooks, opts ...ProcessorOption) *JT808
 		opt(&settings)
 	}
 	deps := defaultProcessorDeps()
-	if settings.deps.Storage != nil {
-		deps.Storage = settings.deps.Storage
+	if settings.deps.Repos != nil {
+		deps.Repos = settings.deps.Repos
 	}
 	if settings.deps.Runtime != nil {
 		deps.Runtime = settings.deps.Runtime
@@ -744,6 +744,20 @@ func (mp *JT808MsgProcessor) ApplyControlBusiness(ctx context.Context, msgID uin
 		return mp.processRegisterBusiness(ctx, data)
 	case 0x0102:
 		return mp.processAuthBusiness(ctx, data)
+	case 0x0200:
+		// 控制面也需要报警事件：自动 0x9208 与报警动作回调在这里触发。
+		// 与网关路径共用 notifyLocation，避免两套报警识别逻辑。
+		if in, ok := data.Incoming.(*model.Msg0200); ok {
+			mp.notifyLocation(ctx, in)
+		}
+		return nil
+	case 0x0704:
+		if in, ok := data.Incoming.(*model.Msg0704); ok {
+			for i := range in.Items {
+				mp.notifyLocation(ctx, &in.Items[i].Loc)
+			}
+		}
+		return nil
 	}
 	act, ok := mp.options[msgID]
 	if !ok || act.process == nil {
@@ -920,7 +934,7 @@ func processSegmentPacket(ctx context.Context, pkt *model.PacketData) (*model.Pr
 func (mp *JT808MsgProcessor) processMsg0002(_ context.Context, data *model.ProcessData) error {
 	ctx := context.Background()
 	phone := data.Incoming.GetHeader().PhoneNumber
-	devices := mp.deps.Storage.Devices
+	devices := mp.deps.Repos.Devices
 	_, err := devices.GetByPhone(ctx, phone)
 
 	// 缓存不存在，说明设备不合法，需要返回错误，让服务层处理关闭
@@ -935,7 +949,7 @@ func (mp *JT808MsgProcessor) processMsg0002(_ context.Context, data *model.Proce
 // 收到注销，应清除缓存，断开连接。
 func (mp *JT808MsgProcessor) processMsg0003(_ context.Context, data *model.ProcessData) error {
 	ctx := context.Background()
-	devices := mp.deps.Storage.Devices
+	devices := mp.deps.Repos.Devices
 	device, err := devices.GetByPhone(ctx, data.Incoming.GetHeader().PhoneNumber)
 	// 缓存不存在，说明设备不合法，需要返回错误，让服务层处理关闭
 	if errors.Is(err, repository.ErrDeviceNotFound) {
@@ -955,7 +969,7 @@ func (mp *JT808MsgProcessor) processMsg0003(_ context.Context, data *model.Proce
 func (mp *JT808MsgProcessor) processMsg0100(ctx context.Context, data *model.ProcessData) error {
 	in := data.Incoming.(*model.Msg0100)
 
-	devices := mp.deps.Storage.Devices
+	devices := mp.deps.Repos.Devices
 	// 校验注册逻辑
 	out := data.Outgoing.(*model.Msg8100)
 	// 车辆已被注册
@@ -993,7 +1007,7 @@ func (mp *JT808MsgProcessor) processMsg0100(ctx context.Context, data *model.Pro
 func (mp *JT808MsgProcessor) processMsg0102(ctx context.Context, data *model.ProcessData) error {
 	in := data.Incoming.(*model.Msg0102)
 
-	devices := mp.deps.Storage.Devices
+	devices := mp.deps.Repos.Devices
 	device, err := devices.GetByPhone(ctx, in.Header.PhoneNumber)
 	// 缓存不存在，说明设备不合法，需要返回错误，让服务层处理关闭
 	if errors.Is(err, repository.ErrDeviceNotFound) {
@@ -1084,7 +1098,7 @@ func genAuthCode(d *model.Device) string {
 func (mp *JT808MsgProcessor) processMsg0104(_ context.Context, data *model.ProcessData) error {
 	in := data.Incoming.(*model.Msg0104)
 	if in.Parameters != nil {
-		_ = mp.deps.Storage.Params.Replace(context.Background(), in.Parameters)
+		_ = mp.deps.Repos.Params.Replace(context.Background(), in.Parameters)
 	}
 	mp.deps.Runtime.ParamResponses.Deliver(in)
 	return nil
@@ -1094,7 +1108,7 @@ func (mp *JT808MsgProcessor) processMsg0104(_ context.Context, data *model.Proce
 // 三者互不阻断：落库失败只告警，不改变协议应答行为。
 func (mp *JT808MsgProcessor) processMsg0107(_ context.Context, data *model.ProcessData) error {
 	in := data.Incoming.(*model.Msg0107)
-	if err := mp.deps.Storage.Properties.Replace(context.Background(), model.NewTerminalProperties(in)); err != nil {
+	if err := mp.deps.Repos.Properties.Replace(context.Background(), model.NewTerminalProperties(in)); err != nil {
 		log.Warn().Err(err).Str("phone", in.Header.PhoneNumber).Msg("Fail to persist terminal properties")
 	}
 	mp.deps.Runtime.PropertyResponses.Deliver(in)
@@ -1104,7 +1118,7 @@ func (mp *JT808MsgProcessor) processMsg0107(_ context.Context, data *model.Proce
 func (mp *JT808MsgProcessor) processMsg8201(_ context.Context, data *model.ProcessData) error {
 	in := data.Incoming.(*model.Msg8201)
 	out := data.Outgoing.(*model.Msg0201)
-	geo, err := mp.deps.Storage.Geo.Latest(context.Background(), in.Header.PhoneNumber)
+	geo, err := mp.deps.Repos.Geo.Latest(context.Background(), in.Header.PhoneNumber)
 	if err != nil {
 		return err
 	}
@@ -1147,13 +1161,13 @@ func (mp *JT808MsgProcessor) processMsg8202(_ context.Context, data *model.Proce
 func (mp *JT808MsgProcessor) processMsg0200(ctx context.Context, data *model.ProcessData) error {
 	in := data.Incoming.(*model.Msg0200)
 
-	devices := mp.deps.Storage.Devices
+	devices := mp.deps.Repos.Devices
 	device, err := devices.GetByPhone(ctx, in.Header.PhoneNumber)
 	// 缓存不存在，说明设备不合法，需要返回错误，让服务层处理关闭
 	if errors.Is(err, repository.ErrDeviceNotFound) {
 		return errors.Wrapf(err, "Fail to find device cache, phoneNumber=%s", in.Header.PhoneNumber)
 	}
-	if err := mp.deps.Storage.Alarms.Record(ctx, in.Header.PhoneNumber, in.Header.SerialNumber, in.AlarmSign, in.Latitude, in.Longitude, in.Time); err != nil {
+	if err := mp.deps.Repos.Alarms.Record(ctx, in.Header.PhoneNumber, in.Header.SerialNumber, in.AlarmSign, in.Latitude, in.Longitude, in.Time); err != nil {
 		// 报警落库失败需要上抛：at_least_once 分类下不应答，由终端重传。
 		return errors.Wrapf(err, "record alarm, phoneNumber=%s", in.Header.PhoneNumber)
 	}
@@ -1171,7 +1185,7 @@ func (mp *JT808MsgProcessor) processMsg0200(ctx context.Context, data *model.Pro
 		_ = devices.Upsert(ctx, device)
 	}
 
-	_ = mp.deps.Storage.Geo.Append(ctx, dg)
+	_ = mp.deps.Repos.Geo.Append(ctx, dg)
 	return mp.recordLocationHistory(ctx, 0x0200, []*model.Msg0200{in})
 }
 
@@ -1179,7 +1193,7 @@ func (mp *JT808MsgProcessor) processMsg0200(ctx context.Context, data *model.Pro
 // 0x0704 数据项内没有独立消息流水号，无法与报警去重口径对齐，因此只记定位、不记报警。
 func (mp *JT808MsgProcessor) processMsg0704(ctx context.Context, data *model.ProcessData) error {
 	in := data.Incoming.(*model.Msg0704)
-	mp.deps.Storage.Industry.Record(in)
+	mp.deps.Repos.Industry.Record(in)
 
 	locs := make([]*model.Msg0200, 0, len(in.Items))
 	for i := range in.Items {
@@ -1191,7 +1205,7 @@ func (mp *JT808MsgProcessor) processMsg0704(ctx context.Context, data *model.Pro
 // recordLocationHistory 写入定位历史；memory 后端未启用 Locations 时跳过。
 // 返回错误供 at_least_once 分类判定：落库失败时本次不应答，等待终端重传。
 func (mp *JT808MsgProcessor) recordLocationHistory(ctx context.Context, msgID uint16, locs []*model.Msg0200) error {
-	repo := mp.deps.Storage.Locations
+	repo := mp.deps.Repos.Locations
 	if repo == nil || len(locs) == 0 {
 		return nil
 	}
@@ -1260,7 +1274,7 @@ func acknowledgeResponse(session *model.Session, in model.JT808Msg) {
 func (mp *JT808MsgProcessor) processMsg0001(ctx context.Context, data *model.ProcessData) error {
 	in := data.Incoming.(*model.Msg0001)
 	if in.AnswerMessageID == 0x8203 {
-		if _, err := mp.deps.Storage.Alarms.ConfirmByCommand(ctx, in.Header.PhoneNumber, in.AnswerSerialNumber); err != nil {
+		if _, err := mp.deps.Repos.Alarms.ConfirmByCommand(ctx, in.Header.PhoneNumber, in.AnswerSerialNumber); err != nil {
 			log.Error().Err(err).Str("phone", in.Header.PhoneNumber).Msg("confirm alarm by command")
 		}
 	}
@@ -1275,7 +1289,7 @@ func (mp *JT808MsgProcessor) processMsg8001(ctx context.Context, data *model.Pro
 	// 收到8001消息，说明此时是作为终端设备
 	if in.Result == model.ResultSuccess {
 		// 回复成功，说明之前注册成功，为方便后续处理，将设备状态改为Online并缓存
-		devices := mp.deps.Storage.Devices
+		devices := mp.deps.Repos.Devices
 		device, err := devices.GetByPhone(context.Background(), in.Header.PhoneNumber)
 		if errors.Is(err, repository.ErrDeviceNotFound) {
 			return nil
@@ -1372,7 +1386,7 @@ func (mp *JT808MsgProcessor) processMsg8100(_ context.Context, data *model.Proce
 	in := data.Incoming.(*model.Msg8100)
 	out := data.Outgoing.(*model.Msg0102)
 
-	device, err := mp.deps.Storage.Devices.GetByPhone(context.Background(), in.Header.PhoneNumber)
+	device, err := mp.deps.Repos.Devices.GetByPhone(context.Background(), in.Header.PhoneNumber)
 	if errors.Is(err, repository.ErrDeviceNotFound) {
 		// JT808 2013 registration responses carry the auth code in the response.
 		// A simulator that does not keep a local device cache can still continue
@@ -1390,7 +1404,7 @@ func (mp *JT808MsgProcessor) processMsg8100(_ context.Context, data *model.Proce
 func (mp *JT808MsgProcessor) processMsg8103(_ context.Context, data *model.ProcessData) error {
 	in := data.Incoming.(*model.Msg8103)
 	ctx := context.Background()
-	paramsRepo := mp.deps.Storage.Params
+	paramsRepo := mp.deps.Repos.Params
 	params, err := paramsRepo.Get(ctx, in.GetHeader().PhoneNumber)
 	if errors.Is(err, repository.ErrDeviceParamsNotFound) {
 		params = in.Parameters
@@ -1406,7 +1420,7 @@ func (mp *JT808MsgProcessor) processMsg8103(_ context.Context, data *model.Proce
 func (mp *JT808MsgProcessor) processMsg8104(_ context.Context, data *model.ProcessData) error {
 	// todo: generate by config
 	out := data.Outgoing.(*model.Msg0104)
-	params, err := mp.deps.Storage.Params.Get(context.Background(), out.GetHeader().PhoneNumber)
+	params, err := mp.deps.Repos.Params.Get(context.Background(), out.GetHeader().PhoneNumber)
 	if errors.Is(err, repository.ErrDeviceParamsNotFound) {
 		out.Parameters = &model.DeviceParams{}
 		// 模拟一个固定的参数
@@ -1451,7 +1465,7 @@ func (mp *JT808MsgProcessor) processMsg8104(_ context.Context, data *model.Proce
 		if err := out.Parameters.Decode(out.Header.PhoneNumber, uint8(paramCnt), hex.Str2Byte(paramByteStr)); err != nil {
 			return err
 		}
-		_ = mp.deps.Storage.Params.Replace(context.Background(), out.Parameters)
+		_ = mp.deps.Repos.Params.Replace(context.Background(), out.Parameters)
 	} else {
 		out.Parameters = params
 	}
@@ -1497,7 +1511,7 @@ func (mp *JT808MsgProcessor) processMsg9205(_ context.Context, data *model.Proce
 	in := data.Incoming.(*model.Msg9205)
 	out := data.Outgoing.(*model.Msg1205)
 	out.Items = nil
-	for _, media := range mp.deps.Storage.Industry.MediaUploads(in.Header.PhoneNumber) {
+	for _, media := range mp.deps.Repos.Industry.MediaUploads(in.Header.PhoneNumber) {
 		if in.LogicChannelID != 0 && media.LogicChannelID != in.LogicChannelID {
 			continue
 		}
@@ -1565,10 +1579,10 @@ func mediaTimeInRange(t string, start, end *time.Time) bool {
 }
 
 func (mp *JT808MsgProcessor) processIndustryReport(ctx context.Context, data *model.ProcessData) error {
-	mp.deps.Storage.Industry.Record(data.Incoming)
+	mp.deps.Repos.Industry.Record(data.Incoming)
 	// 0x0108 升级结果需要跨重启保留，写入独立仓储而不是只留内存快照。
 	if result, ok := data.Incoming.(*model.Msg0108); ok && result.Header != nil {
-		return mp.deps.Storage.UpgradeResults.Save(ctx, &repository.UpgradeResult{
+		return mp.deps.Repos.UpgradeResults.Save(ctx, &repository.UpgradeResult{
 			Phone:       result.Header.PhoneNumber,
 			UpgradeType: result.UpgradeType,
 			Result:      result.Result,
@@ -1589,7 +1603,7 @@ func (mp *JT808MsgProcessor) processMsg0801(ctx context.Context, data *model.Pro
 	if !ok {
 		return nil
 	}
-	mp.deps.Storage.Industry.Record(upload)
+	mp.deps.Repos.Industry.Record(upload)
 	if mp.deps.MediaUpload == nil {
 		log.Warn().Msg("media upload store not configured, skip 0x0801 persistence")
 		return nil
@@ -1598,14 +1612,14 @@ func (mp *JT808MsgProcessor) processMsg0801(ctx context.Context, data *model.Pro
 	if err != nil {
 		return err
 	}
-	return mp.deps.Storage.MediaFiles.Save(ctx, file)
+	return mp.deps.Repos.MediaFiles.Save(ctx, file)
 }
 
 // processMsg0802 把 0x8802 检索命令的应答（0x0802）写入检索结果仓储。
 // 行业内存快照保留原有行为；落库以 (phone, answerSerial) 为单位整体覆盖，
 // 便于查询“终端最近一次返回了哪些本地媒体”。
 func (mp *JT808MsgProcessor) processMsg0802(ctx context.Context, data *model.ProcessData) error {
-	mp.deps.Storage.Industry.Record(data.Incoming)
+	mp.deps.Repos.Industry.Record(data.Incoming)
 	result, ok := data.Incoming.(*model.Msg0802)
 	if !ok || result.Header == nil {
 		return nil
@@ -1629,7 +1643,7 @@ func (mp *JT808MsgProcessor) processMsg0802(ctx context.Context, data *model.Pro
 			ReceivedAt:   receivedAt,
 		})
 	}
-	return mp.deps.Storage.MediaSearches.Replace(ctx, result.Header.PhoneNumber, result.AnswerSerial, records)
+	return mp.deps.Repos.MediaSearches.Replace(ctx, result.Header.PhoneNumber, result.AnswerSerial, records)
 }
 
 // parseMediaSearchLocationTime 按固定 GMT+8 解析内嵌位置体的 BCD 时间；
@@ -1652,7 +1666,7 @@ func (mp *JT808MsgProcessor) processMsg0805(ctx context.Context, data *model.Pro
 	if !ok || reply.Header == nil {
 		return nil
 	}
-	mp.deps.Storage.Industry.Record(reply)
+	mp.deps.Repos.Industry.Record(reply)
 	capture := &repository.MediaCapture{
 		Phone:        reply.Header.PhoneNumber,
 		RecordID:     strconv.FormatUint(uint64(reply.AnswerSerial), 10),
@@ -1664,27 +1678,27 @@ func (mp *JT808MsgProcessor) processMsg0805(ctx context.Context, data *model.Pro
 	for _, mediaID := range reply.MediaIDs {
 		capture.Items = append(capture.Items, repository.MediaCaptureItem{MediaID: mediaID})
 	}
-	return mp.deps.Storage.MediaCaptures.SaveCapture(ctx, capture)
+	return mp.deps.Repos.MediaCaptures.SaveCapture(ctx, capture)
 }
 
 // processMediaSignaling 记录终端上行的 1078 音视频信令状态，
 // 供 API 查询与后续媒体接入使用；0x1206 同时落媒体元数据仓储。
 func (mp *JT808MsgProcessor) processMediaSignaling(ctx context.Context, data *model.ProcessData) error {
-	mp.deps.Storage.Industry.Record(data.Incoming)
+	mp.deps.Repos.Industry.Record(data.Incoming)
 	if notice, ok := data.Incoming.(*model.Msg1206); ok {
-		return mp.deps.Storage.Media.SaveUploadNotice(ctx, notice.Header.PhoneNumber, notice)
+		return mp.deps.Repos.Media.SaveUploadNotice(ctx, notice.Header.PhoneNumber, notice)
 	}
 	return nil
 }
 
 // processMediaResourceList 记录 0x1205 音视频资源列表，并整包覆盖媒体元数据仓储。
 func (mp *JT808MsgProcessor) processMediaResourceList(ctx context.Context, data *model.ProcessData) error {
-	mp.deps.Storage.Industry.Record(data.Incoming)
+	mp.deps.Repos.Industry.Record(data.Incoming)
 	list, ok := data.Incoming.(*model.Msg1205)
 	if !ok || list.Header == nil {
 		return nil
 	}
-	return mp.deps.Storage.Media.ReplaceResourceList(ctx, list.Header.PhoneNumber, list)
+	return mp.deps.Repos.Media.ReplaceResourceList(ctx, list.Header.PhoneNumber, list)
 }
 
 // processMediaUploadTask 保存 0x9206 文件上传指令的元数据。
@@ -1693,7 +1707,7 @@ func (mp *JT808MsgProcessor) processMediaUploadTask(ctx context.Context, data *m
 	if !ok || task.Header == nil {
 		return nil
 	}
-	return mp.deps.Storage.Media.SaveUploadTask(ctx, task.Header.PhoneNumber, task)
+	return mp.deps.Repos.Media.SaveUploadTask(ctx, task.Header.PhoneNumber, task)
 }
 
 // processAttachmentSignaling 记录主链路上的苏标附件信令。
@@ -1712,14 +1726,14 @@ func (mp *JT808MsgProcessor) processAttachmentSignaling(_ context.Context, data 
 // event catalog according to the 0x8301 set type.
 func (mp *JT808MsgProcessor) processMsg8301(_ context.Context, data *model.ProcessData) error {
 	in := data.Incoming.(*model.Msg8301)
-	mp.deps.Storage.Industry.ApplyEventSet(in.Header.PhoneNumber, in.SetType, in.Items)
+	mp.deps.Repos.Industry.ApplyEventSet(in.Header.PhoneNumber, in.SetType, in.Items)
 	return nil
 }
 
 // processMsg8302 stores the issued question so the latest question and its
 // candidate answers are available to the terminal simulator.
 func (mp *JT808MsgProcessor) processMsg8302(_ context.Context, data *model.ProcessData) error {
-	mp.deps.Storage.Industry.Record(data.Incoming)
+	mp.deps.Repos.Industry.Record(data.Incoming)
 	return nil
 }
 
@@ -1727,13 +1741,13 @@ func (mp *JT808MsgProcessor) processMsg8302(_ context.Context, data *model.Proce
 // catalog according to the 0x8303 set type.
 func (mp *JT808MsgProcessor) processMsg8303(_ context.Context, data *model.ProcessData) error {
 	in := data.Incoming.(*model.Msg8303)
-	mp.deps.Storage.Industry.ApplyInfoMenuSet(in.Header.PhoneNumber, in.SetType, in.Items)
+	mp.deps.Repos.Industry.ApplyInfoMenuSet(in.Header.PhoneNumber, in.SetType, in.Items)
 	return nil
 }
 
 // processMsg8304 stores the latest information-service message for a device.
 func (mp *JT808MsgProcessor) processMsg8304(_ context.Context, data *model.ProcessData) error {
-	mp.deps.Storage.Industry.Record(data.Incoming)
+	mp.deps.Repos.Industry.Record(data.Incoming)
 	return nil
 }
 
@@ -1741,7 +1755,7 @@ func (mp *JT808MsgProcessor) processMsg8304(_ context.Context, data *model.Proce
 // 0x8401 set type.
 func (mp *JT808MsgProcessor) processMsg8401(_ context.Context, data *model.ProcessData) error {
 	in := data.Incoming.(*model.Msg8401)
-	mp.deps.Storage.Industry.ApplyPhonebookSet(in.Header.PhoneNumber, in.SetType, in.Items)
+	mp.deps.Repos.Industry.ApplyPhonebookSet(in.Header.PhoneNumber, in.SetType, in.Items)
 	return nil
 }
 
@@ -1749,7 +1763,7 @@ func (mp *JT808MsgProcessor) processMsg8401(_ context.Context, data *model.Proce
 // them back to the platform.
 func (mp *JT808MsgProcessor) processMsg8500(_ context.Context, data *model.ProcessData) error {
 	in := data.Incoming.(*model.Msg8500)
-	mp.deps.Storage.Industry.SetVehicleControl(in.Header.PhoneNumber, in.EchoControlFlags())
+	mp.deps.Repos.Industry.SetVehicleControl(in.Header.PhoneNumber, in.EchoControlFlags())
 	return nil
 }
 
@@ -1762,7 +1776,7 @@ func (mp *JT808MsgProcessor) processRegionResponse(_ context.Context, data *mode
 // simulator's catalog so a subsequent 0x8608 query returns typed records.
 func (mp *JT808MsgProcessor) processRegionRouteSet(_ context.Context, data *model.ProcessData) error {
 	in := data.Incoming.(*model.MsgRegionRouteSet)
-	mp.deps.Storage.Regions.ApplySet(in.Header.PhoneNumber, in)
+	mp.deps.Repos.Regions.ApplySet(in.Header.PhoneNumber, in)
 	return nil
 }
 
@@ -1773,7 +1787,7 @@ func (mp *JT808MsgProcessor) processRegionRouteDelete(_ context.Context, data *m
 	if !ok {
 		return nil
 	}
-	mp.deps.Storage.Regions.Delete(in.Header.PhoneNumber, typ, in.IDs)
+	mp.deps.Repos.Regions.Delete(in.Header.PhoneNumber, typ, in.IDs)
 	return nil
 }
 
@@ -1782,7 +1796,7 @@ func (mp *JT808MsgProcessor) processRegionRouteDelete(_ context.Context, data *m
 func (mp *JT808MsgProcessor) processRegionRouteQuery(_ context.Context, data *model.ProcessData) error {
 	query := data.Incoming.(*model.Msg8608)
 	resp := data.Outgoing.(*model.Msg0608)
-	stored := mp.deps.Storage.Regions.Query(query.Header.PhoneNumber, query.QueryType, query.IDs)
+	stored := mp.deps.Repos.Regions.Query(query.Header.PhoneNumber, query.QueryType, query.IDs)
 	resp.Circles = stored.Circles
 	resp.Rectangles = stored.Rectangles
 	resp.Polygons = stored.Polygons
@@ -1793,7 +1807,7 @@ func (mp *JT808MsgProcessor) processRegionRouteQuery(_ context.Context, data *mo
 func (mp *JT808MsgProcessor) processMediaSearchResponse(_ context.Context, data *model.ProcessData) error {
 	query := data.Incoming.(*model.Msg8802)
 	response := data.Outgoing.(*model.Msg0802)
-	for _, media := range mp.deps.Storage.Industry.MediaUploads(query.Header.PhoneNumber) {
+	for _, media := range mp.deps.Repos.Industry.MediaUploads(query.Header.PhoneNumber) {
 		if media.MultiMediaType != query.MediaType || (query.ChannelID != 0 && media.LogicChannelID != query.ChannelID) || (query.EventID != 0 && media.EventID != query.EventID) {
 			continue
 		}
@@ -1859,7 +1873,7 @@ func (mp *JT808MsgProcessor) processMsg8803(ctx context.Context, data *model.Pro
 		return nil
 	}
 	phone := cmd.Header.PhoneNumber
-	industry := mp.deps.Storage.Industry
+	industry := mp.deps.Repos.Industry
 	uploads := industry.MediaUploads(phone)
 	for i := range uploads {
 		media := uploads[i]
@@ -1899,7 +1913,7 @@ func (mp *JT808MsgProcessor) processMsg8804(ctx context.Context, data *model.Pro
 	cmd := data.Incoming.(*model.Msg8804)
 	session, _ := ctx.Value(model.SessionCtxKey{}).(*model.Session)
 	phone := cmd.Header.PhoneNumber
-	industry := mp.deps.Storage.Industry
+	industry := mp.deps.Repos.Industry
 	industry.SetRecording(phone, cmd.Command == 1)
 	if cmd.Command != 1 || session == nil {
 		return nil
@@ -1933,7 +1947,7 @@ func (mp *JT808MsgProcessor) processMsg8805(ctx context.Context, data *model.Pro
 		return nil
 	}
 	phone := cmd.Header.PhoneNumber
-	industry := mp.deps.Storage.Industry
+	industry := mp.deps.Repos.Industry
 	for _, media := range industry.MediaUploads(phone) {
 		if media.MultiMediaID != cmd.MediaID {
 			continue

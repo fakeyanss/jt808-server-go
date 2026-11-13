@@ -10,7 +10,7 @@ import (
 func gatewayControlBase() *Config {
 	return &Config{
 		Server:        &serverConf{Mode: ServerModeCluster, AckTimeoutMS: 5000, MaxRetransmissions: 3},
-		Storage:       &storageConf{Type: "mysql"},
+		Database:      &databaseConf{Type: "mysql"},
 		CommandOutbox: &commandOutboxConf{Mode: CommandOutboxModeDurable},
 		Uplink:        &uplinkConf{Sink: UplinkSinkLocal},
 		Cluster: &clusterConf{
@@ -130,9 +130,9 @@ func TestParseServerModeMatrix(t *testing.T) {
 		{
 			name: "gateway/control 必须 mysql",
 			mutate: func(t *testing.T, cfg *Config) {
-				cfg.Storage.Type = "memory"
+				cfg.Database.Type = "memory"
 			},
-			wantErr: "storage.type must be mysql",
+			wantErr: "database.type must be mysql",
 		},
 		{
 			name: "control 必须 durable outbox",
@@ -153,34 +153,34 @@ func TestParseServerModeMatrix(t *testing.T) {
 			mutate: func(t *testing.T, cfg *Config) {
 				*cfg = *gatewayOnlyBase()
 				cfg.Cluster.Roles = []string{RoleGateway, RoleMedia}
-				cfg.Cluster.Blob = &clusterBlobConf{Backend: BlobBackendLocal}
+				cfg.Cluster.Storage = &clusterStorageConf{Backend: BlobBackendLocal}
 				cfg.MediaServer = &mediaServerConf{Port: "7100"}
 			},
-			wantErr: "cluster.blob.backend must be sharedVolume or objectStore",
+			wantErr: "cluster.storage.backend must be sharedVolume or objectStore",
 		},
 		{
 			name: "objectStore 在 E1 拒绝",
 			mutate: func(t *testing.T, cfg *Config) {
 				*cfg = *gatewayOnlyBase()
 				cfg.Cluster.Roles = []string{RoleGateway, RoleMedia}
-				cfg.Cluster.Blob = &clusterBlobConf{Backend: BlobBackendObjectStore}
+				cfg.Cluster.Storage = &clusterStorageConf{Backend: BlobBackendObjectStore}
 				cfg.MediaServer = &mediaServerConf{Port: "7100"}
 			},
-			wantErr: "cluster.blob.objectStore.endpoint is required",
+			wantErr: "cluster.storage.objectStore.endpoint is required",
 		},
 		{
 			name: "sharedVolume 缺标记拒绝",
 			mutate: func(t *testing.T, cfg *Config) {
 				*cfg = *gatewayOnlyBase()
 				cfg.Cluster.Roles = []string{RoleGateway, RoleMedia}
-				cfg.Cluster.Blob = &clusterBlobConf{
+				cfg.Cluster.Storage = &clusterStorageConf{
 					Backend:      BlobBackendSharedVolume,
 					SharedVolume: true,
 					Root:         t.TempDir(),
 				}
 				cfg.MediaServer = &mediaServerConf{Port: "7100"}
 			},
-			wantErr: "cluster.blob marker",
+			wantErr: "cluster.storage marker",
 		},
 		{
 			name: "sharedVolume 带标记通过",
@@ -188,10 +188,10 @@ func TestParseServerModeMatrix(t *testing.T) {
 				*cfg = *gatewayOnlyBase()
 				cfg.Cluster.Roles = []string{RoleGateway, RoleMedia}
 				root := t.TempDir()
-				if err := os.WriteFile(filepath.Join(root, DefaultClusterBlobMarker), []byte{}, 0o644); err != nil {
+				if err := os.WriteFile(filepath.Join(root, DefaultClusterStorageMarker), []byte{}, 0o644); err != nil {
 					t.Fatalf("write marker: %v", err)
 				}
-				cfg.Cluster.Blob = &clusterBlobConf{
+				cfg.Cluster.Storage = &clusterStorageConf{
 					Backend:      BlobBackendSharedVolume,
 					SharedVolume: true,
 					Root:         root,
@@ -205,10 +205,10 @@ func TestParseServerModeMatrix(t *testing.T) {
 				*cfg = *gatewayOnlyBase()
 				cfg.Cluster.Roles = []string{RoleGateway, RoleMedia}
 				root := t.TempDir()
-				if err := os.WriteFile(filepath.Join(root, DefaultClusterBlobMarker), []byte{}, 0o644); err != nil {
+				if err := os.WriteFile(filepath.Join(root, DefaultClusterStorageMarker), []byte{}, 0o644); err != nil {
 					t.Fatalf("write marker: %v", err)
 				}
-				cfg.Cluster.Blob = &clusterBlobConf{
+				cfg.Cluster.Storage = &clusterStorageConf{
 					Backend:      BlobBackendSharedVolume,
 					SharedVolume: true,
 					Root:         root,
@@ -222,10 +222,10 @@ func TestParseServerModeMatrix(t *testing.T) {
 				*cfg = *controlOnlyBase()
 				cfg.MediaUpload = &mediaUploadConf{Dir: t.TempDir()}
 				root := t.TempDir()
-				if err := os.WriteFile(filepath.Join(root, DefaultClusterBlobMarker), []byte{}, 0o644); err != nil {
+				if err := os.WriteFile(filepath.Join(root, DefaultClusterStorageMarker), []byte{}, 0o644); err != nil {
 					t.Fatalf("write marker: %v", err)
 				}
-				cfg.Cluster.Blob = &clusterBlobConf{
+				cfg.Cluster.Storage = &clusterStorageConf{
 					Backend:      BlobBackendSharedVolume,
 					SharedVolume: true,
 					Root:         root,
@@ -239,24 +239,24 @@ func TestParseServerModeMatrix(t *testing.T) {
 				*cfg = *controlOnlyBase()
 				root := t.TempDir()
 				cfg.MediaUpload = &mediaUploadConf{Dir: root}
-				cfg.Cluster.Blob = &clusterBlobConf{
+				cfg.Cluster.Storage = &clusterStorageConf{
 					Backend:      BlobBackendSharedVolume,
 					SharedVolume: true,
 					Root:         root,
 				}
 			},
-			wantErr: "cluster.blob marker",
+			wantErr: "cluster.storage marker",
 		},
 		{
 			name: "control sharedVolume 对齐且带标记通过",
 			mutate: func(t *testing.T, cfg *Config) {
 				*cfg = *controlOnlyBase()
 				root := t.TempDir()
-				if err := os.WriteFile(filepath.Join(root, DefaultClusterBlobMarker), []byte{}, 0o644); err != nil {
+				if err := os.WriteFile(filepath.Join(root, DefaultClusterStorageMarker), []byte{}, 0o644); err != nil {
 					t.Fatalf("write marker: %v", err)
 				}
 				cfg.MediaUpload = &mediaUploadConf{Dir: root}
-				cfg.Cluster.Blob = &clusterBlobConf{
+				cfg.Cluster.Storage = &clusterStorageConf{
 					Backend:      BlobBackendSharedVolume,
 					SharedVolume: true,
 					Root:         root,

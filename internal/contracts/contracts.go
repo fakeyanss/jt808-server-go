@@ -362,6 +362,33 @@ type MediaAllocator interface {
 	Release(ctx context.Context, leaseID string) error
 }
 
+// 媒体调度失败的错误码。调用方据此返回稳定的结构化错误，而不是空泛的 503。
+const (
+	// MediaCodeNoNodes 表示没有配置任何媒体节点。
+	MediaCodeNoNodes = "no_media_node_configured"
+	// MediaCodeNodesUnavailable 表示配置了节点但没有一个可接受新会话。
+	MediaCodeNodesUnavailable = "no_media_node_available"
+)
+
+// MediaUnavailableError 表示当前没有可用于承载播放会话的媒体节点。
+//
+// 这是稳定契约错误：API 层返回 503 + code + message，禁止把“起了但什么都不通”
+// 伪装成成功。
+type MediaUnavailableError struct {
+	Code   string
+	Reason string
+}
+
+func (e *MediaUnavailableError) Error() string {
+	if e == nil {
+		return "media is unavailable"
+	}
+	if e.Reason == "" {
+		return e.Code
+	}
+	return fmt.Sprintf("%s: %s", e.Code, e.Reason)
+}
+
 // MediaReader 提供媒体流与文件的只读视图。
 type MediaReader interface {
 	Streams() int
@@ -500,6 +527,30 @@ type AttachmentLease struct {
 type AttachmentAllocator interface {
 	Allocate(ctx context.Context, request AttachmentLeaseRequest) (AttachmentLease, error)
 	Release(ctx context.Context, leaseID string) error
+}
+
+// 附件调度失败的错误码。API 返回 503 + code + reason，禁止静默降级。
+const (
+	// AttachmentCodeNoNodes 表示没有配置任何附件节点。
+	AttachmentCodeNoNodes = "no_attachment_node_configured"
+	// AttachmentCodeNodesUnavailable 表示配置了节点但没有一个可接受新的上传。
+	AttachmentCodeNodesUnavailable = "no_attachment_node_available"
+)
+
+// AttachmentUnavailableError 表示当前没有可承载附件上传的节点。
+type AttachmentUnavailableError struct {
+	Code   string
+	Reason string
+}
+
+func (e *AttachmentUnavailableError) Error() string {
+	if e == nil {
+		return "attachment service is unavailable"
+	}
+	if e.Reason == "" {
+		return e.Code
+	}
+	return fmt.Sprintf("%s: %s", e.Code, e.Reason)
 }
 
 // AttachmentReader 提供附件组装状态与文件目录的只读视图。

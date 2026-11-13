@@ -13,6 +13,7 @@ import (
 	"github.com/fakeyanss/jt808-server-go/internal/observability"
 	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
 	"github.com/fakeyanss/jt808-server-go/internal/repository"
+	"github.com/fakeyanss/jt808-server-go/internal/repository/memory"
 )
 
 const (
@@ -31,6 +32,7 @@ func (c *fakeClock) advance(d time.Duration) { c.now = c.now.Add(d) }
 
 type sentMessage struct {
 	sessionID string
+	phone     string
 	msgID     uint16
 	serial    uint16
 	body      []byte
@@ -66,6 +68,7 @@ func (f *fakeSender) Send(_ context.Context, request contracts.DownlinkRequest) 
 	}
 	f.sent = append(f.sent, sentMessage{
 		sessionID: request.SessionID,
+		phone:     request.Phone,
 		msgID:     header.MsgID,
 		serial:    header.SerialNumber,
 		body:      body,
@@ -98,8 +101,8 @@ type harness struct {
 func newHarness(t *testing.T, options OutboxOptions) *harness {
 	t.Helper()
 	ctx := context.Background()
-	repo := repository.NewCommandRepository()
-	devices := repository.NewDeviceRepository()
+	repo := memory.NewCommandRepository()
+	devices := memory.NewDeviceRepository()
 	sender := &fakeSender{}
 	metrics := observability.NewMetrics()
 	clock := &fakeClock{now: time.Date(2026, 11, 8, 12, 0, 0, 0, time.UTC)}
@@ -158,6 +161,25 @@ func defaultTestOptions() OutboxOptions {
 		RetryMax:      time.Minute,
 		OfflineRetry:  15 * time.Second,
 	}
+}
+
+// 首次下发也必须显式携带 phone：网关只按 JSON 的 phone 字段路由，
+// 不会从编码后的消息头推断。遗漏时表现为首次 400、重投才成功。
+func TestOutboxSubmitCarriesPhoneFromHeader(t *testing.T) {
+	h := newHarness(t, defaultTestOptions())
+	result, err := h.service.Submit(context.Background(), contracts.DownlinkRequest{
+		Message: &model.MsgRawBody{
+			Header: model.GenMsgHeader(&model.Device{Phone: testPhone, VersionDesc: model.Version2013}, 0x9208, 0),
+			Body:   []byte{0x01},
+		},
+	})
+	require.NoError(t, err)
+	require.NotEmpty(t, result.ID)
+	require.Equal(t, 1, h.sender.count())
+	h.sender.mu.Lock()
+	sent := h.sender.sent[0]
+	h.sender.mu.Unlock()
+	require.Equal(t, testPhone, sent.phone)
 }
 
 // TestReplayAfterRestart 覆盖进程重启后的重投：持久化的 pending 命令重新下发，

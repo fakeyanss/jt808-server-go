@@ -129,7 +129,9 @@ func registerPlaybackRoutes(api *gin.RouterGroup, devices repository.DeviceRepos
 				})
 				return
 			}
-			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
+			if !writeMediaUnavailable(c, err) {
+				c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
+			}
 			return
 		}
 
@@ -246,7 +248,9 @@ func registerPlaybackRoutes(api *gin.RouterGroup, devices repository.DeviceRepos
 		// 覆盖不完整不是错误：始终 200 + 结构化区间，避免调用方特判 409。
 		coverage, err := playback.RecordingCoverage(c.Request.Context(), c.Param("phone"), uint8(channel), start, end)
 		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
+			if !writeMediaUnavailable(c, err) {
+				c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
+			}
 			return
 		}
 		c.JSON(http.StatusOK, coverage)
@@ -271,6 +275,9 @@ func registerPlaybackRoutes(api *gin.RouterGroup, devices repository.DeviceRepos
 			}
 			if errors.Is(err, contracts.ErrRangeNotSatisfiable) {
 				c.JSON(http.StatusRequestedRangeNotSatisfiable, gin.H{"err": err.Error()})
+				return
+			}
+			if writeMediaUnavailable(c, err) {
 				return
 			}
 			c.JSON(http.StatusInternalServerError, gin.H{"err": err.Error()})
@@ -408,6 +415,20 @@ func parseByteRange(header string) (offset, length int64, ok bool, err error) {
 		return 0, 0, false, errors.New("invalid Range end")
 	}
 	return start, end - start + 1, true, nil
+}
+
+// writeMediaUnavailable 把媒体调度失败映射为稳定的 503 + code + message。
+// 返回 false 表示不是媒体不可用错误，由调用方按原有语义处理。
+func writeMediaUnavailable(c *gin.Context, err error) bool {
+	var unavailable *contracts.MediaUnavailableError
+	if !errors.As(err, &unavailable) {
+		return false
+	}
+	c.JSON(http.StatusServiceUnavailable, gin.H{
+		"code":    unavailable.Code,
+		"message": unavailable.Error(),
+	})
+	return true
 }
 
 func toEndpointJSON(endpoints []contracts.PlaybackEndpoint) []gin.H {

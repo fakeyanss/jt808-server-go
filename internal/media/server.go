@@ -55,6 +55,8 @@ type Config struct {
 	SegmentSink SegmentSink
 	// AdvertiseIP 是下行信令里填写的媒体节点地址；为空时用 127.0.0.1。
 	AdvertiseIP string
+	// NodeID 是集群内唯一的节点标识；为空时由监听地址与 AdvertiseIP 推导。
+	NodeID string
 	// Playback 是播放输出配置；Output 为空表示不启用播放输出。
 	Playback playback.Config
 }

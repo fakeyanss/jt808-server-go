@@ -110,7 +110,7 @@ func (c *Cleaner) Done() <-chan struct{} {
 func (c *Cleaner) Run(ctx context.Context) {
 	defer close(c.done)
 	if c == nil || c.store == nil {
-		log.Warn().Msg("Retention cleanup skipped: storage backend does not support cleanup")
+		log.Warn().Msg("Retention cleanup skipped: database backend does not support cleanup")
 		return
 	}
 	ticker := time.NewTicker(c.cfg.Interval)

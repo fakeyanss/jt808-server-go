@@ -4,11 +4,37 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/spf13/viper"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	clientconfigs "github.com/fakeyanss/jt808-server-go/client/configs"
 	serverconfigs "github.com/fakeyanss/jt808-server-go/configs"
 )
+
+// 旧 storage 段必须启动失败，不能被 viper 静默忽略。
+func TestRejectLegacyStorageSection(t *testing.T) {
+	valid := viper.New()
+	valid.SetConfigType("yaml")
+	require.NoError(t, valid.ReadConfig(strings.NewReader("database:\n  type: memory\n")))
+	require.NoError(t, rejectLegacyKeys(valid))
+
+	legacy := viper.New()
+	legacy.SetConfigType("yaml")
+	require.NoError(t, legacy.ReadConfig(strings.NewReader("storage:\n  type: memory\n")))
+	err := rejectLegacyKeys(legacy)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), `"storage"`)
+	require.Contains(t, err.Error(), `"database"`)
+
+	legacyCluster := viper.New()
+	legacyCluster.SetConfigType("yaml")
+	require.NoError(t, legacyCluster.ReadConfig(strings.NewReader("cluster:\n  blob:\n    backend: local\n")))
+	err = rejectLegacyKeys(legacyCluster)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), `"cluster.blob"`)
+	require.Contains(t, err.Error(), `"cluster.storage"`)
+}
 
 func TestLoad(t *testing.T) {
 	type args struct {

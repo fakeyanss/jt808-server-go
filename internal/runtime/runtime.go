@@ -63,7 +63,7 @@ type RetransmitTracker interface {
 }
 
 // Stores 聚合运行时状态接口，作为组件构造函数的运行时依赖。
-// 它刻意与 storage.Stores（持久化仓储）分离，避免把连接现场混进可持久化的组装。
+// 它刻意与 stores.Stores（持久化仓储）分离，避免把连接现场混进可持久化的组装。
 type Stores struct {
 	Conn              ConnectionRegistry
 	Fragment          FragmentAssembler

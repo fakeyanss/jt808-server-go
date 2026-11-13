@@ -9,8 +9,8 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
+	"github.com/fakeyanss/jt808-server-go/internal/repository/database"
 	"github.com/fakeyanss/jt808-server-go/internal/runtime"
-	"github.com/fakeyanss/jt808-server-go/internal/storage"
 )
 
 // 回归：SQL 后端不持久化运行时字段，Device.SessionID 读回为空。
@@ -18,12 +18,12 @@ import (
 func TestLookupSessionByPhoneIgnoresPersistedSessionID(t *testing.T) {
 	ctx := context.Background()
 	dbPath := filepath.Join(t.TempDir(), "jt808.db")
-	_, err := storage.Migrate(storage.Config{Type: storage.BackendSQLite, SQLitePath: dbPath})
+	_, err := database.Migrate(database.Config{Type: database.BackendSQLite, SQLitePath: dbPath})
 	require.NoError(t, err)
 
-	stores, err := storage.Open(storage.Config{Type: storage.BackendSQLite, SQLitePath: dbPath})
+	stores, err := database.Open(database.Config{Type: database.BackendSQLite, SQLitePath: dbPath})
 	require.NoError(t, err)
-	t.Cleanup(func() { require.NoError(t, stores.Close()) })
+	t.Cleanup(func() { require.NoError(t, database.Close()) })
 
 	const phone = "18800001111"
 	require.NoError(t, stores.Devices.Upsert(ctx, &model.Device{

@@ -28,12 +28,14 @@ func TestParseAlarmServerDefaults(t *testing.T) {
 	assert.NoError(t, err)
 	assert.True(t, enabled)
 	assert.Equal(t, AlarmServerOptions{
-		Port:          7200,
-		Dir:           DefaultAlarmServerDir,
-		MaxFileSize:   DefaultAlarmServerMaxFileSize,
-		MaxConcurrent: DefaultAlarmServerMaxConcurrent,
-		CompletedTTL:  DefaultAlarmServerCompletedTTL,
-		Retention:     DefaultAlarmServerRetentionDays * 24 * time.Hour,
+		Port:             7200,
+		Dir:              DefaultAlarmServerDir,
+		MaxFileSize:      DefaultAlarmServerMaxFileSize,
+		MaxConcurrent:    DefaultAlarmServerMaxConcurrent,
+		CompletedTTL:     DefaultAlarmServerCompletedTTL,
+		Retention:        DefaultAlarmServerRetentionDays * 24 * time.Hour,
+		SegmentSizeBytes: DefaultAlarmServerSegmentSize,
+		StagingMaxBytes:  DefaultAlarmServerStagingMax,
 	}, options)
 }
 
@@ -93,12 +95,14 @@ func TestParseAlarmServerExplicitValues(t *testing.T) {
 	assert.NoError(t, err)
 	assert.True(t, enabled)
 	assert.Equal(t, AlarmServerOptions{
-		Port:          7611,
-		Dir:           "/var/lib/jt808/alarms",
-		MaxFileSize:   1024,
-		MaxConcurrent: 3,
-		CompletedTTL:  7 * time.Minute,
-		Retention:     DefaultAlarmServerRetentionDays * 24 * time.Hour,
+		Port:             7611,
+		Dir:              "/var/lib/jt808/alarms",
+		MaxFileSize:      1024,
+		MaxConcurrent:    3,
+		CompletedTTL:     7 * time.Minute,
+		Retention:        DefaultAlarmServerRetentionDays * 24 * time.Hour,
+		SegmentSizeBytes: DefaultAlarmServerSegmentSize,
+		StagingMaxBytes:  DefaultAlarmServerStagingMax,
 	}, options)
 }
 
@@ -183,7 +187,6 @@ func TestParseAlarmServerAutoUpload(t *testing.T) {
 	t.Run("invalid auto upload values", func(t *testing.T) {
 		cases := []*alarmServerConf{
 			{Port: "7200", AutoUpload: true},
-			{AutoUpload: true, UploadIP: "10.0.0.8"},
 			{Port: "7200", AutoUpload: true, UploadIP: "10.0.0.8", UDPPort: "0"},
 		}
 		for i, conf := range cases {

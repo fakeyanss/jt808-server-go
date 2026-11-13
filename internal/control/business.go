@@ -20,6 +20,7 @@ import (
 	"github.com/fakeyanss/jt808-server-go/internal/protocol"
 	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
 	"github.com/fakeyanss/jt808-server-go/internal/repository"
+	"github.com/fakeyanss/jt808-server-go/internal/storage"
 	"github.com/fakeyanss/jt808-server-go/internal/uplink"
 )
 
@@ -34,12 +35,14 @@ type BusinessOptions struct {
 	Blob contracts.BlobStore
 	// MediaUpload 是本地媒体目录，仅 Blob 为空时使用。
 	MediaUpload *mediaupload.Store
+	// Hooks 是控制面识别到报警/位置时的动作出口；autoUpload 依赖它在控制面触发 0x9208。
+	Hooks actionpkg.Hooks
 	// OnUnknownDevice 在丢弃事件时回调（指标/日志）。
 	OnUnknownDevice func(phone string)
 	// OnMediaTypeRejected 在 0x0801 携带非图片类型时回调。
 	OnMediaTypeRejected func(phone string, mediaType uint8)
-	// OnBlobCommitFailed 在文件已写、状态标记失败时回调。
-	OnBlobCommitFailed func(phone string, mediaID uint32)
+	// OnStorageCommitFailed 在文件已写、状态标记失败时回调。
+	OnStorageCommitFailed func(phone string, mediaID uint32)
 }
 
 // BusinessExecutor 是管控侧的上行事件消费者。
@@ -65,9 +68,13 @@ type phoneMailbox struct {
 func NewBusinessExecutor(opts BusinessOptions) *BusinessExecutor {
 	processorDeps := opts.ProcessorDeps
 	processorDeps.UplinkSink = nil
+	hooks := opts.Hooks
+	if hooks == nil {
+		hooks = actionpkg.Noop{}
+	}
 	return &BusinessExecutor{
 		opts:    opts,
-		proc:    protocol.NewJT808MsgProcessor(actionpkg.Noop{}, protocol.WithProcessorDeps(processorDeps)),
+		proc:    protocol.NewJT808MsgProcessor(hooks, protocol.WithProcessorDeps(processorDeps)),
 		mailbox: map[string]*phoneMailbox{},
 	}
 }
@@ -160,6 +167,8 @@ func (b *BusinessExecutor) ingestMedia(ctx context.Context, event contracts.Upli
 	if err != nil {
 		return contracts.UplinkResult{}, err
 	}
+	// 对象存储按来源分区：0x0801 图片与 1078 切片、附件分开前缀，便于按来源清理。
+	key = storage.MediaUploads + key
 	info, err := b.opts.Blob.Put(ctx, key, bytes.NewReader(upload.FragmentData), contracts.BlobOptions{ContentType: "image/jpeg"})
 	if err != nil {
 		return contracts.UplinkResult{}, fmt.Errorf("put media %s: %w", key, err)
@@ -174,8 +183,8 @@ func (b *BusinessExecutor) ingestMedia(ctx context.Context, event contracts.Upli
 		return contracts.UplinkResult{}, fmt.Errorf("save media metadata %s: %w", key, err)
 	}
 	if err := b.opts.Blob.MarkCommitted(ctx, info.Key); err != nil {
-		if b.opts.OnBlobCommitFailed != nil {
-			b.opts.OnBlobCommitFailed(event.Phone, upload.MultiMediaID)
+		if b.opts.OnStorageCommitFailed != nil {
+			b.opts.OnStorageCommitFailed(event.Phone, upload.MultiMediaID)
 		}
 		log.Error().Err(err).Str("phone", event.Phone).Str("key", info.Key).
 			Msg("Media file committed but state marker failed; metadata is authoritative")
@@ -183,15 +192,16 @@ func (b *BusinessExecutor) ingestMedia(ctx context.Context, event contracts.Upli
 	return contracts.UplinkResult{Accepted: true}, nil
 }
 
-// SweepPending 清理超过 olderThan 仍为 pending 且无元数据引用的对象。
+// SweepPending 清理超过 olderThan 仍为 pending 且无元数据引用的媒体对象。
+// 范围限定在媒体上传前缀内，不触碰附件等其它来源。
 func (b *BusinessExecutor) SweepPending(ctx context.Context, olderThan time.Duration) {
 	sweeper, ok := b.opts.Blob.(interface {
-		SweepPending(context.Context, time.Duration, func(string) bool)
+		SweepPendingPrefix(context.Context, string, time.Duration, func(string) bool)
 	})
 	if !ok {
 		return
 	}
-	sweeper.SweepPending(ctx, olderThan, func(key string) bool {
+	sweeper.SweepPendingPrefix(ctx, storage.MediaUploads, olderThan, func(key string) bool {
 		return mediaReferenced(ctx, b.opts.Files, key)
 	})
 }
@@ -245,12 +255,13 @@ func mediaReferenced(ctx context.Context, files repository.MediaFileRepository, 
 	if files == nil {
 		return false
 	}
-	parts := strings.Split(filepath.ToSlash(key), "/")
+	relative := strings.TrimPrefix(filepath.ToSlash(key), storage.MediaUploads)
+	parts := strings.Split(relative, "/")
 	if len(parts) < 2 {
 		return false
 	}
 	phone := parts[0]
-	base := strings.TrimSuffix(filepath.Base(key), filepath.Ext(key))
+	base := strings.TrimSuffix(filepath.Base(relative), filepath.Ext(relative))
 	mediaID, err := strconv.ParseUint(base, 10, 32)
 	if err != nil {
 		return false

@@ -11,6 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/fakeyanss/jt808-server-go/internal/repository"
+	"github.com/fakeyanss/jt808-server-go/internal/repository/memory"
 )
 
 // stubLocationRepository 只验证管理面是否正确传递查询条件与分页参数。
@@ -54,7 +55,7 @@ func historyURL(base string, phone string, from, to time.Time, page, pageSize in
 }
 
 func TestListAlarmsFiltersByPhoneAndTimeRange(t *testing.T) {
-	alarms := repository.NewAlarmRepository(repository.AlarmRetention{})
+	alarms := memory.NewAlarmRepository(repository.AlarmRetention{})
 	ctx := context.Background()
 	for serial := uint16(1); serial <= 3; serial++ {
 		require.NoError(t, alarms.Record(ctx, "18800000001", serial, 1, 0, 0, "261028204500"))
@@ -110,7 +111,7 @@ func TestListLocationsUsesRepositoryQuery(t *testing.T) {
 func TestHistoryRequiresPhoneAndTimeRange(t *testing.T) {
 	server := NewServer(testOptions("secret", 100, 200), Dependencies{
 		Locations: &stubLocationRepository{},
-		Alarms:    repository.NewAlarmRepository(repository.AlarmRetention{}),
+		Alarms:    memory.NewAlarmRepository(repository.AlarmRetention{}),
 	})
 	from := time.Now().Add(-time.Hour)
 	to := time.Now()

@@ -3,6 +3,9 @@ package alarmserver
 import (
 	"errors"
 	"time"
+
+	"github.com/fakeyanss/jt808-server-go/internal/contracts"
+	"github.com/fakeyanss/jt808-server-go/internal/repository"
 )
 
 const (
@@ -31,17 +34,54 @@ const (
 var FrameMagic = [4]byte{0x30, 0x31, 0x63, 0x64}
 
 var (
-	ErrInvalidFileName       = errors.New("invalid attachment file name")
-	ErrInvalidFileNameFormat = errors.New("attachment file name does not match T/JSATL 12-2017 4.6.2")
-	ErrInvalidDirectory      = errors.New("invalid attachment directory")
-	ErrInvalidAlarmSign      = errors.New("invalid attachment alarm sign")
-	ErrFileNotRegistered     = errors.New("attachment file is not registered")
-	ErrOffsetOutOfRange      = errors.New("attachment chunk offset out of range")
-	ErrFileTooLarge          = errors.New("attachment file exceeds max file size")
-	ErrTooManyFiles          = errors.New("too many concurrent attachment files")
-	ErrInvalidChunkLength    = errors.New("invalid attachment chunk length")
-	ErrFrameMagic            = errors.New("invalid attachment frame magic")
+	ErrInvalidFileName        = errors.New("invalid attachment file name")
+	ErrInvalidFileNameFormat  = errors.New("attachment file name does not match T/JSATL 12-2017 4.6.2")
+	ErrInvalidDirectory       = errors.New("invalid attachment directory")
+	ErrInvalidAlarmSign       = errors.New("invalid attachment alarm sign")
+	ErrFileNotRegistered      = errors.New("attachment file is not registered")
+	ErrOffsetOutOfRange       = errors.New("attachment chunk offset out of range")
+	ErrFileTooLarge           = errors.New("attachment file exceeds max file size")
+	ErrTooManyFiles           = errors.New("too many concurrent attachment files")
+	ErrInvalidChunkLength     = errors.New("invalid attachment chunk length")
+	ErrFrameMagic             = errors.New("invalid attachment frame magic")
+	ErrStagingCapacity        = errors.New("attachment staging capacity exceeded")
+	ErrTooManySessions        = errors.New("attachment concurrent session limit reached")
+	ErrObjectStoreUnavailable = errors.New("attachment object store is not configured")
 )
+
+// StorageConfig 是附件对象存储模式。
+//
+// 设置后附件不再把完整文件落本地盘：收到数据写入有界本地暂存区，
+// 每个切片窗口到齐后切段上传对象存储，并把水位与段列表写入共享库。
+type StorageConfig struct {
+	Blob   contracts.BlobStore
+	Files  repository.AttachmentFileRepository
+	Source string
+	// SegmentSize 是单个对象切片大小；<=0 时使用 DefaultSegmentSize。
+	SegmentSize int64
+	// StagingDir 是本地暂存根目录；崩溃残留按 .part 标记 + 宽限期扫描清理。
+	StagingDir string
+	// MaxStagingBytes 是整个暂存区的总量上限；到顶拒绝新的文件登记。
+	MaxStagingBytes int64
+	// NodeID 用于日志与状态回报。
+	NodeID string
+}
+
+// DefaultSegmentSize 是附件切片默认大小（8 MiB）。
+const DefaultSegmentSize = 8 * 1024 * 1024
+
+// Normalize 填充对象存储模式的默认值。
+func (c *StorageConfig) Normalize() {
+	if c == nil {
+		return
+	}
+	if c.SegmentSize <= 0 {
+		c.SegmentSize = DefaultSegmentSize
+	}
+	if c.Source == "" {
+		c.Source = repository.AttachmentSourceSubia
+	}
+}
 
 // Config 是附件服务器的运行参数。
 type Config struct {
@@ -51,6 +91,8 @@ type Config struct {
 	SessionTimeout time.Duration // 文件无进展清理阈值
 	CompletedTTL   time.Duration // 完成态内存状态保留时长；0 表示不淘汰
 	Retention      time.Duration // 已完成附件文件保留时长；<=0 表示不清理
+	// Storage 非空时启用对象存储模式；此时 Dir 只作为本地暂存的兜底。
+	Storage *StorageConfig
 }
 
 // Normalize 填充未配置或非法为零值的字段，保证零值 Config 可用。

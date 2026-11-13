@@ -14,8 +14,8 @@ import (
 	actionpkg "github.com/fakeyanss/jt808-server-go/internal/action"
 	"github.com/fakeyanss/jt808-server-go/internal/codec/hex"
 	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
+	"github.com/fakeyanss/jt808-server-go/internal/repository/database"
 	"github.com/fakeyanss/jt808-server-go/internal/runtime"
-	"github.com/fakeyanss/jt808-server-go/internal/storage"
 	"github.com/stretchr/testify/require"
 )
 
@@ -56,7 +56,7 @@ func TestProcessMsg0802PersistsSearchResults(t *testing.T) {
 	}
 	require.NoError(t, NewJT808MsgProcessor(nil).processMsg0802(ctx, &model.ProcessData{Incoming: msg}))
 
-	got, err := storage.Default().MediaSearches.List(ctx, phone, 10)
+	got, err := database.Default().MediaSearches.List(ctx, phone, 10)
 	require.NoError(t, err)
 	require.Len(t, got, 1)
 	require.Equal(t, uint16(21), got[0].AnswerSerial)
@@ -67,7 +67,7 @@ func TestProcessMsg0802PersistsSearchResults(t *testing.T) {
 	// 终端重传同一条应答但结果变空时，旧结果必须被覆盖清空。
 	msg.Items = nil
 	require.NoError(t, NewJT808MsgProcessor(nil).processMsg0802(ctx, &model.ProcessData{Incoming: msg}))
-	got, err = storage.Default().MediaSearches.List(ctx, phone, 10)
+	got, err = database.Default().MediaSearches.List(ctx, phone, 10)
 	require.NoError(t, err)
 	require.Empty(t, got)
 }
@@ -107,19 +107,19 @@ func TestProcessMsg0107PersistsAndDeliversTerminalProperties(t *testing.T) {
 		t.Fatal("property response was not delivered")
 	}
 
-	props, err := storage.Default().Properties.Get(ctx, phone)
+	props, err := database.Default().Properties.Get(ctx, phone)
 	require.NoError(t, err)
 	require.Equal(t, "ACME", props.ManufacturerID)
 	require.Equal(t, "T-2019", props.TerminalModel)
 	require.Equal(t, "FW-1.0", props.FirmwareVersion)
-	require.NoError(t, storage.Default().Properties.Delete(ctx, phone))
+	require.NoError(t, database.Default().Properties.Delete(ctx, phone))
 }
 
 // 心跳只刷新进程内最近通信时间，不再写库：运行时状态不持久化。
 func TestHeartbeatDoesNotPersistRuntime(t *testing.T) {
 	const phone = "188765499004"
 	ctx := context.Background()
-	devices := storage.Default().Devices
+	devices := database.Default().Devices
 	require.NoError(t, devices.Upsert(ctx, &model.Device{
 		Phone:     phone,
 		Keepalive: time.Minute,
@@ -215,10 +215,10 @@ func locationReportBody(alarmSign uint32) []byte {
 // 位置上报写入定位缓存。
 func TestLocationReportWritesGeo(t *testing.T) {
 	const phone = "188765499002"
-	storage.Default().Devices.Upsert(context.Background(), &model.Device{Phone: phone, Keepalive: time.Minute})
+	database.Default().Devices.Upsert(context.Background(), &model.Device{Phone: phone, Keepalive: time.Minute})
 	t.Cleanup(func() {
-		storage.Default().Devices.DeleteByPhone(context.Background(), phone)
-		storage.Default().Geo.Delete(context.Background(), phone)
+		database.Default().Devices.DeleteByPhone(context.Background(), phone)
+		database.Default().Geo.Delete(context.Background(), phone)
 	})
 
 	processor := NewJT808MsgProcessor(nil)
@@ -227,7 +227,7 @@ func TestLocationReportWritesGeo(t *testing.T) {
 	require.NoError(t, err)
 	require.IsType(t, &model.Msg8001{}, result.Outgoing)
 
-	geo, err := storage.Default().Geo.Latest(context.Background(), phone)
+	geo, err := database.Default().Geo.Latest(context.Background(), phone)
 	require.NoError(t, err)
 	require.Equal(t, phone, geo.Phone)
 }
@@ -342,7 +342,7 @@ func TestOnAlarmHTTPCallbackIncludesExtItems(t *testing.T) {
 
 	const phone = "188765432120"
 	ctx := context.Background()
-	devices := storage.Default().Devices
+	devices := database.Default().Devices
 	require.NoError(t, devices.Upsert(ctx, &model.Device{Phone: phone, Keepalive: time.Minute}))
 	t.Cleanup(func() { _ = devices.DeleteByPhone(ctx, phone) })
 

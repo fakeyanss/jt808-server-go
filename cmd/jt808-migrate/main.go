@@ -14,7 +14,7 @@ import (
 	"github.com/rs/zerolog/log"
 
 	"github.com/fakeyanss/jt808-server-go/internal/config"
-	"github.com/fakeyanss/jt808-server-go/internal/storage"
+	"github.com/fakeyanss/jt808-server-go/internal/repository/database"
 	"github.com/fakeyanss/jt808-server-go/pkg/logger"
 )
 
@@ -33,10 +33,10 @@ func main() {
 	cfg := config.Load(cfgPath)
 	log.Logger = *logger.Configure(cfg.ParseLogConf()).Logger
 
-	applied, err := storage.Migrate(storage.FromConfig(cfg))
+	applied, err := database.Migrate(database.FromConfig(cfg))
 	if err != nil {
-		log.Error().Err(err).Msg("Fail to migrate storage schema")
+		log.Error().Err(err).Msg("Fail to migrate database schema")
 		os.Exit(1)
 	}
-	log.Info().Int("applied", applied).Msg("Storage schema migration completed")
+	log.Info().Int("applied", applied).Msg("Database schema migration completed")
 }

@@ -12,7 +12,7 @@ import (
 	"github.com/fakeyanss/jt808-server-go/internal/codec/hex"
 	"github.com/fakeyanss/jt808-server-go/internal/mediaupload"
 	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
-	"github.com/fakeyanss/jt808-server-go/internal/storage"
+	"github.com/fakeyanss/jt808-server-go/internal/repository/database"
 )
 
 // mediaGeoBody 构造 0x0801 使用的 28 字节位置体。
@@ -38,10 +38,10 @@ func encode0801Body(mediaID uint32, channel uint8, alarmSign uint32, data []byte
 func TestProcess0801PersistsMediaFile(t *testing.T) {
 	ctx := context.Background()
 	const phone = "188765432109"
-	stores := storage.NewMemory()
+	stores := database.NewMemory()
 	mediaStore, err := mediaupload.NewStore(t.TempDir())
 	require.NoError(t, err)
-	processor := NewJT808MsgProcessor(nil, WithProcessorDeps(ProcessorDeps{Storage: stores, MediaUpload: mediaStore}))
+	processor := NewJT808MsgProcessor(nil, WithProcessorDeps(ProcessorDeps{Repos: stores, MediaUpload: mediaStore}))
 
 	header := &model.MsgHeader{MsgID: 0x0801, PhoneNumber: phone, SerialNumber: 21, Attr: &model.MsgBodyAttr{}}
 	data := []byte("media-payload")
@@ -67,8 +67,8 @@ func TestProcess0801PersistsMediaFile(t *testing.T) {
 func TestProcess0801WithoutUploadStoreKeepsIndustrySnapshot(t *testing.T) {
 	ctx := context.Background()
 	const phone = "188765432110"
-	stores := storage.NewMemory()
-	processor := NewJT808MsgProcessor(nil, WithProcessorDeps(ProcessorDeps{Storage: stores}))
+	stores := database.NewMemory()
+	processor := NewJT808MsgProcessor(nil, WithProcessorDeps(ProcessorDeps{Repos: stores}))
 
 	header := &model.MsgHeader{MsgID: 0x0801, PhoneNumber: phone, SerialNumber: 22, Attr: &model.MsgBodyAttr{}}
 	_, err := processor.Process(ctx, &model.PacketData{Header: header, Body: encode0801Body(7002, 1, 0, []byte("x"))})
@@ -83,10 +83,10 @@ func TestProcess0801WithoutUploadStoreKeepsIndustrySnapshot(t *testing.T) {
 func TestProcess0805LinksMediaIDsWithUploadedFiles(t *testing.T) {
 	ctx := context.Background()
 	const phone = "188765432111"
-	stores := storage.NewMemory()
+	stores := database.NewMemory()
 	mediaStore, err := mediaupload.NewStore(t.TempDir())
 	require.NoError(t, err)
-	processor := NewJT808MsgProcessor(nil, WithProcessorDeps(ProcessorDeps{Storage: stores, MediaUpload: mediaStore}))
+	processor := NewJT808MsgProcessor(nil, WithProcessorDeps(ProcessorDeps{Repos: stores, MediaUpload: mediaStore}))
 
 	uploadHeader := &model.MsgHeader{MsgID: 0x0801, PhoneNumber: phone, SerialNumber: 23, Attr: &model.MsgBodyAttr{}}
 	_, err = processor.Process(ctx, &model.PacketData{Header: uploadHeader, Body: encode0801Body(7101, 1, 0, []byte("img-7101"))})
@@ -116,10 +116,10 @@ func TestProcess0805LinksMediaIDsWithUploadedFiles(t *testing.T) {
 func TestProcess0801LocationTimeUsesLocalTimezone(t *testing.T) {
 	ctx := context.Background()
 	const phone = "188765432112"
-	stores := storage.NewMemory()
+	stores := database.NewMemory()
 	mediaStore, err := mediaupload.NewStore(t.TempDir())
 	require.NoError(t, err)
-	processor := NewJT808MsgProcessor(nil, WithProcessorDeps(ProcessorDeps{Storage: stores, MediaUpload: mediaStore}))
+	processor := NewJT808MsgProcessor(nil, WithProcessorDeps(ProcessorDeps{Repos: stores, MediaUpload: mediaStore}))
 
 	header := &model.MsgHeader{MsgID: 0x0801, PhoneNumber: phone, SerialNumber: 25, Attr: &model.MsgBodyAttr{}}
 	_, err = processor.Process(ctx, &model.PacketData{Header: header, Body: encode0801Body(7201, 1, 0, []byte("x"))})

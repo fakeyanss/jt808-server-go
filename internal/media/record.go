@@ -15,6 +15,7 @@ import (
 
 	"github.com/fakeyanss/jt808-server-go/internal/contracts"
 	"github.com/fakeyanss/jt808-server-go/internal/media/playback"
+	"github.com/fakeyanss/jt808-server-go/internal/storage"
 )
 
 // RecordMode 是录制模式。
@@ -327,7 +328,7 @@ func (r *recorder) notify(info SegmentInfo) {
 }
 
 func segmentObjectKey(phone string, channel uint8, name string) string {
-	return fmt.Sprintf("recordings/%s/ch%d/%s/%s", phone, channel, time.Now().Format("20060102"), name)
+	return storage.MediaSegment(phone, channel, time.Now().Format("20060102"), name)
 }
 
 func hasParamSets(frame []byte) bool {
