@@ -63,3 +63,15 @@ func TestMySQLPersistence(t *testing.T) {
 	require.Equal(t, model.DeviceStatusOffline, got.Status)
 	require.True(t, got.LastestComTime.IsZero())
 }
+
+// 连接 DSN 必须显式打开 CLIENT_FOUND_ROWS，且保留原有参数。
+func TestDSNWithMatchedRows(t *testing.T) {
+	dsn, err := dsnWithMatchedRows("root:pass@tcp(127.0.0.1:3306)/jt808?parseTime=true&charset=utf8mb4")
+	require.NoError(t, err)
+	require.Contains(t, dsn, "clientFoundRows=true")
+	require.Contains(t, dsn, "parseTime=true")
+	require.Contains(t, dsn, "charset=utf8mb4")
+
+	_, err = dsnWithMatchedRows("not-a-dsn")
+	require.Error(t, err)
+}

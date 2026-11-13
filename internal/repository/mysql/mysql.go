@@ -14,7 +14,7 @@ import (
 	"strings"
 	"time"
 
-	_ "github.com/go-sql-driver/mysql"
+	mysqldriver "github.com/go-sql-driver/mysql"
 
 	"github.com/fakeyanss/jt808-server-go/internal/repository/sqlcore"
 )
@@ -36,15 +36,34 @@ type Backend struct {
 //
 // 启动只校验版本，不执行任何 DDL；迁移由 jt808-migrate 显式调用 Migrate，
 // 或由 DBA 直接按文件名顺序执行本包 migrations 目录下的 SQL。
+//
+// 连接强制启用 clientFoundRows，使 UPDATE 的 RowsAffected 与 SQLite 一样
+// 表示“匹配行数”而不是“实际变更行数”。仓储层据此只需判断 affected==0，
+// 不必在值未变化时回查存在性。
 func Open(dsn string) (*Backend, error) {
 	if strings.TrimSpace(dsn) == "" {
 		return nil, fmt.Errorf("mysql database requires a dsn")
 	}
-	db, err := sqlcore.OpenDatabase("mysql", dsn, "mysql", tunePool, Statements(), ExpectedVersion())
+	matchedRowsDSN, err := dsnWithMatchedRows(dsn)
+	if err != nil {
+		return nil, err
+	}
+	db, err := sqlcore.OpenDatabase("mysql", matchedRowsDSN, "mysql", tunePool, Statements(), ExpectedVersion())
 	if err != nil {
 		return nil, err
 	}
 	return &Backend{Store: sqlcore.New(db, nil, "mysql", Statements())}, nil
+}
+
+// dsnWithMatchedRows 解析 DSN 并打开 CLIENT_FOUND_ROWS。
+// 这是 MySQL 自己的方言能力，不放进共享 sqlcore 层。
+func dsnWithMatchedRows(dsn string) (string, error) {
+	cfg, err := mysqldriver.ParseDSN(strings.TrimSpace(dsn))
+	if err != nil {
+		return "", fmt.Errorf("parse mysql dsn: %w", err)
+	}
+	cfg.ClientFoundRows = true
+	return cfg.FormatDSN(), nil
 }
 
 // Migrate 显式执行 MySQL 迁移并返回本次应用的版本数，不在成功后启动服务。

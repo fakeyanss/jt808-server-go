@@ -13,6 +13,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
 	"github.com/fakeyanss/jt808-server-go/internal/repository"
 )
 
@@ -826,4 +827,32 @@ func insertOutboxRow(t *testing.T, db *sql.DB, commandID, phone string, msgID, s
 		commandID, commandID, phone, int64(msgID), int64(serial), []byte{1}, string(status),
 		now, now, now)
 	require.NoError(t, err)
+}
+
+// SaveAuthState 必须把“值未变化”当作命中：连接启用 clientFoundRows 后
+// RowsAffected 返回匹配行数，不再回查 devices 是否存在。
+func TestSaveAuthStateOnRealMySQL(t *testing.T) {
+	ctx := context.Background()
+	dsn := mysqlTestDSN(t)
+	requireMigrated(t, dsn)
+	raw := openRaw(t, dsn)
+	store := openStore(t, dsn)
+
+	const phone = "18876540997"
+	_, err := raw.Exec(`DELETE FROM devices WHERE phone = ?`, phone)
+	require.NoError(t, err)
+
+	devices := store.DeviceRepository()
+	device := &model.Device{
+		Phone:           phone,
+		IMEI:            "861234567890124",
+		SoftwareVersion: "V1.0.1",
+	}
+	require.NoError(t, devices.Upsert(ctx, device))
+	require.NoError(t, devices.SaveAuthState(ctx, device))
+	// 第二次写入值完全相同：MySQL 默认 RowsAffected=0，这里必须仍是命中。
+	require.NoError(t, devices.SaveAuthState(ctx, device))
+
+	require.NoError(t, devices.DeleteByPhone(ctx, phone))
+	require.ErrorIs(t, devices.SaveAuthState(ctx, device), repository.ErrDeviceNotFound)
 }
