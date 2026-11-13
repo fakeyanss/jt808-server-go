@@ -84,6 +84,17 @@ func (d *deps) startUplinkSink() {
 	d.uplinkSinkDone = uplinkSinkDone
 }
 
+// startNodeReporter 启动网关心跳上报：注册节点、周期心跳，并在退出时注销。
+func (d *deps) startNodeReporter() {
+	reporter := d.nodeReporter
+	if reporter == nil {
+		return
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	d.cancelNodeReport = cancel
+	routines.GoSafe(func() { reporter.Run(ctx) })
+}
+
 // startGatewayListeners 启动终端 TCP/UDP 接入。
 func (d *deps) startGatewayListeners() {
 	hasGateway := d.hasGateway

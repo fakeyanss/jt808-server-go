@@ -168,3 +168,36 @@ func (statements) EnsureDedupKeyRow() string {
 	return `INSERT IGNORE INTO dedup_keys (dedup_key, expires_at, updated_at)
 		VALUES (?, 0, ?)`
 }
+
+func (statements) UpsertGatewayNode() string {
+	return `INSERT INTO gateway_nodes
+		(gateway_id, instance_id, downlink_url, status, started_at, last_seen_at, expires_at)
+		VALUES (?, ?, ?, 'online', CURRENT_TIMESTAMP(3), CURRENT_TIMESTAMP(3),
+			DATE_ADD(CURRENT_TIMESTAMP(3), INTERVAL 30 SECOND))
+		ON DUPLICATE KEY UPDATE
+			instance_id = VALUES(instance_id),
+			downlink_url = VALUES(downlink_url),
+			status = VALUES(status),
+			started_at = VALUES(started_at),
+			last_seen_at = VALUES(last_seen_at),
+			expires_at = VALUES(expires_at)`
+}
+
+func (statements) HeartbeatGatewayNode() string {
+	return `UPDATE gateway_nodes
+		SET last_seen_at = CURRENT_TIMESTAMP(3),
+			expires_at = DATE_ADD(CURRENT_TIMESTAMP(3), INTERVAL 30 SECOND),
+			status = 'online'
+		WHERE gateway_id = ? AND instance_id = ?`
+}
+
+func (statements) DeregisterGatewayNode() string {
+	return `UPDATE gateway_nodes
+		SET status = 'offline', expires_at = CURRENT_TIMESTAMP(3)
+		WHERE gateway_id = ? AND instance_id = ?`
+}
+
+func (statements) SelectGatewayNode() string {
+	return `SELECT gateway_id, instance_id, downlink_url, status, started_at, last_seen_at, expires_at
+		FROM gateway_nodes WHERE gateway_id = ?`
+}

@@ -69,6 +69,52 @@ func TestCoordinationStoreOnRealMySQL(t *testing.T) {
 	require.True(t, third)
 }
 
+// 节点注册表全部时间由 CURRENT_TIMESTAMP(3) 计算，MySQL 方言必须单独验证。
+func TestGatewayNodeRepositoryOnRealMySQL(t *testing.T) {
+	ctx := context.Background()
+	dsn := mysqlTestDSN(t)
+	requireMigrated(t, dsn)
+	db := openRaw(t, dsn)
+	repo := openStore(t, dsn).GatewayNodeRepository()
+
+	const gatewayID = "gw-it"
+	_, err := db.Exec(`DELETE FROM gateway_nodes WHERE gateway_id = ?`, gatewayID)
+	require.NoError(t, err)
+
+	require.NoError(t, repo.Register(ctx, gatewayID, "inst-a", "http://gw-it:9001"))
+	node, err := repo.Get(ctx, gatewayID)
+	require.NoError(t, err)
+	require.NotNil(t, node)
+	require.Equal(t, "inst-a", node.InstanceID)
+	require.Equal(t, "http://gw-it:9001", node.DownlinkURL)
+	require.Equal(t, "online", node.Status)
+	require.WithinDuration(t, time.Now(), node.StartedAt, time.Minute)
+	require.WithinDuration(t, time.Now().Add(30*time.Second), node.ExpiresAt, time.Minute)
+
+	ok, err := repo.Heartbeat(ctx, gatewayID, "inst-a")
+	require.NoError(t, err)
+	require.True(t, ok)
+
+	ok, err = repo.Heartbeat(ctx, gatewayID, "inst-stale")
+	require.NoError(t, err)
+	require.False(t, ok)
+
+	// 新实例注册后旧实例心跳必须被围栏。
+	require.NoError(t, repo.Register(ctx, gatewayID, "inst-b", "http://gw-it:9001"))
+	ok, err = repo.Heartbeat(ctx, gatewayID, "inst-a")
+	require.NoError(t, err)
+	require.False(t, ok)
+
+	require.NoError(t, repo.Deregister(ctx, gatewayID, "inst-b"))
+	node, err = repo.Get(ctx, gatewayID)
+	require.NoError(t, err)
+	require.Equal(t, "offline", node.Status)
+
+	missing, err := repo.Get(ctx, "gw-it-missing")
+	require.NoError(t, err)
+	require.Nil(t, missing)
+}
+
 // openRaw 打开一个独立的原始连接池，用于观察/构造 SQL 层状态。
 func openRaw(t *testing.T, dsn string) *sql.DB {
 	t.Helper()
@@ -139,13 +185,13 @@ func TestMigrateBaselineOnRealMySQL(t *testing.T) {
 	require.NoError(t, db.QueryRow(`SELECT COUNT(*) FROM schema_migrations`).Scan(&versionCount))
 	require.Equal(t, 1, versionCount)
 
-	// 表清单：21 张业务表，device_runtime 已在基线内删除。
+	// 表清单：22 张业务表，device_runtime 已在基线内删除。
 	expectedTables := []string{
 		"alarms", "attachment_files", "command_outbox", "command_serial", "dedup_keys",
-		"device_params", "devices", "locations", "media_capture_items", "media_captures",
-		"media_files", "media_resource_lists", "media_search_results", "media_upload_notices",
-		"media_upload_tasks", "region_items", "schema_migrations", "task_leases",
-		"terminal_catalogs", "terminal_properties", "upgrade_results",
+		"device_params", "devices", "gateway_nodes", "locations", "media_capture_items",
+		"media_captures", "media_files", "media_resource_lists", "media_search_results",
+		"media_upload_notices", "media_upload_tasks", "region_items", "schema_migrations",
+		"task_leases", "terminal_catalogs", "terminal_properties", "upgrade_results",
 	}
 	actual := listTables(t, db)
 	require.Equal(t, expectedTables, actual)

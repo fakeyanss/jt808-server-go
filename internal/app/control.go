@@ -121,6 +121,7 @@ func (d *deps) setupControl() {
 		srv.SetDeviceLookup(func(ctx context.Context, phone string) (*model.Device, error) {
 			return storeSet.Devices.GetByPhone(ctx, phone)
 		})
+		srv.SetGatewayNodeRepository(storeSet.GatewayNodes)
 		// 缺失 confirm-before-ack consumer 时启动失败，并一次性列出缺失项。
 		if err := srv.ValidateCoverage(uplinkPolicy); err != nil {
 			log.Error().Err(err).Msg("Uplink consumer coverage validation failed")

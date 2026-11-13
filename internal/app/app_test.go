@@ -23,3 +23,16 @@ func TestCheckAttachmentBlobAcceptsBlobStore(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, checkAttachmentBlob(blob))
 }
+
+func TestControlBaseURL(t *testing.T) {
+	base, err := controlBaseURL("http://control:8081/internal/v1/uplink")
+	require.NoError(t, err)
+	require.Equal(t, "http://control:8081", base)
+
+	base, err = controlBaseURL("http://control:8081/prefix/internal/v1/uplink/")
+	require.NoError(t, err)
+	require.Equal(t, "http://control:8081/prefix", base)
+
+	_, err = controlBaseURL("not-a-url")
+	require.Error(t, err)
+}

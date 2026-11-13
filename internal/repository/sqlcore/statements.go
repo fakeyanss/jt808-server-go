@@ -50,4 +50,12 @@ type Statements interface {
 	// EnsureDedupKeyRow 插入缺失的共享去重行；行已存在时静默忽略。
 	// 参数为 (dedup_key, updated_at)，expires_at 为 0。
 	EnsureDedupKeyRow() string
+	// UpsertGatewayNode 按 gateway_id 写入或覆盖网关节点状态。
+	UpsertGatewayNode() string
+	// HeartbeatGatewayNode 刷新节点心跳；过期时间由数据库时间计算。
+	HeartbeatGatewayNode() string
+	// DeregisterGatewayNode 将节点标记为离线；过期时间由数据库时间计算。
+	DeregisterGatewayNode() string
+	// SelectGatewayNode 按 gateway_id 查询节点状态。
+	SelectGatewayNode() string
 }

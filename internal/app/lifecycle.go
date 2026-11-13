@@ -20,6 +20,7 @@ func run(spec Spec, cfg *config.Config) {
 	d.startOutbox()
 	d.startDownlinkHTTP()
 	d.startUplinkHTTP()
+	d.startNodeReporter()
 	d.startUplinkSink()
 	d.installUploadHooks()
 	d.startGatewayListeners()
