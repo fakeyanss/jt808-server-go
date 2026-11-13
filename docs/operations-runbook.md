@@ -212,8 +212,8 @@ jt-control requires cluster.roles to contain "control"; current roles=[media]. u
 | 附件 TCP | 7400 | attachment，`alarmServer.port` |
 | 附件 UDP | 7401 | attachment，`alarmServer.udpPort` |
 | 附件内部 HTTP | 7402 | attachment，`alarmServer.httpPort` |
-| 未来 1078 FTP 控制 | 7500 | 预留，不实现 |
-| 未来 1078 FTP 数据 | 7501 | 预留，不实现 |
+| 1078 FTP 控制 | 7500 | attachment，`cluster.attachment.ftp1078.port` |
+| 1078 FTP 被动数据 | 7501-7510 | attachment，`cluster.attachment.ftp1078.passivePorts` |
 | probes | 9105–9109 | 每角色独立，`probes.addr` |
 
 **探针**：五个二进制都必须配置 `probes.addr`，只暴露两个接口：
@@ -298,10 +298,30 @@ jt-control requires cluster.roles to contain "control"; current roles=[media]. u
 - 过期标记、pending 回收与保留期统一由 control 执行，范围限定在 `attachment/` 前缀与 `attachment_files` 表；
   control 不得删除或引用边缘节点的本地暂存路径。
 - 对象 key 自带元数据，扫描即可重建索引：
-  `attachment/<source>/<phone>/<alarmNo>/<fileName>/<offset>_<size>_<total>_<index>`。
+  苏标 `attachment/subia/<phone>/<alarmNo>/<fileName>/<offset>_<size>_<total>_<index>`；
+  FTP 切片 `attachment/ftp1078/<phone>/<serial>/<fileName>/<offset>_<size>_<index>`，
+  完成清单 `attachment/ftp1078/<phone>/<serial>/<fileName>.done`。
 - 集群的媒体与附件共用一套 objectStore，key 前缀按来源分区：
   `media/segments/`（1078 切片）、`media/uploads/`（0x0801 图片）、`attachment/subia/`（苏标附件）、
-  `attachment/ftp1078/`（预留）。pending 回收与保留期清理都按前缀隔离。
+  `attachment/ftp1078/`（1078 FTP 录像）。pending 回收与保留期清理都按前缀隔离。
+
+**1078 FTP 上传（0x9206/0x9207/0x1206）**：
+
+- 附件节点开 `cluster.attachment.ftp1078` 后监听 7500，只接受 `PASV/EPSV`；
+  被动端口段 `passivePorts`（默认 `7501-7510`）需在防火墙放行，`PORT/EPRT` 返回 502。
+- 终端可达地址由 `ftp1078.advertiseIp` 决定（NAT 场景必须显式配置）；缺省取控制连接本地地址。
+- 节点启动后向 control 注册内部 HTTP 地址（`cluster.attachment.advertiseUrl`，默认
+  `http://<advertiseIp>:<alarmServer.httpPort>`），control 据此推送 0x9207；
+  节点每 10s 心跳，30s 未续期判死。`cluster.control.token` 双向一致时校验推送。
+- FTP 登录校验与进度上报走 `alarmServer.progressReport.url`；**去 control 的网络不通时，
+  节点拒绝新的 FTP 登录**（421），已建立连接继续传输。
+- `alarmServer.progressReport.token` 必须等于 control 的 `cluster.control.token`，
+  否则登录校验返回 401、节点按“control 不可用”处理；0x9207 推送的方向同样校验
+  控制面与节点两侧的 `cluster.control.token` 一致。
+- 任务级账号在 0x1206、取消或超时后吊销；`attachment_ftp_tasks` 与 `attachment_nodes`
+  由 control 维护，附件节点不连库。
+- 保留期清理会同时删除 `.done`；若 `.done` 存在但切片不连续，索引保持 `receiving` 并累加
+  `jt808_ftp1078_done_anomaly_total`，需按对象前缀人工排查缺片。
 
 ---
 
@@ -460,6 +480,8 @@ tar -czf /backup/jt808-files-$(date +%Y%m%d-%H%M).tgz ./data ./logs
 | `jt808_orphan_scan_failures_total` | 孤儿文件扫描累计失败次数 |
 | `jt808_orphan_scan_last_run_timestamp_seconds` / `last_run_duration_seconds` | 最近一次孤儿扫描的运行时间与耗时 |
 | `jt808_attachment_trigger_skipped_total` | `alarmServer.autoUpload` 因当前二进制没有 control 角色而未自动下发 0x9208 的次数 |
+| `jt808_ftp1078_done_anomaly_total` | `.done` 存在但切片不连续/缺片的 FTP 上传次数 |
+| `jt808_ftp1078_control_push_failed_total` | 0x9207 推送到附件节点重试耗尽的次数 |
 | `jt808_gateway_nodes_online` | 当前在线且未过期的网关节点数 |
 | `jt808_gateway_nodes_offline` | 已优雅注销的网关节点数 |
 | `jt808_gateway_nodes_expired` | 仍标记 online 但已超过 `expires_at` 的节点数 |

@@ -42,6 +42,7 @@ func (d *deps) setupControl() {
 	var uplinkServer *uplink.Server
 	var controlBlob contracts.BlobStore
 	var businessExecutor *control.BusinessExecutor
+	var ftpManager *control.FTPTaskManager
 	cancelSweep := func() {}
 	// 集群文件后端：控制面用它承接 0x0801，媒体角色用它上传 segmented 录像。
 	// standalone 只用本地目录，不初始化远端后端。
@@ -94,6 +95,26 @@ func (d *deps) setupControl() {
 		if outbox != nil {
 			srv.SetTerminalReplyHandler(outbox)
 		}
+		// 1078 FTP 上传任务：元数据全在 control，附件节点只出站鉴权与上报进度。
+		ftpManager = control.NewFTPTaskManager(control.FTPTaskOptions{
+			Tasks: storeSet.AttachmentFTPTasks,
+			Nodes: storeSet.AttachmentNodes,
+			Pusher: &control.FTPControlPusher{
+				Nodes: storeSet.AttachmentNodes, Token: clusterOptions.Control.Token,
+				Clock: d.clock, Metrics: metrics,
+			},
+			Clock: d.clock, Metrics: metrics, MaxFileSize: alarmOptions.MaxFileSize,
+		})
+		if ftpManager != nil {
+			srv.SetAttachmentFTPSessionStore(ftpManager)
+			srv.SetAttachmentNodeRepository(storeSet.AttachmentNodes)
+			d.ftpTasks = ftpManager
+			d.ftpPort = clusterOptions.Attachment.FTP.Port
+			d.ftpAdvertiseIP = clusterOptions.Attachment.FTP.AdvertiseIP
+			if d.ftpAdvertiseIP == "" {
+				d.ftpAdvertiseIP = alarmOptions.UploadIP
+			}
+		}
 		// 控制面自己识别报警并下发 0x9208：附件节点地址来自 HTTP 节点状态，
 		// 不再要求 gateway 与 control 同进程。
 		controlHooks := hooks
@@ -119,6 +140,11 @@ func (d *deps) setupControl() {
 			},
 			OnStorageCommitFailed: func(phone string, mediaID uint32) {
 				metrics.IncStorageCommitFailed()
+			},
+			OnMediaUploadNotice: func(ctx context.Context, phone string, notice *model.Msg1206) {
+				if ftpManager != nil && notice != nil {
+					ftpManager.CompleteFromNotice(ctx, phone, notice.AnswerSerialNumber, notice.Result)
+				}
 			},
 		})
 		businessExecutor = executor
@@ -161,6 +187,7 @@ func (d *deps) setupControl() {
 			control.AttachmentMaintenanceOptions{
 				SessionTimeout: alarmserver.DefaultSessionTimeout,
 				Retention:      alarmOptions.Retention,
+				Metrics:        metrics,
 			}, d.clock)
 		runAttachmentMaintenance := func(ctx context.Context) {
 			if attachmentMaint == nil {
@@ -186,6 +213,16 @@ func (d *deps) setupControl() {
 				log.Warn().Err(err).Msg("Backfill attachment index failed")
 			}
 		}
+		runFTPTaskExpiry := func(ctx context.Context) {
+			if ftpManager == nil {
+				return
+			}
+			if expired, err := ftpManager.Expire(ctx); err != nil {
+				log.Warn().Err(err).Msg("Expire ftp upload tasks failed")
+			} else if expired > 0 {
+				log.Info().Int("expired", expired).Msg("Expired ftp upload tasks and revoked credentials")
+			}
+		}
 		routines.GoSafe(func() {
 			if indexer != nil {
 				leaseRunner.Run(sweepCtx, "media-segment-index", func(ctx context.Context) {
@@ -196,6 +233,7 @@ func (d *deps) setupControl() {
 			}
 			leaseRunner.Run(sweepCtx, "attachment-maintenance", runAttachmentMaintenance)
 			leaseRunner.Run(sweepCtx, "attachment-index", runAttachmentBackfill)
+			leaseRunner.Run(sweepCtx, "attachment-ftp-expiry", runFTPTaskExpiry)
 			ticker := time.NewTicker(10 * time.Minute)
 			defer ticker.Stop()
 			for {
@@ -218,6 +256,7 @@ func (d *deps) setupControl() {
 					}
 					leaseRunner.Run(sweepCtx, "attachment-maintenance", runAttachmentMaintenance)
 					leaseRunner.Run(sweepCtx, "attachment-index", runAttachmentBackfill)
+					leaseRunner.Run(sweepCtx, "attachment-ftp-expiry", runFTPTaskExpiry)
 				}
 			}
 		})
@@ -228,6 +267,7 @@ func (d *deps) setupControl() {
 	d.businessExecutor = businessExecutor
 	d.cancelSweep = cancelSweep
 	d.remoteAttachment = remoteAttachment
+	d.ftpTasks = ftpManager
 }
 
 // startUplinkHTTP 在后台启动上行 HTTP 入口。

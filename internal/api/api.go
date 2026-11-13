@@ -20,6 +20,7 @@ import (
 	protocolhex "github.com/fakeyanss/jt808-server-go/internal/codec/hex"
 	"github.com/fakeyanss/jt808-server-go/internal/config"
 	"github.com/fakeyanss/jt808-server-go/internal/contracts"
+	"github.com/fakeyanss/jt808-server-go/internal/control"
 	"github.com/fakeyanss/jt808-server-go/internal/httpguard"
 	"github.com/fakeyanss/jt808-server-go/internal/mediaupload"
 	"github.com/fakeyanss/jt808-server-go/internal/protocol"
@@ -39,7 +40,7 @@ type Queryer interface {
 // Run 启动业务 API。downlink 为下行契约实现；sender 是豁免清单（查询/只读/幂等）
 // 的单发通道，二者在 control-only 下均可跨进程工作。未启用 outbox 时下行入口
 // 直接发送，不提供命令状态查询。
-func Run(ctx context.Context, serv *server.TCPServer, cfg *config.Config, apiOptions config.APIOptions, alarmServ *alarmserver.Server, attachments repository.AttachmentFileRepository, attachmentAllocator contracts.AttachmentAllocator, blob contracts.BlobStore, downlink contracts.Downlink, sender contracts.DownlinkSender, mediaUpload *mediaupload.Store, queryer Queryer, playback contracts.PlaybackLibrary) {
+func Run(ctx context.Context, serv *server.TCPServer, cfg *config.Config, apiOptions config.APIOptions, alarmServ *alarmserver.Server, attachments repository.AttachmentFileRepository, attachmentAllocator contracts.AttachmentAllocator, blob contracts.BlobStore, downlink contracts.Downlink, sender contracts.DownlinkSender, mediaUpload *mediaupload.Store, queryer Queryer, playback contracts.PlaybackLibrary, ftpTasks *control.FTPTaskManager, ftpPort uint16, ftpAdvertiseIP string) {
 	// web server structure
 	gin.SetMode(gin.ReleaseMode)
 	router := gin.Default()
@@ -1296,6 +1297,164 @@ func Run(ctx context.Context, serv *server.TCPServer, cfg *config.Config, apiOpt
 			return
 		}
 		writeCommandAccepted(c, command, created, gin.H{"messageId": "0x9208", "ip": ip, "tcpPort": tcpPort, "udpPort": udpPort})
+	})
+
+	// 1078 FTP 录像上传：下发 0x9206 并登记任务级一次性账号。
+	api.POST("/device/:phone/ftp1078/upload", func(c *gin.Context) {
+		if ftpTasks == nil {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"err": "ftp1078 is not enabled on this process"})
+			return
+		}
+		var request struct {
+			UploadPath    string     `json:"uploadPath"`
+			Channel       uint8      `json:"channel"`
+			StartTime     *time.Time `json:"startTime"`
+			EndTime       *time.Time `json:"endTime"`
+			AlarmSign     uint64     `json:"alarmSign"`
+			MediaType     uint8      `json:"mediaType"`
+			StreamType    uint8      `json:"streamType"`
+			StorageType   uint8      `json:"storageType"`
+			TaskCondition uint8      `json:"taskCondition"`
+		}
+		if err := c.ShouldBindJSON(&request); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
+			return
+		}
+		if request.StartTime == nil || request.EndTime == nil || !request.EndTime.After(*request.StartTime) {
+			c.JSON(http.StatusBadRequest, gin.H{"err": "startTime and endTime are required and endTime must be after startTime"})
+			return
+		}
+		if len([]byte(request.UploadPath)) > 255 {
+			c.JSON(http.StatusBadRequest, gin.H{"err": "uploadPath must be at most 255 bytes"})
+			return
+		}
+		if ftpPort == 0 || strings.TrimSpace(ftpAdvertiseIP) == "" {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"err": "ftp1078 advertise ip/port is not configured"})
+			return
+		}
+		phone := c.Param("phone")
+		device, err := devices.GetByPhone(c.Request.Context(), phone)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
+			return
+		}
+		session, err := downlinkSession(c.Request.Context(), connRegistry, device, outboxEnabled)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
+			return
+		}
+		serial := nextDownlinkSerial(session)
+		uploadPath := strings.TrimSpace(request.UploadPath)
+		if uploadPath == "" {
+			uploadPath = fmt.Sprintf("/%s/%d", phone, serial)
+		}
+		task, password, err := ftpTasks.Create(c.Request.Context(), control.CreateFTPTaskInput{
+			Phone: phone, Serial: serial, UploadPath: uploadPath, Channel: request.Channel,
+			StartTime: *request.StartTime, EndTime: *request.EndTime, AlarmSign: fmt.Sprintf("%016X", request.AlarmSign),
+			MediaType: request.MediaType, StreamType: request.StreamType,
+			StorageType: request.StorageType, TaskCondition: request.TaskCondition,
+		})
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"err": err.Error()})
+			return
+		}
+		msg := &model.Msg9206{
+			Header:         model.GenMsgHeader(device, 0x9206, serial),
+			ServerIP:       ftpAdvertiseIP,
+			Port:           ftpPort,
+			Username:       task.Username,
+			Password:       password,
+			UploadPath:     task.UploadPath,
+			LogicChannelID: request.Channel,
+			StartTime:      request.StartTime,
+			EndTime:        request.EndTime,
+			AlarmSign:      request.AlarmSign,
+			MediaType:      request.MediaType,
+			StreamType:     request.StreamType,
+			StorageType:    request.StorageType,
+			TaskCondition:  request.TaskCondition,
+		}
+		command, created, err := dispatchDownlink(c, downlink, session, msg)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"err": err.Error()})
+			return
+		}
+		writeCommandAccepted(c, command, created, gin.H{
+			"messageId": "0x9206", "serial": serial, "username": task.Username,
+			"uploadPath": task.UploadPath, "ip": ftpAdvertiseIP, "port": ftpPort,
+		})
+	})
+
+	// 1078 FTP 上传控制：下发 0x9207 并推送到承载任务的附件节点。
+	api.POST("/device/:phone/ftp1078/control", func(c *gin.Context) {
+		if ftpTasks == nil {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"err": "ftp1078 is not enabled on this process"})
+			return
+		}
+		var request struct {
+			Serial uint16 `json:"serial" binding:"required"`
+			Action uint8  `json:"action"`
+		}
+		if err := c.ShouldBindJSON(&request); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
+			return
+		}
+		if request.Action > 2 {
+			c.JSON(http.StatusBadRequest, gin.H{"err": "action must be 0 (pause), 1 (resume) or 2 (cancel)"})
+			return
+		}
+		phone := c.Param("phone")
+		device, err := devices.GetByPhone(c.Request.Context(), phone)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
+			return
+		}
+		if _, err := ftpTasks.Task(c.Request.Context(), phone, request.Serial); err != nil {
+			c.JSON(http.StatusNotFound, gin.H{"err": "ftp1078 task not found"})
+			return
+		}
+		session, err := downlinkSession(c.Request.Context(), connRegistry, device, outboxEnabled)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
+			return
+		}
+		msg := &model.Msg9207{
+			Header:             model.GenMsgHeader(device, 0x9207, nextDownlinkSerial(session)),
+			AnswerSerialNumber: request.Serial,
+			Control:            request.Action,
+		}
+		command, created, err := dispatchDownlink(c, downlink, session, msg)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"err": err.Error()})
+			return
+		}
+		task, err := ftpTasks.ApplyControl(c.Request.Context(), phone, request.Serial, request.Action)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"err": err.Error()})
+			return
+		}
+		writeCommandAccepted(c, command, created, gin.H{
+			"messageId": "0x9207", "serial": request.Serial, "status": task.Status,
+		})
+	})
+
+	// 1078 FTP 上传任务查询。
+	api.GET("/device/:phone/ftp1078/task/:serial", func(c *gin.Context) {
+		if ftpTasks == nil {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"err": "ftp1078 is not enabled on this process"})
+			return
+		}
+		serial, err := strconv.ParseUint(c.Param("serial"), 10, 16)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"err": "serial must be a 16-bit unsigned integer"})
+			return
+		}
+		task, err := ftpTasks.Task(c.Request.Context(), c.Param("phone"), uint16(serial))
+		if err != nil {
+			c.JSON(http.StatusNotFound, gin.H{"err": "ftp1078 task not found"})
+			return
+		}
+		c.JSON(http.StatusOK, task)
 	})
 
 	// 苏标主动安全附件：查询进度与完成元数据。

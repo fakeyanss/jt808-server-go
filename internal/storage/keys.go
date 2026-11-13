@@ -139,6 +139,30 @@ func AttachmentPrefix(source string) string {
 	}
 }
 
+// ParseAttachmentDoneKey 解析完成清单对象 key；非清单 key 返回错误。
+//
+// 清单与切片目录同级：<prefix><phone>/<alarmNo>/<fileName>.done，
+// 比切片 key 少一层“偏移_大小_序号”，因此是 5 段而不是 6 段。
+func ParseAttachmentDoneKey(key string) (AttachmentSegmentKeyInfo, error) {
+	parts := strings.Split(strings.TrimPrefix(key, "/"), "/")
+	if len(parts) != 5 || parts[0] != "attachment" || !IsAttachmentDoneKey(parts[4]) {
+		return AttachmentSegmentKeyInfo{}, fmt.Errorf("invalid attachment manifest key %q", key)
+	}
+	source := parts[1]
+	// 完成清单是 FTP 上传独有的语义；苏标附件由 0x1212 报文给出总长，不需要清单。
+	if source != SourceFTP1078 {
+		return AttachmentSegmentKeyInfo{}, fmt.Errorf("invalid attachment manifest source %q in key %q", source, key)
+	}
+	fileName := strings.TrimSuffix(parts[4], ".done")
+	if parts[2] == "" || parts[3] == "" || fileName == "" {
+		return AttachmentSegmentKeyInfo{}, fmt.Errorf("attachment manifest key has empty path field: %q", key)
+	}
+	return AttachmentSegmentKeyInfo{
+		Source: source, Phone: parts[2], AlarmNo: parts[3],
+		FileName: fileName, ObjectKey: key,
+	}, nil
+}
+
 // AttachmentSegmentKeyInfo 是能从附件切片对象 key 独立解析出的元数据。
 //
 // 附件节点不连库：control 侧的索引允许丢失，由扫描 attachment/ 前缀重建。
@@ -170,6 +194,52 @@ func AttachmentSegmentObjectKey(source, phone, alarmNo, fileName string, offset,
 	)
 }
 
+// AttachmentFTPSegmentObjectKey 生成 1078 FTP 录像切片的对象 key。
+//
+// FTP 上传在连接结束前不知道文件总长，因此 key 不写 total，只写 offset/size/index；
+// 总长与完整性由同目录的 <fileName>.done 清单对象给出。
+// alarmNo 位置放任务流水号，与苏标附件保持同一层级，便于按任务前缀列举。
+func AttachmentFTPSegmentObjectKey(phone, serial, fileName string, offset, size int64, index int) string {
+	return fmt.Sprintf("%s%s/%s/%s/%012d_%012d_%08d",
+		FTP1078Attachments,
+		SafeSegment(phone),
+		SafeSegment(serial),
+		SafeSegment(fileName),
+		offset, size, index,
+	)
+}
+
+// AttachmentDoneObjectKey 返回附件完成清单对象 key。
+//
+// 清单只在所有切片 Promote 成功后才写入；扫描时它存在但切片不连续，
+// 说明上传中断或对象被误删，按异常处理而不是判为完成。
+func AttachmentDoneObjectKey(source, phone, alarmNo, fileName string) string {
+	return fmt.Sprintf("%s%s/%s/%s.done",
+		AttachmentPrefix(source),
+		SafeSegment(phone),
+		SafeSegment(alarmNo),
+		SafeSegment(fileName),
+	)
+}
+
+// IsAttachmentDoneKey 判断对象 key 是否为完成清单。
+func IsAttachmentDoneKey(key string) bool {
+	return strings.HasSuffix(strings.ToLower(strings.TrimSpace(key)), ".done")
+}
+
+// AttachmentDoneManifest 是 FTP 上传完成后写入的清单内容。
+//
+// 它记录当时已知的事实（总长、切片数、MD5），供 control 扫描重建索引时
+// 判断“清单存在且切片连续”。清单缺失不影响切片本身的可用性。
+type AttachmentDoneManifest struct {
+	FileName    string `json:"fileName"`
+	TotalSize   int64  `json:"totalSize"`
+	SegmentSize int64  `json:"segmentSize"`
+	Segments    int    `json:"segments"`
+	MD5         string `json:"md5,omitempty"`
+	CompletedAt int64  `json:"completedAt"`
+}
+
 // ParseAttachmentSegmentKey 从附件切片对象 key 解析元数据。
 // 任何一段不符合约定都返回错误，调用方应跳过该对象而不是写坏索引。
 func ParseAttachmentSegmentKey(key string) (AttachmentSegmentKeyInfo, error) {
@@ -191,11 +261,14 @@ func ParseAttachmentSegmentKey(key string) (AttachmentSegmentKeyInfo, error) {
 	if info.Phone == "" || info.AlarmNo == "" || info.FileName == "" {
 		return AttachmentSegmentKeyInfo{}, fmt.Errorf("attachment segment key has empty path field: %q", key)
 	}
+	if IsAttachmentDoneKey(parts[5]) {
+		return AttachmentSegmentKeyInfo{}, fmt.Errorf("attachment key %q is a completion manifest, not a segment", key)
+	}
 	fields := strings.Split(parts[5], "_")
-	if len(fields) != 4 {
+	if len(fields) != 4 && !(len(fields) == 3 && source == SourceFTP1078) {
 		return AttachmentSegmentKeyInfo{}, fmt.Errorf("invalid attachment segment file name %q", parts[5])
 	}
-	values := make([]int64, 4)
+	values := make([]int64, len(fields))
 	for i, field := range fields {
 		parsed, err := strconv.ParseInt(field, 10, 64)
 		if err != nil || parsed < 0 {
@@ -203,17 +276,21 @@ func ParseAttachmentSegmentKey(key string) (AttachmentSegmentKeyInfo, error) {
 		}
 		values[i] = parsed
 	}
-	info.Offset, info.Size, info.TotalSize = values[0], values[1], values[2]
+	info.Offset, info.Size = values[0], values[1]
+	if len(values) == 4 {
+		info.TotalSize = values[2]
+		info.Index = int(values[3])
+	} else {
+		// ftp1078 在连接结束前不知道总长：total 记为 0，由 .done 清单补齐。
+		info.TotalSize = 0
+		info.Index = int(values[2])
+	}
 	if info.Size <= 0 {
 		return AttachmentSegmentKeyInfo{}, fmt.Errorf("attachment segment size must be positive in %q", key)
 	}
-	if info.Offset+info.Size > info.TotalSize {
+	if info.TotalSize > 0 && info.Offset+info.Size > info.TotalSize {
 		return AttachmentSegmentKeyInfo{}, fmt.Errorf("attachment segment exceeds total size in %q", key)
 	}
-	if values[3] > int64(^uint32(0)) {
-		return AttachmentSegmentKeyInfo{}, fmt.Errorf("attachment segment index out of range in %q", key)
-	}
-	info.Index = int(values[3])
 	return info, nil
 }
 

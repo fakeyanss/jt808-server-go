@@ -130,6 +130,7 @@ var Ownership = map[uint16]Owner{
 	0x9202: OwnerGateway,
 	0x9205: OwnerGateway,
 	0x9206: OwnerGateway,
+	0x9207: OwnerGateway,
 }
 
 // BusinessHalves 是“两边都要”的消息在管控侧的业务半边函数名。

@@ -48,6 +48,9 @@ type BusinessOptions struct {
 	OnMediaTypeRejected func(phone string, mediaType uint8)
 	// OnStorageCommitFailed 在文件已写、状态标记失败时回调。
 	OnStorageCommitFailed func(phone string, mediaID uint32)
+	// OnMediaUploadNotice 在收到 0x1206 文件上传完成通知后回调。
+	// FTP 上传任务据此收敛终态并吊销一次性账号。
+	OnMediaUploadNotice func(ctx context.Context, phone string, notice *model.Msg1206)
 	// Clock 是进程内唯一时钟源；为空时使用系统时钟。
 	Clock clockpkg.Clock
 }
@@ -154,6 +157,11 @@ func (b *BusinessExecutor) ConsumeEvent(ctx context.Context, event contracts.Upl
 			}
 		}
 		return contracts.UplinkResult{}, err
+	}
+	if event.MsgID == 0x1206 && b.opts.OnMediaUploadNotice != nil {
+		if notice, ok := incoming.(*model.Msg1206); ok {
+			b.opts.OnMediaUploadNotice(ctx, event.Phone, notice)
+		}
 	}
 	return contracts.UplinkResult{Accepted: true, Generation: generation}, nil
 }

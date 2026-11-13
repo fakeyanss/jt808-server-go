@@ -404,6 +404,11 @@ func (mp *JT808MsgProcessor) registerMediaAndAttachment(options processOptions) 
 		},
 		process: mp.processMediaUploadTask,
 	}
+	options[0x9207] = &action{ // 文件上传控制
+		genData: func() *model.ProcessData {
+			return &model.ProcessData{Incoming: &model.Msg9207{}, Outgoing: &model.Msg0001{}}
+		},
+	}
 }
 
 // registerRegionRoutes 注册区域路线设置、删除与查询相关的入口。

@@ -330,9 +330,10 @@ func TestMigrateBaselineOnRealMySQL(t *testing.T) {
 	require.NoError(t, db.QueryRow(`SELECT COUNT(*) FROM schema_migrations`).Scan(&versionCount))
 	require.Equal(t, 1, versionCount)
 
-	// 表清单：24 张业务表，device_runtime 已在基线内删除。
+	// 表清单：26 张业务表，device_runtime 已在基线内删除。
 	expectedTables := []string{
-		"alarms", "attachment_files", "command_outbox", "command_serial", "dedup_keys",
+		"alarms", "attachment_files", "attachment_ftp_tasks", "attachment_nodes",
+		"command_outbox", "command_serial", "dedup_keys",
 		"device_params", "devices", "gateway_nodes", "locations", "media_capture_items",
 		"media_captures", "media_files", "media_resource_lists", "media_search_results",
 		"media_upload_notices", "media_upload_tasks", "recording_segments", "region_items",

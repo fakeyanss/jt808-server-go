@@ -72,6 +72,17 @@ cluster:
     - attachment
   attachment:
     nodeId: "attachment-1"
+    # control 可达的本节点内部 HTTP 基址，用于接收 0x9207 暂停/继续/取消推送。
+    advertiseUrl: "http://127.0.0.1:7402"
+    # 1078 文件上传（0x9206/0x9207/0x1206）：
+    # 只支持 PASV/EPSV，被动数据端口在该段内轮转；PORT/EPRT 被拒绝。
+    ftp1078:
+      port: 7500
+      passivePorts: "7501-7510"
+      advertiseIp: "127.0.0.1"
+  # 校验 control -> 本节点 0x9207 推送的 Bearer token，与 control 的 cluster.control.token 一致。
+  control:
+    token: "uplink-token"
   storage:
     backend: "sharedVolume"
     sharedVolume: true

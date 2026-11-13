@@ -488,3 +488,46 @@ CREATE TABLE IF NOT EXISTS gateway_nodes (
     PRIMARY KEY (gateway_id),
     KEY idx_gateway_nodes_status (status, expires_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+-- 1078 FTP 上传任务（0x9206/0x9207/0x1206）。仅 control 持有。
+-- 账号是任务级一次性凭据：secret_hash 存密码散列，终态后 revoked_at 非零。
+CREATE TABLE IF NOT EXISTS attachment_ftp_tasks (
+    phone VARCHAR(32) NOT NULL,
+    serial SMALLINT UNSIGNED NOT NULL,
+    username VARCHAR(64) NOT NULL,
+    secret_hash VARCHAR(128) NOT NULL,
+    upload_path VARCHAR(255) NOT NULL DEFAULT '',
+    channel SMALLINT NOT NULL DEFAULT 0,
+    start_time BIGINT NOT NULL DEFAULT 0,
+    end_time BIGINT NOT NULL DEFAULT 0,
+    alarm_sign VARCHAR(32) NOT NULL DEFAULT '',
+    media_type SMALLINT NOT NULL DEFAULT 0,
+    stream_type SMALLINT NOT NULL DEFAULT 0,
+    storage_type SMALLINT NOT NULL DEFAULT 0,
+    task_condition SMALLINT NOT NULL DEFAULT 0,
+    status VARCHAR(16) NOT NULL DEFAULT 'issued',
+    node_id VARCHAR(64) NOT NULL DEFAULT '',
+    control_seq INT UNSIGNED NOT NULL DEFAULT 0,
+    total_bytes BIGINT NOT NULL DEFAULT 0,
+    revoked_at BIGINT NOT NULL DEFAULT 0,
+    created_at BIGINT NOT NULL,
+    updated_at BIGINT NOT NULL,
+    completed_at BIGINT NOT NULL DEFAULT 0,
+    PRIMARY KEY (phone, serial),
+    UNIQUE KEY idx_attachment_ftp_tasks_username (username),
+    KEY idx_attachment_ftp_tasks_status (status, updated_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+-- 附件节点注册。与 gateway_nodes 同构：心跳续期、过期判死、
+-- 新 instance_id 注册时覆盖旧实例，避免 0x9207 推到已消失的地址。
+CREATE TABLE IF NOT EXISTS attachment_nodes (
+    node_id VARCHAR(64) NOT NULL,
+    instance_id VARCHAR(64) NOT NULL,
+    base_url VARCHAR(255) NOT NULL,
+    status VARCHAR(16) NOT NULL DEFAULT 'online',
+    started_at BIGINT NOT NULL,
+    last_seen_at BIGINT NOT NULL,
+    expires_at BIGINT NOT NULL,
+    PRIMARY KEY (node_id),
+    KEY idx_attachment_nodes_status (status, expires_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;

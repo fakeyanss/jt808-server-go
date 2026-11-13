@@ -1,7 +1,7 @@
 # 附件服务与统一对象存储设计（E3b 前置）
 
-本文件锁定 `jt-attachment` 独立二进制与“全集群共用一套 objectStore”的实现决策。
-未实现的 FTP 服务端只预留结构与端口，不在本轮交付。
+本文件锁定 `jt-attachment` 独立二进制与“全集群共用一套 objectStore”的实现决策，
+以及苏标附件（0x1210/0x1211/0x1212）与 1078 FTP 录像（0x9206/0x9207/0x1206）两条接入链路。
 
 ## 1. 角色与二进制
 
@@ -34,7 +34,7 @@
 |---|---|---|
 | 媒体切片 | `media/segments/` | `recording_segments` |
 | 苏标附件 | `attachment/subia/` | `attachment_files` |
-| 1078 FTP 录像（预留） | `attachment/ftp1078/` | `attachment_files`（`source=ftp1078`） |
+| 1078 FTP 录像 | `attachment/ftp1078/` | `attachment_files`（`source=ftp1078`）+ `attachment_ftp_tasks` |
 
 前缀定义集中在 `internal/storage`（对象存储包），禁止各角色自行拼字符串。
 
@@ -104,11 +104,22 @@
 **对象 key 自带元数据（硬要求）**：
 
 ```text
-attachment/<source>/<phone>/<alarmNo>/<fileName>/<offset>_<size>_<total>_<index>
+苏标附件：attachment/subia/<phone>/<alarmNo>/<fileName>/<offset>_<size>_<total>_<index>
+FTP 切片：attachment/ftp1078/<phone>/<serial>/<fileName>/<offset>_<size>_<index>
+FTP 清单：attachment/ftp1078/<phone>/<serial>/<fileName>.done
 ```
 
-终端、报警号、文件名、偏移、段大小与文件总长全部编码在 key 里。control 只扫描前缀
-就能重建“覆盖到哪、是否完整”的进度，不依赖任何上报内容；无法解析的 key 跳过并告警。
+终端、报警号（FTP 为任务流水号）、文件名、偏移、段大小与文件总长全部编码在 key 里。
+control 只扫描前缀就能重建“覆盖到哪、是否完整”的进度，不依赖任何上报内容；
+无法解析的 key 跳过并告警。
+
+FTP 上传在连接结束前不知道文件总长，因此切片 key 不写 total，完整性由 `.done` 清单给出：
+
+- `.done` **只在所有切片 Promote（并 MarkCommitted）完成后才写**；内容是
+  `{fileName,totalSize,segmentSize,segments,completedAt}`。
+- 扫描时 `.done` 存在但切片不连续或缺片 → **不判完成**，保持 `receiving`，
+  并计入 `jt808_ftp1078_done_anomaly_total`。
+- 保留期清理删除附件记录时，`.done` 与切片一并删除；同名重传或续传改写尾部前先删旧清单。
 
 **恢复点以 control 为权威**：
 
@@ -147,6 +158,48 @@ attachment/<source>/<phone>/<alarmNo>/<fileName>/<offset>_<size>_<total>_<index>
 - control 侧周期任务：receiving 超时转 expired、`_pending/attachment/` 回收、
   按保留期删除对象与行、扫描 `attachment/` 前缀补齐缺失索引。
 
+### 4.3 1078 FTP 上传链路
+
+协议链路：`0x9206`（平台下发 FTP 参数）→ 终端 `0x1210/0x1211/0x30316364/0x1212` 走附件端口
+上传 → 终端 FTP 上传 → `0x1206`（完成通知）→ 平台 `0x9212`。FTP 服务端在附件节点，
+元数据与任务状态全部在 control；附件节点仍不连数据库。
+
+**任务与凭据**
+
+- `0x9206` 由 control 的 `POST /api/device/:phone/ftp1078/upload` 下发。任务主键是
+  `(phone, 报文头流水号)`，与 `0x1206/0x9207` 的应答流水号对应；落 `attachment_ftp_tasks`。
+- 账号是任务级一次性凭据：用户名 `ftp1078_<phone>_<serial>`，密码随机生成，
+  库里只存 sha256。`0x1206` 完成/失败、取消或超时后 `revoked_at` 置位，不可再次登录。
+- 附件节点收到 `USER/PASS` 后**必须出站调用 control**（`POST /internal/v1/attachment/ftp/login`）
+  校验；control 不可达时拒绝新登录（`421`），已建立连接继续读写，不做本地凭据自校验。
+
+**FTP 行为**
+
+- 只支持被动模式：`PASV/EPSV`，数据端口在配置段内轮转（默认 `7501-7510`）；
+  `PORT/EPRT` 返回 `502`，禁止服务端反向连终端。
+- 控制端口默认 `7500`；`PASV` 通告地址由 `ftp1078.advertiseIp` 指定，缺省取控制连接本地地址。
+- 虚拟根按任务隔离：`CWD/CDUP` 一律停留在任务根并返回成功，越权路径被忽略；
+  落库只取文件 basename，不解析厂商命名。
+- `STOR` 同名重传整文件覆盖（先清旧切片与 `.done`）；`APPE`/`REST` 续传映射到现有暂存偏移，
+  偏移对不上时从头覆盖。上传内容按不透明字节存储，不转封装、不做播放。
+- 切片达到 `segmentSize` 立即 `Put → Promote`；连接正常结束后提交尾部、`MarkCommitted`、
+  最后写 `.done` 清单，再上报 `completed`。连接中断则保留暂存与已提交切片，上报当前水位，
+  后续 `APPE/REST` 从连续前缀继续。
+
+**0x9207 控制**
+
+- control 收到 `POST /api/device/:phone/ftp1078/control` 后：向终端下发 `0x9207`，
+  同时推送到任务绑定的附件节点 `POST /internal/attachment/ftp/control`。
+- 推送失败按有限重试处理并计入 `jt808_ftp1078_control_push_failed_total`，不回滚已下发的终端指令。
+- 节点按单调递增的 `seq` 去重，重复推送不会让同一次暂停/继续/取消执行两次；
+  `pause` 阻塞数据写入，`resume` 继续，`cancel` 关闭数据连接并清理暂存与对象。
+
+**节点注册**
+
+- 附件节点启动后向 control 注册 `nodeId + instanceId + baseUrl`，每 10s 心跳；
+  `attachment_nodes` 与 `gateway_nodes` 同构：TTL 30s、过期判死、新 `instance_id` 覆盖旧记录，
+  旧实例心跳返回 `409` 并重新注册。control 只向在线且未过期的地址推送 `0x9207`。
+
 ## 5. 端口规划
 
 | 用途 | 默认端口 | 说明 |
@@ -159,8 +212,8 @@ attachment/<source>/<phone>/<alarmNo>/<fileName>/<offset>_<size>_<total>_<index>
 | 附件 TCP | 7400 | attachment |
 | 附件 UDP | 7401 | attachment |
 | 附件内部 HTTP | 7402 | attachment status（进度走 control 的 9102） |
-| 未来 1078 FTP 控制 | 7500 | 预留，不实现 |
-| 未来 1078 FTP 数据 | 7501 | 预留，不实现 |
+| 1078 FTP 控制 | 7500 | attachment |
+| 1078 FTP 被动数据 | 7501-7510 | attachment，可配端口段 |
 | gateway 下行契约 | 9101 | signal |
 | control 上行入口 | 9102 | control |
 | admin | 9000 | control |
@@ -170,5 +223,6 @@ attachment/<source>/<phone>/<alarmNo>/<fileName>/<offset>_<size>_<total>_<index>
 
 ## 6. 明确不做
 
-- FTP 服务端（只预留表结构、前缀、端口）。
+- FTP 主动模式（PORT/EPRT）与 FTP 服务端反向连接终端。
+- 对 FTP 上传内容做转封装、解析或播放。
 - control 多副本选主、同 phone 顺序保证、`command_outbox` 保留期清理。

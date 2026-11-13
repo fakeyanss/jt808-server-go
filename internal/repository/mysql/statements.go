@@ -161,6 +161,39 @@ func (statements) UpsertAttachmentFile() string {
 		updated_at = VALUES(updated_at), completed_at = VALUES(completed_at)`
 }
 
+func (statements) UpsertAttachmentFTPTask() string {
+	return `INSERT INTO attachment_ftp_tasks
+		(phone, serial, username, secret_hash, upload_path, channel, start_time, end_time,
+		 alarm_sign, media_type, stream_type, storage_type, task_condition,
+		 status, node_id, control_seq, total_bytes, revoked_at, created_at, updated_at, completed_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON DUPLICATE KEY UPDATE
+			username = VALUES(username), secret_hash = VALUES(secret_hash),
+			upload_path = VALUES(upload_path), channel = VALUES(channel),
+			start_time = VALUES(start_time), end_time = VALUES(end_time),
+			alarm_sign = VALUES(alarm_sign), media_type = VALUES(media_type),
+			stream_type = VALUES(stream_type), storage_type = VALUES(storage_type),
+			task_condition = VALUES(task_condition), status = VALUES(status),
+			node_id = VALUES(node_id),
+			-- 控制序号只增不减：乱序到达的旧状态不能回退已下发的动作。
+			control_seq = GREATEST(control_seq, VALUES(control_seq)),
+			total_bytes = GREATEST(total_bytes, VALUES(total_bytes)), revoked_at = VALUES(revoked_at),
+			updated_at = VALUES(updated_at), completed_at = VALUES(completed_at)`
+}
+
+func (statements) UpsertAttachmentNode() string {
+	return `INSERT INTO attachment_nodes
+		(node_id, instance_id, base_url, status, started_at, last_seen_at, expires_at)
+		VALUES (?, ?, ?, 'online', ?, ?, ?)
+		ON DUPLICATE KEY UPDATE
+			instance_id = VALUES(instance_id),
+			base_url = VALUES(base_url),
+			status = VALUES(status),
+			started_at = VALUES(started_at),
+			last_seen_at = VALUES(last_seen_at),
+			expires_at = VALUES(expires_at)`
+}
+
 func (statements) UpsertRecordingSegment() string {
 	return `INSERT INTO recording_segments (` + recordingSegmentColumns + `)
 	VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)

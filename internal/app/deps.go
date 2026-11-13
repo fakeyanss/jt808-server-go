@@ -70,6 +70,10 @@ type deps struct {
 
 	remoteMedia      *control.RemoteMedia
 	remoteAttachment *control.RemoteAttachment
+	// ftpTasks 是 control 侧的 1078 FTP 任务管理器；非集群或未启用时为 nil。
+	ftpTasks       *control.FTPTaskManager
+	ftpPort        uint16
+	ftpAdvertiseIP string
 
 	serv            *server.TCPServer
 	outbox          *control.Outbox

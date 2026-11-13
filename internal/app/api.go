@@ -48,7 +48,8 @@ func (d *deps) startBusinessAPI() {
 				allocator = remoteAttachment
 			}
 			api.Run(apiCtx, serv, cfg, apiOptions, alarmServ, attachments, allocator, controlBlob,
-				outbox, controlDownlink, mediaUploadStore, queryer, playbackLibrary)
+				outbox, controlDownlink, mediaUploadStore, queryer, playbackLibrary,
+				d.ftpTasks, d.ftpPort, d.ftpAdvertiseIP)
 		})
 	} else {
 		close(apiDone)

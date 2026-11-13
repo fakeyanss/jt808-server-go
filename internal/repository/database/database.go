@@ -65,6 +65,10 @@ type Repositories struct {
 	Commands       repository.CommandRepository
 	// AttachmentFiles 是附件接收元数据；集群下由附件节点写入、控制面读取。
 	AttachmentFiles repository.AttachmentFileRepository
+	// AttachmentFTPTasks 是 1078 FTP 上传任务与一次性账号，仅 control 使用。
+	AttachmentFTPTasks repository.AttachmentFTPTaskRepository
+	// AttachmentNodes 是附件节点注册表，control 据此推送 0x9207。
+	AttachmentNodes repository.AttachmentNodeRepository
 	// RecordingSegments 是平台录像切片索引，由媒体节点写入、控制面查询与清理。
 	RecordingSegments repository.RecordingSegmentRepository
 	// Locations 为定位历史仓储；memory 后端保持既有热读环形缓冲，本字段为 nil。
@@ -106,6 +110,8 @@ type sqlBackend interface {
 	UpgradeResultRepository() repository.UpgradeResultRepository
 	CommandRepository() repository.CommandRepository
 	AttachmentFileRepository() repository.AttachmentFileRepository
+	AttachmentFTPTaskRepository() repository.AttachmentFTPTaskRepository
+	AttachmentNodeRepository() repository.AttachmentNodeRepository
 	RecordingSegmentRepository() repository.RecordingSegmentRepository
 	AlarmRepository(policy repository.AlarmRetention) repository.AlarmRepository
 	LocationRepository(policy repository.LocationRetention) repository.LocationRepository
@@ -125,25 +131,27 @@ func newRepositories(backend string) *Repositories {
 	// 文件与拍摄应答共用同一实现，才能在同一次查询里判断 mediaId 是否已落盘。
 	mediaFiles := memory.NewMediaFileRepository()
 	return &Repositories{
-		Devices:           memory.NewDeviceRepository(),
-		Geo:               memory.NewGeoRepository(),
-		Params:            memory.NewDeviceParamsRepository(),
-		Properties:        memory.NewTerminalPropertiesRepository(),
-		Alarms:            memory.NewAlarmRepository(),
-		Regions:           memory.NewRegionRepository(),
-		Industry:          memory.NewIndustryRepository(),
-		Media:             memory.NewMediaMetadataRepository(),
-		MediaFiles:        mediaFiles,
-		MediaCaptures:     mediaFiles,
-		MediaSearches:     memory.NewMediaSearchRepository(),
-		UpgradeResults:    memory.NewUpgradeResultRepository(),
-		Commands:          memory.NewCommandRepository(),
-		AttachmentFiles:   memory.NewAttachmentFileRepository(),
-		RecordingSegments: memory.NewRecordingSegmentRepository(),
-		Coordination:      coordination.NewMemoryStore(),
-		GatewayNodes:      memory.NewGatewayNodeRepository(),
-		SessionDirectory:  memory.NewSessionDirectoryRepository(),
-		Backend:           backend,
+		Devices:            memory.NewDeviceRepository(),
+		Geo:                memory.NewGeoRepository(),
+		Params:             memory.NewDeviceParamsRepository(),
+		Properties:         memory.NewTerminalPropertiesRepository(),
+		Alarms:             memory.NewAlarmRepository(),
+		Regions:            memory.NewRegionRepository(),
+		Industry:           memory.NewIndustryRepository(),
+		Media:              memory.NewMediaMetadataRepository(),
+		MediaFiles:         mediaFiles,
+		MediaCaptures:      mediaFiles,
+		MediaSearches:      memory.NewMediaSearchRepository(),
+		UpgradeResults:     memory.NewUpgradeResultRepository(),
+		Commands:           memory.NewCommandRepository(),
+		AttachmentFiles:    memory.NewAttachmentFileRepository(),
+		AttachmentFTPTasks: memory.NewAttachmentFTPTaskRepository(),
+		AttachmentNodes:    memory.NewAttachmentNodeRepository(),
+		RecordingSegments:  memory.NewRecordingSegmentRepository(),
+		Coordination:       coordination.NewMemoryStore(),
+		GatewayNodes:       memory.NewGatewayNodeRepository(),
+		SessionDirectory:   memory.NewSessionDirectoryRepository(),
+		Backend:            backend,
 	}
 }
 
@@ -195,6 +203,8 @@ func openSQL(handle sqlBackend, backend string, cfg Config) (*Repositories, erro
 	repos.UpgradeResults = handle.UpgradeResultRepository()
 	repos.Commands = handle.CommandRepository()
 	repos.AttachmentFiles = handle.AttachmentFileRepository()
+	repos.AttachmentFTPTasks = handle.AttachmentFTPTaskRepository()
+	repos.AttachmentNodes = handle.AttachmentNodeRepository()
 	repos.RecordingSegments = handle.RecordingSegmentRepository()
 	repos.Alarms = handle.AlarmRepository(cfg.AlarmRetention)
 	repos.Locations = handle.LocationRepository(cfg.LocationRetention)

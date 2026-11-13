@@ -76,6 +76,11 @@ cluster:
     nodes:
       - name: "attachment-1"
         url: "http://127.0.0.1:7402"
+    # 1078 FTP 上传：0x9206 通告给终端的地址与端口。
+    # 节点会注册自己的内部 HTTP 地址，0x9207 由 control 推送。
+    ftp1078:
+      port: 7500
+      advertiseIp: "127.0.0.1"
   storage:
     backend: "sharedVolume"
     sharedVolume: true
