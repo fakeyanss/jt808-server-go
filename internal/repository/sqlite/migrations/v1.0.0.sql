@@ -17,7 +17,7 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 --   * 不写 ENGINE/CHARSET/COLLATE 等 MySQL 专属子句。
 --   * 索引在版本化迁移内执行，无需 IF NOT EXISTS 兜底。
 
--- 设备静态主数据。运行时字段（session/在线态/最后通信时间）在 device_runtime。
+-- 设备静态主数据。运行时字段（session/在线态/最后通信时间）由进程内 runtime 持有，不落库。
 CREATE TABLE IF NOT EXISTS devices (
     phone TEXT NOT NULL PRIMARY KEY,
     id TEXT NOT NULL DEFAULT '',
@@ -30,6 +30,8 @@ CREATE TABLE IF NOT EXISTS devices (
     software_version TEXT NOT NULL DEFAULT '',
     updated_at INTEGER NOT NULL
 );
+-- 车牌普通索引（非唯一）：设备身份以 phone 为准，plate 允许重复，仅用于加速 GetByPlate。
+CREATE INDEX idx_devices_plate ON devices (plate);
 
 -- 终端参数按设计决策 D1 使用整体 JSON 单字段。
 CREATE TABLE IF NOT EXISTS device_params (
@@ -54,21 +56,6 @@ CREATE TABLE IF NOT EXISTS terminal_properties (
     extra_json TEXT NOT NULL,
     updated_at INTEGER NOT NULL
 );
-
--- 设备运行时投影。存量 session/status 跨进程无意义，无需搬运数据。
--- 不在启动时批量重置：单机由优雅停机清空，异常重启后由读路径 TTL 判定收敛为离线。
-CREATE TABLE IF NOT EXISTS device_runtime (
-    phone TEXT NOT NULL PRIMARY KEY,
-    session_id TEXT NOT NULL DEFAULT '',
-    trans_proto TEXT NOT NULL DEFAULT '',
-    last_com_time_ms INTEGER NOT NULL DEFAULT 0,
-    status INTEGER NOT NULL DEFAULT 0,
-    updated_at INTEGER NOT NULL
-);
-
--- 车牌普通索引（非唯一）：设备身份以 phone 为准，plate 允许重复。
--- 该索引只用于加速 GetByPlate 查询。
-CREATE INDEX idx_devices_plate ON devices (plate);
 
 -- 持久化数据表（2026-11-02）。
 -- 批次 A：终端下行配置目录（terminal_catalogs）与区域/路线（region_items）。
@@ -105,6 +92,8 @@ CREATE INDEX idx_region_items_phone ON region_items (phone, region_type);
 
 -- 定位历史。record_id 由应用层生成（纳秒时间戳 + 进程内递增），
 -- 避免同一毫秒内多条 0x0704 数据项共用 (phone, received_at_ms) 造成主键冲突。
+-- dedup_key = hash(eventId + itemIndex)，老数据与 standalone 写入保持 NULL；
+-- 唯一索引允许多个 NULL，因此不影响既有数据。
 CREATE TABLE IF NOT EXISTS locations (
     phone TEXT NOT NULL,
     record_id INTEGER NOT NULL,
@@ -119,10 +108,13 @@ CREATE TABLE IF NOT EXISTS locations (
     speed INTEGER NOT NULL DEFAULT 0,
     direction INTEGER NOT NULL DEFAULT 0,
     payload_json TEXT NOT NULL,
+    dedup_key TEXT NULL,
     PRIMARY KEY (phone, record_id)
 );
 CREATE INDEX idx_locations_phone_report_time ON locations (phone, report_time_ms);
 CREATE INDEX idx_locations_report_time ON locations (report_time_ms);
+CREATE INDEX idx_locations_received ON locations (received_at_ms);
+CREATE UNIQUE INDEX uq_locations_phone_dedup_key ON locations (phone, dedup_key);
 
 -- 报警历史。同一 (phone, message_serial) 在去重窗口内更新 alarm_sign，
 -- 窗口外以新的 received_at_ms 追加；confirmed 由 0x8203 人工确认置位。
@@ -139,17 +131,6 @@ CREATE TABLE IF NOT EXISTS alarms (
 );
 CREATE INDEX idx_alarms_phone_received ON alarms (phone, received_at_ms);
 CREATE INDEX idx_alarms_received ON alarms (received_at_ms);
-
--- 移除设备运行时投影表（2026-11-05）。
---
--- 运行时状态（session_id / trans_proto / last_com_time_ms / status）不再进入数据库，
--- 改由进程内 runtime 注册表持有：连接在则有效，进程重启后自然归零。
--- devices 表只保留设备静态档案与 keepalive_ms，作为跨进程可恢复的注册信息。
---
--- DROP TABLE IF EXISTS 保证重复执行与部分失败后重跑幂等。
--- 本迁移不搬运存量运行时数据：这些字段跨进程无意义，升级后直接丢弃。
-
-DROP TABLE IF EXISTS device_runtime;
 
 -- 1078 媒体元数据表（2026-11-08）。
 --
@@ -206,30 +187,21 @@ CREATE TABLE IF NOT EXISTS command_outbox (
     attempts INTEGER NOT NULL,
     last_error TEXT NOT NULL,
     created_at INTEGER NOT NULL,
-    updated_at INTEGER NOT NULL
+    updated_at INTEGER NOT NULL,
+    -- 重投闭环字段均带默认值，兼容升级前已存在的 pending 记录：
+    --   next_attempt_at = 0 表示立即可投；
+    --   expires_at = 0 表示不设过期（新写入的记录由应用层按配置填充）；
+    --   lease_expires_at = 0 表示未占用。
+    -- lease_owner / lease_expires_at 是多实例并发保护：同一命令在租约有效期内
+    -- 只会被一个实例下发；租约到期后允许重新占用，因此整体语义是 at-least-once。
+    last_attempt_at INTEGER NOT NULL DEFAULT 0,
+    next_attempt_at INTEGER NOT NULL DEFAULT 0,
+    expires_at INTEGER NOT NULL DEFAULT 0,
+    lease_owner TEXT NOT NULL DEFAULT '',
+    lease_expires_at INTEGER NOT NULL DEFAULT 0
 );
 CREATE UNIQUE INDEX idx_command_outbox_idempotency ON command_outbox (phone, idempotency_key);
 CREATE INDEX idx_command_outbox_routing ON command_outbox (phone, msg_id, serial);
-
--- 下行命令 outbox 重投闭环字段（2026-11-10）。
---
--- 增列均带默认值，兼容升级前已存在的 pending 记录：
---   next_attempt_at = 0 表示立即可投；
---   expires_at = 0 表示不设过期（新写入的记录由应用层按配置填充）；
---   lease_expires_at = 0 表示未占用。
--- lease_owner / lease_expires_at 是多实例并发保护：同一命令在租约有效期内
--- 只会被一个实例下发；租约到期后允许重新占用，因此整体语义是 at-least-once。
---
--- 方言约束同既有迁移文件：只使用 SQLite 语法，
--- 每次 ALTER 只增一列，避免方言差异。
--- 注：迁移工具要求同日唯一，本文件日期顺延至 20261110。
-
-ALTER TABLE command_outbox ADD COLUMN last_attempt_at INTEGER NOT NULL DEFAULT 0;
-ALTER TABLE command_outbox ADD COLUMN next_attempt_at INTEGER NOT NULL DEFAULT 0;
-ALTER TABLE command_outbox ADD COLUMN expires_at INTEGER NOT NULL DEFAULT 0;
-ALTER TABLE command_outbox ADD COLUMN lease_owner TEXT NOT NULL DEFAULT '';
-ALTER TABLE command_outbox ADD COLUMN lease_expires_at INTEGER NOT NULL DEFAULT 0;
-
 CREATE INDEX idx_command_outbox_due ON command_outbox (status, next_attempt_at, expires_at);
 CREATE INDEX idx_command_outbox_lease ON command_outbox (lease_expires_at);
 
@@ -286,6 +258,7 @@ CREATE TABLE IF NOT EXISTS media_files (
 );
 CREATE INDEX idx_media_files_phone_time ON media_files (phone, location_time, received_at);
 CREATE INDEX idx_media_files_alarm ON media_files (phone, alarm_sign);
+CREATE INDEX idx_media_files_received ON media_files (received_at);
 
 CREATE TABLE IF NOT EXISTS media_captures (
     phone TEXT NOT NULL,
@@ -296,6 +269,7 @@ CREATE TABLE IF NOT EXISTS media_captures (
     PRIMARY KEY (phone, record_id)
 );
 CREATE INDEX idx_media_captures_phone_time ON media_captures (phone, received_at);
+CREATE INDEX idx_media_captures_received ON media_captures (received_at);
 
 CREATE TABLE IF NOT EXISTS media_capture_items (
     phone TEXT NOT NULL,
@@ -383,33 +357,9 @@ CREATE TABLE IF NOT EXISTS media_search_results (
     received_at INTEGER NOT NULL,
     PRIMARY KEY (phone, answer_serial, item_index)
 );
--- 查询方式为“按设备取最近检索结果”，按接收时间倒序扫描。
+-- 查询方式为“按设备取最近检索结果”；接收时间索引供保留期清理按全局时间扫描。
 CREATE INDEX idx_media_search_results_phone_time ON media_search_results (phone, received_at);
-
--- 历史数据保留期清理所需索引（2026-11-15）。
---
--- 定期清理按“接收时间早于 cutoff”扫描并分批删除，需要独立的接收时间索引：
---   * locations.received_at_ms：既有索引以 (phone, report_time_ms) 与 report_time_ms 为主，
---     不覆盖按接收时间的全局扫描；
---   * media_files.received_at：既有索引以 phone 开头，无法支撑全局时间扫描；
---   * media_captures.received_at：同上；
---   * media_search_results.received_at：20261114 只建了 (phone, received_at)
---     复合索引，无法支撑按时间的全局扫描。
--- alarms.received_at_ms 已有 idx_alarms_received，无需重复创建。
---
--- 方言约束同既有迁移文件：只使用 SQLite 语法；
--- 不使用 BLOB 默认值，不写 MySQL 专属类型与子句。
-
-CREATE INDEX idx_locations_received ON locations (received_at_ms);
-CREATE INDEX idx_media_files_received ON media_files (received_at);
-CREATE INDEX idx_media_captures_received ON media_captures (received_at);
 CREATE INDEX idx_media_search_results_received ON media_search_results (received_at);
-
--- E2：定位历史按事件幂等写入。
--- dedup_key = hash(eventId + itemIndex)，老数据与 standalone 写入保持 NULL；
--- 唯一索引允许多个 NULL，因此不影响既有数据。
-ALTER TABLE locations ADD COLUMN dedup_key TEXT NULL;
-CREATE UNIQUE INDEX uq_locations_phone_dedup_key ON locations (phone, dedup_key);
 
 -- 下行命令流水号分配表（2026-11-17）。
 --
