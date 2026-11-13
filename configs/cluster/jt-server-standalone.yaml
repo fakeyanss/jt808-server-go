@@ -1,0 +1,64 @@
+# jt-server-standalone 的最小可运行配置。
+# 一个进程承担全部角色，零外部依赖；端口与行为与拆分前一致。
+log:
+  consoleEnable: true
+  fileEnable: true
+  logDirectory: "./logs/"
+  logFile: "jt-server-standalone.log"
+  logLevel: "INFO"
+
+server:
+  name: "jt-server-standalone"
+  mode: "standalone"
+  ackTimeoutMs: 5000
+  maxRetransmissions: 3
+  port:
+    tcpPort: "8080"
+    udpPort: "8081"
+    httpPort: "8008"
+  banner:
+    enable: false
+    bannerPath: "configs/banner.txt"
+
+# 每个角色二进制都必须配置探针端口；/healthz 与 /readyz 由本进程直接提供。
+probes:
+  addr: "0.0.0.0:9105"
+
+alarmServer:
+  port: "7200"
+  udpPort: "7201"
+  dir: "./data/alarms"
+  maxFileSize: 104857600
+  maxConcurrent: 16
+  autoUpload: false
+
+mediaServer:
+  port: "7300"
+  httpPort: "7301"
+  advertiseIp: "127.0.0.1"
+  dir: "./data/media"
+  maxConcurrent: 16
+  maxTCPConns: 64
+  record:
+    mode: "off"
+
+mediaUpload:
+  dir: "./data/media-uploads"
+
+admin:
+  enable: false
+  addr: "127.0.0.1:9000"
+  token: "admin-token"
+
+api:
+  auth:
+    token: "api-token"
+
+uplink:
+  sink: "local"
+
+commandOutbox:
+  mode: "memory"
+
+database:
+  type: "memory"

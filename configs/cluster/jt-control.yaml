@@ -1,0 +1,86 @@
+# jt-control 的最小可运行配置：只承担 control 角色。
+#
+# 依赖共享 MySQL；通过 cluster.media.nodes 调度 jt-media，
+# 通过 cluster.attachment.nodes 调度 jt-attachment。
+# 过渡期用共享卷（sharedVolume）代替对象存储：所有集群角色必须指向同一个 root。
+# 生产多机部署请改为 cluster.storage.backend=objectStore，全集群共用同一套对象存储。
+# 启动前创建共享卷标记文件：
+#   mkdir -p data/blobs && touch data/blobs/.jt808-shared-volume
+log:
+  consoleEnable: true
+  fileEnable: true
+  logDirectory: "./logs/"
+  logFile: "jt-control.log"
+  logLevel: "INFO"
+
+server:
+  name: "jt-control"
+  mode: "cluster"
+  ackTimeoutMs: 5000
+  maxRetransmissions: 3
+  port:
+    tcpPort: "8080"
+    udpPort: "8081"
+    httpPort: "8008"
+  banner:
+    enable: false
+    bannerPath: "configs/banner.txt"
+
+probes:
+  addr: "0.0.0.0:9108"
+
+# 自动 0x9208 在 control 内识别报警并下发；附件节点地址来自下方节点清单。
+alarmServer:
+  autoUpload: true
+
+mediaUpload:
+  # 过渡期与 cluster.storage.root 同一目录；objectStore 模式下仅作本地兜底。
+  dir: "./data/blobs"
+
+admin:
+  enable: true
+  addr: "127.0.0.1:9000"
+  token: "admin-token"
+
+api:
+  auth:
+    token: "api-token"
+
+# control 自己就是上行入口，不需要再投递到外部。
+uplink:
+  sink: "local"
+
+commandOutbox:
+  mode: "durable"
+
+cluster:
+  roles:
+    - control
+  gateway:
+    # control -> gateway 的下行契约基址与共享密钥。
+    url: "http://127.0.0.1:9101"
+    token: "cluster-shared-token"
+  control:
+    addr: "127.0.0.1:9102"
+    token: "uplink-token"
+  media:
+    # 管控按该清单选择媒体节点：优先粘性、其次剩余额度。
+    nodes:
+      - name: "media-1"
+        url: "http://127.0.0.1:7301"
+  attachment:
+    # 附件节点内部 HTTP（/internal/attachment/status）基址。
+    # 没有可用节点时播放附件上传接口返回 503 + no_attachment_node_available。
+    nodes:
+      - name: "attachment-1"
+        url: "http://127.0.0.1:7402"
+  storage:
+    backend: "sharedVolume"
+    sharedVolume: true
+    root: "./data/blobs"
+    marker: ".jt808-shared-volume"
+
+database:
+  type: "mysql"
+  mysql:
+    dsn: "root:password@tcp(127.0.0.1:3306)/jt808?parseTime=true&charset=utf8mb4"

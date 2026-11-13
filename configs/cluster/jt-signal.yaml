@@ -1,0 +1,71 @@
+# jt-signal 的最小可运行配置：只承担 gateway 角色。
+# 依赖共享 MySQL（设备档案与命令查询）与已启动的 jt-control。
+log:
+  consoleEnable: true
+  fileEnable: true
+  logDirectory: "./logs/"
+  logFile: "jt-signal.log"
+  logLevel: "INFO"
+
+server:
+  name: "jt-signal"
+  mode: "cluster"
+  ackTimeoutMs: 5000
+  maxRetransmissions: 3
+  port:
+    tcpPort: "8080"
+    udpPort: "8081"
+    httpPort: "8008"
+  banner:
+    enable: false
+    bannerPath: "configs/banner.txt"
+
+probes:
+  addr: "0.0.0.0:9106"
+
+mediaUpload:
+  dir: "./data/media-uploads"
+
+admin:
+  enable: false
+  addr: "127.0.0.1:9000"
+  token: "admin-token"
+
+api:
+  auth:
+    token: "api-token"
+
+# gateway-only 必须使用 HTTP 上行出口；token 必须等于 cluster.control.token。
+uplink:
+  sink: "http"
+  http:
+    url: "http://127.0.0.1:9102/internal/v1/uplink"
+    token: "uplink-token"
+    timeoutMs: 3000
+    queueSize: 1024
+    workers: 4
+    maxAttempts: 1
+
+commandOutbox:
+  mode: "durable"
+
+cluster:
+  roles:
+    - gateway
+  gateway:
+    # 本进程监听的下行契约入口。
+    addr: "127.0.0.1:9101"
+    url: "http://127.0.0.1:9101"
+    # control -> gateway 的共享密钥。
+    token: "cluster-shared-token"
+  control:
+    # 仅用于回环校验与文档语义；gateway 不在该地址监听。
+    addr: "127.0.0.1:9102"
+    token: "uplink-token"
+  storage:
+    backend: "local"
+
+database:
+  type: "mysql"
+  mysql:
+    dsn: "root:password@tcp(127.0.0.1:3306)/jt808?parseTime=true&charset=utf8mb4"

@@ -1,0 +1,68 @@
+# jt-media 的最小可运行配置：只承担 media 角色。
+# 不连业务库；管控通过 mediaServer.httpPort 上的 /internal/media/* 调度本节点。
+# 启动前创建共享卷标记文件（sharedVolume 校验要求真实存在）：
+#   mkdir -p data/blobs-media && touch data/blobs-media/.jt808-shared-volume
+log:
+  consoleEnable: true
+  fileEnable: true
+  logDirectory: "./logs/"
+  logFile: "jt-media.log"
+  logLevel: "INFO"
+
+server:
+  name: "jt-media"
+  mode: "cluster"
+  ackTimeoutMs: 5000
+  maxRetransmissions: 3
+  port:
+    tcpPort: "8080"
+    udpPort: "8081"
+    httpPort: "8008"
+  banner:
+    enable: false
+    bannerPath: "configs/banner.txt"
+
+probes:
+  addr: "0.0.0.0:9107"
+
+mediaServer:
+  # 1078 接入端口；单端口模式同时承载 TCP 与 UDP。
+  port: "7300"
+  # 内部 HTTP：/internal/media/status、sessions、recordings 与 FLV 播放。
+  httpPort: "7301"
+  advertiseIp: "127.0.0.1"
+  dir: "./data/media"
+  maxConcurrent: 16
+  maxTCPConns: 64
+  record:
+    mode: "off"
+
+mediaUpload:
+  dir: "./data/media-uploads"
+
+admin:
+  enable: false
+  addr: "127.0.0.1:9000"
+  token: "admin-token"
+
+api:
+  auth:
+    token: "api-token"
+
+uplink:
+  sink: "local"
+
+cluster:
+  roles:
+    - media
+  media:
+    # 管控在 /internal/media/status 里看到的节点标识。
+    nodeId: "media-1"
+  storage:
+    backend: "sharedVolume"
+    sharedVolume: true
+    root: "./data/blobs"
+    marker: ".jt808-shared-volume"
+
+database:
+  type: "memory"
