@@ -603,19 +603,88 @@ type BlobStore interface {
 - 对外 HTTP API；
 - 未来的后台管理页面。
 
-### 7.2 会话目录
+### 7.2 节点注册、会话目录与下行路由
 
-管控需要知道“某个手机号当前在哪个网关”，才能把下行送到正确节点。这属于管控层的**路由索引**，不是会话本体：
+会话目录是管控的**路由索引**，不是会话本体。归属有效性跟着节点走，不做每终端周期续期。
 
-```text
-phone -> { gatewayId, gatewayAddr, sessionId, generation, updatedAt, expiresAt }
+#### 7.2.1 数据模型（MySQL）
+
+```sql
+gateway_nodes (
+    gateway_id      VARCHAR(64) PRIMARY KEY,
+    instance_id     VARCHAR(64) NOT NULL,   -- 进程启动生成，重启即变
+    downlink_url    VARCHAR(255) NOT NULL,
+    status          VARCHAR(16) NOT NULL,   -- online / offline
+    started_at      BIGINT NOT NULL,
+    last_seen_at    BIGINT NOT NULL,
+    expires_at      BIGINT NOT NULL
+)
+
+session_directory (
+    phone           VARCHAR(32) PRIMARY KEY,
+    gateway_id      VARCHAR(64) NOT NULL,
+    instance_id     VARCHAR(64) NOT NULL,
+    session_id      VARCHAR(128) NOT NULL,
+    generation      BIGINT NOT NULL,
+    claimed_at      BIGINT NOT NULL,
+    KEY idx_session_directory_node (gateway_id, instance_id)
+)
 ```
 
-- 网关在鉴权成功、心跳刷新、连接关闭时上报（走上行出口的会话类别，异步）；
-- 索引有 TTL，网关崩溃后自动失效；
-- 索引只是路由提示：真正“有没有会话”以网关本地注册表为准；
-- 索引丢失时下行返回 `offline`，由 outbox 重试，不跨网关猜测；
-- 索引可以落在管控自己的存储（MySQL 或 Redis）中，**不要求网关依赖 Redis**。
+- `session_directory` **不设 `expires_at`**。会话是否有效由联表推出：所属 `(gateway_id, instance_id)` 在 `gateway_nodes` 中 `status=online` 且 `expires_at > now`。
+- 节点心跳 10 秒一次，`expires_at = last_seen_at + 30s`；连续 3 次未上报即判定死亡。
+- 客户端心跳、TCP 半开、会话本地超时仍由网关判断；目录不复制这份状态。
+- 实现时选定**单一时间源，不要混用**。应用侧 `time.Now()` 在 NTP 正常时足够；数据库时间的价值是对时钟跳变（VM 暂停恢复、NTP step）免疫，代价是每次判断多一次取值。真正的风险是时钟跳变，不是同步漂移。
+
+#### 7.2.2 写入时机
+
+`session_directory` 只有三个写入时机，全部由 control 执行：
+
+1. **终端鉴权成功（0x0102）**：control 在业务路径内原子 claim，`generation = generation + 1`，写入 `gateway_id / instance_id / session_id / claimed_at`，并把新 generation 返回给网关。**claim 必须幂等**：同一 `(gateway_id, instance_id, session_id)` 重复 claim 时直接返回现有 generation，不递增；只有 gateway/instance/session 任一变化才递增，否则重复的 0x0102 或心跳会把网关自己 fence 掉。
+2. **终端断开**：网关上报 release，control 删除该 phone 目录行；删除条件必须带 `gateway_id + instance_id + session_id + generation`，避免旧连接删掉新归属。
+3. **网关注册**：网关以新的 `instance_id` 注册时，control 在同一事务里删除该 `gateway_id` 下所有旧 `instance_id` 的目录行，再 upsert 节点行。
+
+没有周期性会话续期，也没有 per-phone TTL。
+
+网关注册、心跳、注销走 control 内部 API，复用 gateway → control 的 token。上行信封需要携带 `gateway_id / instance_id`：当前终端应答信封已有 `gatewayId`，通用上行信封在 E4.2 补齐；否则 control 无法在 0x0102 业务路径内完成 claim。
+
+#### 7.2.3 claim 与 fail-closed
+
+- 0x0102 的 claim 在 control 业务路径内完成，不额外增加一次网关到 control 的同步调用；上行响应需要携带 generation，网关在本地绑定 phone 时保存。
+- **0x0102 固定为强制同步**：网关必须等 control 返回 claim/generation 后才能应答终端。注意当前代码里的 `ackFirstMsgIDs` 表示“先应答后业务”，与这里的目标相反；实现时应让 0x0102 留在 confirm-before-ack 路径（业务完成后再回 `0x8001`），不要把它放进提前应答的 map。如果团队把“ack-first 列表”定义为“必须先拿到控制面结果的列表”，则 0x0102 属于该列表；代码层面以 confirm-before-ack 为准。
+- 上行响应体需要同时携带 `generation` 和 `fenced`。confirm 路径本来就会等待并读取响应体，直接应用即可；best-effort 路径当前只读状态码、不读响应体，必须改成读取有界响应体并解析这两个字段，否则旧网关收不到 `fenced`，也就不会关闭本地会话。
+- cluster 下 claim 失败（共享库不可用、节点未注册、control 无法完成写入）按 **fail-closed** 处理：拒绝鉴权，连接不建立，终端重试；不允许只建本地会话。
+- standalone 保持现状，不要求会话目录。
+- 鉴权前的报文 generation 为 0，不做归属校验；鉴权后的上行业务事件和终端应答必须携带本地会话 generation。
+
+#### 7.2.4 围栏
+
+- 上行信封和终端应答都带 `generation`；control 只接受不低于 `session_directory.generation` 的事件。
+- 小于当前值的事件按过期事件丢弃，并在上行应答里返回 `fenced`；网关收到 `fenced` 后关闭本地会话，不再接收该 phone 的新上行。
+- 目录行不存在时，带非零 generation 的事件同样按 `fenced` 丢弃，避免旧连接或已清理实例继续写业务状态。
+- 第一阶段**不做 control 向旧网关推 revoke**，旧网关依靠下一次上行应答中的 `fenced` 自行关闭；因此 confirm-before-ack 事件天然能收到，best-effort 事件要求 sink 解析响应体并处理 `fenced`，这是实现前必须补上的前提。
+- 跨节点顶替时，新 claim 立即把目录指向新节点；旧网关在收到 `fenced` 前可能仍有在途事件，这些事件会被 generation 挡住，不会覆盖新状态。
+
+#### 7.2.5 下行路由
+
+```text
+phone -> session_directory
+      -> join gateway_nodes on (gateway_id, instance_id)
+      -> 校验 status=online 且 expires_at > now
+      -> 取 downlink_url 下发
+```
+
+- 查不到目录、节点已过期、节点离线、generation/sessionId 不匹配，一律返回 `offline`，由 outbox 重试；**不跨节点猜测，不做轮询兜底**。
+- `cluster.gateway.url` 降级为单节点兼容配置；多节点以节点目录为准。
+- 新增 `cluster.gateway.advertiseUrl`：网关告诉 control 的下行入口地址，与监听 `addr` 分开。
+- 新增可选的 `cluster.gateway.nodes` 种子清单，仅用于静态部署或启动预热；动态注册是主路径，种子清单不是唯一来源。
+- `gateway_id` 必须全局唯一；同一 `gateway_id` 启动两个进程会互相清理目录行并造成归属抖动，部署侧需要强约束。
+
+#### 7.2.6 明确退化点
+
+- 网关进程活着、但某条会话本应失效而未失效时，平台侧**兜不住**：`session_directory` 没有 per-phone TTL，control 无法仅凭目录判断该会话已死。系统信任网关自身的 JT808 心跳超时/断链判定，由网关在本地清理会话时上报 release。
+- 如果由于网关 bug、网络半开未被 TCP 发现、release 丢失等原因导致目录残留，下行会继续路由到该网关，直到该 phone 重新 claim 或网关以新 `instance_id` 重新注册。这是本方案用“归属跟节点走”换来的确定性代价。
+- 网关心跳停止时节点会过期，联表后该节点下所有会话立即不可路由，下行返回 `offline`；这条路径不依赖 per-phone TTL。
 
 ### 7.3 可替换性
 
@@ -639,7 +708,8 @@ phone -> { gatewayId, gatewayAddr, sessionId, generation, updatedAt, expiresAt }
 | 设备档案、参数、属性 | 管控 | 共享库 | 是 |
 | 定位、报警、行业载荷 | 管控 | 共享库 | 是 |
 | durable outbox | 管控 | 共享库 | 是 |
-| 会话目录 | 管控 | 管控存储 | 是 |
+| 节点注册与健康状态 | 管控 | MySQL（`gateway_nodes`） | 是 |
+| 会话目录 | 管控 | MySQL（`session_directory`） | 是 |
 | 1078 流、SPS/PPS、文件句柄 | 媒体 | 进程内存 | 否 |
 | 媒体端点租约 | 媒体 | 内存/共享存储（TTL） | 是（仅分配需要） |
 | 附件组装、缺口记账 | 附件 | 进程内存 | 否 |
@@ -725,6 +795,12 @@ cluster:
     # - attachment   # 苏标附件数据面
 
   gateway:
+    # 节点对 control 可达的下行入口；gateway 注册时上报
+    advertiseUrl: ""
+    # 可选种子清单；多节点以 gateway_nodes 动态目录为准
+    nodes:
+      - id: "gw-1"
+        url: "http://gw-1:9100"
     uplink:
       # builtin | http | mq
       mode: "builtin"
@@ -741,11 +817,9 @@ cluster:
       token: ""
       maxConcurrent: 256
       idempotencyTTL: "5m"
-    sessionDirectory:
-      # 上报会话目录的接口；为空时由 control 主动探测（不推荐）
-      endpoint: ""
 
   control:
+    # 单节点兼容；多节点下行以 session_directory + gateway_nodes 为准
     downlinkEndpoint: "http://gateway:9100"
     uplinkListen: "0.0.0.0:9101"
     callbackBaseURL: "http://control:9000"
@@ -770,6 +844,8 @@ cluster:
 | `cluster.roles` | 不校验 | 至少一个；角色组合合法 |
 | `cluster.nodeId` | 不校验 | 非空 |
 | 上行出口 | 固定 `builtin` | `builtin/http/mq` 三选一；`http/mq` 必填 endpoint/token |
+| `cluster.gateway.advertiseUrl` | 不校验 | `gateway` 角色必填；必须是 control 可达的下行基址 |
+| `cluster.gateway.nodes` | 不校验 | 可选；存在时校验 id 唯一、url 合法 |
 | 下行契约监听 | 不启动 | `gateway` 角色必须配置且只绑内网 |
 | 媒体/附件端点分配器 | 不启动 | 承担对应角色时必须配置 |
 | `database.type` | `memory/sqlite/mysql` | `control` 角色必须为 `mysql` |
@@ -801,18 +877,19 @@ cluster:
 
 | 故障 | 表现 | 系统行为 | 数据后果 |
 |---|---|---|---|
-| 网关宕机 | 终端连接断开 | 终端重连到其他网关；会话目录 TTL 过期 | 网关内 pending 与幂等窗口丢失；管控 outbox 未决命令重新投递 |
+| 网关宕机 | 终端连接断开 | 终端重连到其他网关；`gateway_nodes` 30 秒判定离线，联表后该节点会话不可路由 | 网关内 pending 与幂等窗口丢失；管控 outbox 未决命令重新投递 |
 | 管控宕机 | 上行出口失败、下行不可用 | `best-effort` 丢弃并计数；`confirm-before-ack` 不应答，终端重传；outbox 停止推进 | 可能丢失可丢类别；不可丢类别由终端重传补齐 |
 | 媒体宕机 | 推流中断、`0x0801` 文件接入失败 | 端点租约过期；管控重新分配；`0x0801` 不 ack | 当前流/当前文件失败，终端重新协商/重传 |
 | 附件宕机 | 附件上传中断 | 端点租约过期；终端重新上传 | 当前上传失败，已收分片丢弃 |
 | 上行出口超时 | 网关等待受理 | 不应答，终端重传；计入背压指标 | at-least-once |
 | 下行契约超时 | 管控调用网关失败 | 返回失败；outbox 保持 pending 并退避 | 可能重复下发，业务需幂等 |
-| 网关无该会话 | 设备已离线或目录过期 | 返回 `offline`，不转发 | outbox 等待设备上线或过期 |
-| 会话目录过期 | 管控以为在线、网关无会话 | 返回 `offline`；网关心跳/绑定事件刷新目录 | 短暂下行失败 |
-| 重复注册 | 新连接同手机号 | 注册阶段不踢旧连接；鉴权成功后顶替旧会话 | 旧连接 pending 转失败，由管控重投 |
+| 网关无该会话 | 设备已离线或目录无行 | 返回 `offline`，不转发 | outbox 等待设备上线或过期 |
+| 节点离线/目录失效 | 节点 30 秒未心跳 | 目录联表失败，返回 `offline`；不做跨节点猜测 | 下行失败，终端重连后重新 claim |
+| 重复注册 | 新连接同手机号 | 新 0x0102 claim 递增 generation；旧 generation 的事件被丢弃并返回 `fenced` | 旧连接 pending 转失败，由管控重投 |
+| 会话残留 | 网关活着但单条会话未释放 | 平台侧无法仅凭目录判断，继续路由到该网关 | 明确退化：信任网关自身 JT808 心跳超时与 release |
 | 共享库不可用 | 管控无法落库 | `best-effort` 继续应答但可能丢；`confirm-before-ack` 不应答 | 与当前单机语义一致 |
 | 端点租约泄漏 | 节点崩溃未释放 | TTL 到期自动回收 | 短暂端点浪费 |
-| 时钟偏差 | 各节点时间不一致 | 租约与幂等窗口使用统一时间源或相对 TTL | 不影响协议正确性 |
+| 时钟偏差 | 各节点时间不一致 | 目录/租约统一使用数据库时间或单一时间源 | 不影响协议正确性 |
 
 明确不承诺：
 
@@ -1114,15 +1191,23 @@ E2 不引入协调组件；以上方案只在确实需要严格顺序时再选�
 ### E4：集群加固与运维
 
 - 目标：可观测、可运维、可回归。
-- 改动面：
-  - 指标：上行出口成功率/丢弃、下行契约延迟/超时、会话目录命中、端点租约、`0x0801` 交接时延；
-  - 运行手册：扩缩容、角色排水、故障切换、共享卷检查；
-  - 混沌测试：杀网关、杀管控、杀媒体、网络分区；
-  - 性能压测：`0x0801` 图片交接的端到端时延与出口背压表现；
-  - 控制面多副本的**严格顺序**：按 phone 哈希到固定副本（状态化路由 / 一致性哈希 + 再平衡）；E2 已支持多副本下的最终一致，E4 再解除顺序约束。
+- 已完成：
+  - 网关侧 per-phone 分片串行：`HTTPSink` 按 phone 分片，同 phone FIFO，confirm 不越过已排队事件；control 侧跨副本严格顺序仍未完成。
+  - Geo 最新快照按终端位置时间单调守卫，旧定位不覆盖新快照。
+  - MySQL 高频追加表改为自增 `id` 主键 + 业务唯一键；SQLite 基线同步整理。
+  - 多副本 control 单实例任务：`task_leases` + `dedup_keys`，retention cleaner、孤儿扫描、SweepPending 单实例执行，0x9208 自动上传共享 TTL 去重。
+  - 节点注册、会话目录、下行路由设计定稿（见 7.2）。
+- 仍待完成：
+  - 控制面多副本的**严格顺序**：当前只完成网关侧 per-phone 串行；control 多副本之间仍不保序，需要单独的 DB 串行或一致性路由方案。
   - 最新定位（Geo 快照）在进程内存，多副本下各副本各一份、互不可见，`0x8201` 结果取决于打到哪个副本。
   - `media_files` 按 `received_at DESC, media_id DESC` 分页缺少匹配索引：现有 `(phone, location_time, received_at)` 不能直接支撑该排序，后续评估补 `(phone, received_at)`。
   - `terminal_catalogs` 与 `attachment_files` 的宽主键可后续优化：宽业务主键会被 InnoDB 二级索引隐式携带，数据量上来后评估自增 id + 唯一键。
+
+- 节点/会话目录实现阶段（按顺序，每阶段独立验证、独立提交）：
+  1. **E4.1 节点注册与实例生命周期**：新增 `gateway_nodes` 与 `instance_id`；网关注册、10 秒心跳、30 秒判死、优雅注销；本阶段只落节点状态，不改变会话绑定与下行路由。验收：两个网关注册、杀一个后 30 秒内 status=offline；现有下行行为不变。
+  2. **E4.2 会话归属与 generation 围栏**：新增 `session_directory`；control 在 0x0102 业务路径 claim/release，claim 幂等（同一 gateway/instance/session 不递增），返回 generation；0x0102 强制同步，网关等待 claim 结果后再应答；cluster 下 claim 失败 fail-closed；上行信封与终端应答携带 generation，旧事件丢弃并回传 `fenced`，confirm 与 best-effort 两条路径都解析响应体，网关收到后关闭本地会话。验收：同 phone 双 claim 只有一个 generation 生效；重复 claim 不递增；旧 generation 事件不写库；release 丢失时节点离线后目录联表失效。
+  3. **E4.3 下行路由器**：新增 `cluster.gateway.advertiseUrl` 与可选 `cluster.gateway.nodes`；`cluster.gateway.url` 降级为单节点兼容；按 phone 查目录、联节点表、取 `downlink_url`；无目录/离线一律 `offline`，不跨节点猜测。验收：同 phone 迁移到另一网关后下行跟随；节点过期后 outbox 重试并最终过期。
+  4. **E4.4 旧实例清理、观测与运维**：网关注册时按新 `instance_id` 批量清理同 `gateway_id` 旧行；补目录命中/离线/fenced/节点过期指标与运行手册；覆盖网关重启、同号双活、节点分区等混沌场景。revoke 推送作为后续增强，不阻塞本阶段。
 - 验收：故障场景可复现；指标可定位；standalone 回归全绿。
 
 依赖关系：
@@ -1202,7 +1287,8 @@ go test -race -count=1 ./...
 | 管控与网关双向依赖成环 | 自锁、雪崩 | 上行收件不同步等下行；管控异步编排；禁止回调链 |
 | 端点分配器故障 | 无法建立新流/上传 | 租约 TTL、重试、降级为“暂不可用”而非错误端点 |
 | 端点不粘性 | 流/附件重组失败 | 分配器按粘性键选节点；统一入口必须四层粘性 |
-| 会话目录过期 | 下行失败 | 网关绑定/心跳上报；TTL；返回 `offline` 由 outbox 重试 |
+| 节点过期/目录无归属 | 下行失败 | 节点 30 秒判死；目录联表失效；返回 `offline` 由 outbox 重试 |
+| 会话残留 | 下行继续路由到旧网关 | 明确降级：平台信任网关自身 JT808 心跳超时与 release；网关注册新 instance 时清理旧行 |
 | 共享卷性能 | 落盘抖动 | 单写多读；按手机号分目录；监控；可替换对象存储 |
 | UDP LB 配置错误 | 分包跨网关 | 部署强约束；启动/巡检提示；不支持时只启用 TCP |
 | 角色组合配置漂移 | 行为不一致 | 启动校验、有效配置摘要、最小示例 |
@@ -1212,9 +1298,11 @@ go test -race -count=1 ./...
 
 ## 15. 待确认事项
 
-1. **会话目录存储**：管控用 MySQL 还是 Redis；默认 MySQL，避免新增中间件。
-2. **上行出口默认形态**：cluster 下默认 `http` 还是 `mq`；建议按部署规模选择，不设全局默认。
-3. **媒体/附件端点分配器归属**：跟随媒体/附件角色，还是独立协调服务；默认为前者。
+1. **会话目录存储**：已定为 MySQL，不引入 Redis；`gateway_nodes` 与 `session_directory` 都由 control 独占写入。
+2. **best-effort 上行响应的 `fenced` 处理**：需要网关 sink 解析响应体并关闭本地会话；这是 E4.2 的实现前提，需要一并改。
+3. **旧网关 revoke 推送**：第一阶段不做，依靠下一次上行应答的 `fenced` 自行关闭；是否在 E4.4 之后补推送，待定。
+4. **上行出口默认形态**：cluster 下默认 `http` 还是 `mq`；建议按部署规模选择，不设全局默认。
+5. **媒体/附件端点分配器归属**：跟随媒体/附件角色，还是独立协调服务；默认为前者。
 
 ---
 
