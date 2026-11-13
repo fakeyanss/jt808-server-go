@@ -113,6 +113,7 @@ type recorder struct {
 	index    []SegmentKeyframe
 	sps      []byte
 	pps      []byte
+	seq      int
 	wg       sync.WaitGroup
 }
 
@@ -232,6 +233,7 @@ func (r *recorder) finishLocked() error {
 	if statErr == nil {
 		size = stat.Size()
 	}
+	endAt := r.cfg.clock.Now()
 	info := SegmentInfo{
 		SessionID: r.cfg.sessionID,
 		Phone:     r.cfg.phone,
@@ -239,14 +241,16 @@ func (r *recorder) finishLocked() error {
 		Kind:      r.cfg.kind,
 		LocalPath: finalPath,
 		StartTime: r.startAt,
-		EndTime:   r.cfg.clock.Now(),
-		Duration:  r.cfg.clock.Now().Sub(r.startAt),
+		EndTime:   endAt,
+		Duration:  endAt.Sub(r.startAt),
 		Size:      size,
 		Keyframes: append([]SegmentKeyframe(nil), r.index...),
 		State:     "local",
 	}
 	if r.cfg.blob != nil {
-		info.ObjectKey = segmentObjectKey(r.cfg.phone, r.cfg.channel, r.startAt, filepath.Base(finalPath))
+		info.ObjectKey = storage.MediaSegmentObjectKey(
+			r.cfg.phone, r.cfg.channel, string(r.cfg.kind), r.startAt, info.Duration, r.seq)
+		r.seq++
 		info.State = "uploading"
 		r.wg.Add(1)
 		go func() {
@@ -330,10 +334,6 @@ func (r *recorder) notify(info SegmentInfo) {
 		log.Warn().Err(err).Str("phone", info.Phone).Uint8("channel", info.Channel).
 			Msg("Fail to deliver media segment metadata")
 	}
-}
-
-func segmentObjectKey(phone string, channel uint8, startAt time.Time, name string) string {
-	return storage.MediaSegment(phone, channel, startAt.Format("20060102"), name)
 }
 
 func hasParamSets(frame []byte) bool {

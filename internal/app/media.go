@@ -8,6 +8,7 @@ import (
 	"github.com/rs/zerolog/log"
 
 	"github.com/fakeyanss/jt808-server-go/internal/contracts"
+	"github.com/fakeyanss/jt808-server-go/internal/control"
 	"github.com/fakeyanss/jt808-server-go/internal/media"
 	"github.com/fakeyanss/jt808-server-go/internal/media/playback"
 	"github.com/fakeyanss/jt808-server-go/pkg/routines"
@@ -68,21 +69,34 @@ func (d *deps) startMedia() {
 			log.Info().Str("rtmp", playbackOpts.RTMPURL).
 				Msg("RTMP playback output enabled; keep SRS gop_cache ON (default) for new viewers")
 		}
+		// media 不连库：同进程 control 直接写索引，边缘节点走 HTTP 出站上报。
+		var segmentSink media.SegmentSink
+		if hasControl && d.storeSet != nil {
+			segmentSink = control.NewSegmentRepoSink(d.storeSet.RecordingSegments)
+		} else if report := mediaOptions.SegmentReport; report.URL != "" {
+			sink, sinkErr := media.NewHTTPSegmentSink(report.URL, report.Token, report.Timeout)
+			if sinkErr != nil {
+				log.Error().Err(sinkErr).Msg("Fail to configure media segment report")
+			} else if sink != nil {
+				segmentSink = sink
+				log.Info().Str("url", report.URL).Msg("Media segment index will be reported to control")
+			}
+		}
 		mediaServ = media.NewServer(media.Config{
-			Dir:               mediaOptions.Dir,
-			MaxConcurrent:     mediaOptions.MaxConcurrent,
-			MaxTCPConns:       mediaOptions.MaxTCPConns,
-			Retention:         mediaOptions.Retention,
-			RecordMode:        media.RecordMode(recordMode),
-			SegmentDuration:   mediaOptions.SegmentDuration,
-			RingBytes:         mediaOptions.RingBytes,
-			RingDuration:      mediaOptions.RingDuration,
-			Blob:              controlBlob,
-			SegmentRepository: d.storeSet.RecordingSegments,
-			Clock:             d.clock,
-			AdvertiseIP:       advertiseIP,
-			NodeID:            clusterOptions.Media.NodeID,
-			Playback:          playbackConfig,
+			Dir:             mediaOptions.Dir,
+			MaxConcurrent:   mediaOptions.MaxConcurrent,
+			MaxTCPConns:     mediaOptions.MaxTCPConns,
+			Retention:       mediaOptions.Retention,
+			RecordMode:      media.RecordMode(recordMode),
+			SegmentDuration: mediaOptions.SegmentDuration,
+			RingBytes:       mediaOptions.RingBytes,
+			RingDuration:    mediaOptions.RingDuration,
+			Blob:            controlBlob,
+			SegmentSink:     segmentSink,
+			Clock:           d.clock,
+			AdvertiseIP:     advertiseIP,
+			NodeID:          clusterOptions.Media.NodeID,
+			Playback:        playbackConfig,
 		})
 		mediaAddr := fmt.Sprintf(":%d", mediaOptions.Port)
 		if err := mediaServ.Listen(mediaAddr); err != nil {

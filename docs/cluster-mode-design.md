@@ -1004,6 +1004,15 @@ cluster:
 - 1078 流等异步文件：媒体 `Put` + `Promote` 后，对象状态初始为 `pending`（objectStore 用对象标签，sharedVolume 用同目录 sidecar）；通过 at-least-once 事件交给 control，control 写库成功后调用 `MarkCommitted` 置为 `committed`。对账键是确定性 blob key + checksum，数据库唯一键 `(phone, media_id)`。
 - 失败处理：DB 写失败时对象保持 `pending`，objectStore 由 bucket 生命周期在 24h 后清掉，sharedVolume 由 control 单实例巡检删除（删前查库确认无行）；**不存在“半个文件被当成有效文件”**。`MarkCommitted` 失败由 control 重试，超过宽限期把 DB 行标 `missing` **保留行**，仅当对象也确认不存在或删除成功后才同时删对象与行，删行不先于删对象。sidecar `.meta.json` 只用于 sharedVolume 过渡形态，standalone 不写、objectStore 不用。
 - 孤儿清理：objectStore 形态下 `retention.orphanFiles` 必须关闭，改由 `pending/`、`trash/` 前缀的 bucket 生命周期承担；sharedVolume 过渡形态由 control 依据 sidecar 做单实例 pending 巡检，不再做无差别的 mtime 全量扫描。E1 的 cluster 下文件下载端点返回 501，不伪装可用。
+
+**平台录像切片索引（media 不连库）**
+
+- **拓扑约束**：media 可能部署在边缘、control 在中心，两者不在同一内网。让 media 直连中心库意味着对边缘开放数据库端口，现场无法通过网络审批，因此 media 不装配任何 repository、不连业务库。
+- **事实来源**：`media/segments/` 下的对象是切片的事实来源，`recording_segments` 只是可重建的目录；索引丢失不丢文件。
+- **上报**：media 切片提交后向 control 的 `POST /internal/v1/media/segments` 出站上报，带 Bearer token；通知允许丢失，落库用幂等 upsert。media 到 control 只允许出站，control 不反向连 media。
+- **补索引**：control 周期性扫描 `media/segments/` 前缀，从对象 key 重建缺失索引；通知内容只作加速，不作为正确性依据。
+- **key 约定（硬要求）**：`media/segments/<phone>/ch<channel>/<kind>/<YYYYMMDD>/<startMs>_<durationMs>_<endMs>_<seq>.ts`。终端、通道、起止时间与序号必须能从 key 独立解析；无法解析的对象跳过并告警，禁止依赖上报内容。
+- **保留期**：仍在 control，按 `recording_segments.end_at` 先删对象/本地文件，再删索引行。
 - **阶段边界**：E1 的 `cluster` 不承接业务，业务处理仍在网关进程内；**自 E2 起 `cluster` 承接业务**，控制面 handler 在管控进程执行，但媒体/附件角色与 `objectStore` 仍在 E3，因此 E2 的 `cluster` 仍不等于全量生产形态。
 
 **回归保证**

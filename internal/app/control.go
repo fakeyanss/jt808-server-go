@@ -127,6 +127,7 @@ func (d *deps) setupControl() {
 		})
 		srv.SetGatewayNodeRepository(storeSet.GatewayNodes)
 		srv.SetSessionDirectoryRepository(storeSet.SessionDirectory)
+		srv.SetRecordingSegmentRepository(storeSet.RecordingSegments)
 		srv.SetMetrics(metrics)
 		// 缺失 confirm-before-ack consumer 时启动失败，并一次性列出缺失项。
 		if err := srv.ValidateCoverage(uplinkPolicy); err != nil {
@@ -145,7 +146,15 @@ func (d *deps) setupControl() {
 	if controlBlob != nil && businessExecutor != nil {
 		sweepCtx, cancel := context.WithCancel(context.Background())
 		cancelSweep = cancel
+		indexer := control.NewRecordingIndexer(storeSet.RecordingSegments, controlBlob)
 		routines.GoSafe(func() {
+			if indexer != nil {
+				leaseRunner.Run(sweepCtx, "media-segment-index", func(ctx context.Context) {
+					if _, err := indexer.Backfill(ctx); err != nil {
+						log.Warn().Err(err).Msg("Backfill media segment index failed")
+					}
+				})
+			}
 			ticker := time.NewTicker(10 * time.Minute)
 			defer ticker.Stop()
 			for {
@@ -159,6 +168,13 @@ func (d *deps) setupControl() {
 							log.Warn().Err(err).Msg("Prune expired coordination rows failed")
 						}
 					})
+					if indexer != nil {
+						leaseRunner.Run(sweepCtx, "media-segment-index", func(ctx context.Context) {
+							if _, err := indexer.Backfill(ctx); err != nil {
+								log.Warn().Err(err).Msg("Backfill media segment index failed")
+							}
+						})
+					}
 				}
 			}
 		})

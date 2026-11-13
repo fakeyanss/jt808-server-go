@@ -18,7 +18,6 @@ import (
 	"github.com/fakeyanss/jt808-server-go/internal/clock"
 	"github.com/fakeyanss/jt808-server-go/internal/contracts"
 	"github.com/fakeyanss/jt808-server-go/internal/media/playback"
-	"github.com/fakeyanss/jt808-server-go/internal/repository"
 	"github.com/fakeyanss/jt808-server-go/pkg/routines"
 )
 
@@ -55,8 +54,6 @@ type Config struct {
 	Blob contracts.BlobStore
 	// SegmentSink 接收切片完成事件；为空时只记日志。
 	SegmentSink SegmentSink
-	// SegmentRepository 持久化切片索引；为空时只用进程内索引。
-	SegmentRepository repository.RecordingSegmentRepository
 	// Clock 是进程内统一时钟源；为空时使用系统时钟。
 	Clock clock.Clock
 	// AdvertiseIP 是下行信令里填写的媒体节点地址；为空时用 127.0.0.1。

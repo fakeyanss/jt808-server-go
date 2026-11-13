@@ -28,7 +28,7 @@
 
 | 来源 | 前缀 | 业务表 |
 |---|---|---|
-| 媒体切片 | `media/segments/` | `media_files` |
+| 媒体切片 | `media/segments/` | `recording_segments` |
 | 苏标附件 | `attachment/subia/` | `attachment_files` |
 | 1078 FTP 录像（预留） | `attachment/ftp1078/` | `attachment_files`（`source=ftp1078`） |
 
@@ -38,7 +38,7 @@
 
 `SweepPending` 增加前缀参数，回收范围限定在该来源的前缀内：
 
-- media 侧只扫描 `_pending/media/segments/`，业务行联查 `media_files`；
+- control 侧只扫描 `_pending/media/segments/`，业务行联查 `recording_segments`；
 - attachment 侧只扫描 `_pending/attachment/`，业务行联查 `attachment_files` 的段列表。
 
 理由：attachment 的 pending 标记与 media 共用 `_pending/` 根前缀；若沿用“全局扫描 + 只查
@@ -46,7 +46,7 @@
 
 ### 2.4 保留期按来源执行
 
-- media 的 retention / orphan scan 只看 `media/segments/` 前缀与 `media_files` 表。
+- media 的 retention / orphan scan 只看 `media/segments/` 前缀与 `recording_segments` 表。
 - attachment 节点只看 `attachment/` 前缀与 `attachment_files` 表，并在自己的进程内执行；
   control 的 retention 不再触碰附件。
 - 一个来源的文件只由一处清理。

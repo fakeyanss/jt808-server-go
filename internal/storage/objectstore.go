@@ -626,6 +626,8 @@ func (s *ObjectStore) get(ctx context.Context, key, rangeHeader string) (io.Read
 
 type listObject struct {
 	Key string `xml:"Key"`
+	// Size 是对象字节数。
+	Size int64 `xml:"Size"`
 	// LastModified 用字符串接收：encoding/xml 不支持直接反序列化 time.Time。
 	LastModified string `xml:"LastModified"`
 }
@@ -643,6 +645,31 @@ type listResult struct {
 	Contents              []listObject `xml:"Contents"`
 	IsTruncated           bool         `xml:"IsTruncated"`
 	NextContinuationToken string       `xml:"NextContinuationToken"`
+}
+
+// ListObjects 列举指定前缀下的对象，供 control 重建切片索引。
+func (s *ObjectStore) ListObjects(ctx context.Context, prefix string) ([]contracts.BlobObject, error) {
+	clean := strings.Trim(strings.TrimSpace(prefix), "/")
+	if clean == "" {
+		return nil, errors.New("object list prefix is empty")
+	}
+	objects, err := s.list(ctx, clean+"/", 1000)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]contracts.BlobObject, 0, len(objects))
+	for _, object := range objects {
+		key := object.Key
+		if s.cfg.Prefix != "" {
+			key = strings.TrimPrefix(key, s.cfg.Prefix+"/")
+		}
+		out = append(out, contracts.BlobObject{
+			Key:          key,
+			Size:         object.Size,
+			LastModified: object.Modified(),
+		})
+	}
+	return out, nil
 }
 
 // list 返回指定前缀下的对象；maxKeys<=0 使用 1000。
