@@ -148,9 +148,11 @@ func buildDeps(spec Spec, cfg *config.Config, s settings) *deps {
 		log.Warn().Msg("cluster.allowEmbeddedStorage is dev-only: cluster roles are sharing an embedded sqlite file; production must use MySQL")
 	}
 
-	// 只有 gateway/control 需要共享库；media/attachment 是数据面节点，不连数据库。
+	// 不变量：集群模式下只有 control 连元数据库。
+	// gateway/media/attachment 是数据面节点，不装配任何数据库入口：
+	// 网关的档案只读查询走 control 内部 HTTP，其余元数据由 control 独占写入。
 	var storeSet *database.Repositories
-	if hasGateway || hasControl {
+	if hasControl {
 		initialized, err := database.Init(database.FromConfig(cfg))
 		if err != nil {
 			log.Error().Err(err).Msg("Fail to initialize database backend")
@@ -186,6 +188,10 @@ func buildDeps(spec Spec, cfg *config.Config, s settings) *deps {
 		Msg("Uplink reliability configured")
 
 	processorDeps := protocol.ProcessorDeps{Repos: storeSet, Runtime: runtime.Default(), Uplink: &uplinkPolicy}
+	if processorDeps.Repos == nil {
+		// 数据面角色不连库：用进程内仓储占位，协议层的设备档案查询改走 AuthProvider。
+		processorDeps.Repos = database.NewMemory()
+	}
 
 	// 指标在出口之前创建：409 丢弃、超限丢弃等事件需要在网关侧计数。
 	metrics := observability.NewMetrics()

@@ -71,6 +71,9 @@ type RemoteMedia struct {
 	mu       sync.Mutex
 	sticky   map[string]stickyBinding
 	sessions map[string]sessionBinding
+	// inflight 记录“已原子占位、尚未建完会话”的分配数（按 node_id）。
+	// 对账看到在途分配时跳过本轮下调，避免把占位抹掉导致后续超卖。
+	inflight map[string]int
 	// allocLocks 按 (phone, channel) 分片，串行化同一逻辑通道的并发申请，
 	// 避免两个请求同时判定“还没有分配”而各自开出第二条流。
 	allocLocks [64]sync.Mutex
@@ -351,6 +354,7 @@ func (r *RemoteMedia) CreatePlaybackSession(ctx context.Context, request contrac
 	for _, candidate := range candidates {
 		target := candidate.target
 		reserved := false
+		var finishAllocation func()
 		if target.Registered {
 			ok, err := r.repo.Reserve(ctx, target.ID, target.InstanceID, 1, r.now())
 			if err != nil {
@@ -363,8 +367,14 @@ func (r *RemoteMedia) CreatePlaybackSession(ctx context.Context, request contrac
 				continue
 			}
 			reserved = true
+			// 从占位成功到会话建完之间，节点实际会话数还看不到这次分配；
+			// 标记在途，供对账跳过本轮下调。
+			finishAllocation = r.beginAllocation(target.ID)
 		}
 		session, err := r.createOnTarget(ctx, target, request, ttl)
+		if finishAllocation != nil {
+			finishAllocation()
+		}
 		if err == nil {
 			r.remember(key, target, session, reserved)
 			log.Info().
@@ -991,6 +1001,13 @@ func (r *RemoteMedia) Reconcile(ctx context.Context) {
 			if actual == target.EndpointsUsed {
 				return
 			}
+			// 下调会把“已占位、会话还没建完”的在途分配抹掉，先跳过，下一轮再对账；
+			// 上调不受影响（多算只会暂时少接流，不会超卖）。
+			if actual < target.EndpointsUsed && r.hasInflight(target.ID) {
+				log.Debug().Str("node", target.ID).Int64("reserved", target.EndpointsUsed).Int64("actual", actual).
+					Msg("Skip media endpoint reconciliation: allocation in flight")
+				return
+			}
 			if err := r.repo.SetEndpointsUsed(ctx, target.ID, target.InstanceID, actual, r.now()); err != nil {
 				log.Warn().Err(err).Str("node", target.ID).Msg("Fail to reconcile media endpoint usage")
 				return
@@ -1128,6 +1145,32 @@ func (r *RemoteMedia) lockAllocation(key string) func() {
 	shard := &r.allocLocks[allocationShard(key, len(r.allocLocks))]
 	shard.Lock()
 	return shard.Unlock
+}
+
+// beginAllocation 标记节点上有一笔已占位、尚未建完会话的分配，返回结束时调用的函数。
+func (r *RemoteMedia) beginAllocation(nodeID string) func() {
+	r.mu.Lock()
+	if r.inflight == nil {
+		r.inflight = map[string]int{}
+	}
+	r.inflight[nodeID]++
+	r.mu.Unlock()
+	return func() {
+		r.mu.Lock()
+		defer r.mu.Unlock()
+		if r.inflight[nodeID] > 1 {
+			r.inflight[nodeID]--
+			return
+		}
+		delete(r.inflight, nodeID)
+	}
+}
+
+// hasInflight 判断节点上是否还有未完成的分配。
+func (r *RemoteMedia) hasInflight(nodeID string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.inflight[nodeID] > 0
 }
 
 func allocationShard(key string, shards int) int {

@@ -1,5 +1,6 @@
 # jt-signal 的最小可运行配置：只承担 gateway 角色。
-# 依赖共享 MySQL（设备档案与命令查询）与已启动的 jt-control。
+# 网关是数据面/接入面节点，**不连数据库**：设备档案只读查询、上行事件投递
+# 与下行命令都通过 HTTP 与已启动的 jt-control 交互。
 log:
   consoleEnable: true
   fileEnable: true
@@ -46,9 +47,6 @@ uplink:
     workers: 4
     maxAttempts: 1
 
-commandOutbox:
-  mode: "durable"
-
 cluster:
   roles:
     - gateway
@@ -64,8 +62,3 @@ cluster:
     token: "uplink-token"
   storage:
     backend: "local"
-
-database:
-  type: "mysql"
-  mysql:
-    dsn: "root:password@tcp(127.0.0.1:3306)/jt808?parseTime=true&charset=utf8mb4"

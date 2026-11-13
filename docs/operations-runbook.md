@@ -175,7 +175,7 @@ jt-control requires cluster.roles to contain "control"; current roles=[media]. u
 ./bin/jt-attachment -c configs/cluster/jt-attachment.yaml
 ```
 
-`jt-signal` / `jt-control` 依赖共享 MySQL；`jt-media` / `jt-attachment` 是数据面节点，不连数据库。
+只有 `jt-control` 连接共享 MySQL；`jt-signal` / `jt-media` / `jt-attachment` 是数据面节点，不连数据库，全部元数据经 HTTP 与 control 交互。
 所有集群角色必须指向**同一套** `cluster.storage`（同一个 `root`，或同一个 `objectStore` 桶）。
 
 > `cluster.allowEmbeddedStorage` 是 **dev-only** 开关，只允许本地联调时让多个角色进程共用一个 SQLite 文件。

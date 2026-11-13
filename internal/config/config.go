@@ -2316,9 +2316,20 @@ func (c *Config) ParseServerMode() (ClusterOptions, error) {
 		}
 	}
 
-	// 存储：只有 gateway/control 需要共享库。
-	// media / attachment 是数据面节点，不连数据库，只与 control 做 HTTP 交互。
-	if roles.Has(RoleGateway) || roles.Has(RoleControl) {
+	// 元数据面不变量：只有 control 连接并写入元数据库。
+	// gateway/media/attachment 是数据面节点，配置里不得出现数据库入口。
+	if !roles.Has(RoleControl) {
+		backend := ""
+		if c.Database != nil {
+			backend = strings.ToLower(strings.TrimSpace(c.Database.Type))
+		}
+		if backend != "" && backend != "memory" {
+			problems = append(problems, fmt.Sprintf(
+				"database must not be configured for data-plane roles (gateway/media/attachment), got %q: "+
+					"only control connects to the metadata database", backend))
+		}
+	}
+	if roles.Has(RoleControl) {
 		backend := strings.ToLower(strings.TrimSpace(c.Database.Type))
 		if backend == "" {
 			backend = "memory"
@@ -2327,7 +2338,7 @@ func (c *Config) ParseServerMode() (ClusterOptions, error) {
 			allowEmbedded := c.Cluster != nil && c.Cluster.AllowEmbeddedStorage && backend == "sqlite"
 			if !allowEmbedded {
 				problems = append(problems, fmt.Sprintf(
-					"database.type must be mysql when roles include gateway/control, got %q "+
+					"database.type must be mysql when roles include control, got %q "+
 						"(cluster.allowEmbeddedStorage with sqlite is dev-only; production must use mysql)", backend))
 			}
 		}

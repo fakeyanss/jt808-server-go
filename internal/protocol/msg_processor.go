@@ -531,6 +531,26 @@ func NewJT808MsgProcessor(hooks actionpkg.Hooks, opts ...ProcessorOption) *JT808
 	if settings.deps.MediaUpload != nil {
 		deps.MediaUpload = settings.deps.MediaUpload
 	}
+	// 集群网关的可选依赖必须逐项透传，否则会静默回退到本地仓储：
+	// AuthProvider 是网关不连库时的档案来源，RegisterCache 保存 0x0100 的鉴权码。
+	if settings.deps.AuthProvider != nil {
+		deps.AuthProvider = settings.deps.AuthProvider
+	}
+	if settings.deps.RegisterCache != nil {
+		deps.RegisterCache = settings.deps.RegisterCache
+	}
+	if settings.deps.UplinkMaxBodyBytes > 0 {
+		deps.UplinkMaxBodyBytes = settings.deps.UplinkMaxBodyBytes
+	}
+	if settings.deps.OnOversized != nil {
+		deps.OnOversized = settings.deps.OnOversized
+	}
+	if settings.deps.QueryResponse != nil {
+		deps.QueryResponse = settings.deps.QueryResponse
+	}
+	if settings.deps.Blob != nil {
+		deps.Blob = settings.deps.Blob
+	}
 	mp := &JT808MsgProcessor{
 		hooks: hooks,
 		deps:  deps,
@@ -969,29 +989,59 @@ func processSegmentPacket(ctx context.Context, pkt *model.PacketData) (*model.Pr
 
 // 收到心跳，刷新进程内最近通信时间。
 // 运行时状态不落库：心跳只更新 runtime.Heartbeat，供保活判定与 API 展示使用。
+// 集群网关不连库，档案校验走 control 的只读查询。
 func (mp *JT808MsgProcessor) processMsg0002(_ context.Context, data *model.ProcessData) error {
 	ctx := context.Background()
 	phone := data.Incoming.GetHeader().PhoneNumber
-	devices := mp.deps.Repos.Devices
-	_, err := devices.GetByPhone(ctx, phone)
-
-	// 缓存不存在，说明设备不合法，需要返回错误，让服务层处理关闭
-	if errors.Is(err, repository.ErrDeviceNotFound) {
-		return errors.Wrapf(err, "Fail to find device cache, phoneNumber=%s", phone)
+	if err := mp.checkDeviceExists(ctx, phone); err != nil {
+		return err
 	}
-
 	mp.deps.Runtime.Heartbeat.Touch(ctx, phone, time.Now())
 	return nil
 }
 
+// checkDeviceExists 校验终端档案：集群网关查 control（AuthProvider），
+// 其余装配回退本地仓储。管控不可达时返回错误，保持鉴权 fail-closed 的语义。
+func (mp *JT808MsgProcessor) checkDeviceExists(ctx context.Context, phone string) error {
+	if mp.deps.AuthProvider != nil {
+		if _, err := mp.deps.AuthProvider.Device(ctx, phone); err != nil {
+			if errors.Is(err, repository.ErrDeviceNotFound) {
+				return errors.Wrapf(err, "Fail to find device cache, phoneNumber=%s", phone)
+			}
+			return err
+		}
+		return nil
+	}
+	if _, err := mp.deps.Repos.Devices.GetByPhone(ctx, phone); err != nil {
+		if errors.Is(err, repository.ErrDeviceNotFound) {
+			return errors.Wrapf(err, "Fail to find device cache, phoneNumber=%s", phone)
+		}
+		return err
+	}
+	return nil
+}
+
 // 收到注销，应清除缓存，断开连接。
-func (mp *JT808MsgProcessor) processMsg0003(_ context.Context, data *model.ProcessData) error {
-	ctx := context.Background()
+// 集群网关只清理本地会话与保活状态：档案归 control，网关不删库记录。
+func (mp *JT808MsgProcessor) processMsg0003(ctx context.Context, data *model.ProcessData) error {
+	phone := data.Incoming.GetHeader().PhoneNumber
+	if mp.deps.AuthProvider != nil {
+		if err := mp.checkDeviceExists(ctx, phone); err != nil {
+			return err
+		}
+		timer := NewKeepaliveTimer()
+		timer.Cancel(phone)
+		mp.deps.Runtime.Heartbeat.Remove(ctx, phone)
+		return nil
+	}
 	devices := mp.deps.Repos.Devices
-	device, err := devices.GetByPhone(ctx, data.Incoming.GetHeader().PhoneNumber)
+	device, err := devices.GetByPhone(ctx, phone)
 	// 缓存不存在，说明设备不合法，需要返回错误，让服务层处理关闭
 	if errors.Is(err, repository.ErrDeviceNotFound) {
-		return errors.Wrapf(err, "Fail to find device cache, phoneNumber=%s", data.Incoming.GetHeader().PhoneNumber)
+		return errors.Wrapf(err, "Fail to find device cache, phoneNumber=%s", phone)
+	}
+	if err != nil {
+		return err
 	}
 	// 取消定时任务
 	timer := NewKeepaliveTimer()
