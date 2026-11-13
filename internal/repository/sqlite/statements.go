@@ -20,6 +20,9 @@ const attachmentColumns = `source, phone, alarm_no, file_name, terminal_id, alar
 	file_type, total_size, received_bytes, watermark, staging_path, staging_base, ranges, segments,
 	status, created_at, updated_at, completed_at`
 
+const recordingSegmentColumns = `id, phone, channel, kind, object_key, local_path,
+	start_at, end_at, size, keyframes, state, created_at`
+
 func (statements) SchemaMigrationsTableExistsQuery() string {
 	return `SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'schema_migrations'`
 }
@@ -155,6 +158,16 @@ func (statements) UpsertAttachmentFile() string {
 		staging_base = excluded.staging_base, ranges = excluded.ranges,
 		segments = excluded.segments, status = excluded.status,
 		updated_at = excluded.updated_at, completed_at = excluded.completed_at`
+}
+
+func (statements) UpsertRecordingSegment() string {
+	return `INSERT INTO recording_segments (` + recordingSegmentColumns + `)
+	VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	ON CONFLICT(id) DO UPDATE SET
+		phone = excluded.phone, channel = excluded.channel, kind = excluded.kind,
+		object_key = excluded.object_key, local_path = excluded.local_path,
+		start_at = excluded.start_at, end_at = excluded.end_at, size = excluded.size,
+		keyframes = excluded.keyframes, state = excluded.state`
 }
 
 func (statements) InsertLocationsIgnoringDuplicates(placeholders string) string {

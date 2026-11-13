@@ -69,18 +69,20 @@ func (d *deps) startMedia() {
 				Msg("RTMP playback output enabled; keep SRS gop_cache ON (default) for new viewers")
 		}
 		mediaServ = media.NewServer(media.Config{
-			Dir:             mediaOptions.Dir,
-			MaxConcurrent:   mediaOptions.MaxConcurrent,
-			MaxTCPConns:     mediaOptions.MaxTCPConns,
-			Retention:       mediaOptions.Retention,
-			RecordMode:      media.RecordMode(recordMode),
-			SegmentDuration: mediaOptions.SegmentDuration,
-			RingBytes:       mediaOptions.RingBytes,
-			RingDuration:    mediaOptions.RingDuration,
-			Blob:            controlBlob,
-			AdvertiseIP:     advertiseIP,
-			NodeID:          clusterOptions.Media.NodeID,
-			Playback:        playbackConfig,
+			Dir:               mediaOptions.Dir,
+			MaxConcurrent:     mediaOptions.MaxConcurrent,
+			MaxTCPConns:       mediaOptions.MaxTCPConns,
+			Retention:         mediaOptions.Retention,
+			RecordMode:        media.RecordMode(recordMode),
+			SegmentDuration:   mediaOptions.SegmentDuration,
+			RingBytes:         mediaOptions.RingBytes,
+			RingDuration:      mediaOptions.RingDuration,
+			Blob:              controlBlob,
+			SegmentRepository: d.storeSet.RecordingSegments,
+			Clock:             d.clock,
+			AdvertiseIP:       advertiseIP,
+			NodeID:            clusterOptions.Media.NodeID,
+			Playback:          playbackConfig,
 		})
 		mediaAddr := fmt.Sprintf(":%d", mediaOptions.Port)
 		if err := mediaServ.Listen(mediaAddr); err != nil {

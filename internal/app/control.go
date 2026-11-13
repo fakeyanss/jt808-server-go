@@ -101,6 +101,7 @@ func (d *deps) setupControl() {
 			Devices:       storeSet.Devices,
 			Sessions:      storeSet.SessionDirectory,
 			Files:         storeSet.MediaFiles,
+			Segments:      storeSet.RecordingSegments,
 			Blob:          controlBlob,
 			MediaUpload:   mediaUploadStore,
 			Hooks:         controlHooks,

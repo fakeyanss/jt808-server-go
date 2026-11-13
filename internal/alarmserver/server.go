@@ -318,6 +318,9 @@ func (s *Server) cleanupLoop() {
 			if lastPrune.IsZero() || now.Sub(lastPrune) >= time.Hour {
 				lastPrune = now
 				if s.cfg.Storage != nil {
+					if expired := s.assembler.expireReceivingBlob(now, s.cfg.SessionTimeout); expired > 0 {
+						log.Info().Int("expired", expired).Msg("Marked stale attachment receiving records expired")
+					}
 					s.assembler.pruneBlobPending()
 				}
 				if s.cfg.Retention > 0 {

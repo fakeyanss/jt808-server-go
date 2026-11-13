@@ -412,6 +412,26 @@ CREATE TABLE IF NOT EXISTS attachment_files (
 CREATE INDEX idx_attachment_files_phone ON attachment_files (source, phone, updated_at);
 CREATE INDEX idx_attachment_files_status ON attachment_files (status, updated_at);
 
+-- 平台录像切片索引（2026-11-14）。
+-- 每行对应 media/segments/ 下的一个 .ts 对象，或媒体节点本地盘上的一个文件。
+-- start_at/end_at 由应用写入，覆盖查询使用半开区间 [start, end)。
+CREATE TABLE IF NOT EXISTS recording_segments (
+    id TEXT NOT NULL PRIMARY KEY,
+    phone TEXT NOT NULL,
+    channel INTEGER NOT NULL DEFAULT 0,
+    kind TEXT NOT NULL DEFAULT 'live',
+    object_key TEXT NOT NULL DEFAULT '',
+    local_path TEXT NOT NULL DEFAULT '',
+    start_at INTEGER NOT NULL,
+    end_at INTEGER NOT NULL,
+    size INTEGER NOT NULL DEFAULT 0,
+    keyframes TEXT NOT NULL,
+    state TEXT NOT NULL DEFAULT 'local',
+    created_at INTEGER NOT NULL
+);
+CREATE INDEX idx_recording_segments_phone_channel ON recording_segments (phone, channel, start_at);
+CREATE INDEX idx_recording_segments_end ON recording_segments (end_at);
+
 -- 多副本协调（2026-11-19）。
 -- task_leases：周期性任务的单实例租约，name 为任务名，expires_at 到期后可被其它副本接手。
 -- dedup_keys：按业务键的共享 TTL 去重，dedup_key 形如 auto-9208:<phone>:<alarmID>。

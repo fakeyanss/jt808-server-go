@@ -34,6 +34,8 @@ type BusinessOptions struct {
 	Sessions repository.SessionDirectoryRepository
 	// Files 是媒体文件元数据仓储。
 	Files repository.MediaFileRepository
+	// Segments 是平台录像切片索引；用于回收 media/segments/ 下无引用的 pending 对象。
+	Segments repository.RecordingSegmentRepository
 	// Blob 是 sharedVolume 文件后端；为空时 0x0801 回退到本地媒体目录。
 	Blob contracts.BlobStore
 	// MediaUpload 是本地媒体目录，仅 Blob 为空时使用。
@@ -258,6 +260,16 @@ func (b *BusinessExecutor) SweepPending(ctx context.Context, olderThan time.Dura
 	sweeper.SweepPendingPrefix(ctx, storage.MediaUploads, olderThan, func(key string) bool {
 		return mediaReferenced(ctx, b.opts.Files, key)
 	})
+	if b.opts.Segments != nil {
+		// 录像切片有独立索引：只回收无引用的 pending 对象，查库失败时保守保留。
+		sweeper.SweepPendingPrefix(ctx, storage.MediaSegments, olderThan, func(key string) bool {
+			referenced, err := b.opts.Segments.ReferencedSegment(ctx, key)
+			if err != nil {
+				return true
+			}
+			return referenced
+		})
+	}
 }
 
 // needsKnownDevice 判断是否需要先确认设备档案存在。

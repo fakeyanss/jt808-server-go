@@ -1091,6 +1091,7 @@ type retentionConf struct {
 	Locations          *locationRetentionConf `yaml:"locations"`
 	Alarms             *alarmRetentionConf    `yaml:"alarms"`
 	MediaFiles         *timeRetentionConf     `yaml:"mediaFiles"`
+	MediaSegments      *timeRetentionConf     `yaml:"mediaSegments"`
 	MediaCaptures      *timeRetentionConf     `yaml:"mediaCaptures"`
 	MediaSearchResults *timeRetentionConf     `yaml:"mediaSearchResults"`
 	OrphanFiles        *orphanFilesConf       `yaml:"orphanFiles"`
@@ -1168,6 +1169,7 @@ type RetentionPolicy struct {
 	Locations          LocationRetention
 	Alarms             AlarmRetention
 	MediaFiles         TimeRetention
+	MediaSegments      TimeRetention
 	MediaCaptures      TimeRetention
 	MediaSearchResults TimeRetention
 	OrphanFiles        OrphanFilesPolicy
@@ -1234,6 +1236,11 @@ func (c *Config) RetentionPolicy() RetentionPolicy {
 	}
 	if media := c.Retention.MediaFiles; media != nil && media.RetentionDays != nil {
 		policy.MediaFiles.MaxAge = time.Duration(*media.RetentionDays) * 24 * time.Hour
+	}
+	// 录像切片默认跟随多媒体文件保留期；显式配置 mediaSegments 时以它为准。
+	policy.MediaSegments.MaxAge = policy.MediaFiles.MaxAge
+	if segment := c.Retention.MediaSegments; segment != nil && segment.RetentionDays != nil {
+		policy.MediaSegments.MaxAge = time.Duration(*segment.RetentionDays) * 24 * time.Hour
 	}
 	if capture := c.Retention.MediaCaptures; capture != nil && capture.RetentionDays != nil {
 		policy.MediaCaptures.MaxAge = time.Duration(*capture.RetentionDays) * 24 * time.Hour

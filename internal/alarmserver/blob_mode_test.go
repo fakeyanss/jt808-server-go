@@ -16,6 +16,56 @@ import (
 	"github.com/fakeyanss/jt808-server-go/internal/storage"
 )
 
+// 无进展的 receiving 记录超时后转 expired，清空暂存并交给终态回收路径。
+func TestExpireReceivingBlobMarksExpiredAndCleansStaging(t *testing.T) {
+	root := t.TempDir()
+	volume, err := storage.NewSharedVolume(filepath.Join(root, "blob"), false)
+	require.NoError(t, err)
+	files := memory.NewAttachmentFileRepository()
+	assembler := NewAssembler(Config{
+		Dir:            filepath.Join(root, "alarms"),
+		MaxFileSize:    1 << 20,
+		MaxConcurrent:  4,
+		SessionTimeout: time.Hour,
+		Storage: &StorageConfig{
+			Blob:            volume,
+			Files:           files,
+			Source:          repository.AttachmentSourceSubia,
+			SegmentSize:     4,
+			StagingDir:      filepath.Join(root, "staging"),
+			MaxStagingBytes: 1 << 20,
+		},
+	})
+	info := AttachmentInfo{
+		Phone:      "13800138000",
+		TerminalID: "T1",
+		AlarmNo:    "A1",
+		AlarmSign:  bytes.Repeat([]byte{0x11}, 16),
+	}
+	require.NoError(t, assembler.RegisterAlarm(info))
+	state, err := assembler.RegisterFile(info, "clip.bin", 1, 8)
+	require.NoError(t, err)
+	require.NoError(t, state.writeAt(0, []byte("abc")))
+	require.FileExists(t, state.partPath)
+
+	expired := assembler.expireReceivingBlob(time.Now().Add(2*time.Hour), time.Hour)
+	require.Equal(t, 1, expired)
+
+	record, err := files.Get(context.Background(), repository.AttachmentFileKey{
+		Source: repository.AttachmentSourceSubia, Phone: info.Phone, AlarmNo: info.AlarmNo, FileName: "clip.bin",
+	})
+	require.NoError(t, err)
+	require.Equal(t, repository.AttachmentStatusExpired, record.Status)
+	require.Empty(t, record.StagingPath)
+	_, statErr := os.Stat(state.partPath)
+	require.True(t, os.IsNotExist(statErr))
+
+	terminal, err := files.ListTerminalBefore(context.Background(), repository.AttachmentSourceSubia,
+		time.Now().Add(3*time.Hour), 10)
+	require.NoError(t, err)
+	require.Len(t, terminal, 1)
+}
+
 // 对象存储模式：切片按顺序提交，水位与段列表落共享库，文件收完才 marked committed。
 func TestBlobModeStagesSegmentsAndPersistsProgress(t *testing.T) {
 	root := t.TempDir()

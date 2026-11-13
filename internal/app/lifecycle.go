@@ -14,9 +14,9 @@ func run(spec Spec, cfg *config.Config) {
 	s := loadSettings(cfg, spec)
 	d := buildDeps(spec, cfg, s)
 
-	d.startRetention()
 	d.setupDownlinkHTTP()
 	d.setupControl()
+	d.startRetention()
 	d.startClockSkewProbe()
 	d.startOutbox()
 	d.startDownlinkHTTP()

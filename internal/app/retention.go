@@ -40,9 +40,11 @@ func (d *deps) startRetention() {
 				Locations:          retentionPolicy.Locations.MaxAge,
 				Alarms:             retentionPolicy.Alarms.MaxAge,
 				MediaFiles:         retentionPolicy.MediaFiles.MaxAge,
+				RecordingSegments:  retentionPolicy.MediaSegments.MaxAge,
 				MediaCaptures:      retentionPolicy.MediaCaptures.MaxAge,
 				MediaSearchResults: retentionPolicy.MediaSearchResults.MaxAge,
 			}, metrics)
+			cleaner.SetSegmentStore(storeSet.RecordingSegments, d.controlBlob)
 			cleaner.SetLease(leaseRunner)
 			retentionDones = append(retentionDones, cleaner.Done())
 			routines.GoSafe(func() { cleaner.Run(retentionCtx) })
@@ -52,6 +54,7 @@ func (d *deps) startRetention() {
 				Dur("locations", retentionPolicy.Locations.MaxAge).
 				Dur("alarms", retentionPolicy.Alarms.MaxAge).
 				Dur("media_files", retentionPolicy.MediaFiles.MaxAge).
+				Dur("media_segments", retentionPolicy.MediaSegments.MaxAge).
 				Dur("media_captures", retentionPolicy.MediaCaptures.MaxAge).
 				Dur("media_search_results", retentionPolicy.MediaSearchResults.MaxAge).
 				Msg("Retention cleanup enabled")
