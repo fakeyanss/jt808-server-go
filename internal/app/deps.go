@@ -347,7 +347,7 @@ func buildDeps(spec Spec, cfg *config.Config, s settings) *deps {
 		}
 		provider, providerErr := control.NewHTTPAuthProvider(
 			parsed.Scheme+"://"+parsed.Host, uplinkSinkOptions.HTTP.Token,
-			uplinkSinkOptions.HTTP.Timeout, 5*time.Minute)
+			uplinkSinkOptions.HTTP.Timeout, 5*time.Minute, uplinkSinkOptions.HTTP.AuthGrace)
 		if providerErr != nil {
 			log.Error().Err(providerErr).Msg("Fail to create HTTP auth provider")
 			os.Exit(1)
