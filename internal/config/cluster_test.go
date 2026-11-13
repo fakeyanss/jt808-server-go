@@ -24,6 +24,9 @@ func gatewayControlBase() *Config {
 func gatewayOnlyBase() *Config {
 	cfg := gatewayControlBase()
 	cfg.Cluster.Roles = []string{RoleGateway}
+	// 不变量：网关是数据面节点，不配置数据库入口。
+	cfg.Database = nil
+	cfg.CommandOutbox = nil
 	cfg.Uplink = &uplinkConf{
 		Sink: UplinkSinkHTTP,
 		HTTP: &uplinkHTTPConf{URL: "http://control:9102/internal/v1/uplink", Token: "control-token"},
@@ -104,6 +107,25 @@ func TestParseServerModeMatrix(t *testing.T) {
 			},
 		},
 		{
+			name: "gateway-only 配置数据库被拒绝",
+			mutate: func(t *testing.T, cfg *Config) {
+				*cfg = *gatewayOnlyBase()
+				cfg.Database = &databaseConf{Type: "mysql"}
+			},
+			wantErr: "database must not be configured for data-plane roles",
+		},
+		{
+			name: "media 角色配置数据库被拒绝",
+			mutate: func(t *testing.T, cfg *Config) {
+				*cfg = *gatewayOnlyBase()
+				cfg.Cluster.Roles = []string{RoleMedia}
+				cfg.Uplink = nil
+				cfg.MediaServer = &mediaServerConf{Port: "7100"}
+				cfg.Database = &databaseConf{Type: "mysql"}
+			},
+			wantErr: "database must not be configured for data-plane roles",
+		},
+		{
 			name: "control-only 通过",
 			mutate: func(t *testing.T, cfg *Config) {
 				*cfg = *controlOnlyBase()
@@ -169,7 +191,7 @@ func TestParseServerModeMatrix(t *testing.T) {
 			wantErr: "must not point to the local control addr",
 		},
 		{
-			name: "gateway/control 必须 mysql",
+			name: "control 必须 mysql",
 			mutate: func(t *testing.T, cfg *Config) {
 				cfg.Database.Type = "memory"
 			},

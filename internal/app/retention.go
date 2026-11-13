@@ -18,6 +18,12 @@ func (d *deps) startRetention() {
 	mediaUploadStore := d.mediaUploadStore
 	metrics := d.metrics
 
+	// 保留期清理与孤儿扫描依赖元数据库与租约，只在 control 执行；
+	// 数据面角色不连库，直接跳过。
+	if !hasControl || storeSet == nil {
+		return
+	}
+
 	retentionPolicy := cfg.RetentionPolicy()
 	leaseRunner := coordination.NewRunner(storeSet.Coordination, coordination.DefaultTTL,
 		d.clock, d.settings.options.LeaseTolerance)

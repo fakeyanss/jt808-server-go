@@ -14,6 +14,7 @@ import (
 	actionpkg "github.com/fakeyanss/jt808-server-go/internal/action"
 	"github.com/fakeyanss/jt808-server-go/internal/codec/hex"
 	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
+	"github.com/fakeyanss/jt808-server-go/internal/repository"
 	"github.com/fakeyanss/jt808-server-go/internal/repository/database"
 	"github.com/fakeyanss/jt808-server-go/internal/runtime"
 	"github.com/stretchr/testify/require"
@@ -430,4 +431,62 @@ func TestOnAlarmHTTPCallbackIncludesExtItems(t *testing.T) {
 			t.Fatal("alarm callback was not delivered")
 		}
 	}
+}
+
+// fakeAuthProvider 模拟 control 的只读档案查询。
+type fakeAuthProvider struct {
+	devices map[string]*model.Device
+	err     error
+}
+
+func (f fakeAuthProvider) Device(_ context.Context, phone string) (*model.Device, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	if device, ok := f.devices[phone]; ok {
+		return device, nil
+	}
+	return nil, repository.ErrDeviceNotFound
+}
+
+func (f fakeAuthProvider) AuthCode(_ context.Context, phone string) (string, error) {
+	device, err := f.Device(context.Background(), phone)
+	if err != nil {
+		return "", err
+	}
+	return device.AuthCode, nil
+}
+
+// 集群网关不连库：心跳与注销的档案校验走 AuthProvider，且注销不得删除本地库记录。
+func TestGatewayHandlersUseAuthProviderWithoutDatabase(t *testing.T) {
+	const phone = "188765499005"
+	ctx := context.Background()
+	repos := database.NewMemory()
+	require.NoError(t, repos.Devices.Upsert(ctx, &model.Device{
+		Phone:     phone,
+		Keepalive: time.Minute,
+		AuthCode:  "code-1",
+	}))
+	provider := fakeAuthProvider{devices: map[string]*model.Device{
+		phone: {Phone: phone, Keepalive: time.Minute, AuthCode: "code-1"},
+	}}
+	processor := NewJT808MsgProcessor(nil, WithProcessorDeps(ProcessorDeps{
+		Repos:        repos,
+		AuthProvider: provider,
+	}))
+	t.Cleanup(func() { runtime.Default().Heartbeat.Remove(ctx, phone) })
+
+	heartbeat := &model.Msg0002{Header: &model.MsgHeader{MsgID: 0x0002, PhoneNumber: phone, Attr: &model.MsgBodyAttr{}}}
+	require.NoError(t, processor.processMsg0002(ctx, &model.ProcessData{Incoming: heartbeat}))
+
+	logout := &model.Msg0003{Header: &model.MsgHeader{MsgID: 0x0003, PhoneNumber: phone, Attr: &model.MsgBodyAttr{}}}
+	require.NoError(t, processor.processMsg0003(ctx, &model.ProcessData{Incoming: logout}))
+
+	// 注销只清本地会话状态；档案归 control，网关不删库记录。
+	_, err := repos.Devices.GetByPhone(ctx, phone)
+	require.NoError(t, err)
+
+	// 未知终端仍按原语义拒绝。
+	unknown := &model.Msg0002{Header: &model.MsgHeader{MsgID: 0x0002, PhoneNumber: "188765499006", Attr: &model.MsgBodyAttr{}}}
+	require.Error(t, processor.processMsg0002(ctx, &model.ProcessData{Incoming: unknown}))
 }

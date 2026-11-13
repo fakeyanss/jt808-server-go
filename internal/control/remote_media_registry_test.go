@@ -2,9 +2,12 @@ package control
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"net/http"
 	"net/http/httptest"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -189,6 +192,79 @@ func TestRemoteMediaReconcileCalibratesEndpointUsage(t *testing.T) {
 	}
 	if stored.EndpointsUsed != int64(len(node.sessions)) {
 		t.Fatalf("expected endpoints_used to be reconciled to %d, got %d", len(node.sessions), stored.EndpointsUsed)
+	}
+}
+
+func TestRemoteMediaReconcileSkipsDownwardWhileAllocationInFlight(t *testing.T) {
+	gate := make(chan struct{})
+	started := make(chan struct{}, 1)
+	var active atomic.Int64
+	mux := http.NewServeMux()
+	mux.HandleFunc("/internal/media/status", func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"nodeId": "media-1", "active": int(active.Load()), "maxConcurrent": 4,
+			"available": 4 - int(active.Load()),
+		})
+	})
+	mux.HandleFunc("/internal/media/sessions", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		select {
+		case started <- struct{}{}:
+		default:
+		}
+		<-gate
+		active.Add(1)
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"sessionId": "ms-1", "phone": "13800138000", "channel": 1, "kind": "live",
+			"expiresAt": time.Now().Add(time.Minute),
+		})
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	repo := memory.NewMediaNodeRepository()
+	if err := repo.Register(context.Background(), &repository.MediaNode{
+		NodeID: "media-1", InstanceID: "i1", InternalURL: server.URL, EndpointCapacity: 4,
+	}, time.Now()); err != nil {
+		t.Fatalf("register media node: %v", err)
+	}
+	media := NewRemoteMedia(RemoteMediaOptions{NodeRepo: repo})
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := media.CreatePlaybackSession(context.Background(), contracts.PlaybackSessionRequest{
+			Phone: "13800138000", Channel: 1, Kind: "live",
+		})
+		done <- err
+	}()
+	<-started
+
+	// 占位已完成、会话未建完：此刻对账看到 active=0，但不能把在途占位抹掉。
+	media.Reconcile(context.Background())
+	stored, err := repo.Get(context.Background(), "media-1")
+	if err != nil || stored == nil {
+		t.Fatalf("get media node: %v", err)
+	}
+	if stored.EndpointsUsed != 1 {
+		t.Fatalf("in-flight reservation must survive reconciliation, got %d", stored.EndpointsUsed)
+	}
+
+	close(gate)
+	if err := <-done; err != nil {
+		t.Fatalf("create playback session: %v", err)
+	}
+	// 会话建完后节点状态与实际一致，对账保持 1。
+	media.Reconcile(context.Background())
+	stored, err = repo.Get(context.Background(), "media-1")
+	if err != nil || stored == nil {
+		t.Fatalf("get media node after create: %v", err)
+	}
+	if stored.EndpointsUsed != 1 {
+		t.Fatalf("expected endpoints_used=1 after reconciliation, got %d", stored.EndpointsUsed)
 	}
 }
 

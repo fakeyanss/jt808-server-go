@@ -105,16 +105,18 @@ main ──●──────────────────────
 **standalone 不受此约束**：单进程承担全部角色，进程内直接使用本地/SQL 存储，
 不存在跨进程元数据面。
 
-**核对结果（2026-11-14）**：
+**核对结果（2026-11-14，已收口）**：
 
-- media / attachment：配置模板已移除 `database` 段，启动时没有连库入口（`buildDeps` 仅对
-  gateway/control 执行 `database.Init`）；对象存储与出站 HTTP 是唯一外部依赖。
+- media / attachment：配置模板已移除 `database` 段，启动时没有连库入口；对象存储与出站 HTTP
+  是唯一外部依赖。
+- gateway：`buildDeps` 只在 `hasControl` 时执行 `database.Init`；网关设备档案校验改走 control
+  的只读查询（`AuthProvider`），0x0003 注销只清本地会话状态、不再删除档案；启动校验拒绝
+  数据面角色配置任何非 `memory` 的数据库段；`configs/cluster/jt-signal.yaml` 已删除 `database`
+  与 `commandOutbox` 段。
 - control：独占 MySQL，迁移、索引补齐（`attachment-maintenance` / `attachment-index`）与
   保留期清理都在 control 的租约任务里。
-- **gateway 仍有残留**：`internal/app/deps.go` 在 `hasGateway` 时同样执行 `database.Init`，
-  `config.go` 要求 gateway 角色使用 mysql，`configs/cluster/jt-signal.yaml` 仍配置 mysql DSN 与
-  `commandOutbox.mode: durable`。这属于把 durable outbox 与只读档案查询下沉到网关的旧实现，
-  与不变量冲突，列为后续拆项；本次不顺手改，避免与 FTP 变更混在一笔。
+- **启动校验强制不变量**：`cluster.roles` 不含 `control` 时，`database.type` 只能为空或
+  `memory`，否则启动失败并提示“只有 control 连接元数据库”。
 
 ### 2.1 四个逻辑角色
 
@@ -596,6 +598,8 @@ WARN 提醒“码率容量保护未生效”，此时只剩端点额度约束。
 **占用对账**：占位是“分配决定”，节点事实以 `GET /internal/media/status` 的 `active` 为准。
 control 每 60 秒并发查询各注册节点的状态，把 `endpoints_used` 校准为实际活跃会话数；
 查询失败或节点已过期则跳过。对账只修正计数，不改变“心跳不覆盖占用”的语义。
+**下调有守卫**：若该节点本轮还有“已占位、会话未建完”的在途分配，跳过本轮下调，留到下一轮；
+上调不受影响（多算只会暂时少接流，不会超卖）。
 
 **复用**：同一 `(phone, channel)` 已有同类型会话时直接复用，不重复开流；管控重启后本地映射
 为空，先并发查询节点状态再决定复用。复用返回的会话带 `reused` 标记，**API 层不得再下发
@@ -858,7 +862,7 @@ phone -> session_directory
 ```text
 gateway 节点：808 接入、协议、上行出口客户端、下行契约服务端
 control 节点：业务 API、落库、命令编排、outbox、会话目录
-依赖：共享 MySQL；可选 Redis/MQ
+依赖：共享 MySQL（仅 control）；gateway 不连库；可选 Redis/MQ
 ```
 
 **Cluster / gateway + control + media + attachment**
@@ -868,7 +872,7 @@ gateway：只做信令
 control：业务与编排
 media：1078 数据面与端点分配
 attachment：附件数据面与端点分配
-依赖：共享 MySQL + 共享卷/对象存储；可选 Redis/MQ
+依赖：control 共享 MySQL；gateway/media/attachment 不连库；共享卷/对象存储；可选 Redis/MQ
 ```
 
 **Cluster / 合并部署**
@@ -968,7 +972,7 @@ cluster:
 | `cluster.gateway.url` | 不校验 | 仅 `fixed` 模式使用；`directory` 模式必须留空 |
 | 下行契约监听 | 不启动 | `gateway` 角色必须配置且只绑内网 |
 | 媒体/附件端点分配器 | 不启动 | 承担对应角色时必须配置 |
-| `database.type` | `memory/sqlite/mysql` | `control` 角色必须为 `mysql` |
+| `database.type` | `memory/sqlite/mysql` | `control` 角色必须为 `mysql`；不含 `control` 的数据面角色只能为空或 `memory` |
 | `commandOutbox.mode` | 现有归一化规则 | `control` 角色必须为 `durable` |
 | `api` | 现有规则 | `control` 角色沿用现有 `api.token` 规则 |
 | 共享卷 | 现有规则 | `media/attachment` 目录必须可写，启动时检查并告警 |
@@ -1047,7 +1051,7 @@ cluster:
 **启动校验（fail-fast，一次性列出全部问题）**
 
 - `cluster`：roles 非空、取值合法、无重复；各角色所需监听/地址/token 齐全；media/attachment 端口齐全。
-- 存储：`gateway` 与 `control` 都要求 `database.type=mysql`（gateway 只读设备档案与鉴权码，control 读写业务与 outbox）；`memory`/`sqlite` 一律拒绝。`media`/`attachment` 不连业务库（见下）。
+- 存储：`control` 要求 `database.type=mysql`（读写业务与 outbox）；`memory`/`sqlite` 一律拒绝。`gateway`/`media`/`attachment` 不连元数据库：`cluster.roles` 不含 `control` 时配置任何非 `memory` 的 `database` 段都会启动失败。
 - outbox：`control` 要求 `commandOutbox.mode=durable`；`off`/`memory` 拒绝。gateway-only 不构造 outbox，配置忽略并 Warn。
 - 出口：gateway-only 必须 `uplink.sink=http`；gateway+control 同进程允许 `local`；同进程同时配置 `sink=http` 指向自身视为回环，拒绝。
 - **confirm-before-ack 覆盖校验**：出口策略中所有 `at_least_once` 类别，以及被强制为 confirm-before-ack 的 `0x0001`、`0x0801`，启动时必须已经注册能处理它们的 consumer；缺失则启动失败并列出缺失类别/消息。E1 不内置业务 consumer，因此默认配置下 `cluster+control` 无法启动——这是预期行为，契约验证通过测试注入 fake consumer 完成。运行期若 confirm-before-ack 事件仍找不到 consumer，回 503（绝不以 501/200 让终端持续重传或静默丢弃）。
@@ -1059,15 +1063,16 @@ cluster:
 |---|---|---|---|---|---|
 | standalone/缺省 | 任意（忽略） | memory/sqlite/mysql | off/memory/durable | local/http | 允许，行为不变 |
 | standalone | 非空 | — | — | — | 拒绝（矛盾配置） |
-| cluster | gateway | mysql（只读设备档案） | 忽略并 Warn | http | 允许 |
+| cluster | gateway | 不连库（禁止配置 `database`） | 忽略并 Warn | http | 允许 |
 | cluster | control | mysql | durable | local/http | 允许，需 consumer 覆盖校验通过 |
-| cluster | gateway+control | mysql | durable | local | 允许 |
-| cluster | gateway+media / media+attachment / 三数据面角色 | mysql（gateway）/ media、attachment 不连业务库 | 按角色 | http | 允许，但 media/attachment 必须配 `cluster.storage.backend=sharedVolume`（带共享标记）或 `objectStore`（E1 未实现，启动拒绝） |
+| cluster | gateway+control | mysql（仅 control 连接） | durable | local | 允许 |
+| cluster | gateway+media / media+attachment / 三数据面角色 | 不连库（禁止配置 `database`） | 按角色 | http | 允许，但 media/attachment 必须配 `cluster.storage.backend=sharedVolume`（带共享标记）或 `objectStore`（E1 未实现，启动拒绝） |
 | cluster | media/attachment 配置普通本机目录、或 sharedVolume 缺标记 | — | — | — | 拒绝（文件不在共享存储） |
 | cluster | objectStore + `retention.orphanFiles.enabled=true` | — | — | — | 拒绝（对象存储禁用应用侧孤儿扫描） |
-| cluster | 任意含 gateway/control | memory/sqlite | — | — | 拒绝（共享状态不可用） |
+| cluster | 任意含 control | memory/sqlite | — | — | 拒绝（共享状态不可用） |
+| cluster | 数据面角色配置 `database` | mysql/sqlite | — | — | 拒绝（只有 control 连元数据库） |
 | cluster | control | mysql | off/memory | — | 拒绝 |
-| cluster | gateway-only | mysql | — | local | 拒绝（事件无人消费） |
+| cluster | gateway-only | — | — | local | 拒绝（事件无人消费） |
 | cluster | gateway+control | mysql | durable | http 指向自身 | 拒绝（同进程回环） |
 | cluster | roles 为空/未知/重复 | — | — | — | 拒绝 |
 | cluster | 任一角色缺端口/地址/token | — | — | — | 拒绝 |
@@ -1093,7 +1098,7 @@ cluster:
 
 **媒体/附件文件与元数据归属（决策 B：不连业务库，文件走 BlobStore）**
 
-- 媒体/附件角色只写文件，不装配任何 repository、不连 MySQL；文件统一通过 5.5 的 `BlobStore` 写入，cluster 下必须配置共享存储（共享卷过渡或对象存储），普通本机目录启动失败。
+- gateway/media/attachment 数据面角色只做接入、协议与文件写入，不装配任何 repository、不连 MySQL；文件统一通过 5.5 的 `BlobStore` 写入，cluster 下 media/attachment 必须配置共享存储（共享卷过渡或对象存储），普通本机目录启动失败。网关的设备档案只读查询走 control 的 `AuthProvider`。
 - `media_files` / `media_captures` / `media_capture_items` 等业务表**只由 control 写入**，control 对文件只读。`0x0801` 与附件完成态走同步交接：control 调 media/attachment 的 intake（E3 落地），拿到 `{key,size,md5}` 后写库；**写库成功才向上游 ack**，写库失败则删除刚提交的对象并回 503，由终端重传。
 - 1078 流等异步文件：媒体 `Put` + `Promote` 后，对象状态初始为 `pending`（objectStore 用对象标签，sharedVolume 用同目录 sidecar）；通过 at-least-once 事件交给 control，control 写库成功后调用 `MarkCommitted` 置为 `committed`。对账键是确定性 blob key + checksum，数据库唯一键 `(phone, media_id)`。
 - 失败处理：DB 写失败时对象保持 `pending`，objectStore 由 bucket 生命周期在 24h 后清掉，sharedVolume 由 control 单实例巡检删除（删前查库确认无行）；**不存在“半个文件被当成有效文件”**。`MarkCommitted` 失败由 control 重试，超过宽限期把 DB 行标 `missing` **保留行**，仅当对象也确认不存在或删除成功后才同时删对象与行，删行不先于删对象。sidecar `.meta.json` 只用于 sharedVolume 过渡形态，standalone 不写、objectStore 不用。
