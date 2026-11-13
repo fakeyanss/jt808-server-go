@@ -15,9 +15,10 @@
 
 ### 1.1 前置检查
 
-1. 配置文件中的 `storage.type` 决定持久化后端：`memory | sqlite | mysql`。
+1. 配置文件中的 `database.type` 决定持久化后端：`memory | sqlite | mysql`。
    - `memory` 只用于演示/压测，重启即丢，生产不得使用。
-   - `sqlite` 需要可写的库文件路径（默认 `./data/jt808.db`）。
+   - `sqlite` 需要可写的库文件路径（默认 `./data/jt808.db`）。内部使用读写双池：写池固定 1 连接（写写串行），
+     只读池默认按 CPU 数、可通过 `database.sqlite.readConns` 调整；DSN 已开启 WAL、busy_timeout、只读模式与 `BEGIN IMMEDIATE`。
    - `mysql` 需要可用的 DSN。
 2. 生产必须设置：
    - `api.auth.token`：业务 API 的 Bearer token；为空时鉴权关闭，仅建议可信内网临时使用。
@@ -37,8 +38,22 @@ bash scripts/build.sh release jt808-migrate linux amd64
   -c ./target/release/jt808-server-go_linux_amd64/configs/default.yaml
 ```
 
+按角色部署时五个二进制共用同一套装配层，直接编译对应 cmd：
+
+```bash
+go build -o bin/jt-server-standalone ./cmd/jt-server-standalone
+go build -o bin/jt-signal           ./cmd/jt-signal
+go build -o bin/jt-media            ./cmd/jt-media
+go build -o bin/jt-control          ./cmd/jt-control
+go build -o bin/jt-attachment       ./cmd/jt-attachment
+```
+
+`jt808-server` 保留为**通用入口**：完全按配置文件里的 `server.mode` / `cluster.roles`
+运行，行为与拆分前一致，零破坏。它的 `probes.addr` 可选项也保持原行为（未配置就不启动探针）。
+按角色拆进程时请使用下面四个固定角色的二进制。
+
 进程收到 `SIGTERM`/`SIGINT` 后按以下顺序优雅退出：
-业务 API → 终端 TCP 接入与存量会话 → UDP 接入 → 下行 outbox 当前轮次 → 媒体与附件落盘 → 管理面 → 存储。
+业务 API → 终端 TCP 接入与存量会话 → UDP 接入 → 下行 outbox 当前轮次 → 媒体与附件落盘 → 管理面 → 探针 → 存储。
 给编排系统预留至少 10 秒的 `stop_grace_period`。
 
 ### 1.3 Docker Compose 部署
@@ -116,6 +131,128 @@ vhost __defaultVhost__ {
 - `record.mode` 控制是否落盘：`off`（集群默认，只保留内存帧环）、`legacy`（持续写 `.h264/.g711`）、`segmented`（按周期切 MPEG-TS 片并上传对象存储）。终端回放流（`kind=terminal_playback`）默认**不录制**，需要留档时显式配置 `segmented`。
 - `0x9201` 拉的是**终端本地存储**上的录像，不是平台录像。平台录像回放走业务 API：先查覆盖区间，再按 `Range` 读取对象存储中的片段，不经过 `0x9201`。覆盖查询不完整时返回 `200` 与 `{requested, available, missing, playable, segments}`，**不是 409**；只有参数错误才返回 4xx。
 
+### 1.5 集群角色二进制部署
+
+五个二进制各自固定 `server.mode` 与 `cluster.roles`。配置文件写了不匹配的角色时**启动失败**，
+错误信息直接给出应该使用的二进制，例如：
+
+```text
+jt-control requires cluster.roles to contain "control"; current roles=[media]. use jt-media instead
+```
+
+可直接使用的配置样例在 `configs/cluster/`：
+
+| 二进制 | 固定角色 | 样例配置 | 探针端口 |
+|---|---|---|---|
+| `jt-server-standalone` | `mode=standalone` | `configs/cluster/jt-server-standalone.yaml` | `:9105` |
+| `jt-signal` | `cluster.roles=[gateway]` | `configs/cluster/jt-signal.yaml` | `:9106` |
+| `jt-media` | `cluster.roles=[media]` | `configs/cluster/jt-media.yaml` | `:9107` |
+| `jt-control` | `cluster.roles=[control]` | `configs/cluster/jt-control.yaml` | `:9108` |
+| `jt-attachment` | `cluster.roles=[attachment]` | `configs/cluster/jt-attachment.yaml` | `:9109` |
+
+`jt808-server` 是保留的通用入口：完全按配置文件的 `server.mode` 与 `cluster.roles` 运行，
+适合同机调试任意角色组合；生产部署应使用固定角色的二进制，避免配置与二进制职责错配。
+
+最小启动方式（五个终端并行，先按上表创建共享卷标记文件）：
+
+```bash
+# 0) 一次性：初始化共享库并迁移到最新 schema
+./bin/jt808-migrate -c configs/cluster/jt-control.yaml
+
+# 1) 独立形态：一个进程承担全部角色
+./bin/jt-server-standalone -c configs/cluster/jt-server-standalone.yaml
+
+# 2) 网关：只做 808 接入与信令
+./bin/jt-signal -c configs/cluster/jt-signal.yaml
+
+# 3) 媒体：只做 1078 数据面与播放会话
+./bin/jt-media -c configs/cluster/jt-media.yaml
+
+# 4) 管控：业务 API、outbox 与媒体/附件调度
+./bin/jt-control -c configs/cluster/jt-control.yaml
+
+# 5) 附件：独立监听附件 TCP/UDP，切片写入共享对象存储
+./bin/jt-attachment -c configs/cluster/jt-attachment.yaml
+```
+
+`jt-signal` / `jt-control` / `jt-attachment` 依赖共享 MySQL。
+所有集群角色必须指向**同一套** `cluster.storage`（同一个 `root`，或同一个 `objectStore` 桶）。
+
+> `cluster.allowEmbeddedStorage` 是 **dev-only** 开关，只允许本地联调时让多个角色进程共用一个 SQLite 文件。
+> 开启后启动打印 WARN，`/readyz` 返回 `degraded`（HTTP 200，但 `status` 不是 `ready`）。
+> **生产环境禁止开启**，集群部署必须使用共享 MySQL。
+
+**端口规划**（同机部署全部角色时逐项核对，避免撞车）：
+
+| 用途 | 默认端口 | 角色 / 配置项 |
+|---|---|---|
+| 808 主连接 TCP | 8080 | signal，`server.port.tcpPort` |
+| 808 主连接 UDP | 8081 | signal，`server.port.udpPort` |
+| 业务 HTTP API | 8008 | control，`server.port.httpPort` |
+| admin | 9000 | control，`admin.addr` |
+| gateway 下行契约 | 9101 | signal，`cluster.gateway.addr` |
+| control 上行入口 | 9102 | control，`cluster.control.addr` |
+| 1078 媒体 TCP/UDP | 7300 | media，`mediaServer.port` |
+| 1078 媒体 HTTP / FLV | 7301 | media，`mediaServer.httpPort` |
+| 附件 TCP | 7400 | attachment，`alarmServer.port` |
+| 附件 UDP | 7401 | attachment，`alarmServer.udpPort` |
+| 附件内部 HTTP | 7402 | attachment，`alarmServer.httpPort` |
+| 未来 1078 FTP 控制 | 7500 | 预留，不实现 |
+| 未来 1078 FTP 数据 | 7501 | 预留，不实现 |
+| probes | 9105–9109 | 每角色独立，`probes.addr` |
+
+**探针**：五个二进制都必须配置 `probes.addr`，只暴露两个接口：
+
+| 接口 | 语义 |
+|---|---|
+| `GET /healthz` | 进程存活，恒 `200 {"status":"ok"}` |
+| `GET /readyz` | 逐项执行真实依赖检查；任一失败返回 `503` 与 `status: not ready` |
+
+`/readyz` 的检查项按角色装配：
+
+- `database`：数据库连通（gateway / control / attachment）。
+- `outbox_backlog`：过期 pending 命令未超过阈值（control，且 outbox 开启）。
+- `control_endpoint`：`uplink.http.url` 的 host 可解析（gateway-only）。
+- `media_nodes`：`cluster.media.nodes` 非空、至少一个节点可达且仍有并发额度（control 且没有本地媒体）。
+- `attachment_nodes`：`cluster.attachment.nodes` 非空、至少一个附件节点可达且仍有并发额度（control）。
+- `attachment_object_store`：附件节点已接入共享 objectStore 与共享元数据库（attachment）。
+- `media_disk` / `attachment_disk` / `media_upload_disk`：对应目录存在且可写。
+
+**control 调度 media**：
+
+- `cluster.media.nodes` 是管控可选的媒体节点清单，地址为 `jt-media` 的 `mediaServer.httpPort` 基址。
+- 管控通过 `GET /internal/media/status` 获取节点会话与剩余额度，选择“剩余额度多、当前负载低”的节点；
+  同一 `(phone, channel)` 在会话生命周期内固定在同一节点，管控重启后会从节点状态恢复粘性。
+- 创建/释放在媒体节点上真实执行：`POST /internal/media/sessions`、`DELETE /internal/media/sessions/{id}`。
+- 没有可用节点时，播放接口返回 `503` 与稳定错误码：
+  - `no_media_node_configured`：`cluster.media.nodes` 为空；
+  - `no_media_node_available`：节点全部不可达、全部满载或创建全部失败，`message` 带逐个节点的原因。
+- 平台录像覆盖查询会汇总所有媒体节点的切片；切片内容按 `Range` 从持有该切片的节点流式读取。
+
+**control 调度 attachment**：
+
+- `cluster.attachment.nodes` 的地址是 `jt-attachment` 的 `alarmServer.httpPort`（默认 `7402`）。
+- 管控调用 `GET /internal/attachment/status` 获取 `active / maxConcurrent / available / advertiseIp / tcpPort / udpPort`。
+- 手工 `POST /api/device/:phone/attachments/upload` 自动填入节点地址；同一 `(phone, alarmNo)` 粘性。
+- 没有可用节点时返回 `503` 与稳定错误码：
+  - `no_attachment_node_configured`：`cluster.attachment.nodes` 为空；
+  - `no_attachment_node_available`：节点全部不可达或全部满载，`err` 带逐个节点的原因。
+- 自动 `0x9208` 在 control 内识别报警后经下行契约下发，附件节点地址来自节点状态，
+  不再要求 gateway 与 control 同进程；下发失败会打 `WARN` 并保留报警记录。
+
+**附件存储与进度**：
+
+- 附件节点只保留有界本地暂存（`alarmServer.dir/staging`），收到数据即写入，按
+  `alarmServer.segmentSizeBytes`（默认 8 MiB）切片上传到共享 objectStore。
+- 元数据落共享库 `attachment_files`：`received_bytes / watermark / segments / status`，
+  控制面通过 `GET /api/device/:phone/attachments` 查询进度，附件节点重启不丢。
+- 暂存区总量 `alarmServer.stagingMaxBytes` 到顶后拒绝新的文件登记（终端收到失败应答），不排队、不写满磁盘。
+- 崩溃残留按 `.part` 标记 + 宽限期扫描清理；文件全部切片提交后才转为 `completed`，并把对象 `MarkCommitted`。
+- 保留期只由附件节点执行，范围限定在 `attachment/` 前缀与 `attachment_files` 表；control 的 retention 不触碰附件。
+- 集群的媒体与附件共用一套 objectStore，key 前缀按来源分区：
+  `media/segments/`（1078 切片）、`media/uploads/`（0x0801 图片）、`attachment/subia/`（苏标附件）、
+  `attachment/ftp1078/`（预留）。pending 回收与保留期清理都按前缀隔离。
+
 ---
 
 ## 2. 数据库迁移
@@ -131,7 +268,10 @@ docker exec jt808 /app/output/jt808-migrate -c /app/output/configs/default.yaml
 ```
 
 - 首次部署、升级后、恢复备份到新版本前都必须先执行。
-- 迁移文件位于 `internal/repository/migration/`，按版本顺序应用；工具会打印已应用数量。
+- 迁移 SQL 分两套目录：`internal/repository/sqlite/migrations/` 与 `internal/repository/mysql/migrations/`；
+  当前基线为 `v1.0.0.sql`，版本按三段数值比较（`1.10.0` > `1.9.0`）。
+- `jt808-migrate` 按 `database.type` 只执行对应目录，两套目录版本号同步推进。
+- 如果 dev 库残留旧的 8 位数字版本（如 `20261118`），启动会明确报错并提示重建库，不会自动升级。
 - `memory` 后端不执行迁移。
 
 ---
@@ -172,7 +312,7 @@ tar -czf /backup/jt808-files-$(date +%Y%m%d-%H%M).tgz ./data ./logs
 2. 恢复数据库备份。
 3. 执行迁移工具，把 schema 升到当前二进制要求的版本。
 4. 恢复 `data/` 文件目录，保持属主与权限。
-5. 启动服务，确认 `/readyz` 返回 `status: ready` 且 `storage` 检查通过。
+5. 启动服务，确认 `/readyz` 返回 `status: ready` 且 `database` 检查通过。
 6. 抽查最近定位/报警查询与媒体下载。
 
 ---
@@ -231,14 +371,22 @@ tar -czf /backup/jt808-files-$(date +%Y%m%d-%H%M).tgz ./data ./logs
 |---|---|---|
 | `GET /healthz` | 无 | 进程存活，恒返回 `{"status":"ok"}` |
 | `GET /readyz` | 无 | 就绪检查；任一检查失败返回 `503` 与 `status: not ready` |
-| `GET /metrics` | Bearer token | Prometheus 文本格式 |
+| `GET /metrics` | Bearer token | Prometheus 文本格式（仅管理面） |
+
+每个角色二进制通过 `probes.addr` 提供独立的 `/healthz` 与 `/readyz`（不承载业务接口、不做鉴权）；
+`admin.enable` 与 `probes.addr` 可以同时开启，两者端口不能相同。
 
 `/readyz` 当前包含：
 
-- `storage`：数据库 `Ping` 是否成功（3 秒超时）。
+- `database`：数据库 `Ping` 是否成功（3 秒超时）。
 - `outbox_backlog`：下行 outbox 过期（超过 `expireAfter` 仍未投递）数量是否达到阈值（默认 100）；`commandOutbox.mode: off` 时不检查。
+- `control_endpoint`：gateway-only 时 `uplink.http.url` 的 host 可解析；不可解析说明上行事件无处投递。
+- `media_nodes`：control 且没有本地媒体时，`cluster.media.nodes` 非空、至少一个节点可达且仍有并发额度。
+- `attachment_nodes`：control 时 `cluster.attachment.nodes` 非空、至少一个节点可达且仍有并发额度。
+- `attachment_object_store`：attachment 角色已接入共享 objectStore 与共享附件元数据表。
 - `media_disk`：媒体目录存在且可写，仅在 `mediaServer` 启用时检查。
-- `attachment_disk`：附件目录存在且可写，仅在 `alarmServer` 启用时检查。
+- `attachment_disk`：附件目录（集群下为 `alarmServer.dir/staging`）存在且可写，仅在 `alarmServer` 启用时检查。
+- `media_upload_disk`：0x0801 落盘目录存在且可写。
 
 未启用的组件不参与判定，避免把“功能关闭”误报成“服务异常”。
 
@@ -261,6 +409,7 @@ tar -czf /backup/jt808-files-$(date +%Y%m%d-%H%M).tgz ./data ./logs
 | `jt808_orphan_files_scanned_total` / `deleted_total` / `skipped_total` | 孤儿文件扫描累计遍历、删除与跳过文件数 |
 | `jt808_orphan_scan_failures_total` | 孤儿文件扫描累计失败次数 |
 | `jt808_orphan_scan_last_run_timestamp_seconds` / `last_run_duration_seconds` | 最近一次孤儿扫描的运行时间与耗时 |
+| `jt808_attachment_trigger_skipped_total` | `alarmServer.autoUpload` 因当前二进制没有 control 角色而未自动下发 0x9208 的次数 |
 
 采集示例：
 
@@ -304,7 +453,7 @@ bash scripts/loadtest.sh 60
 | 媒体 / 附件进行中 | 0 / 0 |
 | 服务端 RSS | 约 33 MB |
 | 服务端 CPU | 约 1.3%（单次采样） |
-| `/readyz` | `ready`，`storage` 与 `outbox_backlog` 均通过 |
+| `/readyz` | `ready`，`database` 与 `outbox_backlog` 均通过 |
 | 服务端错误日志 | 201 行，全部为压测结束时客户端断开的 `EOF`，无业务错误 |
 
 ### 7.3 结论与限制
@@ -322,7 +471,8 @@ bash scripts/loadtest.sh 60
 | 现象 | 排查方向 |
 |---|---|
 | 启动失败，提示 schema 版本不符 | 先执行 `jt808-migrate`，再启动服务 |
-| `readyz` 中 `storage` 失败 | 检查库文件权限/DSN、连接池与磁盘空间 |
+| 启动失败，提示 `20261118` 等旧数字版本 | dev 库早于语义化版本 `v1.0.0`，删除 SQLite 文件或清空表后重新执行 `jt808-migrate`；不支持自动升级 |
+| `readyz` 中 `database` 失败 | 检查库文件权限/DSN、连接池与磁盘空间 |
 | `outbox_backlog` 失败 | 查看 `jt808_outbox_expired`，确认终端在线率与 `expireAfter` |
 | 端口占用 | 检查 `server.port`、`alarmServer.port/udpPort`、`mediaServer.port` 是否冲突 |
 | 业务 API 全部 401 | 检查 `api.auth.token` 与请求头 `Authorization: Bearer <token>` |

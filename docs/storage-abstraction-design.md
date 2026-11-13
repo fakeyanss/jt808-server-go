@@ -303,9 +303,9 @@ type Coordinator interface {
 
 > 实施状态（M2 与包结构分层已完成，见 §19.3 / §19.4）：`GetXxxCache` 与 `*Cache` 旧名已全部删除，
 > 调用点统一迁移到接口方法命名。落地分层为 **`repository`（持久化契约 + 内存实现）/
-> `runtime`（A 类执行现场与本地 rendezvous）/ `storage`（仅装配与后端选择）** 三包：
+> `runtime`（A 类执行现场与本地 rendezvous）/ `database`（仅装配与后端选择）** 三包：
 > `repository.go` 只保留持久化接口与错误值，A 类接口在 `runtime/runtime.go`，
-> `Stores` 聚合、`NewStores()`/`Default()` 在 `internal/storage`。上表"现有（文件）"列保留为历史对照。
+> `Repositories` 聚合、`NewMemory()`/`Default()` 现已位于 `internal/repository/database`（原 `internal/storage`）。上表"现有（文件）"列保留为历史对照。
 
 ---
 
@@ -337,26 +337,26 @@ type Coordinator interface {
 
 ### 7.2 迁移
 
-- 目录（`go:embed *.sql` 编译进二进制）：
-  - `bootstrap_schema_migrations.sql`：迁移元数据表建表脚本（引导脚本，不参与版本编号）；
-  - `20261101_init.sql`：初始版本。开发阶段不保留增量迁移，直接给出最终 schema；
-  - `20261108_media_metadata.sql`：新增 `media_resource_lists`、`media_upload_tasks`、`media_upload_notices` 三张媒体元数据表。
-- **版本号取自文件名开头日期**：`<YYYYMMDD>_<描述>.sql`，迁移按日期升序执行；
-  后续变更追加新文件（如 `20261201_add_xxx.sql`），无需人工维护递增序号；
-  同一天只允许一个迁移文件（同日期触发 `duplicate migration date` panic），当日多个变更合并为一个文件。
-- **`schema_migrations` 的 DDL 也在 SQL 文件里**，不在 Go 常量中。它必须先于版本存在
-  （否则无处记录已应用版本），因此单独作为引导脚本；迁移工具在执行任何版本前先执行它，
-  失败会作为普通迁移错误返回。MySQL 与 SQLite 都需要该表，二者共用同一份脚本。
+- 目录（`go:embed *.sql` 编译进二进制），按后端分两套：
+  `internal/repository/sqlite/migrations/` 与 `internal/repository/mysql/migrations/`；
+  当前各含一个 `v1.0.0.sql`，这是开发阶段的唯一基线，包含 `schema_migrations` 与全部业务表。
+- **版本号使用语义化版本**：文件名 `v<MAJOR>.<MINOR>.<PATCH>.sql`，迁移器解析成三段整数比较
+  （`1.10.0` > `1.9.0`），不依赖字符串排序；`schema_migrations.version` 存 `1.0.0` 这类字符串。
+  后续变更追加新版本文件，两套目录版本号同步推进。
+- **`schema_migrations` 的 DDL 合并进 `v1.0.0.sql`**，不再单独维护 bootstrap 文件；
+  迁移器先检测该表是否存在，不存在时按“从未迁移”处理并执行完整基线。
+- **旧数字版本**：若存量 dev 库仍记录 `20261118` 这类 8 位数字版本，启动与迁移都会返回
+  `LegacyVersionError`，明确提示重建 dev 库；不做自动升级。
 - **独立迁移工具**：`jt808-migrate -c <config>`，源码位于 `cmd/jt808-migrate/`，与主服务
   **分开编译、分开发布**（`make compile-migrate` / `make release-migrate`）。迁移工具只做连接、
   执行迁移、打印 `applied` 数量，不启动 TCP/UDP/API，也不初始化主服务的运行时。
-  MySQL 场景 DBA 可直接执行：先 `bootstrap_schema_migrations.sql`，再按文件名顺序执行版本文件。
-  除索引创建外语句均为幂等形式（`CREATE TABLE IF NOT EXISTS`）；`20261101_init.sql` 末尾的
+  MySQL 场景 DBA 可直接按版本顺序执行 `internal/repository/mysql/migrations/` 下的文件。
+  除索引创建外语句均为幂等形式（`CREATE TABLE IF NOT EXISTS`）；`v1.0.0.sql` 中的
   `CREATE INDEX` 在 MySQL 上没有 `IF NOT EXISTS`，重复手工执行会报"索引已存在"，属预期，
   执行前请先备份并核对 `schema_migrations`。
 - **所有后端一致，启动只校验不执行**：SQLite 与 MySQL 都不在服务启动时执行任何 DDL。
   读取 `MAX(version)` 与期望版本比较：低于期望 → 报错退出并提示执行 `jt808-migrate`；
-  高于期望 → 报错（库版本高于程序版本），拒绝启动。入口代码为 `storage.Migrate` /
+  高于期望 → 报错（库版本高于程序版本），拒绝启动。入口代码为 `database.Migrate` /
   `sqlstore.Migrate`，仅被迁移工具调用。
 - 执行健壮性：逐版本执行，全部语句成功后才写入 `schema_migrations`；失败时错误信息带版本号与
   失败语句，已成功版本不会重复应用。
@@ -408,7 +408,7 @@ alarms.maxPerDevice       = 1000   # 每设备最多 1000 条报警；0 表示�
 | `region_items` / `terminal_catalogs` | B 类持久化 | P2.1 已落地：目录按 `(phone, catalog_type, item_key)` 整包覆盖；区域/路线在同一事务内 DELETE + INSERT | 写入接口保持既有内存实现签名（无 error），SQL 失败只记英文日志不阻断协议；对账与重试留待 command_outbox 阶段 |
 | `command_outbox` | B 类持久化 | 未落地（本阶段非交付项） | 需要幂等/重投语义，留待 M3；媒体/运单按 D3 后置 |
 | `AlarmRepository` 签名 | 未指定 | `Record`/`List`/`RegisterConfirmation`/`ConfirmByCommand` 统一增加 `ctx context.Context` 并返回 `error` | 与其它 B 类仓储一致，便于 SQL 实现透传超时与取消；内存实现忽略 ctx 并返回 nil。调用点已同步：`internal/api`、`internal/protocol`、`internal/server/udp_server_test.go` |
-| `schema_migrations` | 版本化迁移器 | DDL 位于 `internal/repository/migration/*.sql`（`go:embed`），启动只校验版本，迁移由独立工具 `jt808-migrate` 执行 | 详见 §7.2；MySQL 的 DDL 隐式提交限制已在该节说明 |
+| `schema_migrations` | 版本化迁移器 | DDL 位于 `internal/repository/{sqlite,mysql}/migrations/*.sql`（`go:embed`，两套目录版本同步推进），启动只校验版本，迁移由独立工具 `jt808-migrate` 执行 | 详见 §7.2；MySQL 的 DDL 隐式提交限制已在该节说明 |
 | 主键类型 | 未指定 | `VARCHAR` 主键 + `BIGINT` 毫秒时间戳 | 同时兼容 SQLite/MySQL；时间用毫秒整数避免时区与解析差异 |
 
 ### 7.5 明确延后的持久化决策（2026-11-01 确认，P2.1 已收敛）
@@ -615,10 +615,10 @@ GET /api/devices/{phone}
 
 ---
 
-## 14. 配置设计（在现有 `configs/*.yaml` 上新增 `storage` 段）
+## 14. 配置设计（在现有 `configs/*.yaml` 上新增 `database` 段）
 
 ```yaml
-storage:
+database:
   type: memory            # memory | sqlite | mysql（缺省 memory）
   sqlite:
     path: "./data/jt808.db"   # type=sqlite 时必填
@@ -635,7 +635,7 @@ retention:                  # 仅 sqlite/mysql 后端消费；memory 后端行�
 ```
 
 `config.Config` 增加 `Storage *storageConf` 与 `Retention *retentionConf`，沿用现有 viper Unmarshal 流程。
-启动时由 `storage.Init(Config)` 选择后端；非法 `type`、缺失 `path`/`dsn`、非法 retention 值
+启动时由 `database.Init(Config)` 选择后端；非法 `type`、缺失 `path`/`dsn`、非法 retention 值
 （负数）直接报错退出，启动日志打印 `backend=<实际后端>`。`coordinator` / `frontCache` / `write` / `strict`
 等字段属 M3 及后续范围，本期未实现，避免配置出现但无效果的误导。
 
@@ -672,18 +672,31 @@ internal/runtime/                 # A 类执行现场：生命周期绑定连接
   location_tracking.go            # 临时跟踪定时器
   *_test.go
 
-internal/storage/                 # 仅装配：后端选择与初始化
-  storage.go                      # Stores 聚合 + NewMemory() + Default()
+internal/repository/database/       # 持久化装配：后端选择与初始化
+  database.go                     # Repositories 聚合 + NewMemory() + Init/Default()
+  config.go                       # 配置文件到存储配置的映射
+
+internal/storage/                 # 对象存储：BlobStore 后端、key 前缀、文件落地
+  objectstore.go
+  sharedvolume.go
+  keys.go
 ```
 
 依赖方向（编译期约束）：
 
 - `repository`、`runtime` 只依赖 `internal/protocol/model`，互不依赖；
-- `repository/sqlstore` → `repository`（实现其接口与错误值），不反向；
-- `storage` → `repository` / `repository/sqlstore`（后端选择与组装），不反向；
-- `protocol` / `server` / `api` / `client` / `cmd/jt808-client` → `storage.Default()`（持久化仓储）
+- `repository/sqlcore` → `repository`（实现其接口与错误值），不反向；
+- `repository/sqlite` / `repository/mysql` → `sqlcore`（提供方言语句与迁移）；
+- `repository/database` → `repository` / `sqlite` / `mysql`（后端选择与组装），不反向；
+- `protocol` / `server` / `api` / `client` / `cmd/jt808-client` → `database.Default()`（持久化仓储）
   与 `runtime.Default()`（A 类执行现场），二者入口分离；
 - 包外只能通过接口使用内存实现，`*Cache` 等旧名与旧全局入口已全部删除。
+
+> **分层归位后的现状**：接口唯一来源是 `internal/repository`，内存实现在 `internal/repository/memory`；
+> 持久化装配位于 `internal/repository/database`；
+> `internal/storage` 只保留对象存储（BlobStore 后端、key 前缀编排、文件落地），不再聚合业务仓储。
+> SQL 实现不再维护一套兼容 SQL：`internal/repository/sqlcore` 提供方言无关骨架，
+> `internal/repository/sqlite` 与 `internal/repository/mysql` 各自提供方言语句与独立迁移目录。
 
 
 ---
@@ -739,7 +752,7 @@ internal/storage/                 # 仅装配：后端选择与初始化
 | **D1** | 终端参数落库形态：整体 JSON 单字段 vs EAV 键值表 | **先用整体 JSON 单字段**（简单、与现有模型直接对应）；将来确有「按参数 ID 服务端查询」需求时，再通过迁移演进为 EAV，不影响仓储接口 | §7.1 `device_params` |
 | **D2** | 行业上报（0702/0705/0700/0900/0901 等）最新值是否跨节点镜像 Redis | **首版不需要**。仅留本地 L1（HotView）；`Coordinator.LatestCache` 首版只覆盖定位 latest。将来需要跨节点 API 时按同一接口随时增量扩展 | §3.1、§6.3、§8 |
 | **D3** | 媒体（0x0801/0x1205）/运单（0x0701）等 B 类元数据何时落库 | **后续独立任务开发，不放入 M1/M2**。这两阶段只在 HotView 留最新值；`WaybillRepository`/`MediaMetadataRepository` 与对应建表在独立里程碑实现。**P1 已落地媒体部分（0x1205/0x9206/0x1206，见 §7.1）**，0x0801 媒体字节与运单仍待独立任务 | §3.1、§6.4、§7.1、M2 |
-| **D4** | 单机是否支持「关闭内存 L1 / 直读直写库」模式（超低资源设备） | **支持**。提供 `storage.frontCache.enabled` 开关（单机/分布式均生效，默认开）；关闭后配置类直读直写库、latest 回源库或 Redis | §8、§14 |
+| **D4** | 单机是否支持「关闭内存 L1 / 直读直写库」模式（超低资源设备） | **支持**。提供 `database.frontCache.enabled` 开关（单机/分布式均生效，默认开）；关闭后配置类直读直写库、latest 回源库或 Redis | §8、§14 |
 | **D5** | API 鉴权 / 多租户 / 存储隔离 | **需求尚不明确，后续专题讨论**（与路线图 P2.2 运维就绪一并考虑）；本期存储设计不做多租户假设，表结构预留 `phone` 维度即可 | P2.2 |
 
 ---
@@ -868,7 +881,7 @@ internal/storage/                 # 仅装配：后端选择与初始化
 | B1 | `9047ae3` | `internal/storage` → `internal/repository` 重命名，行为不变 |
 | B2 | `dad95d5` | A 类连接现场/分包重组/下行重传拆到 `internal/runtime`，删除 `repository.Stores` 中的 A 类字段 |
 | B3 | `b71c432` | 报警/行业/区域仓储接口化，4 个 ResponseBroker 与 LocationTracking 归入 runtime，57 处旧全局访问迁移 |
-| B4 | `a5f3213` | 新增 `internal/storage` 装配层，调用点改为 `storage.Default()` / `runtime.Default()` |
+| B4 | `a5f3213` | 新增 `internal/storage` 装配层，调用点改为 `database.Default()` / `runtime.Default()` |
 
 **行为保持**：协议输出、错误值、TTL/容量、深拷贝与并发语义均未改变；仅包路径、类型可见性与
 访问入口变化。
@@ -887,8 +900,9 @@ internal/storage/                 # 仅装配：后端选择与初始化
   `golang.org/x/sys` 固定为 `v0.47.0`（其上游版本声明 `go 1.26.0`，会导致 `go.mod` 被抬到
   未安装的补丁工具链）。
 
-**实现位置**：`internal/repository/sqlstore`（持久化实现下沉 repository，
-`internal/storage` 只负责后端选择与装配）。
+**实现位置**：`internal/repository/sqlcore`（方言无关骨架）+ `internal/repository/sqlite` /
+`internal/repository/mysql`（各自的方言语句与迁移目录）；装配在 `internal/repository/database`，
+`internal/storage` 只负责对象存储。
 
 **建表与迁移**
 
@@ -914,7 +928,7 @@ internal/storage/                 # 仅装配：后端选择与初始化
 - 启动冒烟：`type=sqlite` 能建库并打印 `backend=sqlite`；`type=redis` 启动报错退出（exit=1）。
 - MySQL：仓库内测试通过 `JT808_TEST_MYSQL_DSN` 环境变量启用，本地无实例时跳过；
   未验证假设见下。
-- 默认 `storage.type=memory` 时既有测试全部不变。
+- 默认 `database.type=memory` 时既有测试全部不变。
 
 **MySQL 未验证假设**
 
@@ -950,16 +964,16 @@ internal/storage/                 # 仅装配：后端选择与初始化
 
 **迁移机制实现细节**
 
-- 目录：`internal/repository/migration/` 下 `migrate.go` + `0001_init.sql` /
-  `0002_terminal_properties.sql` / `0003_device_runtime.sql`；SQL 经 `//go:embed *.sql` 编译进二进制，
-  迁移器只依赖 `database/sql`，未引入框架。（这些增量文件已在 §19.10 合并为
+- 目录：`internal/repository/sqlcore/migrate.go` 提供执行器，
+  `internal/repository/{sqlite,mysql}/migrations/*.sql` 各存一套版本化 SQL；SQL 经 `//go:embed *.sql`
+  编译进二进制，迁移器只依赖 `database/sql`，未引入框架。（增量文件已在 §19.10 合并为
   `bootstrap_schema_migrations.sql` + `20261101_init.sql`。）
 - 迁移入口：本批最初复用主服务的 `migrate` 位置参数；**§19.8 起改为独立工具 `jt808-migrate`**，
   SQLite 的启动自动迁移同时取消。DBA 也可按文件名顺序直接执行这些 SQL 文件。
 - 启动校验（当前行为）：所有后端都只比对版本。低于期望报
   `... is behind expected ... run \`jt808-migrate -c <config>\``；高于期望报
   `... is ahead of this program's expected ...`；全新库缺 `schema_migrations` 同样报错并提示迁移。
-  原 `storage.sqlite.autoMigrate` 配置项已删除（§19.8）。
+  原 `database.sqlite.autoMigrate` 配置项已删除（§19.8）。
 - 失败处理：逐版本执行，错误带版本号、文件名与语句序号；仅当该版本全部语句成功后才写入
   `schema_migrations`，已成功版本不会重复应用。
 - MySQL 客观限制：DDL 隐式提交，无法与版本记录同事务；中途失败可能留下"部分表已建、版本未记录"，
@@ -1018,16 +1032,16 @@ internal/storage/                 # 仅装配：后端选择与初始化
 **决策**
 
 1. **迁移不再复用主服务二进制**：新增 `cmd/jt808-migrate`，单独编译、单独发布为 `jt808-migrate`。
-2. **取消 SQLite 启动自动迁移**（原 `storage.sqlite.autoMigrate`，缺省 `true`）。所有后端一致：
+2. **取消 SQLite 启动自动迁移**（原 `database.sqlite.autoMigrate`，缺省 `true`）。所有后端一致：
    启动只校验版本，任何 DDL 只能由迁移工具或 DBA 执行。
 3. **主服务删除 `migrate` 位置参数**，避免一个二进制同时承担在线服务与运维动作。
 
 **实现要点**
 
-- `cmd/jt808-migrate/main.go`：仅接受 `-c <config>`，调用 `storage.Migrate(storage.FromConfig(cfg))`，
+- `cmd/jt808-migrate/main.go`：仅接受 `-c <config>`，调用 `database.Migrate(database.FromConfig(cfg))`，
   打印 `applied` 后退出；不启动 TCP/UDP/API。
-- 新增 `storage.FromConfig`，主服务与迁移工具共用配置映射，避免两处漂移（主服务原 `storageConfig` 删除）。
-- `sqlstore.Open` 只保留版本校验；`sqlstore.Config`、`storage.Config`、`config.sqliteConf`
+- 新增 `database.FromConfig`，主服务与迁移工具共用配置映射，避免两处漂移（主服务原 `storageConfig` 删除）。
+- `sqlstore.Open` 只保留版本校验；`sqlstore.Config`、`database.Config`、`config.sqliteConf`
   删除 `AutoMigrate` 字段。
 - 构建：`scripts/build.sh` 增加 `jt808-migrate` 目标（`cmd/jt808-migrate/main.go`）；
   `make compile-migrate` / `make release-migrate`；Dockerfile 同时构建并拷贝迁移工具。
@@ -1151,7 +1165,7 @@ MySQL 都支持的语法；核对中发现并修复一处 MySQL 不兼容：
 
 **范围**：在既有 SQL 后端（`devices`/`device_runtime`/`device_params`/`terminal_properties`）之上，
 补齐 `terminal_catalogs`、`region_items`、`locations`、`alarms` 四张 B 类表；`memory` 仍为默认后端，
-`storage.type: memory` 下行为不变。迁移文件为 `20261102_persistence_tables.sql`（四表一次建齐，
+`database.type: memory` 下行为不变。迁移文件为 `20261102_persistence_tables.sql`（四表一次建齐，
 原因见 §7.2 的"同日文件会 panic"约束，批次拆分只影响代码接入，不影响 DDL）。
 
 **协议口径**（详见任务回报；结论已写入 §7.3 默认值来源）：

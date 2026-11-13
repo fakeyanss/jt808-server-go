@@ -36,8 +36,8 @@
 | 会话与分包 | 双索引、同号顶替、分包 TTL 与容量上限、补传跟踪 | [connection_registry.go](../internal/runtime/connection_registry.go)、[fragment_assembler.go](../internal/runtime/fragment_assembler.go) | `DisconnectEvent` 没有 `reason/phone`；API 下行仍用 `Device.SessionID`，SQL 后端下该字段为空 |
 | 应答配对与补传 | `0x0001/0x8001` 按流水号精确清算；`0x8003` 补传已接入 | [session.go](../internal/protocol/model/session.go) | 缺「待确认数量」指标与耗尽日志 |
 | 0x0200 附加信息 | 分域注册表 + raw 兜底；`0x64~0x67` 已结构化，未知项保留原始字节 | [msg_0200_ext.go](../internal/protocol/model/msg_0200_ext.go)、[hooks.go](../internal/action/hooks.go) | 结构化字段只挂在 `AlarmEvent`，普通定位事件不带 |
-| 持久化 | 设备、参数、属性、定位、报警、区域、行业目录、媒体元数据、命令 outbox 均有 SQL 实现；默认 `memory` | [repository](../internal/repository)、[sqlstore](../internal/repository/sqlstore) | 运行时状态只存在进程内；行业媒体类快照仍走内存 |
-| 迁移机制 | 独立 `cmd/jt808-migrate`，启动只校验版本不执行 DDL；SQLite/MySQL 兼容 | [migration](../internal/repository/migration) | 版本断言需随新增迁移更新 |
+| 持久化 | 设备、参数、属性、定位、报警、区域、行业目录、媒体元数据、命令 outbox 均有 SQL 实现；默认 `memory`；sqlite 与 mysql 两套方言实现 | [repository](../internal/repository)、[sqlite](../internal/repository/sqlite)、[mysql](../internal/repository/mysql) | 运行时状态只存在进程内；行业媒体类快照仍走内存 |
+| 迁移机制 | 独立 `cmd/jt808-migrate`，启动只校验版本不执行 DDL；两套迁移目录版本同步推进 | [sqlite/migrations](../internal/repository/sqlite/migrations)、[mysql/migrations](../internal/repository/mysql/migrations) | 版本断言需随新增迁移更新 |
 | 苏标附件 | 0x1210/0x1211/0x1212 + 0x9208/0x9212；字节区间并集求补；完成态 TTL；路径安全 | [alarmserver](../internal/alarmserver) | 无附件查询分页，仅有按文件名元数据查询 |
 | 苏标外设结构 | 0x8900/0x0900 独立模型，按消息 Type 驱动，未知类型降级 Raw | [msg_8900.go](../internal/protocol/model/msg_8900.go)、[msg_0900.go](../internal/protocol/model/msg_0900.go) | 0x0801 扩展定位项仍为 raw |
 | 1078 媒体接入 | UDP RTP、PS/PES、H.264 Annex B 落盘；按 SIM+通道分目录 | [media/server.go](../internal/media/server.go) | 无分发、无转码、无播放索引、无文件生命周期 |
