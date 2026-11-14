@@ -192,6 +192,9 @@ docker compose -f deploy/docker-compose.yml up -d
 
 # SQLite 后端（自动执行迁移）
 docker compose -f deploy/docker-compose.sqlite.yml up -d
+
+# 集群（gateway/control/media/attachment + MySQL）
+docker compose -f deploy/docker-compose.cluster.yml up -d
 ```
 
 镜像为多架构构建（`linux/amd64`、`linux/arm64`），默认以 standalone 角色启动；通过首个参数或 `JT808_ROLE` 可切换 `signal`、`control`、`media`、`attachment`、`migrate`。集群样例配置在 `configs/cluster/`，五个角色共用同一套共享存储与 MySQL。端口规划、启动顺序、迁移、备份恢复与故障排查见[安装部署](docs/installation.md)和[运维手册](docs/operations.md)。
