@@ -1,0 +1,158 @@
+name: jt808-cluster
+
+# 集群形态：gateway / control / media / attachment 四角色各一个容器，共享 MySQL 与共享卷。
+# 启动：docker compose -f deploy/docker-compose.cluster.yml up -d
+# 只有 control 连接 MySQL；数据面角色（gateway/media/attachment）不连库。
+# control 在 migrate 成功、共享卷标记文件创建后才启动。
+x-jt808: &jt808
+  image: fakeyanss/jt808-server-go:latest
+  build:
+    context: ..
+    dockerfile: build/Dockerfile
+    args:
+      VERSION: local
+  restart: unless-stopped
+  security_opt:
+    - no-new-privileges:true
+
+services:
+  mysql:
+    image: mysql:8.4
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: jt808
+      MYSQL_USER: jt808
+      MYSQL_PASSWORD: jt808
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_general_ci
+    volumes:
+      - jt808-mysql:/var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p$$MYSQL_ROOT_PASSWORD --silent"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+
+  # sharedVolume 后端要求根目录存在标记文件；四角色挂载同一个 jt808-blobs 卷。
+  shared-volume-init:
+    <<: *jt808
+    restart: "no"
+    entrypoint: ["/bin/sh", "-c"]
+    command: ["mkdir -p /app/data/blobs && touch /app/data/blobs/.jt808-shared-volume"]
+    healthcheck:
+      disable: true
+    volumes:
+      - jt808-blobs:/app/data/blobs
+
+  # 迁移使用 control 配置；成功退出后 control 才启动。
+  migrate:
+    <<: *jt808
+    restart: "no"
+    command: ["migrate"]
+    healthcheck:
+      disable: true
+    environment:
+      TZ: Asia/Shanghai
+      JT808_CONFIG: /etc/jt808/control.yaml
+    volumes:
+      - ./docker/cluster/control.yaml:/etc/jt808/control.yaml:ro
+    depends_on:
+      mysql:
+        condition: service_healthy
+
+  jt-control:
+    <<: *jt808
+    environment:
+      TZ: Asia/Shanghai
+      JT808_ROLE: control
+      JT808_PROBE_ADDR: 127.0.0.1:9108
+    ports:
+      - "8008:8008/tcp"   # 业务 API
+    volumes:
+      - ./docker/cluster/control.yaml:/etc/jt808/control.yaml:ro
+      - jt808-control-data:/app/data
+      - jt808-blobs:/app/data/blobs
+      - jt808-logs:/app/logs
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      shared-volume-init:
+        condition: service_completed_successfully
+
+  jt-signal:
+    <<: *jt808
+    environment:
+      TZ: Asia/Shanghai
+      JT808_ROLE: signal
+      JT808_PROBE_ADDR: 127.0.0.1:9106
+    ports:
+      - "8080:8080/tcp"   # 808 终端接入
+      - "8081:8081/udp"   # 808 终端接入
+    volumes:
+      - ./docker/cluster/signal.yaml:/etc/jt808/signal.yaml:ro
+      - jt808-signal-data:/app/data
+      - jt808-logs:/app/logs
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      jt-control:
+        condition: service_started
+
+  jt-media:
+    <<: *jt808
+    environment:
+      TZ: Asia/Shanghai
+      JT808_ROLE: media
+      JT808_PROBE_ADDR: 127.0.0.1:9107
+    ports:
+      - "7300:7300/tcp"   # 1078 RTP
+      - "7300:7300/udp"   # 1078 RTP
+      - "7301:7301/tcp"   # 媒体内部 HTTP / FLV
+    volumes:
+      - ./docker/cluster/media.yaml:/etc/jt808/media.yaml:ro
+      - jt808-media-data:/app/data
+      - jt808-blobs:/app/data/blobs
+      - jt808-logs:/app/logs
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      shared-volume-init:
+        condition: service_completed_successfully
+      jt-control:
+        condition: service_started
+
+  jt-attachment:
+    <<: *jt808
+    environment:
+      TZ: Asia/Shanghai
+      JT808_ROLE: attachment
+      JT808_PROBE_ADDR: 127.0.0.1:9109
+    ports:
+      - "7400:7400/tcp"   # 苏标附件 TCP
+      - "7401:7401/udp"   # 苏标附件 UDP
+      - "7500:7500/tcp"   # 1078 FTP 控制通道
+      - "7501-7510:7501-7510/tcp"  # 1078 FTP 被动数据端口
+    volumes:
+      - ./docker/cluster/attachment.yaml:/etc/jt808/attachment.yaml:ro
+      - jt808-attachment-data:/app/data
+      - jt808-blobs:/app/data/blobs
+      - jt808-logs:/app/logs
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      shared-volume-init:
+        condition: service_completed_successfully
+      jt-control:
+        condition: service_started
+
+volumes:
+  jt808-mysql:
+  jt808-blobs:
+  jt808-control-data:
+  jt808-signal-data:
+  jt808-media-data:
+  jt808-attachment-data:
+  jt808-logs:

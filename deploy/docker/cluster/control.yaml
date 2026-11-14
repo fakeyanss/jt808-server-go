@@ -1,0 +1,84 @@
+# jt-control 容器配置：只承担 control 角色，唯一连接 MySQL 的集群角色。
+log:
+  consoleEnable: true
+  fileEnable: true
+  printAsJson: false
+  logLevel: "INFO"
+  logDirectory: "./logs/"
+  logFile: "jt-control.log"
+  maxSizeOfRolling: 50
+  maxBackupsOfRolling: 7
+  maxAgeOfRolling: 7
+
+server:
+  name: "jt-control"
+  mode: "cluster"
+  ackTimeoutMs: 5000
+  maxRetransmissions: 3
+  port:
+    tcpPort: "8080"
+    udpPort: "8081"
+    httpPort: "8008"
+  banner:
+    enable: false
+
+probes:
+  addr: "0.0.0.0:9108"
+
+# control 只做自动 0x9208 触发，不监听附件端口；附件地址来自下方节点清单。
+alarmServer:
+  autoUpload: true
+
+mediaUpload:
+  # 与 cluster.storage.root 保持一致，0x0801 文件与附件/媒体切片共用共享卷。
+  dir: "./data/blobs"
+
+admin:
+  enable: false
+  addr: "127.0.0.1:9000"
+  token: "admin-token"
+
+api:
+  auth:
+    token: "api-token"
+
+uplink:
+  sink: "local"
+
+commandOutbox:
+  mode: "durable"
+
+cluster:
+  roles:
+    - control
+  gateway:
+    # directory：按 gateway_nodes 注册表路由下行，验证网关注册与心跳。
+    routing: "directory"
+    token: "cluster-shared-token"
+  control:
+    addr: "0.0.0.0:9102"
+    token: "uplink-token"
+  media:
+    # 静态清单只在 media_nodes 注册表为空时兜底；正常以 jt-media 注册为准。
+    nodes:
+      - name: "media-1"
+        url: "http://jt-media:7301"
+  attachment:
+    # 附件节点没有注册表查询接口，control 必须显式配置可调度节点。
+    nodes:
+      - name: "attachment-1"
+        url: "http://jt-attachment:7402"
+    # 0x9206 通告给终端的 FTP 端口；容器内先按端口验证，终端级冒烟需改宿主机可达 IP。
+    ftp1078:
+      port: 7500
+      advertiseIp: "127.0.0.1"
+  storage:
+    backend: "sharedVolume"
+    sharedVolume: true
+    root: "./data/blobs"
+    marker: ".jt808-shared-volume"
+
+database:
+  type: "mysql"
+  mysql:
+    dsn: "jt808:jt808@tcp(mysql:3306)/jt808?parseTime=true&charset=utf8mb4"

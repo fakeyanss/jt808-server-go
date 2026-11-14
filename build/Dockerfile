@@ -44,7 +44,7 @@ LABEL org.opencontainers.image.title="jt808-server-go" \
 RUN apk add --no-cache ca-certificates tzdata && \
     addgroup -S -g 10001 jt808 && \
     adduser -S -D -H -u 10001 -G jt808 jt808 && \
-    mkdir -p /app/data/alarms /app/data/media /app/data/media-uploads /app/logs /etc/jt808 && \
+    mkdir -p /app/data/alarms /app/data/attachments /app/data/blobs /app/data/media /app/data/media-uploads /app/logs /etc/jt808 && \
     chown -R jt808:jt808 /app /etc/jt808
 
 WORKDIR /app

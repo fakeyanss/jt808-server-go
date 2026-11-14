@@ -1,0 +1,80 @@
+# jt-attachment 容器配置：只承担 attachment 角色，不连业务库。
+log:
+  consoleEnable: true
+  fileEnable: true
+  printAsJson: false
+  logLevel: "INFO"
+  logDirectory: "./logs/"
+  logFile: "jt-attachment.log"
+  maxSizeOfRolling: 50
+  maxBackupsOfRolling: 7
+  maxAgeOfRolling: 7
+
+server:
+  name: "jt-attachment"
+  mode: "cluster"
+  ackTimeoutMs: 5000
+  maxRetransmissions: 3
+  port:
+    tcpPort: "8080"
+    udpPort: "8081"
+    httpPort: "8008"
+  banner:
+    enable: false
+
+probes:
+  addr: "0.0.0.0:9109"
+
+alarmServer:
+  port: "7400"
+  udpPort: "7401"
+  httpPort: "7402"
+  uploadIP: "127.0.0.1"
+  # 本地暂存目录，每个附件节点使用独立卷；最终切片写入共享卷。
+  dir: "./data/attachments"
+  maxFileSize: 104857600
+  maxConcurrent: 16
+  segmentSizeBytes: 8388608
+  stagingMaxBytes: 2147483648
+  retentionDays: 7
+  autoUpload: false
+  progressReport:
+    url: "http://jt-control:9102/internal/v1/attachment/progress"
+    token: "uplink-token"
+    timeoutMs: 3000
+
+mediaUpload:
+  dir: "./data/blobs"
+
+admin:
+  enable: false
+  addr: "127.0.0.1:9000"
+  token: "admin-token"
+
+api:
+  auth:
+    token: "api-token"
+
+uplink:
+  sink: "local"
+
+cluster:
+  roles:
+    - attachment
+  attachment:
+    # 扩容时每个进程必须有唯一 nodeId 与 control 可达的 advertiseUrl。
+    nodeId: "attachment-1"
+    advertiseUrl: "http://jt-attachment:7402"
+    # FTP 启用后附件节点会向 attachment_nodes 注册并周期性心跳。
+    ftp1078:
+      port: 7500
+      passivePorts: "7501-7510"
+      advertiseIp: "127.0.0.1"
+  # control -> 本节点 0x9207 推送的 Bearer token，与 control 的 cluster.control.token 一致。
+  control:
+    token: "uplink-token"
+  storage:
+    backend: "sharedVolume"
+    sharedVolume: true
+    root: "./data/blobs"
+    marker: ".jt808-shared-volume"
