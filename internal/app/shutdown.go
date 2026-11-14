@@ -144,7 +144,9 @@ func (d *deps) shutdown() {
 			}
 		}
 	}
-	cancelRetention()
+	if cancelRetention != nil {
+		cancelRetention()
+	}
 	if len(retentionDones) > 0 {
 		timer := time.NewTimer(5 * time.Second)
 	waitRetention:
