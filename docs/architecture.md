@@ -6,17 +6,47 @@
 
 系统按“接入、协议、业务、存储、投递、运维”分界，而不是按代码目录分界。三件事的变化频率不同：连接与并发模型随部署规模变化，编解码与版本差异随协议标准变化，业务落库与查询随产品需求变化。把三者隔开，才能在增加接入量时不改协议、换存储时不改业务、补版本差异时不碰网络层。
 
-<img src=".asset/pipeline_component.png" alt="消息处理组件" width="760">
+```mermaid
+flowchart TD
+    A["终端上行帧"] --> B["recv：读取完整帧"]
+    B --> C["decode：去转义 / 校验 / 解消息头"]
+    C --> D{"分包收齐？"}
+    D -- 否 --> D1["写入分包缓存<br/>等待后续分片"]
+    D -- 是 --> E["mp.Decode：解消息体<br/>按 MsgID 查注册表"]
+    E --> F{"需要应答？"}
+    F -- 否 --> G["ApplyBusiness<br/>更新运行时状态 / 投递出口"]
+    F -- 是 --> H{"AckFirst 且 AtLeastOnce？"}
+    H -- "否：ack-first（best_effort）" --> I["sendOutgoingNow<br/>先发送应答"]
+    I --> J["ApplyBusiness<br/>落库 / 投递出口"]
+    H -- "是：confirm-before-ack（at_least_once）" --> K["ApplyBusiness<br/>落库 / 投递出口"]
+    K --> L{"业务成功？"}
+    L -- 否 --> M["不应答，中断本轮<br/>终端按 808 重传"]
+    L -- 是 --> N["assignSerialNumber → encode → send<br/>发送应答"]
+    J --> O{"业务成功？"}
+    O -- 否 --> P["已应答：记录日志，不断链<br/>设备不存在例外"]
+    O -- 是 --> Q["处理下一帧"]
+    N --> Q
+    G --> Q
+    D1 --> Q
+```
 
 TCP 与 UDP 复用同一条 Pipeline，每个会话一个协程串行处理：
 
 1. 接入层从 socket 读取字节流，去转义、校验并得到完整帧；
 2. 协议层解码消息头与消息体，按 MsgID 查注册表；分包未完成时先走分包缓存；
-3. 业务处理执行解码、落库/缓存/查询投递，并生成应答；
+3. 业务处理执行落库/缓存/查询投递，并生成应答；
 4. 协议层把待发送消息编码回帧；
 5. 接入层写回连接，完成一次请求/应答。
 
+分叉点在 `process()`：
+
+- `best_effort`（ack-first）：先 `sendOutgoingNow` 应答，再 `ApplyBusiness`；落库失败只记日志，连接继续，语义为 at-most-once。
+- `at_least_once`（confirm-before-ack）：先 `ApplyBusiness`，成功后才走 `assignSerialNumber → encode → send`；失败则不应答并中断本轮，终端按 808 重传，语义为 at-least-once。
+- 无应答的消息仍执行 `ApplyBusiness`，用于更新应答登记、运行时状态与生命周期 Hook。
+
 业务处理与写回应答在同一个会话协程内执行，因此落库耗时会直接体现在应答时延上。这正是上行可靠性按消息分类选择“先应答”还是“先落库”的原因。
+
+集群网关的 `ApplyBusiness` 还会按消息归属分流：`OwnerGateway` 在本进程处理，`OwnerBoth` 先跑协议半边再投递，`OwnerControl` 只投递。`UplinkSink.Deliver` 对 `best_effort` 进入有界队列，对 `at_least_once` 同步等待 control 确认。
 
 ## 2. 模块职责
 
@@ -43,6 +73,41 @@ TCP 与 UDP 复用同一条 Pipeline，每个会话一个协程串行处理：
 ### 3.2 Cluster
 
 按角色拆成独立进程，协议内核不变。拆分的关键不是进程数量，而是状态归属。
+
+```mermaid
+flowchart LR
+    subgraph TERMS["终端侧"]
+        T808["808 / 苏标终端"]
+        T1078["1078 终端"]
+    end
+
+    subgraph DATA["数据面：不连业务库"]
+        GW["jt-signal<br/>连接 / 会话 / 分包 / ACK 配对 / 下行契约"]
+        MED["jt-media<br/>RTP / PS / 帧环 / 切片"]
+        ATT["jt-attachment<br/>附件组装 / 暂存 / 1078 FTP"]
+    end
+
+    subgraph META["元数据面：control 独占"]
+        CTL["jt-control<br/>业务 API / 业务处理 / outbox / 会话目录 / 节点调度"]
+        DB[("MySQL")]
+        CTL --> DB
+    end
+
+    OBJ[("共享对象存储<br/>media/segments · media/uploads · attachment/*")]
+
+    T808 --> GW
+    T808 -- "0x9208 / 0x9206 附件上传" --> ATT
+    T1078 -- "RTP 媒体流" --> MED
+    GW -- "上行 HTTP<br/>事件 / claim / TerminalReply" --> CTL
+    CTL -- "下行契约<br/>directory / fixed" --> GW
+    MED -- "注册 / 心跳 / 会话 / 切片索引" --> CTL
+    ATT -- "注册 / 进度 / 恢复点" --> CTL
+    MED --> OBJ
+    ATT --> OBJ
+    CTL --> OBJ
+```
+
+数据面节点没有指向 MySQL 的边：它们只持有本地连接、媒体流与附件暂存，通过内部 HTTP 与 control 交互，并把文件写入共享存储。control 是唯一的元数据写者。
 
 | 状态 | 归属 | 说明 |
 |---|---|---|
@@ -100,6 +165,46 @@ control 按 eventId 去重，去重窗口由 `cluster.uplink.dedupTTL` 控制。
 
 网关收到下行请求后按幂等键去重，分配流水号并写入终端连接。命令状态通过终端 `0x0001/0x8001` 回填 outbox。
 
+```mermaid
+sequenceDiagram
+    autonumber
+    participant API as 业务 API
+    participant OB as Outbox
+    participant DB as MySQL
+    participant RT as 下行路由器
+    participant GW as jt-signal
+    participant CTL as control 上行入口
+    participant TERM as 终端
+
+    API->>OB: Submit(command, Idempotency-Key)
+    OB->>DB: NextSerial(phone, msgId)
+    OB->>DB: Enqueue(serial, pending, nextAttemptAt = now + initialWait)
+    OB->>RT: Send(phone, msgId, serial, payload)
+    alt directory 模式
+        RT->>DB: 查 session_directory + gateway_nodes
+        RT->>GW: POST 内部下行契约
+    else fixed 模式
+        RT->>GW: POST cluster.gateway.url
+    end
+    GW->>TERM: 编码并写连接，等待 0x0001 / 0x8001
+    GW-->>OB: 同步回执 accepted / offline / acked / failed
+    alt 收到终端应答
+        TERM-->>GW: 0x0001 / 0x8001
+        GW-->>CTL: 上行事件 TerminalReply
+        CTL->>OB: HandleTerminalReply(phone, answerMsgId, answerSerial, result)
+        OB->>DB: FindByRouting + MarkAcked / MarkFailed
+    else 未收到应答
+        OB->>DB: 保持 pending，按退避安排下一次
+        loop Tick 到期
+            OB->>DB: BeginAttempt(lease)
+            OB->>RT: 复用同一 serial 重投
+        end
+    end
+    API->>OB: GET /api/commands/:commandId
+```
+
+流水号在落库模式下由 control 在 `Submit` 时统一分配，确保 `(phone, msgId, serial)` 在首次下发前就确定；`commandOutbox.mode=off` 时不落库、不重投，由网关发送时分配流水号。`memory` 模式重启会丢 pending 命令。同步回执已经是 `acked` 时，后续同一应答的上行 `TerminalReply` 会被幂等忽略。
+
 ### 4.4 1078 媒体
 
 1. control 在在线、未过期、容量未满的媒体节点中按负载选点，原子占位端点；
@@ -109,6 +214,48 @@ control 按 eventId 去重，去重窗口由 `cluster.uplink.dedupTTL` 控制。
 5. `record.mode=segmented` 时按周期切 MPEG-TS 并写对象存储，切片索引上报 control；业务 API 可按时间查询覆盖区间并按 `Range` 读取切片。
 
 同一 `(phone, channel)` 已有同类型会话时复用，不重复下发信令。媒体节点掉线或过期不迁移既有流，终端重连后由新分配接管。
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant API as 业务 API
+    participant RM as RemoteMedia（control）
+    participant DB as MySQL
+    participant GW as jt-signal
+    participant TERM as 终端
+    participant MED as jt-media
+    participant OBJ as 共享对象存储
+    participant VIEW as 播放客户端
+
+    API->>RM: POST /api/device/:phone/playback
+    RM->>RM: 同 (phone, channel) 已有同类型会话？
+    alt 已存在
+        RM-->>API: 复用 session，不再下发信令
+    else 新建
+        RM->>DB: 选择在线、未过期、有容量的节点并 Reserve 端点
+        RM->>MED: POST /internal/media/sessions
+        MED-->>RM: sessionId + ServerIP/TCPPort/UDPPort + 播放地址
+        RM-->>API: session 与媒体端点
+        API->>GW: 通过 outbox 下发 0x9101 / 0x9201
+        GW->>TERM: 信令携带媒体节点 IP、TCP/UDP 端口、通道、码流类型
+        TERM->>MED: 反向连接，推送 RTP over UDP/TCP
+        MED->>MED: PS 解复用为 H.264 / G.711 / AAC
+        par 实时观看
+            MED-->>VIEW: HTTP-FLV
+            MED-->>VIEW: 或转推 RTMP 到外部服务器
+        and 平台录像
+            MED->>OBJ: record.mode=segmented 时写 MPEG-TS 切片
+            MED-->>RM: 上报切片索引
+            RM->>DB: 写 recording_segments，供覆盖查询与 Range 读取
+        end
+    end
+    API->>RM: DELETE /api/playback/:sessionId
+    API->>GW: 下发 0x9102 / 0x9202
+    RM->>MED: DELETE /internal/media/sessions/:id
+    RM->>DB: Release media_nodes 端点占位
+```
+
+回放与录像的位置关系：`0x9201` 只负责让终端把历史码流推到媒体节点；平台录像不是回放请求的副产物，而由 `record.mode=segmented` 独立决定。无论实时流还是回放流，媒体节点都在解复用后把切片写入对象存储，control 只维护可重建的切片索引。
 
 ### 4.5 苏标附件与 1078 FTP
 

@@ -69,11 +69,45 @@ jt808-server-go 是一个用 Go 编写的车载终端接入服务，面向自建
 
 ## 架构概览
 
-消息处理按“接入 → 协议 → 业务 → 存储/投递”分层，TCP 与 UDP 复用同一条 Pipeline，每个会话一个协程串行处理：
+两种形态共享同一套协议内核：Standalone 把全部角色放在一个进程里；Cluster 拆成四个角色，元数据面集中到 control，数据面只持有连接、媒体流与附件暂存，不连业务库。
 
-<img src="docs/.asset/pipeline_component.png" alt="消息处理组件" width="760">
+```mermaid
+flowchart TB
+    TERM["车载终端<br/>JT/T 808 · 苏标 · JT/T 1078"]
 
-Standalone 下所有角色同进程，零外部依赖；Cluster 下拆成四个角色，控制面独占业务库与元数据，数据面只持有连接、媒体流与附件暂存：
+    subgraph SA["Standalone：单进程"]
+        direction LR
+        S["jt-server-standalone / jt808-server<br/>接入 + 协议 + 业务 + API + 媒体 + 附件"]
+        SDB[("memory / SQLite / MySQL")]
+        S --> SDB
+    end
+
+    subgraph CL["Cluster：按角色拆分"]
+        direction TB
+        subgraph DATA["数据面：不连业务库"]
+            GW["jt-signal<br/>808 接入 / 编解码 / 分包 / 会话"]
+            MED["jt-media<br/>1078 RTP / 帧环 / FLV / 录像切片"]
+            ATT["jt-attachment<br/>苏标附件 / 1078 FTP / 暂存"]
+        end
+        subgraph META["元数据面：control 独占"]
+            CTL["jt-control<br/>业务 API / outbox / 会话目录 / 节点调度"]
+            DB[("MySQL<br/>档案 / 历史 / 报警 / 会话目录 / outbox / 节点注册")]
+            CTL --> DB
+        end
+        OBJ[("共享存储<br/>sharedVolume / S3 兼容 objectStore")]
+        GW -- "上行 HTTP · 下行契约" --> CTL
+        MED -- "注册 / 心跳 / 会话 / 切片索引" --> CTL
+        ATT -- "注册 / 进度 / 恢复点" --> CTL
+        MED --> OBJ
+        ATT --> OBJ
+        CTL --> OBJ
+    end
+
+    TERM --> S
+    TERM --> GW
+    TERM --> MED
+    TERM --> ATT
+```
 
 | 角色 | 二进制 | 职责 | 是否连业务库 |
 |---|---|---|---|
@@ -83,7 +117,7 @@ Standalone 下所有角色同进程，零外部依赖；Cluster 下拆成四个�
 | 苏标附件 | `jt-attachment` | 附件 TCP/UDP 接入、暂存、切片上传、进度上报、1078 FTP | 否 |
 | 单机 | `jt-server-standalone` | 上述全部角色同进程 | 可选 SQLite/MySQL |
 
-更完整的模块边界、状态归属、集群故障语义见[架构与集群模式](docs/architecture.md)。
+上行 pipeline、下行命令链路、1078 播放时序与状态归属见[架构与集群模式](docs/architecture.md)。
 
 ## 快速开始
 
