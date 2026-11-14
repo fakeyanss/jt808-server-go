@@ -1,5 +1,5 @@
 // Command registrydoc 从 internal/protocol/msg_processor.go 的消息注册表导出
-// Markdown 表格，并校验 docs/JT808-2019-coverage.md 中的手工状态表与注册表一致。
+// Markdown 表格，并校验 docs/protocol-coverage.md 中的手工状态表与注册表一致。
 //
 // 用法：
 //
@@ -37,7 +37,7 @@ type registryEntry struct {
 func main() {
 	sourcePath := flag.String("source", "internal/protocol/msg_processor.go", "注册表源文件")
 	ownershipPath := flag.String("ownership", "internal/protocol/ownership.go", "消息归属表源文件")
-	docPath := flag.String("doc", "docs/JT808-2019-coverage.md", "覆盖矩阵文档")
+	docPath := flag.String("doc", "docs/protocol-coverage.md", "覆盖矩阵文档")
 	write := flag.Bool("write", false, "把生成的表格写回文档")
 	check := flag.Bool("check", false, "校验文档与注册表是否一致（默认行为）")
 	flag.Parse()
