@@ -1734,7 +1734,8 @@ type clusterAttachmentConf struct {
 	// 为空时按 ftp1078.advertiseIp + alarmServer.httpPort 推导。
 	AdvertiseURL string `yaml:"advertiseUrl"`
 	// FTP 配置 1078 文件上传 FTP 服务；缺省关闭。
-	FTP *clusterFTPConf `yaml:"ftp1078"`
+	// viper 使用 mapstructure 解码，字段名与 ftp1078 不一致时必须显式声明。
+	FTP *clusterFTPConf `yaml:"ftp1078" mapstructure:"ftp1078"`
 }
 
 type clusterFTPConf struct {
