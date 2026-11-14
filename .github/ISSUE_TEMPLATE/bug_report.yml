@@ -1,0 +1,120 @@
+name: Bug 报告
+description: 报告可复现的缺陷、异常行为或文档错误
+title: "[Bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢反馈。提交前请先搜索已有 Issue，避免重复。
+        安全漏洞请不要走公开 Issue，按 [SECURITY.md](https://github.com/fakeyanss/jt808-server-go/blob/main/SECURITY.md) 私密报告。
+        日志、配置与抓包请先脱敏：删除 token、DSN、真实手机号、车牌与终端流水号。
+
+  - type: checkboxes
+    id: preflight
+    attributes:
+      label: 提交前确认
+      options:
+        - label: 我已搜索现有 Issue，未找到相同问题
+          required: true
+        - label: 我已确认问题可以在最新 main 或当前 Release 上复现
+          required: true
+
+  - type: dropdown
+    id: form
+    attributes:
+      label: 运行形态
+      options:
+        - Standalone（jt-server-standalone / jt808-server）
+        - Cluster - gateway（jt-signal）
+        - Cluster - control（jt-control）
+        - Cluster - media（jt-media）
+        - Cluster - attachment（jt-attachment）
+        - 仅模拟器（jt808-client-go）
+        - 不确定
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: 版本或提交
+      description: 二进制版本、镜像 tag 或 git commit
+      placeholder: main@ad4ef73 / v0.3.2 / 自建镜像 tag
+    validations:
+      required: true
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: 环境
+      description: 操作系统与架构、Go 版本、数据库、部署方式（二进制 / Docker / compose / K8s）
+      placeholder: |
+        OS: Ubuntu 24.04 amd64
+        Go: 1.26
+        DB: MySQL 8.0 / SQLite / memory
+        部署: docker compose
+    validations:
+      required: true
+
+  - type: dropdown
+    id: protocol
+    attributes:
+      label: 涉及协议
+      multiple: true
+      options:
+        - JT/T 808-2011
+        - JT/T 808-2013
+        - JT/T 808-2019
+        - T/JSATL 12（苏标主动安全）
+        - JT/T 1078（音视频）
+        - 业务 HTTP API
+        - 集群内部接口
+        - 不涉及协议
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: 复现步骤
+      description: 尽量给出最小步骤、请求或可复用的模拟器命令
+      placeholder: |
+        1. 使用 configs/default.yaml 启动服务
+        2. 运行 jt808-client-go -fault-frame bad-escape
+        3. 观察服务端日志与 /api/device
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: 期望行为
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: 实际行为
+      description: 包含错误码、响应体或异常现象。不要只写“不能用了”。
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: 日志与指标
+      description: 相关日志片段、`/metrics` 关键指标、`/readyz` 输出；请脱敏
+      render: text
+
+  - type: textarea
+    id: config
+    attributes:
+      label: 相关配置
+      description: 只贴与问题相关的配置段，删除 token、DSN、密钥
+      render: yaml
+
+  - type: textarea
+    id: extra
+    attributes:
+      label: 补充信息
+      description: 抓包、帧十六进制、终端型号、已尝试的排查方向等

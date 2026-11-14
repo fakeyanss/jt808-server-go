@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 使用文档
+    url: https://github.com/fakeyanss/jt808-server-go/blob/main/README.md
+    about: 安装、配置、协议覆盖、API 与运维说明的入口
+  - name: 安全漏洞
+    url: https://github.com/fakeyanss/jt808-server-go/security/advisories/new
+    about: 请通过私密渠道报告安全漏洞，不要公开提交 Issue
