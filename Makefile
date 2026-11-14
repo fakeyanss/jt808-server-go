@@ -53,9 +53,11 @@ smoke:
 clean:
 	bash $(CURDIR)/scripts/build.sh clean
 
-# 构建镜像
+# 构建镜像（单架构，使用本机 Docker）
+IMAGE ?= fakeyanss/jt808-server-go
+IMAGE_TAG ?= $(BUILD_COMMIT)
 dockerbuild:
-	docker build -f build/Dockerfile -t fakeyanss/jt808-server-go:$(BUILD_COMMIT) .
+	docker build -f build/Dockerfile -t $(IMAGE):$(IMAGE_TAG) .
 
 # 统计代码行数
 statline:

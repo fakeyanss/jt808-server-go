@@ -1,0 +1,11 @@
+.git
+.github
+.vscode
+.screenshots
+docs
+deploy
+target
+logs
+data
+*.log
+*.out
