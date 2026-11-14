@@ -1,0 +1,2 @@
+# Workflow 改动必须由仓库所有者 review，防止绕过 Docker Hub 的 main-only 发布限制。
+/.github/workflows/ @fakeyanss
