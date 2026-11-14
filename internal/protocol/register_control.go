@@ -106,7 +106,16 @@ func (mp *JT808MsgProcessor) processRegisterProtocol(ctx context.Context, data *
 	// 已知档案：沿用既有语义，拒绝重复注册。
 	if mp.deps.AuthProvider != nil {
 		if _, err := mp.deps.AuthProvider.Device(ctx, in.Header.PhoneNumber); err == nil {
+			// 重复注册不签发新码，但必须回填档案里的鉴权码：
+			// 否则应答会带 GenOutgoing 的占位符，终端无法完成鉴权。
+			code, codeErr := mp.deps.AuthProvider.AuthCode(ctx, in.Header.PhoneNumber)
+			if codeErr != nil {
+				log.Warn().Err(codeErr).Str("phone", in.Header.PhoneNumber).
+					Msg("Auth provider lookup failed while returning existing auth code")
+				return codeErr
+			}
 			out.Result = model.ResDeviceAlreadyRegister
+			out.AuthCode = code
 			return nil
 		} else if !errors.Is(err, repository.ErrDeviceNotFound) {
 			// 管控不可用时不放行注册，避免在档案未知的情况下签发鉴权码。

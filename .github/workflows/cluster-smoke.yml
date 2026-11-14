@@ -1,0 +1,36 @@
+name: cluster-smoke
+
+# 集群模式终端级冒烟：真实 compose 集群 + cmd/jt808-client 模拟终端。
+# 只提供手动触发：整套流程会构建镜像、拉 MySQL 并占用 8008/8080/18080 端口，
+# 不适合每次 PR 都跑。
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  cluster-smoke:
+    name: cluster terminal smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Run cluster terminal smoke
+        env:
+          JT808_SMOKE_WORK_DIR: ${{ github.workspace }}/target/cluster-smoke
+        run: bash scripts/smoke-cluster.sh
+
+      - name: Upload smoke logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cluster-smoke-logs
+          path: target/cluster-smoke
+          if-no-files-found: ignore
