@@ -191,14 +191,23 @@ docker compose -f deploy/docker-compose.yml up --build
 | [安全策略](SECURITY.md) | 漏洞报告渠道与部署安全边界 |
 | [历史文档](docs/archive/) | 早期设计、路线图与生态调研，仅作归档，不再维护 |
 
-## 贡献者与致谢
+## 贡献者
 
-感谢所有提交 Issue、Pull Request 和协议实测反馈的贡献者，完整名单见 [Contributors](https://github.com/fakeyanss/jt808-server-go/graphs/contributors)。
+感谢所有提交 Issue、Pull Request 和协议实测反馈的贡献者。
 
-协议实现参考了以下公开标准与资料：
-
-- JT/T 808-2011/2013/2019、JT/T 1078-2016、T/JSATL 12-2017、GB/T 19056-2021，标准文本见 `docs/协议文档/`；
-- 生态调研参考了 go-jt808、xtream-codec、SmallChi 等开源项目的公开实现与讨论，见[归档的生态调研](docs/archive/jt808-ecosystem-research.md)。
+<p align="center">
+  <a href="https://github.com/fakeyanss" title="fakeyanss"><img src="https://avatars.githubusercontent.com/u/30440198?v=4" width="72" height="72" alt="fakeyanss" /></a>
+  &nbsp;&nbsp;
+  <a href="https://github.com/ChengDaqi2023" title="ChengDaqi2023"><img src="https://avatars.githubusercontent.com/u/131479795?v=4" width="72" height="72" alt="ChengDaqi2023" /></a>
+  &nbsp;&nbsp;
+  <a href="https://github.com/agideo-code" title="agideo-code"><img src="https://avatars.githubusercontent.com/u/37390606?v=4" width="72" height="72" alt="agideo-code" /></a>
+  &nbsp;&nbsp;
+  <a href="https://github.com/deferclose" title="deferclose"><img src="https://avatars.githubusercontent.com/u/109125344?v=4" width="72" height="72" alt="deferclose" /></a>
+  &nbsp;&nbsp;
+  <a href="https://github.com/k2biru" title="k2biru"><img src="https://avatars.githubusercontent.com/u/23555970?v=4" width="72" height="72" alt="k2biru" /></a>
+  &nbsp;&nbsp;
+  <a href="https://github.com/ryan961" title="ryan961"><img src="https://avatars.githubusercontent.com/u/32825698?v=4" width="72" height="72" alt="ryan961" /></a>
+</p>
 
 欢迎通过 Issue 反馈协议联调结果；如果这个项目对你有帮助，欢迎 Star 和 Fork。
 
