@@ -206,7 +206,8 @@ func (s *Server) Start() {
 			}
 		})
 	}
-	s.alarm.Start()
+	// alarm.Start 会阻塞在 TCP accept 循环；FTP 服务与节点上报必须先启动，
+	// 否则启用 1078 FTP 后附件节点不会注册，FTP 也不会 accept 连接。
 	if s.ftp != nil {
 		if s.ftp.Addr() != "" {
 			s.wg.Add(1)
@@ -217,6 +218,7 @@ func (s *Server) Start() {
 		}
 		s.startReporter()
 	}
+	s.alarm.Start()
 }
 
 func (s *Server) startReporter() {
