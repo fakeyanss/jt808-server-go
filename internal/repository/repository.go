@@ -7,7 +7,7 @@ import (
 )
 
 // 本文件定义持久化仓储的业务契约，是接口的唯一来源。
-// 分类沿用 docs/storage-abstraction-design.md：B 耐用态、C 派生投影。
+// 分类沿用 docs/archive/storage-abstraction-design.md：B 耐用态、C 派生投影。
 // 内存实现在 repository/memory，SQL 实现在 sqlcore + sqlite/mysql，装配入口在 repository/database。
 
 // DeviceRepository 设备主数据仓储（B 类）。
