@@ -257,6 +257,65 @@ docker run -d --name jt808-mysql \
 
 Compose 文件同时声明了 `build`，本地没有镜像时会从源码构建；CI 发布后也可以直接 `docker pull fakeyanss/jt808-server-go:latest`。
 
+### 5.7 集群 Compose 示例
+
+`deploy/docker-compose.cluster.yml` 编排 gateway、control、media、attachment 四个角色，加 MySQL 与共享卷：
+
+```sh
+docker compose -f deploy/docker-compose.cluster.yml up -d
+docker compose -f deploy/docker-compose.cluster.yml ps
+```
+
+启动顺序由 compose 依赖保证：
+
+1. `mysql` 健康检查通过；
+2. `shared-volume-init` 在 `jt808-blobs` 卷写入 `.jt808-shared-volume` 标记；
+3. `migrate` 使用 `deploy/docker/cluster/control.yaml` 执行迁移，成功退出；
+4. `jt-control` 在迁移完成后启动；
+5. `jt-signal`、`jt-media`、`jt-attachment` 在 control 启动后启动，并向 control 注册。
+
+只有 `jt-control` 的配置包含 `database`；`jt-signal`、`jt-media`、`jt-attachment` 不配置数据库。迁移使用 control 配置，修改 MySQL DSN 时只需改 `deploy/docker/cluster/control.yaml`。
+
+挂载点：
+
+| 容器路径 | 卷 | 说明 |
+|---|---|---|
+| `/app/data/blobs` | `jt808-blobs` | 四角色共享的 `sharedVolume` 根目录与标记文件 |
+| `/app/data` | `jt808-<角色>-data` | 各角色本地数据、附件暂存、媒体目录 |
+| `/app/logs` | `jt808-logs` | 各角色滚动日志 |
+| `/etc/jt808/*.yaml` | `deploy/docker/cluster/*.yaml` | 只读角色配置 |
+| `/var/lib/mysql` | `jt808-mysql` | MySQL 数据目录 |
+
+角色端口与探针：
+
+| 服务 | 宿主机端口 | 容器内端口 | 探针 | 业务库 |
+|---|---|---|---|---|
+| `jt-signal` | `8080/tcp`、`8081/udp` | `8080/8081`、内部下行 `9101` | `9106` | 否 |
+| `jt-control` | `8008/tcp` | `8008`、内部上行 `9102` | `9108` | MySQL |
+| `jt-media` | `7300/tcp`、`7300/udp`、`7301/tcp` | `7300/7301` | `9107` | 否 |
+| `jt-attachment` | `7400/tcp`、`7401/udp`、`7500/tcp`、`7501-7510/tcp` | `7400/7401/7402`、FTP `7500/7501-7510` | `9109` | 否 |
+| `mysql` | 不发布 | `3306` | `mysqladmin ping` | - |
+
+验证节点注册与迁移：
+
+```sh
+docker compose -f deploy/docker-compose.cluster.yml logs migrate | tail -5
+docker compose -f deploy/docker-compose.cluster.yml exec mysql \
+  mysql -ujt808 -pjt808 jt808 -e \
+  "select gateway_id,status from gateway_nodes; select node_id,status from media_nodes; select node_id,status from attachment_nodes;"
+```
+
+预期看到 `gateway-1`、`media-1`、`attachment-1` 均为 `online`，迁移日志包含 `applied=1`。示例中的 MySQL 密码、`cluster.gateway.token`、`cluster.control.token`、`uplink.http.token` 仅用于本地联调，部署前必须替换。
+
+容器内 `mediaServer.advertiseIp`、`alarmServer.uploadIp`、`cluster.attachment.ftp1078.advertiseIp` 目前是 `127.0.0.1`，只验证容器间启动与注册；终端级冒烟需要改成宿主机可达地址并发布对应端口。
+
+扩容角色时不要直接对同一服务执行 `--scale`：同一份 YAML 会复用 `nodeId` 与 `advertiseUrl`，副本会互相覆盖注册。正确做法是为副本准备独立配置与端口：
+
+- **gateway**：复制 `signal.yaml`，改 `cluster.gateway.nodeId` 和 `advertiseUrl`，新增一个 compose 服务并映射不同宿主机端口。control 使用 `directory` 路由，会按 `gateway_nodes` 自动发现新网关。
+- **media**：复制 `media.yaml`，改 `cluster.media.nodeId` 和 `advertiseUrl`，共享 `jt808-blobs`，新增独立媒体数据卷与端口；可在 control 的 `cluster.media.nodes` 增加静态兜底节点。
+- **attachment**：复制 `attachment.yaml`，改 `cluster.attachment.nodeId`、`advertiseUrl` 和 FTP 端口，共享 `jt808-blobs`，使用独立暂存卷；同时把新节点加入 control 的 `cluster.attachment.nodes`。
+- **control**：control 的上行邮箱是进程内结构，日志明确提示单副本推荐；不要直接水平扩容，需单独评估 outbox、节点注册与下行路由的一致性。
+
 ## 6. 集群角色部署
 
 ### 6.1 角色与二进制
