@@ -6,8 +6,8 @@ on:
     tags: ["v*"]
   pull_request:
     branches: ["main", "dev/**"]
-  release:
-    types: [published]
+  # release 事件不再重复触发：发布 release 前必然先推送同名的 v* tag，
+  # tag 推送已经会发布镜像。重复监听会让同一次发布构建两遍。
   workflow_dispatch:
     inputs:
       version:
@@ -43,20 +43,16 @@ jobs:
           REF: ${{ github.ref }}
           REF_TYPE: ${{ github.ref_type }}
           REF_NAME: ${{ github.ref_name }}
-          RELEASE_TAG: ${{ github.event.release.tag_name }}
           INPUT_VERSION: ${{ inputs.version }}
         run: |
           set -eu
           git fetch --no-tags --force origin main:refs/remotes/origin/main
 
-          # 只有 tag、release、手动触发是发布候选；push/PR 永远只构建。
+          # 只有 tag 推送、手动触发是发布候选；分支 push/PR 永远只构建。
           candidate=false
           is_main=false
           skip_reason=""
           case "$EVENT_NAME" in
-            release)
-              candidate=true
-              ;;
             push)
               if [ "$REF_TYPE" = "tag" ]; then
                 candidate=true
@@ -72,7 +68,7 @@ jobs:
               ;;
           esac
 
-          # tag/release 不能只看事件名：tag 必须指向 main 上的提交。
+          # tag 不能只看事件名：tag 必须指向 main 上的提交。
           if [ "$candidate" = "true" ] && [ "$is_main" = "false" ]; then
             if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
               :
@@ -86,8 +82,6 @@ jobs:
           version=""
           if [ "$EVENT_NAME" = "workflow_dispatch" ] && [ -n "$INPUT_VERSION" ]; then
             version="$INPUT_VERSION"
-          elif [ "$EVENT_NAME" = "release" ] && [ -n "$RELEASE_TAG" ]; then
-            version="$RELEASE_TAG"
           elif [ "$REF_TYPE" = "tag" ]; then
             version="$REF_NAME"
           else
