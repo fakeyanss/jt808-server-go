@@ -1,0 +1,58 @@
+# SQLite 后端容器配置：库文件位于 /app/data，随 jt808-data 卷持久化。
+log:
+  consoleEnable: true
+  fileEnable: true
+  printAsJson: false
+  logLevel: "INFO"
+  logDirectory: "./logs/"
+  logFile: "jt808-server.log"
+  maxSizeOfRolling: 50
+  maxBackupsOfRolling: 7
+  maxAgeOfRolling: 7
+
+server:
+  name: "jt808-server-go"
+  mode: "standalone"
+  ackTimeoutMs: 5000
+  maxRetransmissions: 3
+  port:
+    tcpPort: "8080"
+    udpPort: "8081"
+    httpPort: "8008"
+  banner:
+    enable: false
+
+alarmServer:
+  port: "7200"
+  udpPort: "7201"
+  dir: "./data/alarms"
+  maxFileSize: 104857600
+  maxConcurrent: 16
+  autoUpload: false
+
+mediaUpload:
+  dir: "./data/media-uploads"
+
+admin:
+  enable: false
+  addr: "127.0.0.1:9000"
+  token: ""
+
+probes:
+  addr: "127.0.0.1:9105"
+
+api:
+  auth:
+    token: ""
+
+uplink:
+  sink: "local"
+
+commandOutbox:
+  mode: "durable"
+
+database:
+  type: "sqlite"
+  sqlite:
+    path: "./data/jt808.db"
+    readConns: 0

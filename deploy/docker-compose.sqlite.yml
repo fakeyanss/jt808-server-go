@@ -1,0 +1,58 @@
+name: jt808-sqlite
+
+# SQLite 后端 standalone 示例：先由 migrate 服务初始化库文件，再启动主服务。
+# 启动：docker compose -f deploy/docker-compose.sqlite.yml up -d
+services:
+  migrate:
+    image: fakeyanss/jt808-server-go:latest
+    build:
+      context: ..
+      dockerfile: build/Dockerfile
+      args:
+        VERSION: local
+    restart: "no"
+    command: ["migrate"]
+    environment:
+      TZ: Asia/Shanghai
+      JT808_CONFIG: /etc/jt808/sqlite.yaml
+    volumes:
+      - ./docker/sqlite.yaml:/etc/jt808/sqlite.yaml:ro
+      - jt808-data:/app/data
+      - jt808-logs:/app/logs
+
+  jt808:
+    image: fakeyanss/jt808-server-go:latest
+    build:
+      context: ..
+      dockerfile: build/Dockerfile
+      args:
+        VERSION: local
+    restart: unless-stopped
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    environment:
+      TZ: Asia/Shanghai
+      JT808_CONFIG: /etc/jt808/sqlite.yaml
+    ports:
+      - "8080:8080/tcp"
+      - "8081:8081/udp"
+      - "8008:8008/tcp"
+      - "7200:7200/tcp"
+      - "7201:7201/udp"
+    volumes:
+      - ./docker/sqlite.yaml:/etc/jt808/sqlite.yaml:ro
+      - jt808-data:/app/data
+      - jt808-logs:/app/logs
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/jt808-healthcheck"]
+      interval: 15s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
+    security_opt:
+      - no-new-privileges:true
+
+volumes:
+  jt808-data:
+  jt808-logs:
