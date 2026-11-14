@@ -92,26 +92,170 @@ SQLite 与 MySQL 都**不会**在服务启动时自动执行 DDL。首次部署�
 
 MySQL 场景也可以由 DBA 按文件名顺序直接执行 `internal/repository/mysql/migrations/` 下的 SQL，但必须保证 `schema_migrations` 记录与二进制预期一致。
 
-## 5. Docker 与 Compose
+## 5. 容器部署（Docker / Compose）
+
+### 5.1 镜像与标签
+
+镜像名为 `fakeyanss/jt808-server-go`，同时发布 `linux/amd64` 与 `linux/arm64`。版本标签取 Git tag（去掉前缀 `v`），并附带 `latest`；分支与 PR 构建只验证、不推送。
 
 ```sh
-make dockerbuild
-docker compose -f deploy/docker-compose.yml up --build
+# 本机构建单架构镜像
+make dockerbuild IMAGE_TAG=local
+
+# 本机使用 buildx 构建多架构（需要 buildx 与 QEMU）
+docker buildx build --platform linux/amd64,linux/arm64 \
+  -f build/Dockerfile -t fakeyanss/jt808-server-go:local .
 ```
 
-镜像入口为 `/app/output/jt808-server-go -c /app/output/configs/default.yaml`，同时包含 `/app/output/jt808-migrate`。compose 映射 `8080`、`8081/udp`、`8008`、`7200`、`7201/udp`，挂载只读配置与 `data`/`logs` 卷。
+镜像内包含 `jt-server-standalone`、`jt-signal`、`jt-control`、`jt-media`、`jt-attachment`、`jt808-migrate` 六个静态二进制，以非 root 用户 `10001:10001` 运行，并带有 CA 证书与时区数据。运行阶段不会写入业务数据；配置、数据与日志都从挂载点读取或写入。
 
-注意：
+### 5.2 最短运行
 
-- 管理面默认只监听容器内 `127.0.0.1:9000`，不发布到宿主机。
-- compose 的 healthcheck 依赖 `/healthz`，因此需要开启 `admin` 并配置非空 token，否则容器会一直不健康。也可以改用独立的 `probes.addr`。
-- 容器内工作目录为 `/app/output`，配置中的相对路径按该目录解析。
+默认启动 standalone + `memory` 后端，无需挂载配置：
 
 ```sh
-# 容器内检查探针
-docker exec jt808 wget -qO- http://127.0.0.1:9000/healthz
-docker exec jt808 wget -qO- http://127.0.0.1:9000/readyz
+docker run -d --name jt808 \
+  -p 8080:8080 -p 8081:8081/udp -p 8008:8008 \
+  -p 7200:7200 -p 7201:7201/udp \
+  -v jt808-data:/app/data -v jt808-logs:/app/logs \
+  fakeyanss/jt808-server-go:latest
+
+curl -s http://localhost:8008/api/device
 ```
+
+默认监听端口：
+
+| 端口 | 用途 |
+|---|---|
+| `8080/tcp`、`8081/udp` | 808 终端接入 |
+| `8008/tcp` | 业务 API |
+| `7200/tcp`、`7201/udp` | 苏标附件 |
+| `9105/tcp` | 探针（容器内 `127.0.0.1`，默认不发布） |
+
+镜像自带 `HEALTHCHECK`，通过容器内 `http://127.0.0.1:9105/readyz` 判断就绪。手工检查：
+
+```sh
+docker inspect --format '{{.State.Health.Status}}' jt808
+docker exec jt808 wget -qO- http://127.0.0.1:9105/healthz
+docker exec jt808 wget -qO- http://127.0.0.1:9105/readyz
+```
+
+### 5.3 单镜像切换角色
+
+默认角色为 `standalone`。首个参数或 `JT808_ROLE` 可切换角色，不需要为每个角色单独构建镜像：
+
+```sh
+# 首个参数
+docker run --rm fakeyanss/jt808-server-go:latest signal -c /etc/jt808/signal.yaml
+
+# 环境变量
+docker run --rm -e JT808_ROLE=signal \
+  -v "$PWD/configs/cluster/jt-signal.yaml:/etc/jt808/signal.yaml:ro" \
+  fakeyanss/jt808-server-go:latest
+```
+
+支持的角色：`standalone`（默认）、`signal`（别名 `gateway`）、`control`、`media`、`attachment`、`migrate`。角色容器会自动读取 `/etc/jt808/<role>.yaml`；也可以显式传 `-c` 或设置 `JT808_CONFIG`。角色与配置中的 `server.mode`、`cluster.roles` 必须匹配，否则启动失败。
+
+集群角色不是开箱即用：需要共享 MySQL、共享存储（`sharedVolume` 或对象存储）以及一致的内部 token，详见[集群角色部署](#6-集群角色部署)与 `configs/cluster/` 下的样例配置。
+
+| 角色 | 主要端口 | 探针示例 |
+|---|---|---|
+| `signal` | 8080/8081、8008、9101 | 9106 |
+| `control` | 8008、9000、9102 | 9108 |
+| `media` | 7300、7301 | 9107 |
+| `attachment` | 7400/7401、7402、7500、7501-7510 | 9109 |
+
+角色容器如果修改了 `probes.addr`，需要同步设置 `JT808_PROBE_ADDR`，否则镜像内置健康检查仍会请求 `127.0.0.1:9105`：
+
+```sh
+docker run -e JT808_ROLE=media \
+  -e JT808_PROBE_ADDR=127.0.0.1:9107 \
+  -v "$PWD/configs/cluster/jt-media.yaml:/etc/jt808/media.yaml:ro" \
+  fakeyanss/jt808-server-go:latest
+```
+
+### 5.4 挂载点
+
+| 容器路径 | 内容 | 是否必须挂载 |
+|---|---|---|
+| `/etc/jt808/standalone.yaml` | 镜像内置 standalone 默认配置 | 覆盖配置时挂载 |
+| `/etc/jt808/<role>.yaml` | 角色配置 | 角色容器必须提供 |
+| `/app/data` | SQLite 库、附件、媒体、上传文件、对象存储本地目录 | 建议 |
+| `/app/logs` | 滚动日志 | 建议 |
+
+容器工作目录为 `/app`，配置中的相对路径按该目录解析。进程以 UID/GID `10001` 运行；Linux 上使用 bind mount 时需保证目录可写：
+
+```sh
+mkdir -p ./jt808-data ./jt808-logs
+sudo chown -R 10001:10001 ./jt808-data ./jt808-logs
+```
+
+### 5.5 配置覆盖与环境变量
+
+配置优先级从高到低：
+
+1. 命令行 `-c <path>` / `--config <path>`；
+2. 环境变量 `JT808_CONFIG`；
+3. 默认路径 `/etc/jt808/<role>.yaml`（standalone 为 `/etc/jt808/standalone.yaml`）。
+
+因此覆盖配置最直接的方式是把宿主机 YAML 挂载到默认路径：
+
+```sh
+docker run -d --name jt808 \
+  -v "$PWD/my-standalone.yaml:/etc/jt808/standalone.yaml:ro" \
+  -p 8080:8080 -p 8008:8008 \
+  -v jt808-data:/app/data -v jt808-logs:/app/logs \
+  fakeyanss/jt808-server-go:latest
+```
+
+镜像读取的环境变量：
+
+| 变量 | 默认值 | 说明 |
+|---|---|---|
+| `JT808_ROLE` | `standalone` | 运行角色；首个参数优先于该变量 |
+| `JT808_CONFIG` | 空 | 配置文件路径；显式 `-c` 优先 |
+| `JT808_PROBE_ADDR` | `127.0.0.1:9105` | 健康检查请求的探针地址 |
+| `TZ` | `Asia/Shanghai` | 进程时区 |
+
+配置项本身仍以 YAML 为准，环境变量不逐项覆盖 YAML 字段；需要改端口、数据库或集群地址时请挂载完整配置文件。
+
+### 5.6 Compose 示例
+
+```sh
+# memory 后端：开箱即跑
+docker compose -f deploy/docker-compose.yml up -d
+
+# SQLite 后端：先执行 migrate，再启动主服务
+docker compose -f deploy/docker-compose.sqlite.yml up -d
+```
+
+两份 compose 都映射 standalone 默认端口并挂载 `jt808-data`、`jt808-logs`。SQLite 示例使用 `deploy/docker/sqlite.yaml`，迁移服务以 `migrate` 角色运行，成功后主服务才启动。
+
+使用 MySQL 时，复制 `deploy/docker/sqlite.yaml`，把 `database` 段改为：
+
+```yaml
+database:
+  type: "mysql"
+  mysql:
+    dsn: "jt808:jt808@tcp(mysql:3306)/jt808?parseTime=true&charset=utf8mb4"
+```
+
+先执行迁移，再以同一份配置启动：
+
+```sh
+docker run --rm \
+  -v "$PWD/mysql.yaml:/etc/jt808/migrate.yaml:ro" \
+  fakeyanss/jt808-server-go:latest migrate
+
+docker run -d --name jt808-mysql \
+  -e JT808_CONFIG=/etc/jt808/mysql.yaml \
+  -v "$PWD/mysql.yaml:/etc/jt808/mysql.yaml:ro" \
+  -p 8080:8080 -p 8008:8008 \
+  -v jt808-data:/app/data -v jt808-logs:/app/logs \
+  fakeyanss/jt808-server-go:latest
+```
+
+Compose 文件同时声明了 `build`，本地没有镜像时会从源码构建；CI 发布后也可以直接 `docker pull fakeyanss/jt808-server-go:latest`。
 
 ## 6. 集群角色部署
 

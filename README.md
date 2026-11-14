@@ -134,7 +134,23 @@ make run-client
 curl -s http://localhost:8008/api/device
 ```
 
-设备列表中出现模拟终端的手机号，说明接入、协议处理与查询链路已打通。默认端口与开关：
+设备列表中出现模拟终端的手机号，说明接入、协议处理与查询链路已打通。
+
+Docker 最短路径（默认 `memory` 后端，无需额外配置）：
+
+```sh
+docker run -d --name jt808 \
+  -p 8080:8080 -p 8081:8081/udp -p 8008:8008 \
+  -p 7200:7200 -p 7201:7201/udp \
+  -v jt808-data:/app/data -v jt808-logs:/app/logs \
+  fakeyanss/jt808-server-go:latest
+
+curl -s http://localhost:8008/api/device
+```
+
+镜像健康检查使用容器内 `/readyz`；SQLite/MySQL、单镜像切换角色与挂载说明见[安装部署](docs/installation.md#5-容器部署docker--compose)。
+
+默认端口与开关：
 
 | 入口 | 默认值 | 说明 |
 |---|---|---|
@@ -171,11 +187,14 @@ go build -o bin/jt-attachment       ./cmd/jt-attachment
 Docker 与 compose：
 
 ```sh
-make dockerbuild
-docker compose -f deploy/docker-compose.yml up --build
+make dockerbuild IMAGE_TAG=local
+docker compose -f deploy/docker-compose.yml up -d
+
+# SQLite 后端（自动执行迁移）
+docker compose -f deploy/docker-compose.sqlite.yml up -d
 ```
 
-集群样例配置在 `configs/cluster/`，五个角色共用同一套共享存储与 MySQL。端口规划、启动顺序、迁移、备份恢复与故障排查见[安装部署](docs/installation.md)和[运维手册](docs/operations.md)。
+镜像为多架构构建（`linux/amd64`、`linux/arm64`），默认以 standalone 角色启动；通过首个参数或 `JT808_ROLE` 可切换 `signal`、`control`、`media`、`attachment`、`migrate`。集群样例配置在 `configs/cluster/`，五个角色共用同一套共享存储与 MySQL。端口规划、启动顺序、迁移、备份恢复与故障排查见[安装部署](docs/installation.md)和[运维手册](docs/operations.md)。
 
 ## 文档
 
