@@ -1,0 +1,71 @@
+# jt-media 容器配置：只承担 media 角色，不连业务库。
+log:
+  consoleEnable: true
+  fileEnable: true
+  printAsJson: false
+  logLevel: "INFO"
+  logDirectory: "./logs/"
+  logFile: "jt-media.log"
+  maxSizeOfRolling: 50
+  maxBackupsOfRolling: 7
+  maxAgeOfRolling: 7
+
+server:
+  name: "jt-media"
+  mode: "cluster"
+  ackTimeoutMs: 5000
+  maxRetransmissions: 3
+  port:
+    tcpPort: "8080"
+    udpPort: "8081"
+    httpPort: "8008"
+  banner:
+    enable: false
+
+probes:
+  addr: "0.0.0.0:9107"
+
+mediaServer:
+  port: "7300"
+  httpPort: "7301"
+  advertiseIp: "127.0.0.1"
+  dir: "./data/media"
+  maxConcurrent: 16
+  maxTCPConns: 64
+  maxBitrateKbps: 20000
+  record:
+    mode: "off"
+  segmentReport:
+    url: "http://jt-control:9102/internal/v1/media/segments"
+    token: "uplink-token"
+    timeoutMs: 3000
+
+mediaUpload:
+  dir: "./data/blobs"
+
+admin:
+  enable: false
+  addr: "127.0.0.1:9000"
+  token: "admin-token"
+
+api:
+  auth:
+    token: "api-token"
+
+uplink:
+  sink: "local"
+
+cluster:
+  roles:
+    - media
+  media:
+    # 扩容时每个进程必须有唯一 nodeId 与 control 可达的 advertiseUrl。
+    nodeId: "media-1"
+    controlUrl: "http://jt-control:9102"
+    advertiseUrl: "http://jt-media:7301"
+    token: "uplink-token"
+  storage:
+    backend: "sharedVolume"
+    sharedVolume: true
+    root: "./data/blobs"
+    marker: ".jt808-shared-volume"

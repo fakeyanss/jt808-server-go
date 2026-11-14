@@ -1,0 +1,61 @@
+# jt-signal 容器配置：只承担 gateway 角色，不连业务库。
+log:
+  consoleEnable: true
+  fileEnable: true
+  printAsJson: false
+  logLevel: "INFO"
+  logDirectory: "./logs/"
+  logFile: "jt-signal.log"
+  maxSizeOfRolling: 50
+  maxBackupsOfRolling: 7
+  maxAgeOfRolling: 7
+
+server:
+  name: "jt-signal"
+  mode: "cluster"
+  ackTimeoutMs: 5000
+  maxRetransmissions: 3
+  port:
+    tcpPort: "8080"
+    udpPort: "8081"
+    httpPort: "8008"
+  banner:
+    enable: false
+
+probes:
+  addr: "0.0.0.0:9106"
+
+mediaUpload:
+  dir: "./data/media-uploads"
+
+admin:
+  enable: false
+  addr: "127.0.0.1:9000"
+  token: "admin-token"
+
+api:
+  auth:
+    token: "api-token"
+
+# gateway-only 必须使用 HTTP 上行出口；token 与 cluster.control.token 一致。
+uplink:
+  sink: "http"
+  http:
+    url: "http://jt-control:9102/internal/v1/uplink"
+    token: "uplink-token"
+    timeoutMs: 3000
+    queueSize: 1024
+    workers: 4
+    maxAttempts: 1
+
+cluster:
+  roles:
+    - gateway
+  gateway:
+    addr: "0.0.0.0:9101"
+    # control 通过 jt-signal:9101 回调本网关；nodeId 在扩容时必须唯一。
+    nodeId: "gateway-1"
+    advertiseUrl: "http://jt-signal:9101"
+    token: "cluster-shared-token"
+  control:
+    token: "uplink-token"
