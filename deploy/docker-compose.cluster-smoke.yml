@@ -1,0 +1,48 @@
+# 集群终端级冒烟的 compose 覆盖文件，仅由 scripts/smoke-cluster.sh 使用。
+#
+# 在 deploy/docker-compose.cluster.yml 基础上：
+#   - 把 jt808 角色镜像替换成本地构建的冒烟镜像（不重新 tag latest）；
+#   - 用脚本生成的 1 号网关配置覆盖 jt-signal；
+#   - 增加 2 号网关 jt-signal-2，用于验证下行按目录路由与会话归属转移。
+#
+# 必需环境变量（脚本会设置）：
+#   JT808_SMOKE_IMAGE       冒烟镜像 tag
+#   JT808_SMOKE_CONFIG_DIR  脚本生成的网关配置目录（绝对路径）
+services:
+  shared-volume-init:
+    image: ${JT808_SMOKE_IMAGE:?JT808_SMOKE_IMAGE is required}
+  migrate:
+    image: ${JT808_SMOKE_IMAGE:?JT808_SMOKE_IMAGE is required}
+  jt-control:
+    image: ${JT808_SMOKE_IMAGE:?JT808_SMOKE_IMAGE is required}
+  jt-media:
+    image: ${JT808_SMOKE_IMAGE:?JT808_SMOKE_IMAGE is required}
+  jt-attachment:
+    image: ${JT808_SMOKE_IMAGE:?JT808_SMOKE_IMAGE is required}
+  jt-signal:
+    image: ${JT808_SMOKE_IMAGE:?JT808_SMOKE_IMAGE is required}
+    volumes:
+      - ${JT808_SMOKE_CONFIG_DIR:?JT808_SMOKE_CONFIG_DIR is required}/signal-1.yaml:/etc/jt808/signal.yaml:ro
+  jt-signal-2:
+    image: ${JT808_SMOKE_IMAGE:?JT808_SMOKE_IMAGE is required}
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      TZ: Asia/Shanghai
+      JT808_ROLE: signal
+      JT808_PROBE_ADDR: 127.0.0.1:9116
+    ports:
+      - "18080:8080/tcp" # 2 号网关的终端接入端口
+    volumes:
+      - ${JT808_SMOKE_CONFIG_DIR:?JT808_SMOKE_CONFIG_DIR is required}/signal-2.yaml:/etc/jt808/signal.yaml:ro
+      - jt808-signal2-data:/app/data
+      - jt808-logs:/app/logs
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      jt-control:
+        condition: service_started
+
+volumes:
+  jt808-signal2-data:
