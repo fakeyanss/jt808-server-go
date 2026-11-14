@@ -1,17 +1,85 @@
 name: release
 
+# 只在 release 发布时运行一次。
+# 之前同时监听 created 与 published，同一次发布会触发两个 run。
 on:
   release:
-    types: [created, published]
+    types: [published]
+
+permissions:
+  contents: write
+
+env:
+  BINARY_NAME: jt808-server-go
+
+# 同一 tag 的重复触发串行化，避免并发写同一个 release。
+concurrency:
+  group: release-${{ github.event.release.tag_name }}
+  cancel-in-progress: false
 
 jobs:
-  release-package:
-    name: release
+  build:
+    name: package ${{ matrix.os }}/${{ matrix.arch }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: linux
+            arch: amd64
+          - os: linux
+            arch: arm64
+          - os: darwin
+            arch: amd64
+          - os: darwin
+            arch: arm64
+          - os: windows
+            arch: amd64
+          - os: windows
+            arch: arm64
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build and package
+        run: bash scripts/package-release.sh "${{ github.event.release.tag_name }}" "${{ matrix.os }}" "${{ matrix.arch }}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.BINARY_NAME }}_${{ github.event.release.tag_name }}_${{ matrix.os }}_${{ matrix.arch }}
+          path: |
+            target/dist/*.tar.gz
+            target/dist/*.zip
+          if-no-files-found: error
+
+  publish:
+    name: checksums and upload
+    needs: build
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v3
-    - uses: wangyoucao577/go-release-action@v1
-      with:
-        github_token: ${{ secrets.GITHUB_TOKEN }}
-        goversion: 1.26.10
-        build_command: make release && make release-client
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: target/dist
+          merge-multiple: true
+
+      - name: Generate checksums
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          set -euo pipefail
+          cd target/dist
+          # 按文件名排序，顺序与手工 v1.0.0 的 checksums 保持一致
+          sha256sum *.tar.gz *.zip | sort -k2 > "${{ env.BINARY_NAME }}_${TAG}_checksums.txt"
+          cat "${{ env.BINARY_NAME }}_${TAG}_checksums.txt"
+
+      - name: Upload assets to release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.event.release.tag_name }}
+        run: gh release upload "$TAG" target/dist/* --clobber --repo "$GITHUB_REPOSITORY"
