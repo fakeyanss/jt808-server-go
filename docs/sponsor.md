@@ -4,23 +4,15 @@
 
 ## 支付宝
 
-<!-- 收款码文件就位后，取消下面 img 标签的注释。
 <p align="center">
-  <img src="assets/sponsor/alipay.png" alt="支付宝收款码" width="240" />
+  <img src="assets/sponsor/alipay.jpg" alt="支付宝收款码" width="240" />
 </p>
--->
-
-收款码待补充：`docs/assets/sponsor/alipay.png`。
 
 ## 微信
 
-<!-- 收款码文件就位后，取消下面 img 标签的注释。
 <p align="center">
-  <img src="assets/sponsor/wechat.png" alt="微信收款码" width="240" />
+  <img src="assets/sponsor/wxpay.png" alt="微信收款码" width="240" />
 </p>
--->
-
-收款码待补充：`docs/assets/sponsor/wechat.png`。
 
 ## 其他支持方式
 
