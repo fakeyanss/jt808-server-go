@@ -211,6 +211,10 @@ docker compose -f deploy/docker-compose.yml up --build
 
 欢迎通过 Issue 反馈协议联调结果；如果这个项目对你有帮助，欢迎 Star 和 Fork。
 
+## 赞助
+
+如果这个项目对你的工作有帮助，欢迎通过[赞助页](docs/sponsor.md)了解支付宝或微信支持方式。
+
 ## 许可证
 
 [MIT](LICENSE)
