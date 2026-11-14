@@ -805,10 +805,13 @@ func (mp *JT808MsgProcessor) ApplyControlBusiness(ctx context.Context, msgID uin
 	case 0x0200:
 		// 控制面也需要报警事件：自动 0x9208 与报警动作回调在这里触发。
 		// 与网关路径共用 notifyLocation，避免两套报警识别逻辑。
-		if in, ok := data.Incoming.(*model.Msg0200); ok {
-			mp.notifyLocation(ctx, in)
+		in, ok := data.Incoming.(*model.Msg0200)
+		if !ok {
+			return nil
 		}
-		return nil
+		mp.notifyLocation(ctx, in)
+		// 集群下 0x0200 归控制面，位置历史、报警与在线态只能在控制面落库。
+		return mp.processMsg0200(ctx, data)
 	case 0x0704:
 		if in, ok := data.Incoming.(*model.Msg0704); ok {
 			for i := range in.Items {
