@@ -52,8 +52,8 @@ go list -deps ./cmd/jt-signal ./cmd/jt-media ./cmd/jt-attachment \
 | `internal/controlhttp/` | control 侧内部 HTTP 入口：上行事件、设备档案查询、节点注册/心跳、FTP 登录、进度与切片上报 | 只由 control 装配；路径常量取自 `internalapi` |
 | `internal/uplink/` | 网关侧上行出口：HTTP 投递、可靠性分类与重投 | 不承载 control 侧入口 |
 | `internal/downlinkhttp/` | control → 网关下行 HTTP 的 client、router 与 server | 与 `uplink` 对称，不混入上行逻辑 |
-| `internal/internalapi/` | 角色间内部 HTTP 的路径常量与上行事件信封 | 叶子包；网关出口与 control 入口共用 |
-| `internal/api/` | 对外管理面 HTTP：设备、位置、下行、媒体/附件/播放接口 | 仓储由装配层注入，不取全局单例 |
+| `internal/internalapi/` | 服务间内部 HTTP 的路径常量与上行事件信封（`/internal/v1/*`） | 只描述线上契约，不对公网暴露，不放请求处理 |
+| `internal/api/` | 对外管理面 HTTP（`/api/*`）：设备、位置、下行、媒体/附件/播放接口 | 路由表只做声明；handler 按资源分文件，请求结构、校验与处理分离；仓储由装配层注入 |
 | `internal/adminapi/` | 管理面 HTTP：健康/就绪/指标/会话/历史 | `Dependencies` 显式注入 |
 | `internal/contracts/` | 跨进程最小信封：`UplinkSink`、`Downlink`、`AuthProvider`、终端应答 | 不再承载媒体、附件与对象存储类型 |
 | `internal/contracts/media/` | 媒体端点、租约、`MediaAllocator`、`MediaReader` 与调度错误码 | 只放媒体领域契约 |

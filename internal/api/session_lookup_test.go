@@ -10,6 +10,7 @@ import (
 
 	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
 	"github.com/fakeyanss/jt808-server-go/internal/repository/database"
+
 	// 测试需要真实 SQLite 后端，显式注册驱动实现。
 	"github.com/fakeyanss/jt808-server-go/internal/domain"
 	_ "github.com/fakeyanss/jt808-server-go/internal/repository/database/sqlbackend"
