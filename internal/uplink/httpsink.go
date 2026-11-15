@@ -58,6 +58,8 @@ type HTTPSinkStats struct {
 // HTTPEnvelope 是上行出口的 JSON 信封，字段与设计文档第 4 节一致。
 type HTTPEnvelope struct {
 	EventID             string                   `json:"eventId"`
+	Event               string                   `json:"event,omitempty"`
+	Reason              string                   `json:"reason,omitempty"`
 	Phone               string                   `json:"phone"`
 	MsgID               uint16                   `json:"msgId"`
 	RawMsgID            uint16                   `json:"rawMsgId"`
@@ -257,7 +259,8 @@ func (s *HTTPSink) Deliver(ctx context.Context, event contracts.UplinkEvent) (co
 	}
 	envelope, err := BuildHTTPEnvelope(event)
 	if err != nil {
-		if event.Reliability == contracts.ReliabilityConfirmBeforeAck {
+		if event.Reliability == contracts.ReliabilityConfirmBeforeAck ||
+			event.Reliability == contracts.ReliabilityAtLeastOnce {
 			s.failed.Add(1)
 			return contracts.UplinkResult{Reason: err.Error()}, err
 		}
@@ -271,7 +274,8 @@ func (s *HTTPSink) Deliver(ctx context.Context, event contracts.UplinkEvent) (co
 		s.rememberRegistration(envelope)
 	}
 
-	if event.Reliability != contracts.ReliabilityConfirmBeforeAck {
+	if event.Reliability != contracts.ReliabilityConfirmBeforeAck &&
+		event.Reliability != contracts.ReliabilityAtLeastOnce {
 		return s.enqueue(envelope)
 	}
 	return s.deliverSync(ctx, envelope)
@@ -624,6 +628,8 @@ func errIsDeadline(err error) bool {
 func BuildHTTPEnvelope(event contracts.UplinkEvent) (HTTPEnvelope, error) {
 	envelope := HTTPEnvelope{
 		EventID:             event.EventID,
+		Event:               event.Event,
+		Reason:              event.Reason,
 		Phone:               event.Phone,
 		MsgID:               event.MsgID,
 		RawMsgID:            event.RawMsgID,

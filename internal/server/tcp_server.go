@@ -13,6 +13,7 @@ import (
 	"github.com/rs/zerolog/log"
 
 	"github.com/fakeyanss/jt808-server-go/internal/action"
+	"github.com/fakeyanss/jt808-server-go/internal/contracts"
 	"github.com/fakeyanss/jt808-server-go/internal/observability"
 	"github.com/fakeyanss/jt808-server-go/internal/protocol"
 	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
@@ -290,15 +291,34 @@ func isTimeout(err error) bool {
 	return errors.As(err, &netErr) && netErr.Timeout()
 }
 
-// endSession 幂等结束会话：上报 release 并派发断连事件。
-// cluster 的 action 钩子由 control 统一派发，网关侧只在 standalone 生效。
+// endSession 幂等结束会话：cluster 通过 uplink 投递 session.closed，
+// 由 control 释放归属并派发钩子；standalone 直接本地派发。
 func endSession(session *model.Session, hooks action.Hooks, deps protocol.ProcessorDeps, reason string) {
 	if session == nil || !session.MarkEnded() {
 		return
 	}
 	transport := string(session.GetTransProto())
-	if deps.OnSessionClosed != nil {
-		deps.OnSessionClosed(session.ID, session.Phone(), transport, session.Generation())
+	// 未鉴权的连接没有目录归属（phone/generation 为空），无需上报 session.closed。
+	if deps.UplinkSink != nil && session.Phone() != "" && session.Generation() != 0 {
+		// 会话结束走与业务事件相同的 uplink 通道；at_least_once 会同步重试，
+		// 失败只记日志，不影响连接关闭。
+		event := contracts.UplinkEvent{
+			EventID:     session.ID,
+			Event:       "session.closed",
+			Phone:       session.Phone(),
+			SessionID:   session.ID,
+			Generation:  session.Generation(),
+			GatewayID:   deps.GatewayID,
+			InstanceID:  deps.InstanceID,
+			Transport:   transport,
+			Reason:      reason,
+			Reliability: contracts.ReliabilityAtLeastOnce,
+		}
+		if _, err := deps.UplinkSink.Deliver(context.Background(), event); err != nil {
+			log.Error().Err(err).Str("session_id", session.ID).
+				Msg("Session closed event delivery failed")
+		}
+		return
 	}
 	if deps.SkipActionHooks {
 		return

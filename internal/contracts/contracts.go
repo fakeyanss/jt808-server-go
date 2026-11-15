@@ -26,6 +26,8 @@ type Reliability string
 const (
 	// ReliabilityBestEffort 先应答再异步投递；出口失败时允许丢弃并计数。
 	ReliabilityBestEffort Reliability = "best_effort"
+	// ReliabilityAtLeastOnce 与 confirm_before_ack 同义：先处理成功再应答。
+	ReliabilityAtLeastOnce Reliability = "at_least_once"
 	// ReliabilityConfirmBeforeAck 必须拿到管控受理结果后才应答；失败由终端重传。
 	ReliabilityConfirmBeforeAck Reliability = "confirm_before_ack"
 )
@@ -49,6 +51,11 @@ type UplinkEvent struct {
 	Reliability Reliability
 	// Generation 是会话 claim 得到的围栏版本；鉴权前为 0，不做归属校验。
 	Generation uint64
+
+	// Event 为事件类型；空值表示普通终端报文，session.closed 表示会话结束。
+	Event string
+	// Reason 仅 session.closed 使用：logout / transport_closed。
+	Reason string
 
 	// 协议头信息，供管控重建报文头并解码消息体。
 	ProtocolVersion     string

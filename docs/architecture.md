@@ -164,6 +164,8 @@ flowchart LR
 
 control 按 eventId 去重，去重窗口由 `cluster.uplink.dedupTTL` 控制。事件体的解码上限分别由 `maxBodyBytes`、`maxRequestBytes`、`maxDecodedBodyBytes` 约束。
 
+会话结束也走该通道：网关在连接关闭时投递 `session.closed`，`eventId` 取 sessionId，携带 `phone/sessionId/generation/gatewayId/instanceId/transport/reason`，`reason` 为 `logout`（0x0003 注销）或 `transport_closed`（连接关闭/超时）。该事件固定为 `at_least_once`，没有补发机会。control 按 sessionId 幂等释放会话目录（仍要求 owner+generation 匹配），只有实际删除归属时才派发一次 `OnDisconnect`；重复投递返回 `already_closed`，不重复释放、不重复派发。
+
 ### 4.3 下行
 
 业务 API 把命令写入 outbox，由 control 的路由器投递：

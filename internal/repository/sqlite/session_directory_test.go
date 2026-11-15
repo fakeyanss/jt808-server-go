@@ -49,12 +49,16 @@ func TestSessionDirectoryClaimIsIdempotentAndFences(t *testing.T) {
 	require.False(t, ok)
 
 	// release 必须同时匹配 owner 与 generation。
-	require.NoError(t, dir.Release(ctx, "13800000001", ownerA, 1))
+	released, err := dir.Release(ctx, "13800000001", ownerA, 1)
+	require.NoError(t, err)
+	require.False(t, released)
 	record, err = dir.Get(ctx, "13800000001")
 	require.NoError(t, err)
 	require.NotNil(t, record)
 
-	require.NoError(t, dir.Release(ctx, "13800000001", ownerB, 2))
+	released, err = dir.Release(ctx, "13800000001", ownerB, 2)
+	require.NoError(t, err)
+	require.True(t, released)
 	record, err = dir.Get(ctx, "13800000001")
 	require.NoError(t, err)
 	require.Nil(t, record)
@@ -109,7 +113,8 @@ func TestSessionDirectoryRouteFollowsNodeLiveness(t *testing.T) {
 	require.False(t, ok)
 
 	// 归属释放后下行路由立即失效。
-	require.NoError(t, dir.Release(ctx, phone, owner, 1))
+	_, err = dir.Release(ctx, phone, owner, 1)
+	require.NoError(t, err)
 	_, ok, err = dir.Route(ctx, phone, "", routeAt)
 	require.NoError(t, err)
 	require.False(t, ok)

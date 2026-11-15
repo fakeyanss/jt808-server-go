@@ -60,10 +60,17 @@ func (r *sessionDirectoryRepository) Claim(ctx context.Context, phone string, ow
 	return generation, nil
 }
 
-func (r *sessionDirectoryRepository) Release(ctx context.Context, phone string, owner repository.SessionOwner, generation uint64) error {
-	_, err := r.store.db.ExecContext(ctx, r.store.stmts.DeleteSessionDirectory(),
+func (r *sessionDirectoryRepository) Release(ctx context.Context, phone string, owner repository.SessionOwner, generation uint64) (bool, error) {
+	result, err := r.store.db.ExecContext(ctx, r.store.stmts.DeleteSessionDirectory(),
 		phone, owner.GatewayID, owner.InstanceID, owner.SessionID, generation)
-	return err
+	if err != nil {
+		return false, err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return affected > 0, nil
 }
 
 func (r *sessionDirectoryRepository) DeleteByGateway(ctx context.Context, gatewayID, instanceID string) error {

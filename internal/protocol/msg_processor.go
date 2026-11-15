@@ -67,12 +67,8 @@ type ProcessorDeps struct {
 	UplinkMaxBodyBytes int64
 	// OnOversized 是超限事件的旁路回调，用于指标与日志。
 	OnOversized func(msgID uint16, phone string, size int)
-	// OnSessionClosed 在网关本地会话关闭后回调；cluster 用它上报 release。
-	// phone 为空或 generation 为 0 时表示该会话没有成功 claim，不需要 release。
-	OnSessionClosed func(sessionID, phone, transport string, generation uint64)
-
 	// SkipActionHooks 为 true 时本进程不派发 action 钩子。
-	// cluster 由 control 统一派发（上行事件 + release），网关不再重复发送。
+	// cluster 由 control 统一派发（上行事件），网关不再重复发送。
 	SkipActionHooks bool
 	// QueryResponse 把网关收到的查询应答体交给下行等待表。
 	QueryResponse func(msgID uint16, header *model.MsgHeader, body []byte)
@@ -528,9 +524,6 @@ func NewJT808MsgProcessor(hooks actionpkg.Hooks, opts ...ProcessorOption) *JT808
 	}
 	if settings.deps.InstanceID != "" {
 		deps.InstanceID = settings.deps.InstanceID
-	}
-	if settings.deps.OnSessionClosed != nil {
-		deps.OnSessionClosed = settings.deps.OnSessionClosed
 	}
 	deps.SkipActionHooks = settings.deps.SkipActionHooks
 	if settings.deps.MediaUpload != nil {

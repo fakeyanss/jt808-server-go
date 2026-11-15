@@ -12,7 +12,6 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/fakeyanss/jt808-server-go/internal/contracts"
-	"github.com/fakeyanss/jt808-server-go/internal/gatewaynode"
 	"github.com/fakeyanss/jt808-server-go/internal/repository"
 	"github.com/fakeyanss/jt808-server-go/internal/repository/memory"
 )
@@ -113,14 +112,14 @@ func TestUplinkServerAuthClaimBypassesDedup(t *testing.T) {
 	require.Equal(t, 2, consumer.calls)
 }
 
-func TestUplinkServerSessionRelease(t *testing.T) {
+func TestUplinkServerSessionClosedIsIdempotent(t *testing.T) {
 	sessions := memory.NewSessionDirectoryRepository()
-	type released struct{ phone, sessionID, transport string }
-	var got []released
+	type closed struct{ phone, sessionID, transport, reason string }
+	var got []closed
 	server, err := NewServer(ServerOptions{
 		Token: testControlToken,
-		OnSessionReleased: func(_ context.Context, phone, sessionID, transport string) {
-			got = append(got, released{phone: phone, sessionID: sessionID, transport: transport})
+		OnSessionClosed: func(_ context.Context, phone, sessionID, transport, reason string) {
+			got = append(got, closed{phone: phone, sessionID: sessionID, transport: transport, reason: reason})
 		},
 	})
 	require.NoError(t, err)
@@ -132,27 +131,81 @@ func TestUplinkServerSessionRelease(t *testing.T) {
 	generation, err := sessions.Claim(context.Background(), "13800000003", owner, time.Now())
 	require.NoError(t, err)
 
-	release := gatewaynode.ReleaseRequest{
-		GatewayID:  owner.GatewayID,
-		InstanceID: owner.InstanceID,
-		Phone:      "13800000003",
-		SessionID:  owner.SessionID,
-		Generation: generation,
-		Transport:  "tcp",
+	envelope := HTTPEnvelope{
+		EventID:     owner.SessionID,
+		Event:       "session.closed",
+		Phone:       "13800000003",
+		GatewayID:   owner.GatewayID,
+		InstanceID:  owner.InstanceID,
+		SessionID:   owner.SessionID,
+		Generation:  generation,
+		Transport:   "TCP",
+		Reason:      "logout",
+		Reliability: string(contracts.ReliabilityAtLeastOnce),
 	}
-	payload, err := json.Marshal(release)
-	require.NoError(t, err)
-	request, err := http.NewRequest(http.MethodPost, httpServer.URL+gatewaynode.PathRelease, bytes.NewReader(payload))
-	require.NoError(t, err)
-	request.Header.Set("Content-Type", "application/json")
-	request.Header.Set("Authorization", "Bearer "+testControlToken)
-	response, err := http.DefaultClient.Do(request)
-	require.NoError(t, err)
-	defer response.Body.Close()
+	response, body := postGenerationEnvelope(t, httpServer.URL, testControlToken, envelope)
 	require.Equal(t, http.StatusOK, response.StatusCode)
+	require.Equal(t, "closed", body["outcome"])
 
 	record, err := sessions.Get(context.Background(), "13800000003")
 	require.NoError(t, err)
 	require.Nil(t, record)
-	require.Equal(t, []released{{phone: "13800000003", sessionID: "sess-1", transport: "tcp"}}, got)
+	require.Equal(t, []closed{{phone: "13800000003", sessionID: "sess-1", transport: "TCP", reason: "logout"}}, got)
+
+	// 同一 eventId 重投：去重短路，不再释放也不再回调。
+	response, body = postGenerationEnvelope(t, httpServer.URL, testControlToken, envelope)
+	require.Equal(t, http.StatusOK, response.StatusCode)
+	require.Equal(t, "duplicate", body["outcome"])
+
+	// 同一会话换 eventId 重投：释放条件不再匹配，只回 already_closed。
+	envelope.EventID = "sess-1-retry"
+	response, body = postGenerationEnvelope(t, httpServer.URL, testControlToken, envelope)
+	require.Equal(t, http.StatusOK, response.StatusCode)
+	require.Equal(t, "already_closed", body["outcome"])
+	require.Len(t, got, 1)
+}
+
+// 归属条件不匹配（旧 generation）时不得释放别人的新会话。
+func TestUplinkServerSessionClosedFencesStaleOwner(t *testing.T) {
+	sessions := memory.NewSessionDirectoryRepository()
+	closedCalls := 0
+	server, err := NewServer(ServerOptions{
+		Token: testControlToken,
+		OnSessionClosed: func(context.Context, string, string, string, string) {
+			closedCalls++
+		},
+	})
+	require.NoError(t, err)
+	server.SetSessionDirectoryRepository(sessions)
+	httpServer := httptest.NewServer(server.Handler())
+	t.Cleanup(httpServer.Close)
+
+	now := time.Now()
+	stale := repository.SessionOwner{GatewayID: "gw-1", InstanceID: "inst-a", SessionID: "sess-1"}
+	staleGeneration, err := sessions.Claim(context.Background(), "13800000004", stale, now)
+	require.NoError(t, err)
+	current := repository.SessionOwner{GatewayID: "gw-1", InstanceID: "inst-b", SessionID: "sess-2"}
+	_, err = sessions.Claim(context.Background(), "13800000004", current, now)
+	require.NoError(t, err)
+
+	envelope := HTTPEnvelope{
+		EventID:     stale.SessionID,
+		Event:       "session.closed",
+		Phone:       "13800000004",
+		GatewayID:   stale.GatewayID,
+		InstanceID:  stale.InstanceID,
+		SessionID:   stale.SessionID,
+		Generation:  staleGeneration,
+		Transport:   "TCP",
+		Reason:      "transport_closed",
+		Reliability: string(contracts.ReliabilityAtLeastOnce),
+	}
+	response, body := postGenerationEnvelope(t, httpServer.URL, testControlToken, envelope)
+	require.Equal(t, http.StatusOK, response.StatusCode)
+	require.Equal(t, "already_closed", body["outcome"])
+	require.Zero(t, closedCalls)
+
+	record, err := sessions.Get(context.Background(), "13800000004")
+	require.NoError(t, err)
+	require.Equal(t, current, record.SessionOwner)
 }

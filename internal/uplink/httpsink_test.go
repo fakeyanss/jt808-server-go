@@ -59,6 +59,22 @@ func TestBuildHTTPEnvelopeCarriesTerminalReply(t *testing.T) {
 	require.Contains(t, string(raw), `"result":1`)
 }
 
+func TestBuildHTTPEnvelopeCarriesSessionClosed(t *testing.T) {
+	envelope, err := BuildHTTPEnvelope(contracts.UplinkEvent{
+		EventID:    "sess-1",
+		Event:      "session.closed",
+		Phone:      "13800000001",
+		SessionID:  "sess-1",
+		Generation: 5,
+		Transport:  "TCP",
+		Reason:     "transport_closed",
+	})
+	require.NoError(t, err)
+	require.Equal(t, "session.closed", envelope.Event)
+	require.Equal(t, "transport_closed", envelope.Reason)
+	require.Equal(t, uint64(5), envelope.Generation)
+}
+
 func newTestSink(t *testing.T, url string, mutate func(*HTTPSinkOptions)) *HTTPSink {
 	t.Helper()
 	options := HTTPSinkOptions{
@@ -286,6 +302,38 @@ func TestHTTPSinkBestEffortRetriesThenSucceeds(t *testing.T) {
 	require.Eventually(t, func() bool {
 		return sink.Stats().Delivered == 1
 	}, 2*time.Second, 10*time.Millisecond)
+}
+
+// at_least_once 事件必须在 control 短暂不可达时同步重试并最终送达。
+func TestHTTPSinkAtLeastOnceRetriesUntilDelivered(t *testing.T) {
+	var attempts atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if attempts.Add(1) == 1 {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	sink := newTestSink(t, server.URL, func(o *HTTPSinkOptions) { o.MaxAttempts = 3 })
+	runTestSink(t, sink)
+
+	event := contracts.UplinkEvent{
+		EventID:     "sess-1",
+		Event:       "session.closed",
+		Phone:       "13800000001",
+		SessionID:   "sess-1",
+		Generation:  3,
+		Transport:   "TCP",
+		Reason:      "logout",
+		Reliability: contracts.ReliabilityAtLeastOnce,
+	}
+	result, err := sink.Deliver(context.Background(), event)
+	require.NoError(t, err)
+	require.True(t, result.Accepted)
+	require.Equal(t, int64(2), attempts.Load())
+	require.Equal(t, int64(1), sink.Stats().Delivered)
 }
 
 func TestHTTPSinkBestEffortFailureStillAccepted(t *testing.T) {
