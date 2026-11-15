@@ -358,6 +358,16 @@ func TestHTTPSinkPerClassAttempts(t *testing.T) {
 			wantTries: 2,
 		},
 		{
+			name:      "session closed built-in default",
+			global:    1,
+			overrides: AttemptOverrides{},
+			event: contracts.UplinkEvent{
+				EventID: "sess-2", Event: "session.closed", Phone: "13800000004",
+				SessionID: "sess-2", Generation: 2, Reliability: contracts.ReliabilityAtLeastOnce,
+			},
+			wantTries: 2,
+		},
+		{
 			name:      "location override disables retry",
 			global:    3,
 			overrides: AttemptOverrides{Location: 1},

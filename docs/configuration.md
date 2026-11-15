@@ -106,7 +106,7 @@
 | `uplink.http.timeoutMs` | `3000` | 单次投递超时；confirm-before-ack 必须小于终端重传窗口 |
 | `uplink.http.queueSize` / `workers` | `1024` / `4` | best-effort 有界队列与后台 worker |
 | `uplink.http.maxAttempts` | `1` | 单条事件投递次数上限，范围 1–3 |
-| `uplink.http.maxAttemptsByClass.*` | 回落到 `maxAttempts` | 按分类覆盖投递次数；可用键 `default`/`location`/`batchLocation`/`alarm`/`sessionClosed`，范围 1–3 |
+| `uplink.http.maxAttemptsByClass.*` | `sessionClosed` 为 2，其余回落到 `maxAttempts` | 按分类覆盖投递次数；可用键 `default`/`location`/`batchLocation`/`alarm`/`sessionClosed`，范围 1–3 |
 | `uplink.http.gatewayId` | 主机名-进程号 | 事件信封中的网关标识 |
 | `uplink.http.authGraceMs` | `1800000` | 缓存档案过期且 control 不可达时的放行宽限期；从未查到档案始终拒绝 |
 | `uplink.reliability.default` | `best_effort` | 其余上行 |
@@ -116,7 +116,19 @@
 
 `best_effort` 先应答后落库，可能丢一条；`at_least_once` 先落库再应答，落库失败终端重传，可能重复落库。注册、鉴权、查询应答等需要业务结果决定应答内容的消息始终先执行业务。
 
-投递次数按上行分类取值：`location`（实时定位）、`batchLocation`（批量定位 0x0704）、`alarm`（带报警位的 0x0200）、`sessionClosed`（会话结束事件）、`default`（其余事件）。`maxAttemptsByClass` 中未配置的分类回落到 `uplink.http.maxAttempts`，因此可以只给 `sessionClosed` 加重试而保持定位事件一次即返回；`sessionClosed` 没有终端重传来兜底，通常应配置 2–3 次。
+投递次数按上行分类取值：`location`（实时定位）、`batchLocation`（批量定位 0x0704）、`alarm`（带报警位的 0x0200）、`sessionClosed`（会话结束事件）、`default`（其余事件）。`maxAttemptsByClass` 中未配置的分类回落到 `uplink.http.maxAttempts`；`sessionClosed` 是例外，代码层默认 2 次（首发 + 1 次重试），即使整段 `maxAttemptsByClass` 缺省也按 2 次投递，因为该事件没有终端重传来兜底。配置示例：
+
+```yaml
+uplink:
+  http:
+    maxAttempts: 1
+    maxAttemptsByClass:
+      sessionClosed: 2
+      # alarm: 3
+      # batchLocation: 3
+```
+
+这样定位事件仍一次即返回，而会话结束事件有一次重试机会。
 
 ## 6. 下行 outbox
 

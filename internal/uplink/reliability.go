@@ -109,6 +109,13 @@ type AttemptOverrides struct {
 	SessionClosed int
 }
 
+// attemptClassDefaults 是分类的代码级默认投递次数（含首次）。
+// 未显式配置时优先于全局 maxAttempts：session.closed 没有终端重传来兜底，
+// 默认首发 + 1 次重试，避免出口短暂不可达时直接丢事件。
+var attemptClassDefaults = map[Class]int{
+	ClassSessionClosed: 2,
+}
+
 // AttemptPolicy 按分类选择单条事件的投递次数。
 type AttemptPolicy struct {
 	fallback  int
@@ -137,6 +144,9 @@ func (p AttemptPolicy) For(class Class) int {
 		attempts = p.overrides.SessionClosed
 	default:
 		attempts = p.overrides.Default
+	}
+	if attempts < 1 {
+		attempts = attemptClassDefaults[class]
 	}
 	if attempts < 1 {
 		attempts = p.fallback

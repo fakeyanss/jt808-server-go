@@ -213,14 +213,12 @@ uplink:
     workers: 4
     # 单条事件投递次数上限（含首次）；默认不重试，允许 1..3。
     maxAttempts: 1
-    # 按上行分类覆盖 maxAttempts；未配置的分类（含整段缺省）回落到 maxAttempts。
+    # 按上行分类覆盖 maxAttempts；未配置的分类回落到 maxAttempts。
     # 分类口径与 uplink.reliability 一致，另加 sessionClosed（会话结束事件）。
-    # maxAttemptsByClass:
-    #   default: 1
-    #   location: 1
-    #   batchLocation: 3
-    #   alarm: 3
-    #   sessionClosed: 3
+    # sessionClosed 在代码层默认为 2（首发 + 1 次重试），此处显式写出便于调整；
+    # 其余分类可按需覆盖：default / location / batchLocation / alarm。
+    maxAttemptsByClass:
+      sessionClosed: 2
     # 事件信封中的网关标识；缺省为 主机名-进程号。
     gatewayId: ""
   reliability:

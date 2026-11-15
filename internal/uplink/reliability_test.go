@@ -51,6 +51,10 @@ func TestAttemptPolicyFallsBackToGlobal(t *testing.T) {
 	require.Equal(t, 2, policy.For(ClassBatchLocation))
 	require.Equal(t, 2, policy.For(ClassDefault))
 
+	// session.closed 未显式配置时使用代码层默认 2 次，而不是回落到全局值。
+	require.Equal(t, 2, NewAttemptPolicy(1, AttemptOverrides{}).For(ClassSessionClosed))
+	require.Equal(t, 3, NewAttemptPolicy(1, AttemptOverrides{SessionClosed: 3}).For(ClassSessionClosed))
+
 	// 非法全局值按 1 次处理，保证至少投递一次。
 	require.Equal(t, 1, NewAttemptPolicy(0, AttemptOverrides{}).For(ClassDefault))
 }

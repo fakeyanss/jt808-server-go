@@ -162,7 +162,7 @@ flowchart LR
 - `best_effort`：进入有界队列，队列满即丢弃并计数；适合实时定位等可由下一条覆盖的数据；
 - `at_least_once`：同步等待 control 确认后再向终端应答；control 失败则不应答，由终端按 808 协议重传。
 
-control 按 eventId 去重，去重窗口由 `cluster.uplink.dedupTTL` 控制。事件体的解码上限分别由 `maxBodyBytes`、`maxRequestBytes`、`maxDecodedBodyBytes` 约束。投递次数默认取 `uplink.http.maxAttempts`，可按分类（`location`/`batchLocation`/`alarm`/`sessionClosed`/`default`）用 `maxAttemptsByClass` 覆盖，未配置的分类回落到全局值。
+control 按 eventId 去重，去重窗口由 `cluster.uplink.dedupTTL` 控制。事件体的解码上限分别由 `maxBodyBytes`、`maxRequestBytes`、`maxDecodedBodyBytes` 约束。投递次数默认取 `uplink.http.maxAttempts`，可按分类（`location`/`batchLocation`/`alarm`/`sessionClosed`/`default`）用 `maxAttemptsByClass` 覆盖，未配置的分类回落到全局值；`sessionClosed` 例外，代码层默认 2 次（首发 + 1 次重试）。
 
 会话结束也走该通道：网关在连接关闭时投递 `session.closed`，`eventId` 取 sessionId，携带 `phone/sessionId/generation/gatewayId/instanceId/transport/reason`，`reason` 为 `logout`（0x0003 注销）或 `transport_closed`（连接关闭/超时）。该事件固定为 `at_least_once`，没有补发机会。control 按 sessionId 幂等释放会话目录（仍要求 owner+generation 匹配），只有实际删除归属时才派发一次 `OnDisconnect`；重复投递返回 `already_closed`，不重复释放、不重复派发。
 
