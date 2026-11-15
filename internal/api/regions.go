@@ -139,7 +139,7 @@ func (h *handler) postDeviceRegionsQuery(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 		return
 	}
-	broker := h.runtimeStores.RegionResponses
+	broker := h.runtimeState.RegionResponses
 	response, cancel, err := broker.Register(phone, request.QueryType)
 	if err != nil {
 		c.JSON(http.StatusConflict, gin.H{"err": err.Error()})

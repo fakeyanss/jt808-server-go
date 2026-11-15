@@ -37,14 +37,14 @@ type Queryer interface {
 // Run 启动业务 API。downlink 为下行契约实现；sender 是豁免清单（查询/只读/幂等）
 // 的单发通道，二者在 control-only 下均可跨进程工作。未启用 outbox 时下行入口
 // 直接发送，不提供命令状态查询。
-func Run(ctx context.Context, serv *server.TCPServer, cfg *config.Config, repos repository.Repositories, runtimeStores *runtime.Stores, apiOptions config.APIOptions, alarmServ *alarmserver.Server, attachments repository.AttachmentFileRepository, attachmentAllocator attachment.AttachmentAllocator, blob storage.BlobStore, downlink contracts.Downlink, sender contracts.DownlinkSender, mediaUpload *mediaupload.Store, queryer Queryer, playback playback.PlaybackLibrary, ftpTasks *control.FTPTaskManager, ftpPort uint16, ftpAdvertiseIP string) {
+func Run(ctx context.Context, serv *server.TCPServer, cfg *config.Config, repos repository.Repositories, runtimeState *runtime.State, apiOptions config.APIOptions, alarmServ *alarmserver.Server, attachments repository.AttachmentFileRepository, attachmentAllocator attachment.AttachmentAllocator, blob storage.BlobStore, downlink contracts.Downlink, sender contracts.DownlinkSender, mediaUpload *mediaupload.Store, queryer Queryer, playback playback.PlaybackLibrary, ftpTasks *control.FTPTaskManager, ftpPort uint16, ftpAdvertiseIP string) {
 	// web server structure
 	gin.SetMode(gin.ReleaseMode)
 	router := gin.Default()
 	// 顺序为审计 → 限流 → 鉴权：审计能看到被拒绝的请求，限流在鉴权前挡住洪峰。
 	router.Use(httpguard.Audit(), httpguard.RateLimit(apiOptions.RatePerSecond, apiOptions.Burst), httpguard.Auth(apiOptions.Token))
 	api := router.Group("/api")
-	h := newHandler(serv, cfg, repos, runtimeStores, apiOptions, alarmServ, attachments, attachmentAllocator, blob, downlink, sender, mediaUpload, queryer, playback, ftpTasks, ftpPort, ftpAdvertiseIP)
+	h := newHandler(serv, cfg, repos, runtimeState, apiOptions, alarmServ, attachments, attachmentAllocator, blob, downlink, sender, mediaUpload, queryer, playback, ftpTasks, ftpPort, ftpAdvertiseIP)
 
 	registerMediaRoutes(api, h.devices, h.repos.MediaFiles, h.repos.MediaCaptures, h.repos.MediaSearches, h.mediaUpload, h.blob)
 	registerPlaybackRoutes(api, h.devices, h.connRegistry, h.downlink, h.playback)

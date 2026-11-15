@@ -49,7 +49,7 @@ type ProcessorDeps struct {
 	// Repos 是协议层可用的仓储接口集合；只允许依赖 repository 的接口，
 	// 不得引入具体后端或 database 装配层。数据面角色注入内存实现。
 	Repos   repository.Repositories
-	Runtime *runtime.Stores
+	Runtime *runtime.State
 	// Uplink 为空表示上行可靠性未配置（全部 best_effort）。
 	Uplink *uplink.Policy
 	// UplinkSink 为空表示使用进程内直连处理（standalone 默认）；
@@ -927,7 +927,7 @@ func decodeMessageSafely(msg model.JT808Msg, pkt *model.PacketData) (err error) 
 	return msg.Decode(pkt)
 }
 
-func processSegmentPacket(ctx context.Context, pkt *model.PacketData, stores *runtime.Stores) (*model.ProcessData, error) {
+func processSegmentPacket(ctx context.Context, pkt *model.PacketData, stores *runtime.State) (*model.ProcessData, error) {
 	// JT1078 4.1节定义，对每个分包回复8001
 	headerCopy := *pkt.Header
 	attrCopy := *pkt.Header.Attr

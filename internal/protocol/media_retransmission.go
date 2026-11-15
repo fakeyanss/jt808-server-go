@@ -24,7 +24,7 @@ type mediaRetransmissionState struct {
 	firstSerial uint16
 	mediaID     uint32
 	header      model.MsgHeader
-	stores      *runtime.Stores
+	stores      *runtime.State
 	timer       *time.Timer
 	attempts    int
 }
@@ -41,7 +41,7 @@ func mediaRetransmissionKey(sessionID, phone string, msgID, firstSerial uint16) 
 // scheduleMediaRetransmission registers an in-progress media upload (0x0801)
 // for missing-packet detection. The first fragment's body carries the
 // MultiMediaID; later fragments rely on the state cached by the first one.
-func scheduleMediaRetransmission(session *model.Session, packet *model.PacketData, stores *runtime.Stores) {
+func scheduleMediaRetransmission(session *model.Session, packet *model.PacketData, stores *runtime.State) {
 	if session == nil || packet == nil || packet.Header == nil || packet.Header.Frag == nil {
 		return
 	}

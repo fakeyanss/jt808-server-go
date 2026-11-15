@@ -49,7 +49,7 @@ func (s *UDPServer) SetDeps(deps protocol.ProcessorDeps) {
 	s.deps = deps
 }
 
-func (s *UDPServer) runtimeStores() *runtime.Stores {
+func (s *UDPServer) runtimeState() *runtime.State {
 	if s.deps.Runtime != nil {
 		return s.deps.Runtime
 	}
@@ -106,7 +106,7 @@ func (s *UDPServer) Start() {
 					s.metrics.IncAckTimeout()
 				}
 			}
-			_ = s.runtimeStores().Conn.Bind(context.Background(), session)
+			_ = s.runtimeState().Conn.Bind(context.Background(), session)
 			routines.GoSafe(func() { serveSession(session, s.hooks, s.deps) })
 		}
 		s.mu.Unlock()
@@ -135,7 +135,7 @@ func (s *UDPServer) remove(key string) {
 	s.mu.Lock()
 	delete(s.sessions, key)
 	s.mu.Unlock()
-	s.runtimeStores().Conn.Unbind(context.Background(), key)
+	s.runtimeState().Conn.Unbind(context.Background(), key)
 }
 
 type udpSessionConn struct {
