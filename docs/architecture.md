@@ -7,6 +7,10 @@
 系统按“接入、协议、业务、元数据、投递、运维”分界，而不是按代码目录分界。三件事的变化频率不同：连接与并发模型随部署规模变化，编解码与版本差异随协议标准变化，业务落库与查询随产品需求变化。把三者隔开，才能在增加接入量时不改协议、换元数据后端时不改业务、补版本差异时不碰网络层。
 
 ```mermaid
+---
+config:
+  theme: redux-color
+---
 flowchart TD
     A["终端上行帧"] --> B["recv：读取完整帧"]
     B --> C["decode：去转义 / 校验 / 解消息头"]
@@ -75,6 +79,10 @@ TCP 与 UDP 复用同一条 Pipeline，每个会话一个协程串行处理：
 按角色拆成独立进程，协议内核不变。拆分的关键不是进程数量，而是状态归属。
 
 ```mermaid
+---
+config:
+  theme: redux-color
+---
 flowchart LR
     subgraph TERMS["终端侧"]
         T808["808 / 苏标终端"]
@@ -82,13 +90,13 @@ flowchart LR
     end
 
     subgraph DATA["数据面：不连业务库"]
-        GW["jt-signal<br/>连接 / 会话 / 分包 / ACK 配对 / 下行契约"]
-        MED["jt-media<br/>RTP / PS / 帧环 / 切片"]
-        ATT["jt-attachment<br/>附件组装 / 暂存 / 1078 FTP"]
+        GW["jt-signal<br/>连接 / 会话 / 分包 / ACK 配对 / 下行契约"]@{ shape: procs }
+        MED["jt-media<br/>RTP / PS / 帧环 / 切片"]@{ shape: procs }
+        ATT["jt-attachment<br/>附件组装 / 暂存 / 1078 FTP"]@{ shape: procs }
     end
 
     subgraph META["元数据面：control 独占"]
-        CTL["jt-control<br/>业务 API / 业务处理 / outbox / 会话目录 / 节点调度"]
+        CTL["jt-control<br/>业务 API / 业务处理 / outbox / 会话目录 / 节点调度"]@{ shape: procs }
         DB[("MySQL")]
         CTL --> DB
     end
@@ -166,6 +174,10 @@ control 按 eventId 去重，去重窗口由 `cluster.uplink.dedupTTL` 控制。
 网关收到下行请求后按幂等键去重，分配流水号并写入终端连接。命令状态通过终端 `0x0001/0x8001` 回填 outbox。
 
 ```mermaid
+---
+config:
+  theme: redux-color
+---
 sequenceDiagram
     autonumber
     participant API as 业务 API
@@ -216,6 +228,10 @@ sequenceDiagram
 同一 `(phone, channel)` 已有同类型会话时复用，不重复下发信令。媒体节点掉线或过期不迁移既有流，终端重连后由新分配接管。
 
 ```mermaid
+---
+config:
+  theme: redux-color
+---
 sequenceDiagram
     autonumber
     participant API as 业务 API
