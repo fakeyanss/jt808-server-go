@@ -46,7 +46,7 @@ jobs:
           cache: true
 
       - name: Build and package
-        run: bash scripts/package-release.sh "${{ github.event.release.tag_name }}" "${{ matrix.os }}" "${{ matrix.arch }}"
+        run: bash scripts/build.sh release "${{ github.event.release.tag_name }}" "${{ matrix.os }}" "${{ matrix.arch }}"
 
       - uses: actions/upload-artifact@v4
         with:

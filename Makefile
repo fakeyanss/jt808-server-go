@@ -2,13 +2,10 @@
 CURDIR := $(shell pwd)
 # 设置编译时所需要的 Go 环境
 export GOENV = $(CURDIR)/go.env
-# 程序编译产出信息
-PROG_NAME := jt808-server-go
-TEST_CLIENT_NAME := jt808-client-go
-MIGRATE_NAME := jt808-migrate
-BUILD_TIME := $(shell date +'%Y-%m-%dT%H:%M:%S')
+# 二进制清单只有一份：build/targets.tsv，由 scripts/build.sh 读取
 BUILD_COMMIT := $(shell git rev-parse --short HEAD)
-$(info BUILD_TIME: $(BUILD_TIME))
+# release 版本号：默认取最近的 tag，可用 make release VERSION=v1.2.3 覆盖
+VERSION ?= $(shell git describe --tags --abbrev=0 2>/dev/null || echo dev)
 $(info BUILD_COMMIT: $(BUILD_COMMIT))
 $(info ========================================)
 
@@ -22,27 +19,19 @@ set-env:
 test: set-env
 	bash $(CURDIR)/scripts/build.sh test
 
-# complile 阶段，执行编译命令并打包，可单独执行命令: make compile
+# compile 阶段，把清单里全部二进制编译到 target/debug/，可单独执行命令: make compile
 compile: set-env
-	bash $(CURDIR)/scripts/build.sh compile $(PROG_NAME)
-compile-client: set-env
-	bash $(CURDIR)/scripts/build.sh compile $(TEST_CLIENT_NAME)
-compile-migrate: set-env
-	bash $(CURDIR)/scripts/build.sh compile $(MIGRATE_NAME)
+	bash $(CURDIR)/scripts/build.sh compile
 
 run: set-env
 	go run $(CURDIR)/cmd/jt808-server/main.go -c configs/default.yaml
 run-client: set-env
 	go run $(CURDIR)/cmd/jt808-client/main.go -c $(CURDIR)/client/configs/default.yaml
 
-# release 阶段，单独执行交叉编译命令并打包
+# release 阶段：交叉编译 6 个平台并按发布格式打包到 target/dist/
+# 也可只构建单平台: make release OS=linux ARCH=arm64
 release: set-env
-	bash $(CURDIR)/scripts/build.sh release $(PROG_NAME)
-	bash $(CURDIR)/scripts/build.sh release $(MIGRATE_NAME)
-release-client: set-env
-	bash $(CURDIR)/scripts/build.sh release $(TEST_CLIENT_NAME)
-release-migrate: set-env
-	bash $(CURDIR)/scripts/build.sh release $(MIGRATE_NAME)
+	bash $(CURDIR)/scripts/build.sh release $(VERSION) $(OS) $(ARCH)
 
 # smoke 阶段，构建真实 server/client 二进制并跑端到端冒烟，可单独执行: make smoke
 # 可选: --keep-logs 保留日志，或 SMOKE_TCP_PORT/SMOKE_UDP_PORT/SMOKE_HTTP_PORT 覆盖端口
@@ -65,4 +54,4 @@ statline:
 	echo "TOTAL_CODE_LINE: $$total"
 
 # avoid filename conflict and speed up build
-.PHONY: all test compile release clean smoke compile-migrate release-migrate
+.PHONY: all set-env test compile run run-client release smoke clean dockerbuild statline

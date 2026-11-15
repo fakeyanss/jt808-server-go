@@ -5,9 +5,9 @@
 FROM golang:1.26.10-alpine AS build
 
 ARG GOPROXY=https://goproxy.cn,direct
-ARG VERSION=dev
-ARG COMMIT=unknown
-ARG BUILD_TIME=unknown
+# buildx 会自动注入目标平台；本机 docker build 时为空，脚本回退到 go env。
+ARG TARGETOS
+ARG TARGETARCH
 
 ENV CGO_ENABLED=0 \
     GOPROXY=${GOPROXY} \
@@ -15,17 +15,16 @@ ENV CGO_ENABLED=0 \
 
 WORKDIR /src
 
+# 统一构建脚本是 bash 写的，构建镜像里补一个 bash；运行时镜像不装。
+RUN apk add --no-cache bash
+
 COPY go.mod go.sum ./
 RUN go mod download
 
 COPY . .
 
-RUN mkdir -p /out && \
-    for cmd in jt-server-standalone jt-signal jt-control jt-media jt-attachment jt808-migrate; do \
-      go build -trimpath -buildvcs=false \
-        -ldflags "-s -w -X main.buildTime=${BUILD_TIME} -X main.buildCommit=${COMMIT}" \
-        -o "/out/${cmd}" "./cmd/${cmd}"; \
-    done
+# 镜像内的二进制清单由 build/targets.tsv 决定（image 列为 1 的目标）。
+RUN mkdir -p /out && bash scripts/build.sh image /out
 
 # Runtime stage：Alpine 提供 busybox wget 用于健康检查，额外补 CA 证书与时区数据。
 FROM alpine:3.22
