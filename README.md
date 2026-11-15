@@ -121,7 +121,7 @@ flowchart TB
 | 苏标附件 | `jt-attachment` | 附件 TCP/UDP 接入、暂存、切片上传、进度上报、1078 FTP | 否 |
 | 单机 | `jt-server-standalone` | 上述全部角色同进程 | 可选 SQLite/MySQL |
 
-上行 pipeline、下行命令链路、1078 播放时序与状态归属见[架构与集群模式](docs/architecture.md)；目录职责与新增仓储/后端/业务模块的步骤见[贡献指南的目录结构与扩展方式](CONTRIBUTING.md#目录结构与扩展方式)。
+上行 pipeline、下行命令链路、1078 播放时序与状态归属见[架构与集群模式](docs/architecture.md)；目录职责、依赖方向与新增仓储/后端/业务模块/协议消息的步骤见[代码结构与扩展指南](docs/codebase.md)。
 
 ## 快速开始
 
@@ -206,10 +206,11 @@ docker compose -f deploy/docker-compose.cluster.yml up -d
 | [安装部署](docs/installation.md) | 前置条件、编译、单机与集群部署、Docker、数据库迁移、端口规划 |
 | [配置说明](docs/configuration.md) | 存储、接入、可靠性、附件、媒体、集群、探针与日志配置项 |
 | [架构与集群模式](docs/architecture.md) | 消息流转、模块职责、状态归属、角色拆分、会话目录、节点调度与故障语义 |
+| [代码结构与扩展](docs/codebase.md) | 目录职责、分层与接口实现对应、依赖方向、新增仓储/后端/业务模块/协议消息步骤 |
 | [协议覆盖](docs/protocol-coverage.md) | 808 逐消息状态、1078/苏标信令清单、注册表自动生成段 |
 | [业务 API](docs/api.md) | 设备、位置、参数、报警、媒体、附件、播放与 FTP 接口 |
 | [运维手册](docs/operations.md) | 探针、指标、保留期、备份恢复、回滚、压测基线与常见问题 |
-| [贡献指南](CONTRIBUTING.md) | 分支、提交、检查命令、目录结构与扩展方式、协议消息开发与迁移规范 |
+| [贡献指南](CONTRIBUTING.md) | 分支、提交、检查命令、代码风格、PR 与 review 流程 |
 | [安全策略](SECURITY.md) | 漏洞报告渠道与部署安全边界 |
 | [历史文档](docs/archive/) | 早期设计、路线图与生态调研，仅作归档，不再维护 |
 
