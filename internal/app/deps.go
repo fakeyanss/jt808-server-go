@@ -207,6 +207,13 @@ func buildDeps(spec Spec, cfg *config.Config, s settings) *deps {
 			QueueSize:   uplinkSinkOptions.HTTP.QueueSize,
 			Workers:     uplinkSinkOptions.HTTP.Workers,
 			MaxAttempts: uplinkSinkOptions.HTTP.MaxAttempts,
+			Attempts: uplink.AttemptOverrides{
+				Default:       uplinkSinkOptions.HTTP.MaxAttemptsByClass.Default,
+				Location:      uplinkSinkOptions.HTTP.MaxAttemptsByClass.Location,
+				BatchLocation: uplinkSinkOptions.HTTP.MaxAttemptsByClass.BatchLocation,
+				Alarm:         uplinkSinkOptions.HTTP.MaxAttemptsByClass.Alarm,
+				SessionClosed: uplinkSinkOptions.HTTP.MaxAttemptsByClass.SessionClosed,
+			},
 			OnUnknownDeviceDropped: func(phone string) {
 				metrics.IncUplinkUnknownDropped()
 			},
@@ -277,9 +284,24 @@ func buildDeps(spec Spec, cfg *config.Config, s settings) *deps {
 	}
 
 	var hooks action.Hooks = action.Noop{}
-	if cfg.Server.Action != nil && cfg.Server.Action.HTTP != nil && cfg.Server.Action.HTTP.URL != "" {
-		hooks = action.NewHTTPCallback(cfg.Server.Action.HTTP.URL, time.Duration(cfg.Server.Action.HTTP.TimeoutMS)*time.Millisecond)
-		log.Info().Str("url", cfg.Server.Action.HTTP.URL).Msg("Action HTTP callback enabled")
+	var actionEvents []string
+	if cfg.Server.Action != nil {
+		actionEvents = cfg.Server.Action.Events
+		if cfg.Server.Action.HTTP != nil && cfg.Server.Action.HTTP.URL != "" {
+			hooks = action.NewHTTPCallback(cfg.Server.Action.HTTP.URL, time.Duration(cfg.Server.Action.HTTP.TimeoutMS)*time.Millisecond)
+			log.Info().Str("url", cfg.Server.Action.HTTP.URL).Msg("Action HTTP callback enabled")
+		}
+	}
+	// 事件范围装饰在最外层回调之前：内部触发（如自动 0x9208）仍能看到全部事件，
+	// 只有对外回调按订阅范围过滤。standalone 与 cluster 共用同一装配。
+	filteredHooks, filterErr := action.NewFilter(hooks, actionEvents)
+	if filterErr != nil {
+		log.Error().Err(filterErr).Msg("Invalid server.action.events")
+		os.Exit(1)
+	}
+	hooks = filteredHooks
+	if len(actionEvents) > 0 {
+		log.Info().Strs("events", actionEvents).Msg("Action hook event scope configured")
 	}
 
 	if cfg.Server.Banner.Enable {

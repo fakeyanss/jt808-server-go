@@ -18,10 +18,13 @@
 | `server.banner.enable` / `bannerPath` | `true` / `configs/banner.txt` | 启动横幅 |
 | `server.action.http.url` | 空 | 生命周期 Hook 回调地址；空则不启用 |
 | `server.action.http.timeoutMs` | `2000` | Hook 回调超时 |
+| `server.action.events` | 空（全量） | 只派发列出的事件类型；非法事件名启动即失败 |
 
 回调为异步 JSON POST，单后台协程 + 有界队列（256），队列满丢弃并记 warn；不重试、不带鉴权头。每个事件都带 `eventId`（同一条报文在 gateway/control 两侧一致，0x0704 的逐条位置追加 `#index`），便于消费端幂等与关联。
 
-**单点发出**：standalone 由单机进程派发；cluster 只由 control 派发（注册/鉴权来自上行事件，定位/报警来自业务处理，断连来自 release 回调），gateway 不再重复发送。
+`server.action.events` 用文档事件表中的 `event` 名（大小写不敏感）限定派发范围，例如 `[alarm, waybill]` 只发报警与电子运单；留空或省略表示全量派发，保持默认行为。范围只作用于对外回调，内部的自动 0x9208 触发等逻辑不受影响；standalone 与 cluster 使用同一套过滤，语义一致。
+
+**单点发出**：standalone 由单机进程派发；cluster 只由 control 派发（注册/鉴权来自上行事件，定位/报警来自业务处理，断连来自 session.closed 事件），gateway 不再重复发送。
 
 | 事件 `event` | 消息 | payload 业务字段（除 `eventId/phone/serial/time` 外） |
 |---|---|---|
@@ -103,6 +106,7 @@
 | `uplink.http.timeoutMs` | `3000` | 单次投递超时；confirm-before-ack 必须小于终端重传窗口 |
 | `uplink.http.queueSize` / `workers` | `1024` / `4` | best-effort 有界队列与后台 worker |
 | `uplink.http.maxAttempts` | `1` | 单条事件投递次数上限，范围 1–3 |
+| `uplink.http.maxAttemptsByClass.*` | 回落到 `maxAttempts` | 按分类覆盖投递次数；可用键 `default`/`location`/`batchLocation`/`alarm`/`sessionClosed`，范围 1–3 |
 | `uplink.http.gatewayId` | 主机名-进程号 | 事件信封中的网关标识 |
 | `uplink.http.authGraceMs` | `1800000` | 缓存档案过期且 control 不可达时的放行宽限期；从未查到档案始终拒绝 |
 | `uplink.reliability.default` | `best_effort` | 其余上行 |
@@ -111,6 +115,8 @@
 | `uplink.reliability.alarm` | `at_least_once` | 报警定位 `0x0200` |
 
 `best_effort` 先应答后落库，可能丢一条；`at_least_once` 先落库再应答，落库失败终端重传，可能重复落库。注册、鉴权、查询应答等需要业务结果决定应答内容的消息始终先执行业务。
+
+投递次数按上行分类取值：`location`（实时定位）、`batchLocation`（批量定位 0x0704）、`alarm`（带报警位的 0x0200）、`sessionClosed`（会话结束事件）、`default`（其余事件）。`maxAttemptsByClass` 中未配置的分类回落到 `uplink.http.maxAttempts`，因此可以只给 `sessionClosed` 加重试而保持定位事件一次即返回；`sessionClosed` 没有终端重传来兜底，通常应配置 2–3 次。
 
 ## 6. 下行 outbox
 

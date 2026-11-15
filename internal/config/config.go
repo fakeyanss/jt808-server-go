@@ -67,6 +67,9 @@ type serverConf struct {
 // actionConf 配置业务数据回调。目前仅提供 HTTP 示例实现。
 type actionConf struct {
 	HTTP *httpActionConf `yaml:"http"`
+	// Events 限定回调派发的事件类型；为空表示全量派发。
+	// 非法事件名在启动时直接拒绝。
+	Events []string `yaml:"events"`
 }
 
 type httpActionConf struct {
@@ -251,10 +254,23 @@ type uplinkHTTPConf struct {
 	QueueSize   int    `yaml:"queueSize"`
 	Workers     int    `yaml:"workers"`
 	MaxAttempts int    `yaml:"maxAttempts"`
-	GatewayID   string `yaml:"gatewayId"`
+	// MaxAttemptsByClass 按上行分类覆盖 maxAttempts；未配置的分类回落到 maxAttempts。
+	MaxAttemptsByClass *uplinkAttemptsConf `yaml:"maxAttemptsByClass"`
+	GatewayID          string              `yaml:"gatewayId"`
 	// AuthGraceMS 是网关只读鉴权的宽限期（毫秒）：缓存过期后 control 不可达时，
 	// 在该窗口内继续按缓存档案放行；0 表示使用默认值。
 	AuthGraceMS int `yaml:"authGraceMs"`
+}
+
+// uplinkAttemptsConf 按上行分类覆盖投递次数（含首次）。
+// 0 表示未配置，回落到 uplink.http.maxAttempts。
+type uplinkAttemptsConf struct {
+	Default       int `yaml:"default"`
+	Location      int `yaml:"location"`
+	BatchLocation int `yaml:"batchLocation"`
+	Alarm         int `yaml:"alarm"`
+	// SessionClosed 对应 session.closed 会话结束事件。
+	SessionClosed int `yaml:"sessionClosed"`
 }
 
 type uplinkReliabilityConf struct {
@@ -369,9 +385,21 @@ type UplinkHTTPOptions struct {
 	// 同一 phone 的事件固定落在同一分片。
 	Workers     int
 	MaxAttempts int
-	GatewayID   string
+	// MaxAttemptsByClass 是分类覆盖；零值字段回落到 MaxAttempts。
+	MaxAttemptsByClass UplinkAttemptOverrides
+	GatewayID          string
 	// AuthGrace 是缓存过期后 control 不可达时的有限放行窗口。
 	AuthGrace time.Duration
+}
+
+// UplinkAttemptOverrides 是分类投递次数的归一化配置。
+// 字段为 0 表示未配置，回落到 uplink.http.maxAttempts。
+type UplinkAttemptOverrides struct {
+	Default       int
+	Location      int
+	BatchLocation int
+	Alarm         int
+	SessionClosed int
 }
 
 // DefaultUplinkSinkOptions 返回默认上行出口：本地直连内置处理，不产生外部依赖。
@@ -450,6 +478,29 @@ func (c *Config) ParseUplinkSink() (UplinkSinkOptions, error) {
 			return UplinkSinkOptions{}, fmt.Errorf("uplink.http.maxAttempts must be in [1, 3], got %d", conf.MaxAttempts)
 		}
 		options.HTTP.MaxAttempts = conf.MaxAttempts
+	}
+	if overrides := conf.MaxAttemptsByClass; overrides != nil {
+		fields := []struct {
+			name  string
+			value int
+			dest  *int
+		}{
+			{"default", overrides.Default, &options.HTTP.MaxAttemptsByClass.Default},
+			{"location", overrides.Location, &options.HTTP.MaxAttemptsByClass.Location},
+			{"batchLocation", overrides.BatchLocation, &options.HTTP.MaxAttemptsByClass.BatchLocation},
+			{"alarm", overrides.Alarm, &options.HTTP.MaxAttemptsByClass.Alarm},
+			{"sessionClosed", overrides.SessionClosed, &options.HTTP.MaxAttemptsByClass.SessionClosed},
+		}
+		for _, field := range fields {
+			if field.value == 0 {
+				continue
+			}
+			if field.value < 1 || field.value > 3 {
+				return UplinkSinkOptions{}, fmt.Errorf(
+					"uplink.http.maxAttemptsByClass.%s must be in [1, 3], got %d", field.name, field.value)
+			}
+			*field.dest = field.value
+		}
 	}
 	if conf.AuthGraceMS != 0 {
 		if conf.AuthGraceMS < 1 || conf.AuthGraceMS > int((24*time.Hour).Milliseconds()) {

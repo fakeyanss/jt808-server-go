@@ -66,7 +66,7 @@ TCP 与 UDP 复用同一条 Pipeline，每个会话一个协程串行处理：
 | 媒体服务 | 1078 RTP 接收、PS 解复用、H.264/音频输出、帧环、FLV/RTMP、录像切片 | 不做转码，不内置 RTMP 服务器 |
 | 业务 API | 设备/历史查询、下行命令入口、媒体/附件/播放接口 | 不直接操作数据库，不持有协议会话 |
 | 管理面 | 探针、指标、会话运维、历史分页 | 不参与终端协议处理链路 |
-| 生命周期 Hook | 把注册、鉴权、定位、报警、断连事件异步通知第三方 | 不保证送达，不阻塞协议处理 |
+| 生命周期 Hook | 把注册、鉴权、定位、报警、断连等 16 类事件异步通知第三方；`server.action.events` 可限定派发范围 | 不保证送达，不阻塞协议处理 |
 
 ## 3. 两种部署形态
 
@@ -162,7 +162,7 @@ flowchart LR
 - `best_effort`：进入有界队列，队列满即丢弃并计数；适合实时定位等可由下一条覆盖的数据；
 - `at_least_once`：同步等待 control 确认后再向终端应答；control 失败则不应答，由终端按 808 协议重传。
 
-control 按 eventId 去重，去重窗口由 `cluster.uplink.dedupTTL` 控制。事件体的解码上限分别由 `maxBodyBytes`、`maxRequestBytes`、`maxDecodedBodyBytes` 约束。
+control 按 eventId 去重，去重窗口由 `cluster.uplink.dedupTTL` 控制。事件体的解码上限分别由 `maxBodyBytes`、`maxRequestBytes`、`maxDecodedBodyBytes` 约束。投递次数默认取 `uplink.http.maxAttempts`，可按分类（`location`/`batchLocation`/`alarm`/`sessionClosed`/`default`）用 `maxAttemptsByClass` 覆盖，未配置的分类回落到全局值。
 
 会话结束也走该通道：网关在连接关闭时投递 `session.closed`，`eventId` 取 sessionId，携带 `phone/sessionId/generation/gatewayId/instanceId/transport/reason`，`reason` 为 `logout`（0x0003 注销）或 `transport_closed`（连接关闭/超时）。该事件固定为 `at_least_once`，没有补发机会。control 按 sessionId 幂等释放会话目录（仍要求 owner+generation 匹配），只有实际删除归属时才派发一次 `OnDisconnect`；重复投递返回 `already_closed`，不重复释放、不重复派发。
 

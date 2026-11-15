@@ -3,6 +3,7 @@ package uplink
 import (
 	"strings"
 
+	"github.com/fakeyanss/jt808-server-go/internal/contracts"
 	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
 )
 
@@ -25,6 +26,9 @@ const (
 	ClassLocation      Class = "location"
 	ClassBatchLocation Class = "batch_location"
 	ClassAlarm         Class = "alarm"
+	// ClassSessionClosed 是会话结束事件 session.closed 的独立分类。
+	// 它不携带终端报文，也没有终端重传来兜底，通常需要比默认更多的重试。
+	ClassSessionClosed Class = "session_closed"
 )
 
 // Policy 按消息分类选择投递语义。
@@ -93,4 +97,77 @@ func (p Policy) AtLeastOnce(msgID uint16, incoming model.JT808Msg) bool {
 		alarmSign = msg.AlarmSign
 	}
 	return p.For(p.Classify(msgID, alarmSign)) == AtLeastOnce
+}
+
+// AttemptOverrides 按分类覆盖单条事件的投递次数（含首次）。
+// 零值表示未配置，回落到全局 maxAttempts。
+type AttemptOverrides struct {
+	Default       int
+	Location      int
+	BatchLocation int
+	Alarm         int
+	SessionClosed int
+}
+
+// AttemptPolicy 按分类选择单条事件的投递次数。
+type AttemptPolicy struct {
+	fallback  int
+	overrides AttemptOverrides
+}
+
+// NewAttemptPolicy 构造投递次数策略；fallback 非法时按 1 次处理。
+func NewAttemptPolicy(fallback int, overrides AttemptOverrides) AttemptPolicy {
+	if fallback < 1 {
+		fallback = 1
+	}
+	return AttemptPolicy{fallback: fallback, overrides: overrides}
+}
+
+// For 返回分类对应的投递次数：未配置的分类回落到全局次数。
+func (p AttemptPolicy) For(class Class) int {
+	var attempts int
+	switch class {
+	case ClassLocation:
+		attempts = p.overrides.Location
+	case ClassBatchLocation:
+		attempts = p.overrides.BatchLocation
+	case ClassAlarm:
+		attempts = p.overrides.Alarm
+	case ClassSessionClosed:
+		attempts = p.overrides.SessionClosed
+	default:
+		attempts = p.overrides.Default
+	}
+	if attempts < 1 {
+		attempts = p.fallback
+	}
+	return attempts
+}
+
+// ForEvent 按出口事件判定分类并返回投递次数。
+func (p AttemptPolicy) ForEvent(event contracts.UplinkEvent) int {
+	return p.For(ClassifyEvent(event))
+}
+
+// ClassifyEvent 判定出口事件的上行分类。
+// 分类口径与可靠性 Policy 一致，另外把 session.closed 单列为会话结束。
+func ClassifyEvent(event contracts.UplinkEvent) Class {
+	if event.Event == "session.closed" {
+		return ClassSessionClosed
+	}
+	var alarmSign uint32
+	if msg, ok := event.Payload.(*model.Msg0200); ok && msg != nil {
+		alarmSign = msg.AlarmSign
+	}
+	switch event.MsgID {
+	case 0x0704:
+		return ClassBatchLocation
+	case 0x0200:
+		if alarmSign != 0 {
+			return ClassAlarm
+		}
+		return ClassLocation
+	default:
+		return ClassDefault
+	}
 }

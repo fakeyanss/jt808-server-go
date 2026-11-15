@@ -75,6 +75,12 @@ func TestParseUplinkSinkHTTPNormalizes(t *testing.T) {
 			QueueSize:   64,
 			Workers:     2,
 			MaxAttempts: 1,
+			MaxAttemptsByClass: &uplinkAttemptsConf{
+				Location:      1,
+				BatchLocation: 2,
+				Alarm:         2,
+				SessionClosed: 3,
+			},
 			GatewayID:   " gw-test ",
 			AuthGraceMS: 60000,
 		},
@@ -87,6 +93,12 @@ func TestParseUplinkSinkHTTPNormalizes(t *testing.T) {
 	require.Equal(t, 64, options.HTTP.QueueSize)
 	require.Equal(t, 2, options.HTTP.Workers)
 	require.Equal(t, 1, options.HTTP.MaxAttempts)
+	require.Equal(t, UplinkAttemptOverrides{
+		Location:      1,
+		BatchLocation: 2,
+		Alarm:         2,
+		SessionClosed: 3,
+	}, options.HTTP.MaxAttemptsByClass)
 	require.Equal(t, "gw-test", options.HTTP.GatewayID)
 	require.Equal(t, time.Minute, options.HTTP.AuthGrace)
 }
@@ -161,6 +173,14 @@ func TestParseUplinkSinkRejectsInvalidConfig(t *testing.T) {
 			name:   "invalid attempts",
 			conf:   &uplinkConf{Sink: UplinkSinkHTTP, HTTP: &uplinkHTTPConf{URL: "http://127.0.0.1/uplink", Token: "token", MaxAttempts: 4}},
 			errKey: "uplink.http.maxAttempts",
+		},
+		{
+			name: "invalid class attempts",
+			conf: &uplinkConf{Sink: UplinkSinkHTTP, HTTP: &uplinkHTTPConf{
+				URL: "http://127.0.0.1/uplink", Token: "token",
+				MaxAttemptsByClass: &uplinkAttemptsConf{SessionClosed: 4},
+			}},
+			errKey: "uplink.http.maxAttemptsByClass.sessionClosed",
 		},
 		{
 			name:   "invalid auth grace",

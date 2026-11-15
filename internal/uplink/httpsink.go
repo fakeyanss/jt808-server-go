@@ -33,6 +33,8 @@ type HTTPSinkOptions struct {
 	QueueSize   int
 	Workers     int
 	MaxAttempts int
+	// Attempts 按分类覆盖 MaxAttempts；零值字段回落到 MaxAttempts。
+	Attempts AttemptOverrides
 	// OnUnknownDeviceDropped 在 409 重投仍失败时回调，用于指标与告警。
 	OnUnknownDeviceDropped func(phone string)
 	// OnFenced 在 best-effort 响应携带 fenced 时回调；网关据此关闭本地会话。
@@ -95,11 +97,11 @@ type HTTPEnvelope struct {
 // 顺序消费；不同分片之间并发。confirm 事件也走同一分片队列，保证不会
 // 越过同 phone 已排队的事件。
 type HTTPSink struct {
-	url         string
-	token       string
-	timeout     time.Duration
-	maxAttempts int
-	client      *http.Client
+	url      string
+	token    string
+	timeout  time.Duration
+	attempts AttemptPolicy
+	client   *http.Client
 
 	shards   []chan sinkJob
 	done     chan struct{}
@@ -127,6 +129,8 @@ type HTTPSink struct {
 // result 非空表示 confirm-before-ack：worker 完成后把结果写回，调用方等待。
 type sinkJob struct {
 	envelope HTTPEnvelope
+	// attempts 是这条事件本次投递的次数上限（含首次）。
+	attempts int
 	result   chan sinkResult
 }
 
@@ -178,10 +182,10 @@ func NewHTTPSink(options HTTPSinkOptions) (*HTTPSink, error) {
 		shards[i] = make(chan sinkJob, shardCap)
 	}
 	return &HTTPSink{
-		url:         options.URL,
-		token:       options.Token,
-		timeout:     options.Timeout,
-		maxAttempts: options.MaxAttempts,
+		url:      options.URL,
+		token:    options.Token,
+		timeout:  options.Timeout,
+		attempts: NewAttemptPolicy(options.MaxAttempts, options.Attempts),
 		client: &http.Client{
 			Timeout: options.Timeout,
 		},
@@ -274,11 +278,12 @@ func (s *HTTPSink) Deliver(ctx context.Context, event contracts.UplinkEvent) (co
 		s.rememberRegistration(envelope)
 	}
 
+	attempts := s.attempts.ForEvent(event)
 	if event.Reliability != contracts.ReliabilityConfirmBeforeAck &&
 		event.Reliability != contracts.ReliabilityAtLeastOnce {
-		return s.enqueue(envelope)
+		return s.enqueue(envelope, attempts)
 	}
-	return s.deliverSync(ctx, envelope)
+	return s.deliverSync(ctx, envelope, attempts)
 }
 
 // shardFor 按 phone 选择分片；同一 phone 永远命中同一分片，从而由同一条
@@ -287,7 +292,7 @@ func (s *HTTPSink) shardFor(phone string) chan sinkJob {
 	return s.shards[int(hash.FNV32(phone)%uint32(len(s.shards)))]
 }
 
-func (s *HTTPSink) enqueue(envelope HTTPEnvelope) (contracts.UplinkResult, error) {
+func (s *HTTPSink) enqueue(envelope HTTPEnvelope, attempts int) (contracts.UplinkResult, error) {
 	jobs := s.shardFor(envelope.Phone)
 	if s.closed.Load() {
 		s.dropped.Add(1)
@@ -295,7 +300,7 @@ func (s *HTTPSink) enqueue(envelope HTTPEnvelope) (contracts.UplinkResult, error
 		return contracts.UplinkResult{Accepted: true}, nil
 	}
 	select {
-	case jobs <- sinkJob{envelope: envelope}:
+	case jobs <- sinkJob{envelope: envelope, attempts: attempts}:
 		log.Debug().
 			Str("event_id", envelope.EventID).
 			Int("shard_queue_depth", len(jobs)).
@@ -316,7 +321,7 @@ func (s *HTTPSink) enqueue(envelope HTTPEnvelope) (contracts.UplinkResult, error
 	}
 }
 
-func (s *HTTPSink) deliverSync(ctx context.Context, envelope HTTPEnvelope) (contracts.UplinkResult, error) {
+func (s *HTTPSink) deliverSync(ctx context.Context, envelope HTTPEnvelope, attempts int) (contracts.UplinkResult, error) {
 	if s.closed.Load() {
 		s.rejected.Add(1)
 		return contracts.UplinkResult{Reason: "sink closed"}, fmt.Errorf("uplink http sink closed")
@@ -341,7 +346,7 @@ func (s *HTTPSink) deliverSync(ctx context.Context, envelope HTTPEnvelope) (cont
 	resultCh := make(chan sinkResult, 1)
 	jobs := s.shardFor(envelope.Phone)
 	select {
-	case jobs <- sinkJob{envelope: envelope, result: resultCh}:
+	case jobs <- sinkJob{envelope: envelope, attempts: attempts, result: resultCh}:
 	case <-s.done:
 		s.rejected.Add(1)
 		return contracts.UplinkResult{Reason: "sink closed"}, fmt.Errorf("uplink http sink closed")
@@ -370,14 +375,14 @@ func (s *HTTPSink) deliverSync(ctx context.Context, envelope HTTPEnvelope) (cont
 //   - 每个入站事件最多重投一次注册事件；
 //   - 重投后仍 409 则熔断 30s，期间同手机号事件直接丢弃并计数；
 //   - 丢弃返回错误，网关不应答终端，计入终端自身的重传窗口，不在网关内部循环。
-func (s *HTTPSink) handleUnknownDevice(ctx context.Context, envelope HTTPEnvelope, cause error) (contracts.UplinkResult, error) {
+func (s *HTTPSink) handleUnknownDevice(ctx context.Context, envelope HTTPEnvelope, attempts int, cause error) (contracts.UplinkResult, error) {
 	if s.unknownRecently(envelope.Phone) {
 		s.dropUnknown(envelope, "device remains unknown within cooldown window")
 		return contracts.UplinkResult{Reason: "unknown_device"}, fmt.Errorf("uplink http sink: unknown device (cooldown): %w", cause)
 	}
 	if registration, ok := s.registration(envelope.Phone); ok && registration.EventID != envelope.EventID {
-		if _, _, retryErr := s.postWithRetryStatus(ctx, registration); retryErr == nil {
-			if status, resp, err := s.postWithRetryStatus(ctx, envelope); err == nil {
+		if _, _, retryErr := s.postWithRetryStatus(ctx, registration, attempts); retryErr == nil {
+			if status, resp, err := s.postWithRetryStatus(ctx, envelope, attempts); err == nil {
 				return contracts.UplinkResult{
 					Accepted:   true,
 					Generation: resp.Generation,
@@ -471,7 +476,7 @@ func (s *HTTPSink) runJob(job sinkJob) {
 	defer cancel()
 
 	if job.result == nil {
-		resp, err := s.postWithRetry(postCtx, job.envelope)
+		resp, err := s.postWithRetry(postCtx, job.envelope, job.attempts)
 		if err != nil {
 			log.Warn().Err(err).Str("event_id", job.envelope.EventID).Msg("uplink http sink best-effort delivery failed")
 		} else if resp.Fenced {
@@ -482,12 +487,12 @@ func (s *HTTPSink) runJob(job sinkJob) {
 
 	s.inFlight.Add(1)
 	defer s.inFlight.Add(-1)
-	result, err := s.deliverConfirm(postCtx, job.envelope)
+	result, err := s.deliverConfirm(postCtx, job.envelope, job.attempts)
 	job.result <- sinkResult{result: result, err: err}
 }
 
-func (s *HTTPSink) deliverConfirm(ctx context.Context, envelope HTTPEnvelope) (contracts.UplinkResult, error) {
-	status, resp, err := s.postWithRetryStatus(ctx, envelope)
+func (s *HTTPSink) deliverConfirm(ctx context.Context, envelope HTTPEnvelope, attempts int) (contracts.UplinkResult, error) {
+	status, resp, err := s.postWithRetryStatus(ctx, envelope, attempts)
 	if err == nil {
 		return contracts.UplinkResult{
 			Accepted:   true,
@@ -496,13 +501,13 @@ func (s *HTTPSink) deliverConfirm(ctx context.Context, envelope HTTPEnvelope) (c
 		}, nil
 	}
 	if status == http.StatusConflict && envelope.MsgID != 0x0100 {
-		return s.handleUnknownDevice(ctx, envelope, err)
+		return s.handleUnknownDevice(ctx, envelope, attempts, err)
 	}
 	return contracts.UplinkResult{Reason: err.Error()}, err
 }
 
-func (s *HTTPSink) postWithRetry(ctx context.Context, envelope HTTPEnvelope) (controlResponse, error) {
-	_, resp, err := s.postWithRetryStatus(ctx, envelope)
+func (s *HTTPSink) postWithRetry(ctx context.Context, envelope HTTPEnvelope, attempts int) (controlResponse, error) {
+	_, resp, err := s.postWithRetryStatus(ctx, envelope, attempts)
 	return resp, err
 }
 
@@ -515,14 +520,13 @@ type controlResponse struct {
 	Fenced     bool   `json:"fenced"`
 }
 
-func (s *HTTPSink) postWithRetryStatus(ctx context.Context, envelope HTTPEnvelope) (int, controlResponse, error) {
+func (s *HTTPSink) postWithRetryStatus(ctx context.Context, envelope HTTPEnvelope, attempts int) (int, controlResponse, error) {
 	body, err := json.Marshal(envelope)
 	if err != nil {
 		s.failed.Add(1)
 		return 0, controlResponse{}, fmt.Errorf("marshal uplink event: %w", err)
 	}
 
-	attempts := s.maxAttempts
 	if attempts < 1 {
 		attempts = 1
 	}
