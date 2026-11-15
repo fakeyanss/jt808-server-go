@@ -4,6 +4,7 @@ import (
 	"github.com/pkg/errors"
 
 	"github.com/fakeyanss/jt808-server-go/internal/codec/hex"
+	"github.com/fakeyanss/jt808-server-go/internal/domain"
 )
 
 var (
@@ -134,12 +135,13 @@ const (
 	PacketFragmentedTrue  PacketFragmentedType = true
 )
 
-type VersionType int8
+// VersionType 与版本常量由领域包定义，model 内保留别名以维持报文 API 不变。
+type VersionType = domain.VersionType
 
 const (
-	Version2011 VersionType = 0
-	Version2013 VersionType = 1
-	Version2019 VersionType = 2
+	Version2011 = domain.Version2011
+	Version2013 = domain.Version2013
+	Version2019 = domain.Version2019
 )
 
 // 定义消息体属性
@@ -223,7 +225,7 @@ func versionDecode(ver VersionType) uint8 {
 	return 0
 }
 
-func GenMsgHeader(d *Device, msgID, serialNumber uint16) *MsgHeader {
+func GenMsgHeader(d *domain.Device, msgID, serialNumber uint16) *MsgHeader {
 	return &MsgHeader{
 		MsgID: msgID,
 		Attr: &MsgBodyAttr{

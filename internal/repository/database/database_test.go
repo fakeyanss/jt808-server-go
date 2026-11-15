@@ -12,6 +12,7 @@ import (
 	"github.com/fakeyanss/jt808-server-go/internal/repository"
 	"github.com/fakeyanss/jt808-server-go/internal/repository/database"
 	// 测试需要真实 SQL 后端，显式注册驱动实现。
+	"github.com/fakeyanss/jt808-server-go/internal/domain"
 	_ "github.com/fakeyanss/jt808-server-go/internal/repository/database/sqlbackend"
 )
 
@@ -45,7 +46,7 @@ func TestOpenSQLitePersistsDevicesAndParams(t *testing.T) {
 	require.Equal(t, database.BackendSQLite, first.Backend)
 
 	phone := "188765430001"
-	device := &model.Device{
+	device := &domain.Device{
 		ID:             "DEV-001",
 		Plate:          "京A12345",
 		Phone:          phone,
@@ -53,11 +54,11 @@ func TestOpenSQLitePersistsDevicesAndParams(t *testing.T) {
 		TransProto:     model.TCPProto,
 		Keepalive:      time.Minute,
 		LastestComTime: time.UnixMilli(1761700000000),
-		Status:         model.DeviceStatusOnline,
+		Status:         domain.DeviceStatusOnline,
 		VersionDesc:    model.Version2013,
 	}
 	require.NoError(t, first.Devices.Upsert(ctx, device))
-	params := &model.DeviceParams{DevicePhone: phone, ParamCnt: 1, Params: []*model.ParamData{
+	params := &domain.DeviceParams{DevicePhone: phone, ParamCnt: 1, Params: []*domain.ParamData{
 		{ParamID: 0x0010, ParamLen: 4, ParamValue: "TEST"},
 	}}
 	require.NoError(t, first.Params.Replace(ctx, params))
@@ -75,7 +76,7 @@ func TestOpenSQLitePersistsDevicesAndParams(t *testing.T) {
 	// 运行时状态不落库：重开进程后 session/status/last_com_time 全部归零。
 	require.Empty(t, got.SessionID)
 	require.Empty(t, got.TransProto)
-	require.Equal(t, model.DeviceStatusOffline, got.Status)
+	require.Equal(t, domain.DeviceStatusOffline, got.Status)
 	require.True(t, got.LastestComTime.IsZero())
 	gone := "188765430099"
 	_, err = second.Devices.GetByPhone(ctx, gone)

@@ -8,6 +8,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/fakeyanss/jt808-server-go/internal/domain"
 	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
 )
 
@@ -27,9 +28,9 @@ func TestSQLitePersistsMediaMetadataAcrossReopen(t *testing.T) {
 		Header:             &model.MsgHeader{PhoneNumber: phone},
 		AnswerSerialNumber: 3,
 		MediaCount:         2,
-		Items: []model.DeviceMedia{
-			{DeviceMediaQuery: model.DeviceMediaQuery{LogicChannelID: 1, StartTime: &start, EndTime: &end, MediaType: 2}, Size: 4096},
-			{DeviceMediaQuery: model.DeviceMediaQuery{LogicChannelID: 2, StartTime: &start, MediaType: 1}, Size: 2048},
+		Items: []domain.DeviceMedia{
+			{DeviceMediaQuery: domain.DeviceMediaQuery{LogicChannelID: 1, StartTime: &start, EndTime: &end, MediaType: 2}, Size: 4096},
+			{DeviceMediaQuery: domain.DeviceMediaQuery{LogicChannelID: 2, StartTime: &start, MediaType: 1}, Size: 2048},
 		},
 	}
 	require.NoError(t, first.MediaMetadataRepository().ReplaceResourceList(ctx, phone, list))

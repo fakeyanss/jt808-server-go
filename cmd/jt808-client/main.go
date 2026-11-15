@@ -13,6 +13,7 @@ import (
 	"github.com/fakeyanss/jt808-server-go/client/datagen"
 	"github.com/fakeyanss/jt808-server-go/internal/client"
 	"github.com/fakeyanss/jt808-server-go/internal/config"
+	"github.com/fakeyanss/jt808-server-go/internal/domain"
 	"github.com/fakeyanss/jt808-server-go/internal/protocol"
 	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
 	"github.com/fakeyanss/jt808-server-go/internal/repository/database"
@@ -40,7 +41,7 @@ var (
 	clientRuntime = runtime.NewStores()
 )
 
-func buildDevice(ctx context.Context, cli *client.TCPClient) *model.Device {
+func buildDevice(ctx context.Context, cli *client.TCPClient) *domain.Device {
 	deviceConf := ctx.Value(DeviceConfCtxKey{}).(*config.DeviceConf)
 	device := datagen.GenDevice(deviceConf)
 	device.SessionID = cli.Session.ID
@@ -50,7 +51,7 @@ func buildDevice(ctx context.Context, cli *client.TCPClient) *model.Device {
 	return device
 }
 
-func getDevice(ctx context.Context) *model.Device {
+func getDevice(ctx context.Context) *domain.Device {
 	phone := ctx.Value(DevicePhoneCtxKey{}).(string)
 	device, err := clientRepos.Devices.GetByPhone(ctx, phone)
 	if err != nil {
@@ -183,7 +184,7 @@ func dialAndSend(cfg *config.Config, cliWg *sync.WaitGroup, fragmentSize int, re
 			// device status checker
 			for {
 				renewDevice, _ := clientRepos.Devices.GetByPhone(ctx, d.Phone)
-				if renewDevice.Status == model.DeviceStatusOnline {
+				if renewDevice.Status == domain.DeviceStatusOnline {
 					wg.Done()
 					return
 				}

@@ -8,7 +8,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
+	"github.com/fakeyanss/jt808-server-go/internal/domain"
 	"github.com/fakeyanss/jt808-server-go/internal/repository"
 )
 
@@ -19,7 +19,7 @@ type deviceParamsRepository struct {
 	store *Store
 }
 
-func (r *deviceParamsRepository) Get(ctx context.Context, phone string) (*model.DeviceParams, error) {
+func (r *deviceParamsRepository) Get(ctx context.Context, phone string) (*domain.DeviceParams, error) {
 	ctx, cancel := readContext(ctx)
 	defer cancel()
 	var (
@@ -36,14 +36,14 @@ func (r *deviceParamsRepository) Get(ctx context.Context, phone string) (*model.
 		return nil, fmt.Errorf("get device params %s: %w", phone, err)
 	}
 
-	params := &model.DeviceParams{DevicePhone: phone, ParamCnt: uint8(paramCnt)}
+	params := &domain.DeviceParams{DevicePhone: phone, ParamCnt: uint8(paramCnt)}
 	if err := json.Unmarshal(paramsJSON, &params.Params); err != nil {
 		return nil, fmt.Errorf("decode device params %s: %w", phone, err)
 	}
 	return params, nil
 }
 
-func (r *deviceParamsRepository) Replace(ctx context.Context, params *model.DeviceParams) error {
+func (r *deviceParamsRepository) Replace(ctx context.Context, params *domain.DeviceParams) error {
 	payload, err := json.Marshal(params.Params)
 	if err != nil {
 		return fmt.Errorf("encode device params %s: %w", params.DevicePhone, err)

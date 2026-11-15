@@ -3,6 +3,7 @@ package memory
 import (
 	"sync"
 
+	"github.com/fakeyanss/jt808-server-go/internal/domain"
 	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
 	"github.com/fakeyanss/jt808-server-go/internal/repository"
 )
@@ -91,7 +92,7 @@ func (c *memoryIndustryRepository) Record(msg model.JT808Msg) {
 		c.mediaSearches[phone] = &copy
 	case *model.Msg1205:
 		copy := *m
-		copy.Items = append([]model.DeviceMedia(nil), m.Items...)
+		copy.Items = append([]domain.DeviceMedia(nil), m.Items...)
 		c.mediaResources[phone] = &copy
 	case *model.Msg9105:
 		copy := *m
@@ -564,7 +565,7 @@ func (c *memoryIndustryRepository) MediaResourceList(phone string) *model.Msg120
 		return nil
 	}
 	copy := *m
-	copy.Items = append([]model.DeviceMedia(nil), m.Items...)
+	copy.Items = append([]domain.DeviceMedia(nil), m.Items...)
 	return &copy
 }
 

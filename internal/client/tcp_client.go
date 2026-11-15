@@ -10,6 +10,7 @@ import (
 
 	"github.com/rs/zerolog/log"
 
+	"github.com/fakeyanss/jt808-server-go/internal/domain"
 	"github.com/fakeyanss/jt808-server-go/internal/protocol"
 	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
 	"github.com/fakeyanss/jt808-server-go/internal/runtime"
@@ -260,7 +261,7 @@ func (cli *TCPClient) SendWithError(msg model.JT808Msg) error {
 
 // RequestFragmentRetransmission sends a terminal-side 0x0005 request. It is
 // intended for simulator scenarios that verify platform resend behavior.
-func (cli *TCPClient) RequestFragmentRetransmission(device *model.Device, originalSerial uint16, packetIDs []uint16) error {
+func (cli *TCPClient) RequestFragmentRetransmission(device *domain.Device, originalSerial uint16, packetIDs []uint16) error {
 	if cli.Session == nil || device == nil || device.Phone == "" || len(packetIDs) == 0 || len(packetIDs) > 65535 {
 		return errors.New("invalid fragment retransmission request")
 	}

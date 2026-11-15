@@ -15,8 +15,8 @@ import (
 	"github.com/fakeyanss/jt808-server-go/internal/codec/hex"
 	"github.com/fakeyanss/jt808-server-go/internal/contracts"
 	"github.com/fakeyanss/jt808-server-go/internal/controlhttp"
+	"github.com/fakeyanss/jt808-server-go/internal/domain"
 	"github.com/fakeyanss/jt808-server-go/internal/protocol"
-	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
 	"github.com/fakeyanss/jt808-server-go/internal/repository"
 	"github.com/fakeyanss/jt808-server-go/internal/repository/database"
 	"github.com/fakeyanss/jt808-server-go/internal/repository/memory"
@@ -53,7 +53,7 @@ func newTestBlob(t *testing.T) *storage.SharedVolume {
 func registerTestDevice(t *testing.T, phone string) {
 	t.Helper()
 	ctx := context.Background()
-	require.NoError(t, database.Default().Devices.Upsert(ctx, &model.Device{Phone: phone, AuthCode: "AUTH"}))
+	require.NoError(t, database.Default().Devices.Upsert(ctx, &domain.Device{Phone: phone, AuthCode: "AUTH"}))
 	t.Cleanup(func() { _ = database.Default().Devices.DeleteByPhone(ctx, phone) })
 }
 
@@ -206,7 +206,7 @@ func TestBusinessExecutorIgnoresGatewayOwnedEvents(t *testing.T) {
 func TestBusinessExecutorAcceptsTerminalReplyHalf(t *testing.T) {
 	ctx := context.Background()
 	devices := memory.NewDeviceRepository()
-	require.NoError(t, devices.Upsert(ctx, &model.Device{Phone: "188765400006"}))
+	require.NoError(t, devices.Upsert(ctx, &domain.Device{Phone: "188765400006"}))
 	executor := NewBusinessExecutor(BusinessOptions{Devices: devices})
 	result, err := executor.ConsumeEvent(ctx, contracts.UplinkEvent{
 		EventID: "evt-reply",
@@ -245,7 +245,7 @@ func TestRegistrationAndAuthStateAreOrderIndependent(t *testing.T) {
 		}
 	}
 
-	run := func(t *testing.T, authFirst bool) *model.Device {
+	run := func(t *testing.T, authFirst bool) *domain.Device {
 		t.Helper()
 		ctx := context.Background()
 		stores := database.NewMemory()
@@ -281,7 +281,7 @@ func TestRegistrationAndAuthStateAreOrderIndependent(t *testing.T) {
 	require.Equal(t, registerFirst.VersionDesc, authFirst.VersionDesc)
 	require.Equal(t, registerFirst.IMEI, authFirst.IMEI)
 	require.Equal(t, registerFirst.SoftwareVersion, authFirst.SoftwareVersion)
-	require.Equal(t, model.DeviceStatusOnline, authFirst.Status)
+	require.Equal(t, domain.DeviceStatusOnline, authFirst.Status)
 	require.Equal(t, "sess-order", authFirst.SessionID)
 	require.False(t, authFirst.LastestComTime.IsZero())
 	require.Equal(t, "京A12345", authFirst.Plate)

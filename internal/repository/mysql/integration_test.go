@@ -13,7 +13,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
+	"github.com/fakeyanss/jt808-server-go/internal/domain"
 	"github.com/fakeyanss/jt808-server-go/internal/repository"
 )
 
@@ -947,7 +947,7 @@ func TestSaveAuthStateOnRealMySQL(t *testing.T) {
 	require.NoError(t, err)
 
 	devices := store.DeviceRepository()
-	device := &model.Device{
+	device := &domain.Device{
 		Phone:           phone,
 		IMEI:            "861234567890124",
 		SoftwareVersion: "V1.0.1",

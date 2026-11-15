@@ -2,16 +2,17 @@ package model
 
 import (
 	"github.com/fakeyanss/jt808-server-go/internal/codec/hex"
+	"github.com/fakeyanss/jt808-server-go/internal/domain"
 )
 
 // JTT1078 终端上传音视频资源列表
 //
 // 列表过大时需要分包
 type Msg1205 struct {
-	Header             *MsgHeader    `json:"header"`
-	AnswerSerialNumber uint16        `json:"answerSerialNumber"` // 流水号，对应查询音视频资源列表消息的流水号
-	MediaCount         uint32        `json:"mediaCount"`         // 音视频资源总数
-	Items              []DeviceMedia `json:"items"`              // 资源列表
+	Header             *MsgHeader           `json:"header"`
+	AnswerSerialNumber uint16               `json:"answerSerialNumber"` // 流水号，对应查询音视频资源列表消息的流水号
+	MediaCount         uint32               `json:"mediaCount"`         // 音视频资源总数
+	Items              []domain.DeviceMedia `json:"items"`              // 资源列表
 }
 
 func (m *Msg1205) Decode(packet *PacketData) error {
@@ -24,7 +25,7 @@ func (m *Msg1205) Decode(packet *PacketData) error {
 		if idx+28 > len(pkt) {
 			return ErrDecodeMsg
 		}
-		var item DeviceMedia
+		var item domain.DeviceMedia
 		item.Decode(pkt[idx : idx+28])
 		idx += 28
 		m.Items = append(m.Items, item)

@@ -10,8 +10,8 @@ import (
 	"github.com/fakeyanss/jt808-server-go/internal/contracts"
 	"github.com/fakeyanss/jt808-server-go/internal/contracts/attachment"
 	"github.com/fakeyanss/jt808-server-go/internal/contracts/media"
+	"github.com/fakeyanss/jt808-server-go/internal/domain"
 	"github.com/fakeyanss/jt808-server-go/internal/mediaupload"
-	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
 	"github.com/fakeyanss/jt808-server-go/internal/repository"
 )
 
@@ -48,7 +48,7 @@ func NewLocalAuthProvider(devices repository.DeviceRepository) *LocalAuthProvide
 }
 
 // Device 返回设备档案。
-func (p *LocalAuthProvider) Device(ctx context.Context, phone string) (*model.Device, error) {
+func (p *LocalAuthProvider) Device(ctx context.Context, phone string) (*domain.Device, error) {
 	if p == nil || p.devices == nil {
 		return nil, fmt.Errorf("device repository is not configured")
 	}

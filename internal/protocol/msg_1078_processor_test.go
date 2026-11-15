@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 
+	"github.com/fakeyanss/jt808-server-go/internal/domain"
 	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
 	"github.com/fakeyanss/jt808-server-go/internal/repository/database"
 	"github.com/stretchr/testify/require"
@@ -67,8 +68,8 @@ func TestProcess1078MediaMetadataPersists(t *testing.T) {
 		Header:             listHeader,
 		AnswerSerialNumber: 8,
 		MediaCount:         1,
-		Items: []model.DeviceMedia{
-			{DeviceMediaQuery: model.DeviceMediaQuery{LogicChannelID: 1, MediaType: 2}, Size: 512},
+		Items: []domain.DeviceMedia{
+			{DeviceMediaQuery: domain.DeviceMediaQuery{LogicChannelID: 1, MediaType: 2}, Size: 512},
 		},
 	}
 	_, listBody := encode1078Body(t, list)

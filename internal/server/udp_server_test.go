@@ -13,6 +13,7 @@ import (
 
 	"github.com/fakeyanss/jt808-server-go/internal/business"
 	"github.com/fakeyanss/jt808-server-go/internal/client"
+	"github.com/fakeyanss/jt808-server-go/internal/domain"
 	"github.com/fakeyanss/jt808-server-go/internal/protocol"
 	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
 	"github.com/fakeyanss/jt808-server-go/internal/repository"
@@ -43,11 +44,11 @@ func TestTCPServerRetransmitsRequestedDownlinkFragments(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	require.NotNil(t, session)
-	device := &model.Device{Phone: phone, VersionDesc: model.Version2013}
+	device := &domain.Device{Phone: phone, VersionDesc: model.Version2013}
 	originalSerial := session.GetNextSerialNum()
-	params := &model.DeviceParams{ParamCnt: 6}
+	params := &domain.DeviceParams{ParamCnt: 6}
 	for i := 0; i < 6; i++ {
-		params.Params = append(params.Params, &model.ParamData{ParamID: 0x0010, ParamValue: strings.Repeat("X", 200)})
+		params.Params = append(params.Params, &domain.ParamData{ParamID: 0x0010, ParamValue: strings.Repeat("X", 200)})
 	}
 	message := &model.Msg8103{Header: model.GenMsgHeader(device, 0x8103, originalSerial), Parameters: params}
 	encoded, err := message.Encode()
@@ -119,14 +120,14 @@ func TestUDPServerProcessesJT808Registration(t *testing.T) {
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
 		device, err := database.Default().Devices.GetByPhone(context.Background(), phone)
-		if err == nil && device.Status == model.DeviceStatusOnline {
+		if err == nil && device.Status == domain.DeviceStatusOnline {
 			break
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
 	device, err := database.Default().Devices.GetByPhone(context.Background(), phone)
 	require.NoError(t, err)
-	require.Equal(t, model.DeviceStatusOnline, device.Status)
+	require.Equal(t, domain.DeviceStatusOnline, device.Status)
 
 	database.Default().Devices.DeleteByPhone(context.Background(), phone)
 	protocol.NewKeepaliveTimer().Cancel(phone)
@@ -176,14 +177,14 @@ func TestTCPServerProcessesJT808Registration(t *testing.T) {
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
 		device, err := database.Default().Devices.GetByPhone(context.Background(), phone)
-		if err == nil && device.Status == model.DeviceStatusOnline {
+		if err == nil && device.Status == domain.DeviceStatusOnline {
 			break
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
 	device, err := database.Default().Devices.GetByPhone(context.Background(), phone)
 	require.NoError(t, err)
-	require.Equal(t, model.DeviceStatusOnline, device.Status)
+	require.Equal(t, domain.DeviceStatusOnline, device.Status)
 
 	session, err := runtime.Default().Conn.Get(context.Background(), device.SessionID)
 	require.NoError(t, err)
@@ -280,17 +281,17 @@ func TestTCPClientSimulatorIndustryMessages(t *testing.T) {
 	const phone = "188765433210"
 	registration := &model.Msg0100{Header: &model.MsgHeader{MsgID: 0x0100, Attr: &model.MsgBodyAttr{VersionDesc: model.Version2013}, PhoneNumber: phone}, ProvinceID: 11, CityID: 1101, ManufacturerID: "ABCDE", DeviceMode: "JT808-INDUSTRY-SIM", DeviceID: "INDUSTRY-01", PlateColor: 1, PlateNumber: "京A76543"}
 	require.NoError(t, cli.SendWithError(registration))
-	var device *model.Device
+	var device *domain.Device
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
 		device, _ = database.Default().Devices.GetByPhone(context.Background(), phone)
-		if device != nil && device.Status == model.DeviceStatusOnline {
+		if device != nil && device.Status == domain.DeviceStatusOnline {
 			break
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
 	require.NotNil(t, device)
-	require.Equal(t, model.DeviceStatusOnline, device.Status)
+	require.Equal(t, domain.DeviceStatusOnline, device.Status)
 	t.Cleanup(func() {
 		database.Default().Devices.DeleteByPhone(context.Background(), phone)
 		protocol.NewKeepaliveTimer().Cancel(phone)
@@ -428,17 +429,17 @@ func TestSimulatorMediaUploadCommands(t *testing.T) {
 	const phone = "188765433220"
 	registration := &model.Msg0100{Header: &model.MsgHeader{MsgID: 0x0100, Attr: &model.MsgBodyAttr{VersionDesc: model.Version2013}, PhoneNumber: phone}, ProvinceID: 11, CityID: 1101, ManufacturerID: "ABCDE", DeviceMode: "JT808-MEDIA-SIM", DeviceID: "MEDIA-01", PlateColor: 1, PlateNumber: "京A88030"}
 	require.NoError(t, cli.SendWithError(registration))
-	var device *model.Device
+	var device *domain.Device
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
 		device, _ = database.Default().Devices.GetByPhone(context.Background(), phone)
-		if device != nil && device.Status == model.DeviceStatusOnline {
+		if device != nil && device.Status == domain.DeviceStatusOnline {
 			break
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
 	require.NotNil(t, device)
-	require.Equal(t, model.DeviceStatusOnline, device.Status)
+	require.Equal(t, domain.DeviceStatusOnline, device.Status)
 	t.Cleanup(func() {
 		database.Default().Devices.DeleteByPhone(context.Background(), phone)
 		protocol.NewKeepaliveTimer().Cancel(phone)
@@ -544,17 +545,17 @@ func TestSimulatorMediaResourceListQuery(t *testing.T) {
 	const phone = "188765433229"
 	registration := &model.Msg0100{Header: &model.MsgHeader{MsgID: 0x0100, Attr: &model.MsgBodyAttr{VersionDesc: model.Version2013}, PhoneNumber: phone}, ProvinceID: 11, CityID: 1101, ManufacturerID: "ABCDE", DeviceMode: "JT808-MEDIA-SIM", DeviceID: "MEDIA-02", PlateColor: 1, PlateNumber: "京A88031"}
 	require.NoError(t, cli.SendWithError(registration))
-	var device *model.Device
+	var device *domain.Device
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
 		device, _ = database.Default().Devices.GetByPhone(context.Background(), phone)
-		if device != nil && device.Status == model.DeviceStatusOnline {
+		if device != nil && device.Status == domain.DeviceStatusOnline {
 			break
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
 	require.NotNil(t, device)
-	require.Equal(t, model.DeviceStatusOnline, device.Status)
+	require.Equal(t, domain.DeviceStatusOnline, device.Status)
 	t.Cleanup(func() {
 		database.Default().Devices.DeleteByPhone(context.Background(), phone)
 		protocol.NewKeepaliveTimer().Cancel(phone)
@@ -566,7 +567,7 @@ func TestSimulatorMediaResourceListQuery(t *testing.T) {
 
 	// Empty catalog query returns zero items.
 	querySerial := session.GetNextSerialNum()
-	server.Send(session.ID, &model.Msg9205{Header: model.GenMsgHeader(device, 0x9205, querySerial), DeviceMediaQuery: model.DeviceMediaQuery{LogicChannelID: 0, MediaType: 0, StreamType: 0, StorageType: 0}})
+	server.Send(session.ID, &model.Msg9205{Header: model.GenMsgHeader(device, 0x9205, querySerial), DeviceMediaQuery: domain.DeviceMediaQuery{LogicChannelID: 0, MediaType: 0, StreamType: 0, StorageType: 0}})
 	deadline = time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
 		if industry.MediaResourceList(phone) != nil {
@@ -614,7 +615,7 @@ func TestSimulatorMediaResourceListQuery(t *testing.T) {
 	require.Len(t, industry.MediaUploads(phone), 3, "three media items should be uploaded")
 
 	// Query all (mediaType 0) -> all 3 items.
-	server.Send(session.ID, &model.Msg9205{Header: model.GenMsgHeader(device, 0x9205, session.GetNextSerialNum()), DeviceMediaQuery: model.DeviceMediaQuery{LogicChannelID: 0, MediaType: 0}})
+	server.Send(session.ID, &model.Msg9205{Header: model.GenMsgHeader(device, 0x9205, session.GetNextSerialNum()), DeviceMediaQuery: domain.DeviceMediaQuery{LogicChannelID: 0, MediaType: 0}})
 	deadline = time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
 		if r := industry.MediaResourceList(phone); r != nil && r.MediaCount == 3 {
@@ -627,7 +628,7 @@ func TestSimulatorMediaResourceListQuery(t *testing.T) {
 	require.Len(t, allResult.Items, 3)
 
 	// Filter by channel 1 -> items 101 and 103.
-	server.Send(session.ID, &model.Msg9205{Header: model.GenMsgHeader(device, 0x9205, session.GetNextSerialNum()), DeviceMediaQuery: model.DeviceMediaQuery{LogicChannelID: 1, MediaType: 0}})
+	server.Send(session.ID, &model.Msg9205{Header: model.GenMsgHeader(device, 0x9205, session.GetNextSerialNum()), DeviceMediaQuery: domain.DeviceMediaQuery{LogicChannelID: 1, MediaType: 0}})
 	deadline = time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
 		if r := industry.MediaResourceList(phone); r != nil && r.MediaCount == 2 {
@@ -642,7 +643,7 @@ func TestSimulatorMediaResourceListQuery(t *testing.T) {
 	}
 
 	// Filter by media type 1 (audio) -> only item 102.
-	server.Send(session.ID, &model.Msg9205{Header: model.GenMsgHeader(device, 0x9205, session.GetNextSerialNum()), DeviceMediaQuery: model.DeviceMediaQuery{LogicChannelID: 0, MediaType: 1}})
+	server.Send(session.ID, &model.Msg9205{Header: model.GenMsgHeader(device, 0x9205, session.GetNextSerialNum()), DeviceMediaQuery: domain.DeviceMediaQuery{LogicChannelID: 0, MediaType: 1}})
 	deadline = time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
 		if r := industry.MediaResourceList(phone); r != nil && r.MediaCount == 1 {
@@ -658,7 +659,7 @@ func TestSimulatorMediaResourceListQuery(t *testing.T) {
 	// Filter by time range Jan 1 00:00 to Jan 1 23:59 -> items 101 and 102.
 	start := time.Date(2024, 1, 1, 0, 0, 0, 0, time.Local)
 	end := time.Date(2024, 1, 1, 23, 59, 59, 0, time.Local)
-	server.Send(session.ID, &model.Msg9205{Header: model.GenMsgHeader(device, 0x9205, session.GetNextSerialNum()), DeviceMediaQuery: model.DeviceMediaQuery{LogicChannelID: 0, MediaType: 0, StartTime: &start, EndTime: &end}})
+	server.Send(session.ID, &model.Msg9205{Header: model.GenMsgHeader(device, 0x9205, session.GetNextSerialNum()), DeviceMediaQuery: domain.DeviceMediaQuery{LogicChannelID: 0, MediaType: 0, StartTime: &start, EndTime: &end}})
 	deadline = time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
 		if r := industry.MediaResourceList(phone); r != nil && r.MediaCount == 2 {
@@ -686,17 +687,17 @@ func TestSimulatorTextAndEventMessages(t *testing.T) {
 	const phone = "188765433228"
 	registration := &model.Msg0100{Header: &model.MsgHeader{MsgID: 0x0100, Attr: &model.MsgBodyAttr{VersionDesc: model.Version2013}, PhoneNumber: phone}, ProvinceID: 11, CityID: 1101, ManufacturerID: "ABCDE", DeviceMode: "JT808-EVENT-SIM", DeviceID: "EVENT-01", PlateColor: 1, PlateNumber: "京A88032"}
 	require.NoError(t, cli.SendWithError(registration))
-	var device *model.Device
+	var device *domain.Device
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
 		device, _ = database.Default().Devices.GetByPhone(context.Background(), phone)
-		if device != nil && device.Status == model.DeviceStatusOnline {
+		if device != nil && device.Status == domain.DeviceStatusOnline {
 			break
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
 	require.NotNil(t, device)
-	require.Equal(t, model.DeviceStatusOnline, device.Status)
+	require.Equal(t, domain.DeviceStatusOnline, device.Status)
 	t.Cleanup(func() {
 		database.Default().Devices.DeleteByPhone(context.Background(), phone)
 		protocol.NewKeepaliveTimer().Cancel(phone)
@@ -791,17 +792,17 @@ func TestSimulatorVehicleControl(t *testing.T) {
 	const phone = "188765433227"
 	registration := &model.Msg0100{Header: &model.MsgHeader{MsgID: 0x0100, Attr: &model.MsgBodyAttr{VersionDesc: model.Version2013}, PhoneNumber: phone}, ProvinceID: 11, CityID: 1101, ManufacturerID: "ABCDE", DeviceMode: "JT808-VEH-SIM", DeviceID: "VEH-01", PlateColor: 1, PlateNumber: "京A88033"}
 	require.NoError(t, cli.SendWithError(registration))
-	var device *model.Device
+	var device *domain.Device
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
 		device, _ = database.Default().Devices.GetByPhone(context.Background(), phone)
-		if device != nil && device.Status == model.DeviceStatusOnline {
+		if device != nil && device.Status == domain.DeviceStatusOnline {
 			break
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
 	require.NotNil(t, device)
-	require.Equal(t, model.DeviceStatusOnline, device.Status)
+	require.Equal(t, domain.DeviceStatusOnline, device.Status)
 	t.Cleanup(func() {
 		database.Default().Devices.DeleteByPhone(context.Background(), phone)
 		protocol.NewKeepaliveTimer().Cancel(phone)
@@ -852,17 +853,17 @@ func TestSimulatorQuestionMenuInfoService(t *testing.T) {
 	const phone = "188765433225"
 	registration := &model.Msg0100{Header: &model.MsgHeader{MsgID: 0x0100, Attr: &model.MsgBodyAttr{VersionDesc: model.Version2013}, PhoneNumber: phone}, ProvinceID: 11, CityID: 1101, ManufacturerID: "ABCDE", DeviceMode: "JT808-Q-SIM", DeviceID: "Q-01", PlateColor: 1, PlateNumber: "京A88035"}
 	require.NoError(t, cli.SendWithError(registration))
-	var device *model.Device
+	var device *domain.Device
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
 		device, _ = database.Default().Devices.GetByPhone(context.Background(), phone)
-		if device != nil && device.Status == model.DeviceStatusOnline {
+		if device != nil && device.Status == domain.DeviceStatusOnline {
 			break
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
 	require.NotNil(t, device)
-	require.Equal(t, model.DeviceStatusOnline, device.Status)
+	require.Equal(t, domain.DeviceStatusOnline, device.Status)
 	t.Cleanup(func() {
 		database.Default().Devices.DeleteByPhone(context.Background(), phone)
 		protocol.NewKeepaliveTimer().Cancel(phone)
@@ -995,17 +996,17 @@ func TestSimulatorPhonebookAndUpgrade(t *testing.T) {
 	const phone = "188765433224"
 	registration := &model.Msg0100{Header: &model.MsgHeader{MsgID: 0x0100, Attr: &model.MsgBodyAttr{VersionDesc: model.Version2013}, PhoneNumber: phone}, ProvinceID: 11, CityID: 1101, ManufacturerID: "ABCDE", DeviceMode: "JT808-PB-SIM", DeviceID: "PB-01", PlateColor: 1, PlateNumber: "京A88036"}
 	require.NoError(t, cli.SendWithError(registration))
-	var device *model.Device
+	var device *domain.Device
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
 		device, _ = database.Default().Devices.GetByPhone(context.Background(), phone)
-		if device != nil && device.Status == model.DeviceStatusOnline {
+		if device != nil && device.Status == domain.DeviceStatusOnline {
 			break
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
 	require.NotNil(t, device)
-	require.Equal(t, model.DeviceStatusOnline, device.Status)
+	require.Equal(t, domain.DeviceStatusOnline, device.Status)
 	t.Cleanup(func() {
 		database.Default().Devices.DeleteByPhone(context.Background(), phone)
 		protocol.NewKeepaliveTimer().Cancel(phone)
@@ -1134,17 +1135,17 @@ func TestSimulatorTransparentAndCompressed(t *testing.T) {
 	const phone = "188765433223"
 	registration := &model.Msg0100{Header: &model.MsgHeader{MsgID: 0x0100, Attr: &model.MsgBodyAttr{VersionDesc: model.Version2013}, PhoneNumber: phone}, ProvinceID: 11, CityID: 1101, ManufacturerID: "ABCDE", DeviceMode: "JT808-TT-SIM", DeviceID: "TT-01", PlateColor: 1, PlateNumber: "京A88037"}
 	require.NoError(t, cli.SendWithError(registration))
-	var device *model.Device
+	var device *domain.Device
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
 		device, _ = database.Default().Devices.GetByPhone(context.Background(), phone)
-		if device != nil && device.Status == model.DeviceStatusOnline {
+		if device != nil && device.Status == domain.DeviceStatusOnline {
 			break
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
 	require.NotNil(t, device)
-	require.Equal(t, model.DeviceStatusOnline, device.Status)
+	require.Equal(t, domain.DeviceStatusOnline, device.Status)
 	t.Cleanup(func() {
 		database.Default().Devices.DeleteByPhone(context.Background(), phone)
 		protocol.NewKeepaliveTimer().Cancel(phone)
@@ -1229,17 +1230,17 @@ func TestSimulatorWaybillAndBatchLocation(t *testing.T) {
 	const phone = "188765433226"
 	registration := &model.Msg0100{Header: &model.MsgHeader{MsgID: 0x0100, Attr: &model.MsgBodyAttr{VersionDesc: model.Version2013}, PhoneNumber: phone}, ProvinceID: 11, CityID: 1101, ManufacturerID: "ABCDE", DeviceMode: "JT808-WB-SIM", DeviceID: "WB-01", PlateColor: 1, PlateNumber: "京A88034"}
 	require.NoError(t, cli.SendWithError(registration))
-	var device *model.Device
+	var device *domain.Device
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
 		device, _ = database.Default().Devices.GetByPhone(context.Background(), phone)
-		if device != nil && device.Status == model.DeviceStatusOnline {
+		if device != nil && device.Status == domain.DeviceStatusOnline {
 			break
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
 	require.NotNil(t, device)
-	require.Equal(t, model.DeviceStatusOnline, device.Status)
+	require.Equal(t, domain.DeviceStatusOnline, device.Status)
 	t.Cleanup(func() {
 		database.Default().Devices.DeleteByPhone(context.Background(), phone)
 		protocol.NewKeepaliveTimer().Cancel(phone)
@@ -1306,17 +1307,17 @@ func TestSimulatorMediaRetransmissionRecoversDroppedPacket(t *testing.T) {
 	const phone = "188765433240"
 	registration := &model.Msg0100{Header: &model.MsgHeader{MsgID: 0x0100, Attr: &model.MsgBodyAttr{VersionDesc: model.Version2013}, PhoneNumber: phone}, ProvinceID: 11, CityID: 1101, ManufacturerID: "ABCDE", DeviceMode: "JT808-MEDIA-SIM", DeviceID: "MEDIA-02", PlateColor: 1, PlateNumber: "京A88000"}
 	require.NoError(t, cli.SendWithError(registration))
-	var device *model.Device
+	var device *domain.Device
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
 		device, _ = database.Default().Devices.GetByPhone(context.Background(), phone)
-		if device != nil && device.Status == model.DeviceStatusOnline {
+		if device != nil && device.Status == domain.DeviceStatusOnline {
 			break
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
 	require.NotNil(t, device)
-	require.Equal(t, model.DeviceStatusOnline, device.Status)
+	require.Equal(t, domain.DeviceStatusOnline, device.Status)
 	t.Cleanup(func() {
 		database.Default().Devices.DeleteByPhone(context.Background(), phone)
 		protocol.NewKeepaliveTimer().Cancel(phone)
@@ -1404,17 +1405,17 @@ func TestSimulatorRecorderCommandTypedResponses(t *testing.T) {
 	const phone = "188765433230"
 	registration := &model.Msg0100{Header: &model.MsgHeader{MsgID: 0x0100, Attr: &model.MsgBodyAttr{VersionDesc: model.Version2013}, PhoneNumber: phone}, ProvinceID: 11, CityID: 1101, ManufacturerID: "ABCDE", DeviceMode: "JT808-RECORDER-SIM", DeviceID: "RECORDER-01", PlateColor: 1, PlateNumber: "京A87000"}
 	require.NoError(t, cli.SendWithError(registration))
-	var device *model.Device
+	var device *domain.Device
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
 		device, _ = database.Default().Devices.GetByPhone(context.Background(), phone)
-		if device != nil && device.Status == model.DeviceStatusOnline {
+		if device != nil && device.Status == domain.DeviceStatusOnline {
 			break
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
 	require.NotNil(t, device)
-	require.Equal(t, model.DeviceStatusOnline, device.Status)
+	require.Equal(t, domain.DeviceStatusOnline, device.Status)
 	t.Cleanup(func() {
 		database.Default().Devices.DeleteByPhone(context.Background(), phone)
 		protocol.NewKeepaliveTimer().Cancel(phone)
@@ -1520,17 +1521,17 @@ func TestSimulatorRecorderParamSettingRoundTrip(t *testing.T) {
 	const phone = "188765433231"
 	registration := &model.Msg0100{Header: &model.MsgHeader{MsgID: 0x0100, Attr: &model.MsgBodyAttr{VersionDesc: model.Version2013}, PhoneNumber: phone}, ProvinceID: 11, CityID: 1101, ManufacturerID: "ABCDE", DeviceMode: "JT808-RECORDER-SIM", DeviceID: "RECORDER-02", PlateColor: 1, PlateNumber: "京A87010"}
 	require.NoError(t, cli.SendWithError(registration))
-	var device *model.Device
+	var device *domain.Device
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
 		device, _ = database.Default().Devices.GetByPhone(context.Background(), phone)
-		if device != nil && device.Status == model.DeviceStatusOnline {
+		if device != nil && device.Status == domain.DeviceStatusOnline {
 			break
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
 	require.NotNil(t, device)
-	require.Equal(t, model.DeviceStatusOnline, device.Status)
+	require.Equal(t, domain.DeviceStatusOnline, device.Status)
 	t.Cleanup(func() {
 		database.Default().Devices.DeleteByPhone(context.Background(), phone)
 		protocol.NewKeepaliveTimer().Cancel(phone)
@@ -1564,7 +1565,7 @@ func TestSimulatorRecorderParamSettingRoundTrip(t *testing.T) {
 	time.Sleep(300 * time.Millisecond)
 	device, _ = database.Default().Devices.GetByPhone(context.Background(), phone)
 	require.NotNil(t, device, "device should still be cached after 0x8701 round-trip")
-	require.Equal(t, model.DeviceStatusOnline, device.Status, "0x8701 should be acknowledged by 0x0001 and keep the device online")
+	require.Equal(t, domain.DeviceStatusOnline, device.Status, "0x8701 should be acknowledged by 0x0001 and keep the device online")
 }
 
 func TestClientFaultFramesDoNotPreventFollowingRegistration(t *testing.T) {
@@ -1603,14 +1604,14 @@ func TestClientFaultFramesDoNotPreventFollowingRegistration(t *testing.T) {
 				deadline := time.Now().Add(6 * time.Second)
 				for time.Now().Before(deadline) {
 					device, err := database.Default().Devices.GetByPhone(context.Background(), phone)
-					if err == nil && device.Status == model.DeviceStatusOnline {
+					if err == nil && device.Status == domain.DeviceStatusOnline {
 						break
 					}
 					time.Sleep(10 * time.Millisecond)
 				}
 				device, err := database.Default().Devices.GetByPhone(context.Background(), phone)
 				require.NoError(t, err, "valid registration after %s was not processed", fault)
-				require.Equal(t, model.DeviceStatusOnline, device.Status)
+				require.Equal(t, domain.DeviceStatusOnline, device.Status)
 				t.Cleanup(func() {
 					database.Default().Devices.DeleteByPhone(context.Background(), phone)
 					protocol.NewKeepaliveTimer().Cancel(phone)
@@ -1696,7 +1697,7 @@ func dialBareTerminalOn(t *testing.T, network, addr, phone, plate, deviceID stri
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
 		d, err := database.Default().Devices.GetByPhone(context.Background(), phone)
-		if err == nil && d.Status == model.DeviceStatusOnline {
+		if err == nil && d.Status == domain.DeviceStatusOnline {
 			return b
 		}
 		time.Sleep(5 * time.Millisecond)
@@ -1995,7 +1996,7 @@ func TestTCPServerRejectsDuplicateRegistration(t *testing.T) {
 
 	original, err := devices.GetByPhone(context.Background(), phoneA)
 	require.NoError(t, err)
-	require.Equal(t, model.DeviceStatusOnline, original.Status, "original device must stay untouched")
+	require.Equal(t, domain.DeviceStatusOnline, original.Status, "original device must stay untouched")
 }
 
 func TestTCPServerRejectsWrongAuthCode(t *testing.T) {
@@ -2053,7 +2054,7 @@ func TestTCPServerMergesTerminalParamsAndAnswers8104(t *testing.T) {
 
 	b.send(t, &model.Msg8103{
 		Header:     uplinkHeader(0x8103, phone, 3),
-		Parameters: &model.DeviceParams{ParamCnt: 1, Params: []*model.ParamData{{ParamID: 0x0001, ParamValue: uint32(111)}}},
+		Parameters: &domain.DeviceParams{ParamCnt: 1, Params: []*domain.ParamData{{ParamID: 0x0001, ParamValue: uint32(111)}}},
 	})
 	ack := &model.Msg0001{}
 	b.recvInto(t, 3*time.Second, 0x0001, ack)
@@ -2061,7 +2062,7 @@ func TestTCPServerMergesTerminalParamsAndAnswers8104(t *testing.T) {
 
 	b.send(t, &model.Msg8103{
 		Header: uplinkHeader(0x8103, phone, 4),
-		Parameters: &model.DeviceParams{ParamCnt: 2, Params: []*model.ParamData{
+		Parameters: &domain.DeviceParams{ParamCnt: 2, Params: []*domain.ParamData{
 			{ParamID: 0x0001, ParamValue: uint32(222)},
 			{ParamID: 0x0002, ParamValue: uint32(333)},
 		}},
@@ -2103,17 +2104,17 @@ func TestSimulatorRecorderPositionTestCommands(t *testing.T) {
 	const phone = "188765433241"
 	registration := &model.Msg0100{Header: &model.MsgHeader{MsgID: 0x0100, Attr: &model.MsgBodyAttr{VersionDesc: model.Version2013}, PhoneNumber: phone}, ProvinceID: 11, CityID: 1101, ManufacturerID: "ABCDE", DeviceMode: "JT808-RECORDER-SIM", DeviceID: "RECORDER-03", PlateColor: 1, PlateNumber: "京A87020"}
 	require.NoError(t, cli.SendWithError(registration))
-	var device *model.Device
+	var device *domain.Device
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
 		device, _ = database.Default().Devices.GetByPhone(context.Background(), phone)
-		if device != nil && device.Status == model.DeviceStatusOnline {
+		if device != nil && device.Status == domain.DeviceStatusOnline {
 			break
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
 	require.NotNil(t, device)
-	require.Equal(t, model.DeviceStatusOnline, device.Status)
+	require.Equal(t, domain.DeviceStatusOnline, device.Status)
 	t.Cleanup(func() {
 		database.Default().Devices.DeleteByPhone(context.Background(), phone)
 		protocol.NewKeepaliveTimer().Cancel(phone)
@@ -2251,7 +2252,7 @@ func TestTCPServerRejectsImpersonationAndKeepsOldSession(t *testing.T) {
 	waitPhoneOwner(t, phone, oldSessionID)
 	device, err := database.Default().Devices.GetByPhone(context.Background(), phone)
 	require.NoError(t, err, "failed authentication must not delete the existing device")
-	require.Equal(t, model.DeviceStatusOnline, device.Status)
+	require.Equal(t, domain.DeviceStatusOnline, device.Status)
 
 	old.send(t, &model.Msg0002{Header: uplinkHeader(0x0002, phone, 2)})
 	hbReply := &model.Msg8001{}

@@ -8,6 +8,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/fakeyanss/jt808-server-go/internal/client"
+	"github.com/fakeyanss/jt808-server-go/internal/domain"
 	"github.com/fakeyanss/jt808-server-go/internal/protocol"
 	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
 	"github.com/fakeyanss/jt808-server-go/internal/repository/database"
@@ -16,14 +17,14 @@ import (
 
 // startSimulatorServer brings up a TCP server and a registered client simulator
 // for region/route end-to-end tests.
-func startSimulatorServer(t *testing.T) (*TCPServer, *client.TCPClient, *model.Device) {
+func startSimulatorServer(t *testing.T) (*TCPServer, *client.TCPClient, *domain.Device) {
 	t.Helper()
 	return startSimulatorServerWith(t, nil)
 }
 
 // startSimulatorServerWith 允许在终端连接建立前注入服务端依赖；
 // 会话在 accept 时捕获可靠投递回调，因此配置必须先于拨号。
-func startSimulatorServerWith(t *testing.T, configure func(*TCPServer)) (*TCPServer, *client.TCPClient, *model.Device) {
+func startSimulatorServerWith(t *testing.T, configure func(*TCPServer)) (*TCPServer, *client.TCPClient, *domain.Device) {
 	t.Helper()
 	server := NewTCPServer()
 	server.SetDeps(protocol.ProcessorDeps{Repos: database.Default().Repositories})
@@ -48,17 +49,17 @@ func startSimulatorServerWith(t *testing.T, configure func(*TCPServer)) (*TCPSer
 	}
 	require.NoError(t, cli.SendWithError(registration))
 
-	var device *model.Device
+	var device *domain.Device
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
 		device, _ = database.Default().Devices.GetByPhone(context.Background(), phone)
-		if device != nil && device.Status == model.DeviceStatusOnline {
+		if device != nil && device.Status == domain.DeviceStatusOnline {
 			break
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
 	require.NotNil(t, device)
-	require.Equal(t, model.DeviceStatusOnline, device.Status)
+	require.Equal(t, domain.DeviceStatusOnline, device.Status)
 	t.Cleanup(func() {
 		database.Default().Devices.DeleteByPhone(context.Background(), phone)
 		protocol.NewKeepaliveTimer().Cancel(phone)

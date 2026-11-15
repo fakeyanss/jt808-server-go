@@ -1,9 +1,11 @@
 package model
 
+import "github.com/fakeyanss/jt808-server-go/internal/domain"
+
 // JT1078 查询资源列表
 type Msg9205 struct {
 	Header *MsgHeader `json:"header"`
-	DeviceMediaQuery
+	domain.DeviceMediaQuery
 }
 
 func (m *Msg9205) Decode(packet *PacketData) error {

@@ -13,8 +13,8 @@ import (
 	"github.com/rs/zerolog/log"
 
 	"github.com/fakeyanss/jt808-server-go/internal/contracts"
+	"github.com/fakeyanss/jt808-server-go/internal/domain"
 	"github.com/fakeyanss/jt808-server-go/internal/internalapi"
-	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
 	"github.com/fakeyanss/jt808-server-go/internal/repository"
 )
 
@@ -46,7 +46,7 @@ type HTTPAuthProvider struct {
 }
 
 type authCacheEntry struct {
-	device     *model.Device
+	device     *domain.Device
 	expiresAt  time.Time
 	graceUntil time.Time
 }
@@ -82,7 +82,7 @@ func NewHTTPAuthProvider(baseURL, token string, timeout, cacheTTL, grace time.Du
 }
 
 // Device 返回设备档案。
-func (p *HTTPAuthProvider) Device(ctx context.Context, phone string) (*model.Device, error) {
+func (p *HTTPAuthProvider) Device(ctx context.Context, phone string) (*domain.Device, error) {
 	if p == nil {
 		return nil, repository.ErrDeviceNotFound
 	}
@@ -122,7 +122,7 @@ func (p *HTTPAuthProvider) Device(ctx context.Context, phone string) (*model.Dev
 	if err := json.NewDecoder(response.Body).Decode(&body); err != nil {
 		return p.degrade(phone, err)
 	}
-	device := &model.Device{Phone: body.Phone, ID: body.ID, Plate: body.Plate, AuthCode: body.AuthCode}
+	device := &domain.Device{Phone: body.Phone, ID: body.ID, Plate: body.Plate, AuthCode: body.AuthCode}
 	p.store(device)
 	p.markRecovered()
 	return device, nil
@@ -139,7 +139,7 @@ func (p *HTTPAuthProvider) AuthCode(ctx context.Context, phone string) (string, 
 
 // degrade 在 control 不可达时按过期缓存有界放行。
 // 没有缓存条目或宽限期已耗尽则返回原始错误，保持 fail-closed。
-func (p *HTTPAuthProvider) degrade(phone string, cause error) (*model.Device, error) {
+func (p *HTTPAuthProvider) degrade(phone string, cause error) (*domain.Device, error) {
 	now := p.now()
 	p.mu.Lock()
 	entry, ok := p.cache[phone]
@@ -152,7 +152,7 @@ func (p *HTTPAuthProvider) degrade(phone string, cause error) (*model.Device, er
 		p.degraded = true
 		first = true
 	}
-	var device *model.Device
+	var device *domain.Device
 	if ok {
 		copied := *entry.device
 		device = &copied
@@ -177,7 +177,7 @@ func (p *HTTPAuthProvider) degrade(phone string, cause error) (*model.Device, er
 }
 
 // fresh 只返回仍在正常有效期内的缓存。
-func (p *HTTPAuthProvider) fresh(phone string) (*model.Device, bool) {
+func (p *HTTPAuthProvider) fresh(phone string) (*domain.Device, bool) {
 	now := p.now()
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -195,7 +195,7 @@ func (p *HTTPAuthProvider) drop(phone string) {
 	delete(p.cache, phone)
 }
 
-func (p *HTTPAuthProvider) store(device *model.Device) {
+func (p *HTTPAuthProvider) store(device *domain.Device) {
 	now := p.now()
 	p.mu.Lock()
 	defer p.mu.Unlock()

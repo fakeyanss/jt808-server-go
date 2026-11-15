@@ -12,6 +12,7 @@ import (
 
 	actionpkg "github.com/fakeyanss/jt808-server-go/internal/action"
 	"github.com/fakeyanss/jt808-server-go/internal/codec/hex"
+	"github.com/fakeyanss/jt808-server-go/internal/domain"
 	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
 	"github.com/fakeyanss/jt808-server-go/internal/repository"
 	"github.com/fakeyanss/jt808-server-go/internal/repository/database"
@@ -83,7 +84,7 @@ func TestHeartbeatDoesNotPersistRuntime(t *testing.T) {
 	const phone = "188765499004"
 	ctx := context.Background()
 	devices := database.Default().Devices
-	require.NoError(t, devices.Upsert(ctx, &model.Device{
+	require.NoError(t, devices.Upsert(ctx, &domain.Device{
 		Phone:     phone,
 		Keepalive: time.Minute,
 	}))
@@ -98,7 +99,7 @@ func TestHeartbeatDoesNotPersistRuntime(t *testing.T) {
 	stored, err := devices.GetByPhone(ctx, phone)
 	require.NoError(t, err)
 	require.True(t, stored.LastestComTime.IsZero(), "heartbeat must not persist last com time")
-	require.Equal(t, model.DeviceStatusOffline, stored.Status, "heartbeat must not persist status")
+	require.Equal(t, domain.DeviceStatusOffline, stored.Status, "heartbeat must not persist status")
 
 	last, ok := runtime.Default().Heartbeat.Last(ctx, phone)
 	require.True(t, ok)
@@ -277,7 +278,7 @@ func TestOnAlarmHTTPCallbackIncludesExtItems(t *testing.T) {
 	const phone = "188765432120"
 	ctx := context.Background()
 	devices := database.Default().Devices
-	require.NoError(t, devices.Upsert(ctx, &model.Device{Phone: phone, Keepalive: time.Minute}))
+	require.NoError(t, devices.Upsert(ctx, &domain.Device{Phone: phone, Keepalive: time.Minute}))
 	t.Cleanup(func() { _ = devices.DeleteByPhone(ctx, phone) })
 
 	adas := buildTest0200ADAS()
@@ -330,11 +331,11 @@ func TestOnAlarmHTTPCallbackIncludesExtItems(t *testing.T) {
 
 // fakeAuthProvider 模拟 control 的只读档案查询。
 type fakeAuthProvider struct {
-	devices map[string]*model.Device
+	devices map[string]*domain.Device
 	err     error
 }
 
-func (f fakeAuthProvider) Device(_ context.Context, phone string) (*model.Device, error) {
+func (f fakeAuthProvider) Device(_ context.Context, phone string) (*domain.Device, error) {
 	if f.err != nil {
 		return nil, f.err
 	}
@@ -357,12 +358,12 @@ func TestGatewayHandlersUseAuthProviderWithoutDatabase(t *testing.T) {
 	const phone = "188765499005"
 	ctx := context.Background()
 	repos := database.NewMemory()
-	require.NoError(t, repos.Devices.Upsert(ctx, &model.Device{
+	require.NoError(t, repos.Devices.Upsert(ctx, &domain.Device{
 		Phone:     phone,
 		Keepalive: time.Minute,
 		AuthCode:  "code-1",
 	}))
-	provider := fakeAuthProvider{devices: map[string]*model.Device{
+	provider := fakeAuthProvider{devices: map[string]*domain.Device{
 		phone: {Phone: phone, Keepalive: time.Minute, AuthCode: "code-1"},
 	}}
 	processor := NewJT808MsgProcessor(nil, WithProcessorDeps(ProcessorDeps{

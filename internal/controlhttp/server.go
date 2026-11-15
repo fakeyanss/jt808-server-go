@@ -22,11 +22,11 @@ import (
 	"github.com/fakeyanss/jt808-server-go/internal/attachmentnode"
 	clockpkg "github.com/fakeyanss/jt808-server-go/internal/clock"
 	"github.com/fakeyanss/jt808-server-go/internal/contracts"
+	"github.com/fakeyanss/jt808-server-go/internal/domain"
 	"github.com/fakeyanss/jt808-server-go/internal/gatewaynode"
 	"github.com/fakeyanss/jt808-server-go/internal/internalapi"
 	"github.com/fakeyanss/jt808-server-go/internal/medianode"
 	"github.com/fakeyanss/jt808-server-go/internal/observability"
-	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
 	"github.com/fakeyanss/jt808-server-go/internal/repository"
 	"github.com/fakeyanss/jt808-server-go/internal/uplink"
 )
@@ -80,7 +80,7 @@ type Server struct {
 	defaultConsumer EventConsumer
 	replyHandler    contracts.TerminalReplyHandler
 	dedup           *dedupCache
-	deviceLookup    func(ctx context.Context, phone string) (*model.Device, error)
+	deviceLookup    func(ctx context.Context, phone string) (*domain.Device, error)
 	nodes           repository.GatewayNodeRepository
 	sessions        repository.SessionDirectoryRepository
 	segments        repository.RecordingSegmentRepository
@@ -168,7 +168,7 @@ func (s *Server) SetTerminalReplyHandler(handler contracts.TerminalReplyHandler)
 }
 
 // SetDeviceLookup 设置网关只读查询设备档案的回调。
-func (s *Server) SetDeviceLookup(lookup func(ctx context.Context, phone string) (*model.Device, error)) {
+func (s *Server) SetDeviceLookup(lookup func(ctx context.Context, phone string) (*domain.Device, error)) {
 	if s == nil {
 		return
 	}

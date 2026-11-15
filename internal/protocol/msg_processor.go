@@ -16,6 +16,7 @@ import (
 	"github.com/fakeyanss/jt808-server-go/internal/codec/hash"
 	"github.com/fakeyanss/jt808-server-go/internal/codec/hex"
 	"github.com/fakeyanss/jt808-server-go/internal/contracts"
+	"github.com/fakeyanss/jt808-server-go/internal/domain"
 	"github.com/fakeyanss/jt808-server-go/internal/mediaupload"
 	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
 	"github.com/fakeyanss/jt808-server-go/internal/repository"
@@ -1110,7 +1111,7 @@ func (mp *JT808MsgProcessor) processMsg0102(ctx context.Context, data *model.Pro
 			device.SessionID = session.ID
 			device.TransProto = session.GetTransProto()
 		}
-		device.Status = model.DeviceStatusOnline
+		device.Status = domain.DeviceStatusOnline
 		device.LastestComTime = time.Now()
 		device.AuthCode = in.AuthCode
 		device.IMEI = in.IMEI
@@ -1147,7 +1148,7 @@ func (mp *JT808MsgProcessor) bindPhoneSession(ctx context.Context, phone string,
 	return nil
 }
 
-func genAuthCode(d *model.Device) string {
+func genAuthCode(d *domain.Device) string {
 	var splitByte byte = '_'
 	codeBuilder := new(strings.Builder)
 	codeBuilder.WriteString(d.ID)
@@ -1276,12 +1277,12 @@ func (mp *JT808MsgProcessor) processMsg8001(ctx context.Context, data *model.Pro
 		if errors.Is(err, repository.ErrDeviceNotFound) {
 			return nil
 		}
-		if device.Status != model.DeviceStatusOffline {
+		if device.Status != domain.DeviceStatusOffline {
 			return nil
 		}
 
 		// 仅在未注册成功时执行一次
-		device.Status = model.DeviceStatusOnline
+		device.Status = domain.DeviceStatusOnline
 		device.LastestComTime = time.Now()
 		_ = devices.Upsert(context.Background(), device)
 	}
@@ -1404,7 +1405,7 @@ func (mp *JT808MsgProcessor) processMsg8104(_ context.Context, data *model.Proce
 	out := data.Outgoing.(*model.Msg0104)
 	params, err := mp.deps.Repos.Params.Get(context.Background(), out.GetHeader().PhoneNumber)
 	if errors.Is(err, repository.ErrDeviceParamsNotFound) {
-		out.Parameters = &model.DeviceParams{}
+		out.Parameters = &domain.DeviceParams{}
 		// 模拟一个固定的参数
 		paramCnt := 39
 		paramByteStr := "00000001044B687673" +
@@ -1461,7 +1462,7 @@ func (mp *JT808MsgProcessor) processMsg8106(ctx context.Context, data *model.Pro
 	}
 	in := data.Incoming.(*model.Msg8106)
 	out := data.Outgoing.(*model.Msg0104)
-	filtered := &model.DeviceParams{DevicePhone: out.Parameters.DevicePhone}
+	filtered := &domain.DeviceParams{DevicePhone: out.Parameters.DevicePhone}
 	for _, id := range in.ParamIDs {
 		for _, p := range out.Parameters.Params {
 			if p.ParamID == id {
@@ -1507,7 +1508,7 @@ func (mp *JT808MsgProcessor) processMsg9205(_ context.Context, data *model.Proce
 		if !mediaTimeInRange(location.Time, in.StartTime, in.EndTime) {
 			continue
 		}
-		item := model.DeviceMedia{}
+		item := domain.DeviceMedia{}
 		item.LogicChannelID = media.LogicChannelID
 		t := hex.ParseTime(location.Time)
 		item.StartTime = &t
@@ -1743,7 +1744,7 @@ func (mp *JT808MsgProcessor) processMsg8803(ctx context.Context, data *model.Pro
 			continue
 		}
 		upload := &model.Msg0801{
-			Header:              model.GenMsgHeader(&model.Device{Phone: phone, VersionDesc: cmd.Header.Attr.VersionDesc, ProtocolVersion: cmd.Header.ProtocolVersion}, 0x0801, session.GetNextSerialNum()),
+			Header:              model.GenMsgHeader(&domain.Device{Phone: phone, VersionDesc: cmd.Header.Attr.VersionDesc, ProtocolVersion: cmd.Header.ProtocolVersion}, 0x0801, session.GetNextSerialNum()),
 			MultiMediaID:        media.MultiMediaID,
 			MultiMediaType:      media.MultiMediaType,
 			MultiMediaContainer: media.MultiMediaContainer,
@@ -1771,7 +1772,7 @@ func (mp *JT808MsgProcessor) processMsg8804(ctx context.Context, data *model.Pro
 	if cmd.Command != 1 || session == nil {
 		return nil
 	}
-	device := &model.Device{Phone: phone, VersionDesc: cmd.Header.Attr.VersionDesc, ProtocolVersion: cmd.Header.ProtocolVersion}
+	device := &domain.Device{Phone: phone, VersionDesc: cmd.Header.Attr.VersionDesc, ProtocolVersion: cmd.Header.ProtocolVersion}
 	frameCount := 3
 	for i := 0; i < frameCount; i++ {
 		upload := &model.Msg0801{
@@ -1806,7 +1807,7 @@ func (mp *JT808MsgProcessor) processMsg8805(ctx context.Context, data *model.Pro
 			continue
 		}
 		upload := &model.Msg0801{
-			Header:              model.GenMsgHeader(&model.Device{Phone: phone, VersionDesc: cmd.Header.Attr.VersionDesc, ProtocolVersion: cmd.Header.ProtocolVersion}, 0x0801, session.GetNextSerialNum()),
+			Header:              model.GenMsgHeader(&domain.Device{Phone: phone, VersionDesc: cmd.Header.Attr.VersionDesc, ProtocolVersion: cmd.Header.ProtocolVersion}, 0x0801, session.GetNextSerialNum()),
 			MultiMediaID:        media.MultiMediaID,
 			MultiMediaType:      media.MultiMediaType,
 			MultiMediaContainer: media.MultiMediaContainer,

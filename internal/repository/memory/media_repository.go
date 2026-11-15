@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"sync"
 
+	"github.com/fakeyanss/jt808-server-go/internal/domain"
 	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
 	"github.com/fakeyanss/jt808-server-go/internal/repository"
 )
@@ -38,7 +39,7 @@ func (r *memoryMediaMetadataRepository) ReplaceResourceList(_ context.Context, p
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	copy := *list
-	copy.Items = append([]model.DeviceMedia(nil), list.Items...)
+	copy.Items = append([]domain.DeviceMedia(nil), list.Items...)
 	r.lists[phone] = &copy
 	return nil
 }
@@ -51,7 +52,7 @@ func (r *memoryMediaMetadataRepository) ResourceList(_ context.Context, phone st
 		return nil, nil
 	}
 	copy := *list
-	copy.Items = append([]model.DeviceMedia(nil), list.Items...)
+	copy.Items = append([]domain.DeviceMedia(nil), list.Items...)
 	return &copy, nil
 }
 

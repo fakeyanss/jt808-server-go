@@ -11,6 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/fakeyanss/jt808-server-go/internal/contracts"
+	"github.com/fakeyanss/jt808-server-go/internal/domain"
 	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
 	"github.com/fakeyanss/jt808-server-go/internal/repository"
 	"github.com/fakeyanss/jt808-server-go/internal/repository/database"
@@ -145,7 +146,7 @@ func runUplinkPipelineWithSink(
 // 落库成功时才发出 0x8001 通用应答。
 func TestAtLeastOnceAcksAfterLocationPersisted(t *testing.T) {
 	stores := database.NewMemory()
-	require.NoError(t, stores.Devices.Upsert(context.Background(), &model.Device{Phone: "188765499021", Keepalive: time.Minute}))
+	require.NoError(t, stores.Devices.Upsert(context.Background(), &domain.Device{Phone: "188765499021", Keepalive: time.Minute}))
 	repo := &recordingLocationRepo{}
 	stores.Locations = repo
 
@@ -168,7 +169,7 @@ func TestAtLeastOnceAcksAfterLocationPersisted(t *testing.T) {
 // 落库失败时本轮不发出任何应答，让终端按协议重传。
 func TestAtLeastOnceSkipsAckWhenLocationPersistFails(t *testing.T) {
 	stores := database.NewMemory()
-	require.NoError(t, stores.Devices.Upsert(context.Background(), &model.Device{Phone: "188765499021", Keepalive: time.Minute}))
+	require.NoError(t, stores.Devices.Upsert(context.Background(), &domain.Device{Phone: "188765499021", Keepalive: time.Minute}))
 	stores.Locations = failingLocationRepo{}
 
 	policy := uplink.NewPolicy("best_effort", "best_effort", "at_least_once", "at_least_once")
@@ -186,7 +187,7 @@ func TestAtLeastOnceSkipsAckWhenLocationPersistFails(t *testing.T) {
 // best_effort 保留旧语义：先应答，落库失败只记日志、不影响连接。
 func TestBestEffortAcksBeforeLocationPersistFailure(t *testing.T) {
 	stores := database.NewMemory()
-	require.NoError(t, stores.Devices.Upsert(context.Background(), &model.Device{Phone: "188765499021", Keepalive: time.Minute}))
+	require.NoError(t, stores.Devices.Upsert(context.Background(), &domain.Device{Phone: "188765499021", Keepalive: time.Minute}))
 	stores.Locations = failingLocationRepo{}
 
 	policy := uplink.NewPolicy("best_effort", "best_effort", "at_least_once", "at_least_once")

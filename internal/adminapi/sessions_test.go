@@ -11,6 +11,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/fakeyanss/jt808-server-go/internal/domain"
 	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
 	"github.com/fakeyanss/jt808-server-go/internal/repository"
 	"github.com/fakeyanss/jt808-server-go/internal/repository/memory"
@@ -69,12 +70,12 @@ func TestListSessionsReturnsBoundSessionsWithRuntimeFields(t *testing.T) {
 	unbound := &model.Session{ID: "10.0.0.3:9002", ConnectedAt: connectedAt}
 	require.NoError(t, fixture.registry.Bind(context.Background(), unbound))
 
-	require.NoError(t, fixture.devices.Upsert(context.Background(), &model.Device{
+	require.NoError(t, fixture.devices.Upsert(context.Background(), &domain.Device{
 		Phone:           "18800000001",
 		ProtocolVersion: 1,
 		LastestComTime:  lastCom,
 	}))
-	require.NoError(t, fixture.devices.Upsert(context.Background(), &model.Device{
+	require.NoError(t, fixture.devices.Upsert(context.Background(), &domain.Device{
 		Phone:           "18800000002",
 		ProtocolVersion: 0,
 		LastestComTime:  lastCom,

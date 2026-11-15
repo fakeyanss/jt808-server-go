@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/fakeyanss/jt808-server-go/internal/domain"
 	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
 	"github.com/fakeyanss/jt808-server-go/internal/repository"
 )
@@ -14,7 +15,7 @@ import (
 // deviceRepository 是 repository.DeviceRepository 的 SQL 实现。
 // 只持久化设备静态档案（devices）；session/在线态/最后通信时间等运行时状态
 // 由进程内 runtime 注册表持有，重启后自然归零。
-// 因此读路径返回的 model.Device 运行时字段恒为零值（离线、空会话、零时间）。
+// 因此读路径返回的 domain.Device 运行时字段恒为零值（离线、空会话、零时间）。
 type deviceRepository struct {
 	store *Store
 }
@@ -43,7 +44,7 @@ type deviceRow struct {
 	updatedAt       int64
 }
 
-func newDeviceRow(d *model.Device) deviceRow {
+func newDeviceRow(d *domain.Device) deviceRow {
 	return deviceRow{
 		phone:           d.Phone,
 		id:              d.ID,
@@ -65,9 +66,9 @@ func (r deviceRow) args() []any {
 	}
 }
 
-// device 只填充静态档案；运行时字段保留 model.Device 的零值。
-func (r deviceRow) device() *model.Device {
-	return &model.Device{
+// device 只填充静态档案；运行时字段保留 domain.Device 的零值。
+func (r deviceRow) device() *domain.Device {
+	return &domain.Device{
 		ID:              r.id,
 		Plate:           r.plate,
 		Phone:           r.phone,
@@ -80,7 +81,7 @@ func (r deviceRow) device() *model.Device {
 	}
 }
 
-func scanDeviceRow(scanner interface{ Scan(...any) error }) (*model.Device, error) {
+func scanDeviceRow(scanner interface{ Scan(...any) error }) (*domain.Device, error) {
 	var r deviceRow
 	if err := scanner.Scan(
 		&r.phone, &r.id, &r.plate, &r.keepaliveMS, &r.versionDesc, &r.protocolVersion,
@@ -91,7 +92,7 @@ func scanDeviceRow(scanner interface{ Scan(...any) error }) (*model.Device, erro
 	return r.device(), nil
 }
 
-func (r *deviceRepository) GetByPhone(ctx context.Context, phone string) (*model.Device, error) {
+func (r *deviceRepository) GetByPhone(ctx context.Context, phone string) (*domain.Device, error) {
 	ctx, cancel := readContext(ctx)
 	defer cancel()
 	row := r.store.readDB.QueryRowContext(ctx,
@@ -106,7 +107,7 @@ func (r *deviceRepository) GetByPhone(ctx context.Context, phone string) (*model
 	return device, nil
 }
 
-func (r *deviceRepository) GetByPlate(ctx context.Context, plate string) (*model.Device, error) {
+func (r *deviceRepository) GetByPlate(ctx context.Context, plate string) (*domain.Device, error) {
 	ctx, cancel := readContext(ctx)
 	defer cancel()
 	row := r.store.readDB.QueryRowContext(ctx,
@@ -122,7 +123,7 @@ func (r *deviceRepository) GetByPlate(ctx context.Context, plate string) (*model
 	return device, nil
 }
 
-func (r *deviceRepository) List(ctx context.Context) ([]*model.Device, error) {
+func (r *deviceRepository) List(ctx context.Context) ([]*domain.Device, error) {
 	ctx, cancel := readContext(ctx)
 	defer cancel()
 	rows, err := r.store.readDB.QueryContext(ctx,
@@ -132,7 +133,7 @@ func (r *deviceRepository) List(ctx context.Context) ([]*model.Device, error) {
 	}
 	defer rows.Close()
 
-	devices := make([]*model.Device, 0)
+	devices := make([]*domain.Device, 0)
 	for rows.Next() {
 		device, err := scanDeviceRow(rows)
 		if err != nil {
@@ -147,7 +148,7 @@ func (r *deviceRepository) List(ctx context.Context) ([]*model.Device, error) {
 }
 
 // Upsert 只写 devices 静态列；设备结构体上的运行时字段被忽略，不落库。
-func (r *deviceRepository) Upsert(ctx context.Context, device *model.Device) error {
+func (r *deviceRepository) Upsert(ctx context.Context, device *domain.Device) error {
 	row := newDeviceRow(device)
 	stmt := r.store.stmts.UpsertDevice()
 	if _, err := r.store.db.ExecContext(ctx, stmt, row.args()...); err != nil {
@@ -160,7 +161,7 @@ func (r *deviceRepository) Upsert(ctx context.Context, device *model.Device) err
 //
 // 更新时不触碰 imei/software_version：0x0100 与 0x0102 在集群中可能乱序，
 // 整行覆盖会把鉴权写入的终端信息回退成空值。
-func (r *deviceRepository) SaveRegistration(ctx context.Context, device *model.Device) error {
+func (r *deviceRepository) SaveRegistration(ctx context.Context, device *domain.Device) error {
 	if device == nil || device.Phone == "" {
 		return fmt.Errorf("save registration: empty phone")
 	}
@@ -181,7 +182,7 @@ func (r *deviceRepository) SaveRegistration(ctx context.Context, device *model.D
 
 // SaveAuthState 只写 0x0102 拥有的终端信息；档案不存在返回 ErrDeviceNotFound。
 // 线上状态、会话与最后通信时间属于进程内运行时状态，不写入 devices。
-func (r *deviceRepository) SaveAuthState(ctx context.Context, device *model.Device) error {
+func (r *deviceRepository) SaveAuthState(ctx context.Context, device *domain.Device) error {
 	if device == nil || device.Phone == "" {
 		return repository.ErrDeviceNotFound
 	}

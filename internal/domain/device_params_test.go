@@ -1,4 +1,4 @@
-package model
+package domain
 
 import (
 	"testing"
@@ -146,21 +146,6 @@ func TestDeviceParamsEncodeRejectsInvalidCompoundValue(t *testing.T) {
 	}}}
 	_, err := params.Encode()
 	require.ErrorIs(t, err, ErrEncodeDeviceParams)
-}
-
-func TestMsg0104DecodesSubiaoParams(t *testing.T) {
-	payload, err := encodeSubiaoBSDParam(SubiaoBSDParam{RearApproachAlarmTimeThreshold: 4, SideRearApproachAlarmTimeThreshold: 6})
-	require.NoError(t, err)
-	body := hex.WriteWord(nil, 7)
-	body = hex.WriteByte(body, 1)
-	body = hex.WriteBytes(body, encodeTestParam(0xF367, payload))
-
-	msg := &Msg0104{}
-	err = msg.Decode(&PacketData{Header: genMsgHeader(0x0104), Body: body})
-	require.NoError(t, err)
-	require.Equal(t, uint16(7), msg.AnswerSerialNumber)
-	require.Len(t, msg.Parameters.Params, 1)
-	require.Equal(t, SubiaoBSDParam{RearApproachAlarmTimeThreshold: 4, SideRearApproachAlarmTimeThreshold: 6}, msg.Parameters.Params[0].ParamValue)
 }
 
 func TestDeviceParamsDecode(t *testing.T) {

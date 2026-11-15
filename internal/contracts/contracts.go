@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/fakeyanss/jt808-server-go/internal/domain"
 	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
 )
 
@@ -301,6 +302,6 @@ func ClassifyDownlinkStatus(statusCode int) DownlinkErrorKind {
 //
 // 网关不得反向写入设备档案；注册受理属于上行出口的业务结果。
 type AuthProvider interface {
-	Device(ctx context.Context, phone string) (*model.Device, error)
+	Device(ctx context.Context, phone string) (*domain.Device, error)
 	AuthCode(ctx context.Context, phone string) (string, error)
 }

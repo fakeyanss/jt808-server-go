@@ -13,6 +13,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/fakeyanss/jt808-server-go/internal/domain"
 	"github.com/fakeyanss/jt808-server-go/internal/media"
 	"github.com/fakeyanss/jt808-server-go/internal/protocol"
 	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
@@ -45,7 +46,7 @@ func TestE2E1078MediaIngestionOverUDPSocket(t *testing.T) {
 	require.NotZero(t, udpAddr.Port)
 
 	request := &model.Msg9101{
-		Header:         model.GenMsgHeader(&model.Device{Phone: phone, VersionDesc: model.Version2013}, 0x9101, session.GetNextSerialNum()),
+		Header:         model.GenMsgHeader(&domain.Device{Phone: phone, VersionDesc: model.Version2013}, 0x9101, session.GetNextSerialNum()),
 		ServerIP:       "127.0.0.1",
 		UDPPort:        uint16(udpAddr.Port),
 		LogicChannelID: 1,
@@ -101,7 +102,7 @@ func TestE2E1078SignalingAckPairingOverJT808Session(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, session)
 
-	device := &model.Device{Phone: phone, VersionDesc: model.Version2013}
+	device := &domain.Device{Phone: phone, VersionDesc: model.Version2013}
 
 	// 平台下发 0x9101，终端按真实报文解析并应答 0x0001。
 	request := &model.Msg9101{
