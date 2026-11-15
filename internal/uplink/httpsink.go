@@ -73,6 +73,8 @@ type HTTPEnvelope struct {
 	HeaderAttr          uint16                   `json:"headerAttr,omitempty"`
 	FragmentReassembled bool                     `json:"fragmentReassembled"`
 	FragmentTotal       uint16                   `json:"fragmentTotal,omitempty"`
+	ReplyMsgID          uint16                   `json:"replyMsgId,omitempty"`
+	ReplyResult         uint8                    `json:"replyResult,omitempty"`
 	BodyBase64          string                   `json:"bodyBase64,omitempty"`
 	Payload             json.RawMessage          `json:"payload,omitempty"`
 	PayloadBase64       string                   `json:"payloadBase64,omitempty"`
@@ -636,6 +638,8 @@ func BuildHTTPEnvelope(event contracts.UplinkEvent) (HTTPEnvelope, error) {
 		HeaderAttr:          event.HeaderAttr,
 		FragmentReassembled: event.FragmentReassembled,
 		FragmentTotal:       event.FragmentTotal,
+		ReplyMsgID:          event.ReplyMsgID,
+		ReplyResult:         event.ReplyResult,
 		Meta:                event.Meta,
 		Reply:               event.Reply,
 	}

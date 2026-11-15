@@ -56,6 +56,11 @@ type UplinkEvent struct {
 	FragmentReassembled bool
 	FragmentTotal       uint16
 
+	// ReplyMsgID/ReplyResult 是网关已发给终端的应答结果（0x8100/0x8001）。
+	// 管控侧据此派发与网关一致的注册/鉴权钩子事件。
+	ReplyMsgID  uint16
+	ReplyResult uint8
+
 	Body       []byte
 	Payload    any
 	PayloadRaw []byte

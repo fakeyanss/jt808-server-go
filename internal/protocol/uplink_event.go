@@ -56,13 +56,11 @@ func buildUplinkEvent(
 			reassembled = false
 		}
 	}
+	body = uplinkBody(ctx, in)
 	if packet, ok := ctx.Value(model.PacketDecodeCtxKey{}).(*model.PacketData); ok && packet != nil {
-		body = append([]byte(nil), packet.Body...)
 		if packet.SegCompleted || packet.Header == nil || packet.Header.Frag == nil {
 			reassembled = true
 		}
-	} else if media, ok := in.(*model.Msg0801); ok && media != nil {
-		body = append([]byte(nil), media.FragmentData...)
 	}
 	if session, ok := ctx.Value(model.SessionCtxKey{}).(*model.Session); ok && session != nil {
 		sessionID = session.ID
@@ -92,6 +90,16 @@ func buildUplinkEvent(
 		Body:                body,
 		Payload:             in,
 		Meta:                map[string]any{"packetCount": packetCount},
+	}
+	if out := data.Outgoing; out != nil {
+		switch reply := out.(type) {
+		case *model.Msg8100:
+			event.ReplyMsgID = 0x8100
+			event.ReplyResult = uint8(reply.Result)
+		case *model.Msg8001:
+			event.ReplyMsgID = 0x8001
+			event.ReplyResult = uint8(reply.Result)
+		}
 	}
 	if media, ok := in.(*model.Msg0801); ok && media != nil {
 		// 0x0801 的图片本体单独走 payloadBase64，避免把大块字节塞进结构化载荷。
@@ -149,6 +157,36 @@ func parseUplinkTime(value string) time.Time {
 		return time.Time{}
 	}
 	return parsed
+}
+
+// uplinkBody 提取参与 eventId 计算的原始消息体。
+// 分包重组后的完整正文在 PacketDecodeCtxKey 里；0x0801 退回图片分片本体。
+func uplinkBody(ctx context.Context, in model.JT808Msg) []byte {
+	if ctx != nil {
+		if packet, ok := ctx.Value(model.PacketDecodeCtxKey{}).(*model.PacketData); ok && packet != nil {
+			return append([]byte(nil), packet.Body...)
+		}
+	}
+	if media, ok := in.(*model.Msg0801); ok && media != nil {
+		return append([]byte(nil), media.FragmentData...)
+	}
+	return nil
+}
+
+// hookEventID 返回本次业务事件的稳定 ID。
+// 管控侧直接复用网关随事件带来的 EventID；网关侧按与 buildUplinkEvent 相同的
+// 规则计算，保证两侧对同一条报文得到同一个值。
+func hookEventID(ctx context.Context, msgID uint16, in model.JT808Msg) string {
+	if ctx != nil {
+		if event := UplinkEventFromContext(ctx); event.EventID != "" {
+			return event.EventID
+		}
+	}
+	header := in.GetHeader()
+	if header == nil {
+		return ""
+	}
+	return uplinkEventID(header.PhoneNumber, msgID, header.SerialNumber, uplinkBody(ctx, in))
 }
 
 // uplinkEventID 用手机号、消息 ID、流水号与原始消息体派生稳定 ID。

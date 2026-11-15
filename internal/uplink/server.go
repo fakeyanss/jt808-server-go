@@ -67,6 +67,8 @@ type ServerOptions struct {
 	MaxDecodedBodyBytes int64
 	// Clock 是进程内唯一时钟源；为空时使用系统时钟。
 	Clock clockpkg.Clock
+	// OnSessionReleased 在会话释放成功后回调；control 用它派发 OnDisconnect。
+	OnSessionReleased func(ctx context.Context, phone, sessionID, transport string)
 }
 
 // Server 是管控侧上行 HTTP 入口。
@@ -524,6 +526,9 @@ func (s *Server) handleSessionRelease(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "release_failed", "failed to release session")
 		return
 	}
+	if s.opts.OnSessionReleased != nil {
+		s.opts.OnSessionReleased(r.Context(), req.Phone, req.SessionID, req.Transport)
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"status": "released"})
 }
 
@@ -595,6 +600,8 @@ func envelopeToEvent(envelope HTTPEnvelope) (contracts.UplinkEvent, error) {
 		HeaderAttr:          envelope.HeaderAttr,
 		FragmentReassembled: envelope.FragmentReassembled,
 		FragmentTotal:       envelope.FragmentTotal,
+		ReplyMsgID:          envelope.ReplyMsgID,
+		ReplyResult:         envelope.ReplyResult,
 		Payload:             envelope.Payload,
 		PayloadRaw:          nil,
 		Meta:                envelope.Meta,

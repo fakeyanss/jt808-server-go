@@ -267,14 +267,14 @@ func buildDeps(spec Spec, cfg *config.Config, s settings) *deps {
 		processorDeps.GatewayID = clusterOptions.Gateway.NodeID
 		processorDeps.InstanceID = instanceID
 		// 会话断开时上报 release；失败不影响连接关闭，目录残留由节点过期兜底。
-		processorDeps.OnSessionClosed = func(sessionID, phone string, generation uint64) {
+		processorDeps.OnSessionClosed = func(sessionID, phone, transport string, generation uint64) {
 			if phone == "" || generation == 0 {
 				return
 			}
 			go func() {
 				releaseCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 				defer cancel()
-				if err := reporter.Release(releaseCtx, phone, sessionID, generation); err != nil {
+				if err := reporter.Release(releaseCtx, phone, sessionID, transport, generation); err != nil {
 					log.Warn().Err(err).Str("phone", phone).Str("session", sessionID).
 						Msg("Session release failed; directory will expire with node liveness")
 				}

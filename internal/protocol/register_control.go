@@ -20,9 +20,11 @@ type UplinkEventCtxKey struct{}
 
 // UplinkEventContext 是 handler 在管控侧能看到的、与活连接无关的事件信息。
 type UplinkEventContext struct {
-	EventID   string
-	SessionID string
-	Phone     string
+	EventID     string
+	SessionID   string
+	Phone       string
+	ReplyMsgID  uint16
+	ReplyResult uint8
 }
 
 // UplinkEventFromContext 返回事件上下文；standalone 下为空。

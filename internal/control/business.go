@@ -115,7 +115,13 @@ func (b *BusinessExecutor) ConsumeEvent(ctx context.Context, event contracts.Upl
 	}
 	data.Incoming = incoming
 
-	eventCtx := protocol.UplinkEventContext{EventID: event.EventID, SessionID: event.SessionID, Phone: event.Phone}
+	eventCtx := protocol.UplinkEventContext{
+		EventID:     event.EventID,
+		SessionID:   event.SessionID,
+		Phone:       event.Phone,
+		ReplyMsgID:  event.ReplyMsgID,
+		ReplyResult: event.ReplyResult,
+	}
 	ctx = context.WithValue(ctx, protocol.UplinkEventCtxKey{}, eventCtx)
 
 	unlock := b.lockPhone(event.Phone)
