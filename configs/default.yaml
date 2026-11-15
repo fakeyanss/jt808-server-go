@@ -192,6 +192,7 @@ commandOutbox:
 uplink:
   # 上行出口：local（默认，进程内直连内置处理）| http（HTTP hook）。
   # local 不产生外部依赖、不新增监听端口；http 需要显式配置 url 与 token。
+  # server.mode=standalone 下没有本地上行接收端，只允许 local。
   sink: "local"
   # 仅 sink=http 时生效。
   http:

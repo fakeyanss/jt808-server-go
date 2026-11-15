@@ -72,7 +72,7 @@
 
 | 配置键 | 默认 | 说明 |
 |---|---|---|
-| `uplink.sink` | `local` | `local`（进程内处理）/ `http`（投递到 control） |
+| `uplink.sink` | `local` | `local`（进程内处理）/ `http`（投递到 control）；`server.mode=standalone` 下必须为 `local` |
 | `uplink.http.url` | 空 | `sink=http` 时必填，例如 `http://control:9102/internal/v1/uplink` |
 | `uplink.http.token` | 空 | `sink=http` 时必填，需等于 `cluster.control.token` |
 | `uplink.http.timeoutMs` | `3000` | 单次投递超时；confirm-before-ack 必须小于终端重传窗口 |
