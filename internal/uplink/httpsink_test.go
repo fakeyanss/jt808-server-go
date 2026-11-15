@@ -14,6 +14,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/fakeyanss/jt808-server-go/internal/contracts"
+	"github.com/fakeyanss/jt808-server-go/internal/internalapi"
 	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
 )
 
@@ -33,7 +34,7 @@ func testEvent(reliability contracts.Reliability) contracts.UplinkEvent {
 	}
 }
 
-func TestBuildHTTPEnvelopeCarriesTerminalReply(t *testing.T) {
+func TestBuildUplinkEnvelopeCarriesTerminalReply(t *testing.T) {
 	event := testEvent(contracts.ReliabilityBestEffort)
 	event.MsgID = 0x0001
 	event.Serial = 44
@@ -48,7 +49,7 @@ func TestBuildHTTPEnvelopeCarriesTerminalReply(t *testing.T) {
 		Source:       "http",
 	}
 
-	envelope, err := BuildHTTPEnvelope(event)
+	envelope, err := internalapi.BuildUplinkEnvelope(event)
 	require.NoError(t, err)
 	require.NotNil(t, envelope.Reply)
 
@@ -60,8 +61,8 @@ func TestBuildHTTPEnvelopeCarriesTerminalReply(t *testing.T) {
 	require.Contains(t, string(raw), `"result":1`)
 }
 
-func TestBuildHTTPEnvelopeCarriesSessionClosed(t *testing.T) {
-	envelope, err := BuildHTTPEnvelope(contracts.UplinkEvent{
+func TestBuildUplinkEnvelopeCarriesSessionClosed(t *testing.T) {
+	envelope, err := internalapi.BuildUplinkEnvelope(contracts.UplinkEvent{
 		EventID:    "sess-1",
 		Event:      "session.closed",
 		Phone:      "13800000001",
@@ -135,7 +136,7 @@ func TestNewHTTPSinkRejectsInvalidOptions(t *testing.T) {
 }
 
 func TestHTTPSinkSendsAuthAndEnvelope(t *testing.T) {
-	var got HTTPEnvelope
+	var got internalapi.UplinkEnvelope
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		require.Equal(t, "Bearer shared-token", r.Header.Get("Authorization"))
 		require.Equal(t, "application/json", r.Header.Get("Content-Type"))
@@ -189,7 +190,7 @@ func TestHTTPSinkConfirmNon2xxFails(t *testing.T) {
 func TestHTTPSinkUnknownDeviceRedeliveryIsBounded(t *testing.T) {
 	var registrations, events atomic.Int64
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var envelope HTTPEnvelope
+		var envelope internalapi.UplinkEnvelope
 		if err := json.NewDecoder(r.Body).Decode(&envelope); err != nil {
 			w.WriteHeader(http.StatusBadRequest)
 			return
@@ -507,23 +508,23 @@ func TestHTTPSinkClosedDropsBestEffort(t *testing.T) {
 	require.Equal(t, int64(1), sink.Stats().Dropped)
 }
 
-func TestBuildHTTPEnvelopeCarriesRawPayload(t *testing.T) {
+func TestBuildUplinkEnvelopeCarriesRawPayload(t *testing.T) {
 	event := testEvent(contracts.ReliabilityBestEffort)
 	event.Payload = map[string]any{"multiMediaId": 9}
 	event.PayloadRaw = []byte{0x01, 0x02, 0x03}
 	event.OccurredAt = time.Time{}
 
-	envelope, err := BuildHTTPEnvelope(event)
+	envelope, err := internalapi.BuildUplinkEnvelope(event)
 	require.NoError(t, err)
 	require.Equal(t, int64(0), envelope.OccurredAtMS)
 	require.Equal(t, "AQID", envelope.PayloadBase64)
 	require.JSONEq(t, `{"multiMediaId":9}`, string(envelope.Payload))
 }
 
-func TestBuildHTTPEnvelopeRejectsUnsupportedPayload(t *testing.T) {
+func TestBuildUplinkEnvelopeRejectsUnsupportedPayload(t *testing.T) {
 	event := testEvent(contracts.ReliabilityBestEffort)
 	event.Payload = make(chan int)
-	_, err := BuildHTTPEnvelope(event)
+	_, err := internalapi.BuildUplinkEnvelope(event)
 	require.Error(t, err)
 }
 
@@ -536,7 +537,7 @@ func TestHTTPSinkSamePhonePreservesOrder(t *testing.T) {
 	var firstOnce sync.Once
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var envelope HTTPEnvelope
+		var envelope internalapi.UplinkEnvelope
 		if err := json.NewDecoder(r.Body).Decode(&envelope); err != nil {
 			w.WriteHeader(http.StatusBadRequest)
 			return
@@ -590,7 +591,7 @@ func TestHTTPSinkConfirmWaitsBehindSamePhoneQueue(t *testing.T) {
 	release := make(chan struct{})
 	arrived := make(chan uint16, 2)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var envelope HTTPEnvelope
+		var envelope internalapi.UplinkEnvelope
 		if err := json.NewDecoder(r.Body).Decode(&envelope); err != nil {
 			w.WriteHeader(http.StatusBadRequest)
 			return
@@ -637,7 +638,7 @@ func TestHTTPSinkDifferentShardsRunConcurrently(t *testing.T) {
 	entered := make(chan string, 2)
 	release := make(chan struct{})
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var envelope HTTPEnvelope
+		var envelope internalapi.UplinkEnvelope
 		if err := json.NewDecoder(r.Body).Decode(&envelope); err != nil {
 			w.WriteHeader(http.StatusBadRequest)
 			return

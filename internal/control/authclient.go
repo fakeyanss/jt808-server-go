@@ -13,9 +13,9 @@ import (
 	"github.com/rs/zerolog/log"
 
 	"github.com/fakeyanss/jt808-server-go/internal/contracts"
+	"github.com/fakeyanss/jt808-server-go/internal/internalapi"
 	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
 	"github.com/fakeyanss/jt808-server-go/internal/repository"
-	"github.com/fakeyanss/jt808-server-go/internal/uplink"
 )
 
 // HTTPAuthProvider 是网关侧的只读鉴权来源：只查档案，不写档案。
@@ -71,7 +71,7 @@ func NewHTTPAuthProvider(baseURL, token string, timeout, cacheTTL, grace time.Du
 		grace = 0
 	}
 	return &HTTPAuthProvider{
-		url:    strings.TrimRight(baseURL, "/") + uplink.PathDeviceLookup,
+		url:    strings.TrimRight(baseURL, "/") + internalapi.PathDeviceLookup,
 		token:  token,
 		client: &http.Client{Timeout: timeout},
 		ttl:    cacheTTL,

@@ -1,4 +1,4 @@
-package uplink
+package controlhttp
 
 import (
 	"bytes"
@@ -13,6 +13,8 @@ import (
 	"testing"
 
 	"github.com/fakeyanss/jt808-server-go/internal/contracts"
+	"github.com/fakeyanss/jt808-server-go/internal/internalapi"
+	"github.com/fakeyanss/jt808-server-go/internal/uplink"
 )
 
 const testControlToken = "control-token"
@@ -61,13 +63,13 @@ func newTestServer(t *testing.T, options ServerOptions) (*Server, *httptest.Serv
 	return server, httpServer
 }
 
-func postEnvelope(t *testing.T, url, token string, envelope HTTPEnvelope) (*http.Response, []byte) {
+func postEnvelope(t *testing.T, url, token string, envelope internalapi.UplinkEnvelope) (*http.Response, []byte) {
 	t.Helper()
 	body, err := json.Marshal(envelope)
 	if err != nil {
 		t.Fatalf("marshal envelope: %v", err)
 	}
-	request, err := http.NewRequest(http.MethodPost, url+PathUplink, bytes.NewReader(body))
+	request, err := http.NewRequest(http.MethodPost, url+internalapi.PathUplink, bytes.NewReader(body))
 	if err != nil {
 		t.Fatalf("build request: %v", err)
 	}
@@ -92,7 +94,7 @@ func readAll(response *http.Response) ([]byte, error) {
 
 func TestUplinkRequiresToken(t *testing.T) {
 	_, httpServer := newTestServer(t, ServerOptions{})
-	response, _ := postEnvelope(t, httpServer.URL, "", HTTPEnvelope{EventID: "e1", MsgID: 0x0200})
+	response, _ := postEnvelope(t, httpServer.URL, "", internalapi.UplinkEnvelope{EventID: "e1", MsgID: 0x0200})
 	if response.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("expected 401, got %d", response.StatusCode)
 	}
@@ -102,7 +104,7 @@ func TestUplinkDedupByEventID(t *testing.T) {
 	server, httpServer := newTestServer(t, ServerOptions{})
 	consumer := &fakeConsumer{}
 	server.RegisterConsumer(0x0200, consumer)
-	envelope := HTTPEnvelope{
+	envelope := internalapi.UplinkEnvelope{
 		EventID:     "event-1",
 		Phone:       "13800000001",
 		MsgID:       0x0200,
@@ -126,7 +128,7 @@ func TestUplinkDedupByEventID(t *testing.T) {
 
 func TestUplinkBestEffortWithoutConsumerIsAccepted(t *testing.T) {
 	_, httpServer := newTestServer(t, ServerOptions{})
-	response, payload := postEnvelope(t, httpServer.URL, testControlToken, HTTPEnvelope{
+	response, payload := postEnvelope(t, httpServer.URL, testControlToken, internalapi.UplinkEnvelope{
 		EventID:     "event-2",
 		MsgID:       0x0200,
 		Reliability: string(contracts.ReliabilityBestEffort),
@@ -141,7 +143,7 @@ func TestUplinkBestEffortWithoutConsumerIsAccepted(t *testing.T) {
 
 func TestUplinkConfirmWithoutConsumerReturns503(t *testing.T) {
 	_, httpServer := newTestServer(t, ServerOptions{})
-	response, payload := postEnvelope(t, httpServer.URL, testControlToken, HTTPEnvelope{
+	response, payload := postEnvelope(t, httpServer.URL, testControlToken, internalapi.UplinkEnvelope{
 		EventID:     "event-3",
 		MsgID:       0x0801,
 		Reliability: string(contracts.ReliabilityConfirmBeforeAck),
@@ -154,7 +156,7 @@ func TestUplinkConfirmWithoutConsumerReturns503(t *testing.T) {
 func TestUplinkConsumerFailureKeepsConfirmUnacked(t *testing.T) {
 	server, httpServer := newTestServer(t, ServerOptions{})
 	server.RegisterConsumer(0x0801, &fakeConsumer{err: fmt.Errorf("db down")})
-	response, payload := postEnvelope(t, httpServer.URL, testControlToken, HTTPEnvelope{
+	response, payload := postEnvelope(t, httpServer.URL, testControlToken, internalapi.UplinkEnvelope{
 		EventID:     "event-4",
 		MsgID:       0x0801,
 		Reliability: string(contracts.ReliabilityConfirmBeforeAck),
@@ -170,7 +172,7 @@ func TestUplinkConfirmRetryAfterFailureIsNotDuplicate(t *testing.T) {
 	server, httpServer := newTestServer(t, ServerOptions{})
 	consumer := &fakeConsumer{err: fmt.Errorf("db down")}
 	server.RegisterConsumer(0x0801, consumer)
-	envelope := HTTPEnvelope{
+	envelope := internalapi.UplinkEnvelope{
 		EventID:     "event-retry",
 		MsgID:       0x0801,
 		Reliability: string(contracts.ReliabilityConfirmBeforeAck),
@@ -206,7 +208,7 @@ func TestUplinkRoutesTerminalReply(t *testing.T) {
 	server, httpServer := newTestServer(t, ServerOptions{})
 	handler := &fakeReplyHandler{outcome: contracts.TerminalReplyAcked}
 	server.SetTerminalReplyHandler(handler)
-	response, payload := postEnvelope(t, httpServer.URL, testControlToken, HTTPEnvelope{
+	response, payload := postEnvelope(t, httpServer.URL, testControlToken, internalapi.UplinkEnvelope{
 		EventID: "event-5",
 		MsgID:   0x0001,
 		Reply: &contracts.TerminalReply{
@@ -230,7 +232,7 @@ func TestUplinkRoutesTerminalReply(t *testing.T) {
 
 func TestUplinkReplyWithoutHandlerReturns503(t *testing.T) {
 	_, httpServer := newTestServer(t, ServerOptions{})
-	response, payload := postEnvelope(t, httpServer.URL, testControlToken, HTTPEnvelope{
+	response, payload := postEnvelope(t, httpServer.URL, testControlToken, internalapi.UplinkEnvelope{
 		EventID: "event-6",
 		MsgID:   0x0001,
 		Reply: &contracts.TerminalReply{
@@ -246,7 +248,7 @@ func TestUplinkReplyWithoutHandlerReturns503(t *testing.T) {
 
 func TestUplinkRejectsOversizedRequest(t *testing.T) {
 	_, httpServer := newTestServer(t, ServerOptions{MaxRequestBytes: 1024})
-	response, payload := postEnvelope(t, httpServer.URL, testControlToken, HTTPEnvelope{
+	response, payload := postEnvelope(t, httpServer.URL, testControlToken, internalapi.UplinkEnvelope{
 		EventID: "event-7",
 		MsgID:   0x0200,
 		Meta:    map[string]any{"padding": strings.Repeat("x", 4096)},
@@ -259,7 +261,7 @@ func TestUplinkRejectsOversizedRequest(t *testing.T) {
 func TestUplinkRejectsOversizedDecodedBody(t *testing.T) {
 	server, httpServer := newTestServer(t, ServerOptions{MaxRequestBytes: 1 << 20, MaxDecodedBodyBytes: 64})
 	server.RegisterDefaultConsumer(&fakeConsumer{})
-	response, payload := postEnvelope(t, httpServer.URL, testControlToken, HTTPEnvelope{
+	response, payload := postEnvelope(t, httpServer.URL, testControlToken, internalapi.UplinkEnvelope{
 		EventID:    "event-8",
 		MsgID:      0x0200,
 		BodyBase64: base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{0}, 128)),
@@ -271,7 +273,7 @@ func TestUplinkRejectsOversizedDecodedBody(t *testing.T) {
 
 func TestValidateCoverage(t *testing.T) {
 	server, _ := newTestServer(t, ServerOptions{})
-	policy := NewPolicy("best_effort", "best_effort", "best_effort", "best_effort")
+	policy := uplink.NewPolicy("best_effort", "best_effort", "best_effort", "best_effort")
 	err := server.ValidateCoverage(policy)
 	if err == nil {
 		t.Fatal("expected coverage error")
@@ -288,7 +290,7 @@ func TestValidateCoverage(t *testing.T) {
 		t.Fatalf("expected coverage to pass, got %v", err)
 	}
 
-	atLeastOnce := NewPolicy("best_effort", "at_least_once", "at_least_once", "at_least_once")
+	atLeastOnce := uplink.NewPolicy("best_effort", "at_least_once", "at_least_once", "at_least_once")
 	err = server.ValidateCoverage(atLeastOnce)
 	if err == nil {
 		t.Fatal("expected coverage error for at_least_once categories")

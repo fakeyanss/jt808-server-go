@@ -18,12 +18,12 @@ import (
 	"github.com/fakeyanss/jt808-server-go/internal/business"
 	clockpkg "github.com/fakeyanss/jt808-server-go/internal/clock"
 	"github.com/fakeyanss/jt808-server-go/internal/contracts"
+	"github.com/fakeyanss/jt808-server-go/internal/controlhttp"
 	"github.com/fakeyanss/jt808-server-go/internal/mediaupload"
 	"github.com/fakeyanss/jt808-server-go/internal/protocol"
 	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
 	"github.com/fakeyanss/jt808-server-go/internal/repository"
 	"github.com/fakeyanss/jt808-server-go/internal/storage"
-	"github.com/fakeyanss/jt808-server-go/internal/uplink"
 )
 
 // BusinessOptions 是管控业务执行器的构造参数。
@@ -108,7 +108,7 @@ func (b *BusinessExecutor) ConsumeEvent(ctx context.Context, event contracts.Upl
 	header := headerFromEvent(event)
 	incoming, err := protocol.DecodeMessageBody(event.MsgID, header, event.Body)
 	if err != nil {
-		return contracts.UplinkResult{}, &uplink.StatusError{
+		return contracts.UplinkResult{}, &controlhttp.StatusError{
 			Status:  http.StatusBadRequest,
 			Code:    "invalid_body",
 			Message: fmt.Sprintf("decode 0x%04X: %v", event.MsgID, err),
@@ -141,7 +141,7 @@ func (b *BusinessExecutor) ConsumeEvent(ctx context.Context, event contracts.Upl
 				log.Warn().Str("phone", event.Phone).Str("event_id", event.EventID).
 					Str("msg_id", fmt.Sprintf("0x%04X", event.MsgID)).
 					Msg("Uplink event rejected: device is not registered")
-				return contracts.UplinkResult{}, &uplink.StatusError{
+				return contracts.UplinkResult{}, &controlhttp.StatusError{
 					Status:  http.StatusConflict,
 					Code:    "unknown_device",
 					Message: "device is not registered",
@@ -161,7 +161,7 @@ func (b *BusinessExecutor) ConsumeEvent(ctx context.Context, event contracts.Upl
 	}
 	if err := b.business.ProcessControl(ctx, event.MsgID, data); err != nil {
 		if errors.Is(err, repository.ErrDeviceNotFound) {
-			return contracts.UplinkResult{}, &uplink.StatusError{
+			return contracts.UplinkResult{}, &controlhttp.StatusError{
 				Status:  http.StatusConflict,
 				Code:    "unknown_device",
 				Message: "device is not registered",
@@ -194,7 +194,7 @@ func (b *BusinessExecutor) claimSession(ctx context.Context, event contracts.Upl
 	}
 	device, err := b.opts.Devices.GetByPhone(ctx, event.Phone)
 	if errors.Is(err, repository.ErrDeviceNotFound) {
-		return 0, &uplink.StatusError{
+		return 0, &controlhttp.StatusError{
 			Status:  http.StatusConflict,
 			Code:    "unknown_device",
 			Message: "device is not registered",
@@ -204,7 +204,7 @@ func (b *BusinessExecutor) claimSession(ctx context.Context, event contracts.Upl
 		return 0, err
 	}
 	if in.AuthCode != device.AuthCode {
-		return 0, &uplink.StatusError{
+		return 0, &controlhttp.StatusError{
 			Status:  http.StatusForbidden,
 			Code:    "auth_rejected",
 			Message: "authentication code does not match control state",
@@ -223,7 +223,7 @@ func (b *BusinessExecutor) claimSession(ctx context.Context, event contracts.Upl
 func (b *BusinessExecutor) ingestMedia(ctx context.Context, event contracts.UplinkEvent, incoming model.JT808Msg) (contracts.UplinkResult, error) {
 	upload, ok := incoming.(*model.Msg0801)
 	if !ok || upload == nil {
-		return contracts.UplinkResult{}, &uplink.StatusError{
+		return contracts.UplinkResult{}, &controlhttp.StatusError{
 			Status: http.StatusBadRequest, Code: "invalid_body", Message: "expect 0x0801 body",
 		}
 	}

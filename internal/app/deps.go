@@ -19,8 +19,10 @@ import (
 	"github.com/fakeyanss/jt808-server-go/internal/config"
 	"github.com/fakeyanss/jt808-server-go/internal/contracts"
 	"github.com/fakeyanss/jt808-server-go/internal/control"
+	"github.com/fakeyanss/jt808-server-go/internal/controlhttp"
 	"github.com/fakeyanss/jt808-server-go/internal/downlinkhttp"
 	"github.com/fakeyanss/jt808-server-go/internal/gatewaynode"
+	"github.com/fakeyanss/jt808-server-go/internal/internalapi"
 	"github.com/fakeyanss/jt808-server-go/internal/media"
 	"github.com/fakeyanss/jt808-server-go/internal/medianode"
 	"github.com/fakeyanss/jt808-server-go/internal/mediaupload"
@@ -87,7 +89,7 @@ type deps struct {
 	retentionCtx    context.Context
 
 	downlinkServer   *downlinkhttp.Server
-	uplinkServer     *uplink.Server
+	uplinkServer     *controlhttp.Server
 	nodeReporter     *gatewaynode.Reporter
 	cancelNodeReport context.CancelFunc
 	// mediaNodeReporter 是独立 media 进程向 control 注册与心跳的上报器。
@@ -558,7 +560,7 @@ func controlBaseURL(endpoint string) (string, error) {
 	}
 	base := parsed.Scheme + "://" + parsed.Host
 	prefix := strings.TrimRight(parsed.Path, "/")
-	prefix = strings.TrimSuffix(prefix, uplink.PathUplink)
+	prefix = strings.TrimSuffix(prefix, internalapi.PathUplink)
 	prefix = strings.TrimRight(prefix, "/")
 	return base + prefix, nil
 }

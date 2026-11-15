@@ -13,6 +13,7 @@ import (
 
 	"github.com/fakeyanss/jt808-server-go/internal/attachmentnode"
 	"github.com/fakeyanss/jt808-server-go/internal/contracts"
+	"github.com/fakeyanss/jt808-server-go/internal/internalapi"
 )
 
 // ErrLoginRejected 表示 control 判定账号无效或已吊销。
@@ -104,7 +105,7 @@ func (c *HTTPControl) Report(ctx context.Context, progress contracts.AttachmentP
 		return err
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
-		c.BaseURL+"/internal/v1/attachment/progress", bytes.NewReader(payload))
+		c.BaseURL+internalapi.PathAttachmentProgress, bytes.NewReader(payload))
 	if err != nil {
 		return err
 	}

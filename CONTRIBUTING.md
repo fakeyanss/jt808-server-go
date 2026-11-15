@@ -89,6 +89,9 @@ CI 会在 `main`、`dev/**` 的 push 与 Pull Request 上执行 `make all`、覆
 | `internal/repository/database/sqlbackend/` | 把 sqlite/mysql 的打开与迁移注册进 `database` | 仅 control、standalone、migrate 导入 |
 | `internal/server/` | 连接生命周期、pipeline、会话调度 | 通过 `protocol.ProcessorDeps` 注入依赖 |
 | `internal/control/` | 集群控制面、上行事件消费、节点与会话调度 | 唯一连业务库的角色 |
+| `internal/controlhttp/` | control 侧内部 HTTP 入口：上行事件、设备档案查询、节点注册/心跳、FTP 登录、进度与切片上报 | 只由 control 装配；路径取自 `internalapi` |
+| `internal/uplink/` | 网关侧上行出口：HTTP 投递、可靠性分类与 409 重投 | 不承载 control 侧入口 |
+| `internal/internalapi/` | 角色间内部 HTTP 的路径常量与上行事件信封 | 叶子包；网关出口与 control 入口共用 |
 | `internal/api/` | 业务 HTTP API | 仓储由装配层注入，不取全局单例 |
 | `tools/registrydoc/` | 生成并校验协议覆盖矩阵 | 生成段禁止手改 |
 

@@ -1,4 +1,4 @@
-package uplink
+package controlhttp
 
 import (
 	"bytes"
@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/fakeyanss/jt808-server-go/internal/contracts"
+	"github.com/fakeyanss/jt808-server-go/internal/internalapi"
 	"github.com/fakeyanss/jt808-server-go/internal/repository"
 	"github.com/fakeyanss/jt808-server-go/internal/repository/memory"
 )
@@ -26,11 +27,11 @@ func (c *resultConsumer) ConsumeEvent(context.Context, contracts.UplinkEvent) (c
 	return c.result, nil
 }
 
-func postGenerationEnvelope(t *testing.T, url, token string, envelope HTTPEnvelope) (*http.Response, map[string]any) {
+func postGenerationEnvelope(t *testing.T, url, token string, envelope internalapi.UplinkEnvelope) (*http.Response, map[string]any) {
 	t.Helper()
 	payload, err := json.Marshal(envelope)
 	require.NoError(t, err)
-	request, err := http.NewRequest(http.MethodPost, url+PathUplink, bytes.NewReader(payload))
+	request, err := http.NewRequest(http.MethodPost, url+internalapi.PathUplink, bytes.NewReader(payload))
 	require.NoError(t, err)
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("Authorization", "Bearer "+token)
@@ -61,7 +62,7 @@ func TestUplinkServerFencesStaleGeneration(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, ok)
 
-	envelope := HTTPEnvelope{
+	envelope := internalapi.UplinkEnvelope{
 		EventID:     "evt-current",
 		Phone:       "13800000001",
 		MsgID:       0x0200,
@@ -92,7 +93,7 @@ func TestUplinkServerAuthClaimBypassesDedup(t *testing.T) {
 	server.RegisterConsumer(0x0102, consumer)
 	server.SetSessionDirectoryRepository(memory.NewSessionDirectoryRepository())
 
-	envelope := HTTPEnvelope{
+	envelope := internalapi.UplinkEnvelope{
 		EventID:     "evt-auth",
 		Phone:       "13800000002",
 		MsgID:       0x0102,
@@ -131,7 +132,7 @@ func TestUplinkServerSessionClosedIsIdempotent(t *testing.T) {
 	generation, err := sessions.Claim(context.Background(), "13800000003", owner, time.Now())
 	require.NoError(t, err)
 
-	envelope := HTTPEnvelope{
+	envelope := internalapi.UplinkEnvelope{
 		EventID:     owner.SessionID,
 		Event:       "session.closed",
 		Phone:       "13800000003",
@@ -188,7 +189,7 @@ func TestUplinkServerSessionClosedFencesStaleOwner(t *testing.T) {
 	_, err = sessions.Claim(context.Background(), "13800000004", current, now)
 	require.NoError(t, err)
 
-	envelope := HTTPEnvelope{
+	envelope := internalapi.UplinkEnvelope{
 		EventID:     stale.SessionID,
 		Event:       "session.closed",
 		Phone:       "13800000004",

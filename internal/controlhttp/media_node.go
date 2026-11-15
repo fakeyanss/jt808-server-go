@@ -1,4 +1,4 @@
-package uplink
+package controlhttp
 
 import (
 	"encoding/json"

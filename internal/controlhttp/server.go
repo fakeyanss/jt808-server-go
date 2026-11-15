@@ -1,4 +1,9 @@
-package uplink
+// Package controlhttp 是 control 侧的内部 HTTP 入口。
+//
+// 它承载网关上行事件、设备档案只读查询，以及 media/附件节点的注册、心跳、
+// 切片上报、FTP 登录与进度恢复点。网关侧的上行出口在 internal/uplink，
+// 两侧通过 internal/internalapi 共享路径与信封，互不依赖彼此的实现。
+package controlhttp
 
 import (
 	"context"
@@ -18,17 +23,12 @@ import (
 	clockpkg "github.com/fakeyanss/jt808-server-go/internal/clock"
 	"github.com/fakeyanss/jt808-server-go/internal/contracts"
 	"github.com/fakeyanss/jt808-server-go/internal/gatewaynode"
+	"github.com/fakeyanss/jt808-server-go/internal/internalapi"
 	"github.com/fakeyanss/jt808-server-go/internal/medianode"
 	"github.com/fakeyanss/jt808-server-go/internal/observability"
 	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
 	"github.com/fakeyanss/jt808-server-go/internal/repository"
-)
-
-const (
-	// PathUplink 是管控侧上行入口。
-	PathUplink = "/internal/v1/uplink"
-	// PathDeviceLookup 是网关只读查询设备档案的入口。
-	PathDeviceLookup = "/internal/v1/device/lookup"
+	"github.com/fakeyanss/jt808-server-go/internal/uplink"
 )
 
 // EventConsumer 处理某一类上行事件。
@@ -180,7 +180,7 @@ func (s *Server) SetDeviceLookup(lookup func(ctx context.Context, phone string) 
 // ValidateCoverage 校验 confirm-before-ack 覆盖：所有 at_least_once 类别，
 // 以及被强制 confirm 的 0x0001、0x0801，都必须已经注册处理方。
 // 缺失时返回一次性列出的错误；E1 不提供跳过开关。
-func (s *Server) ValidateCoverage(policy Policy) error {
+func (s *Server) ValidateCoverage(policy uplink.Policy) error {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -198,16 +198,16 @@ func (s *Server) ValidateCoverage(policy Policy) error {
 	if s.consumers[0x0801] == nil {
 		add("0x0801(forced confirm-before-ack)")
 	}
-	if policy.Default == AtLeastOnce && s.defaultConsumer == nil {
+	if policy.Default == uplink.AtLeastOnce && s.defaultConsumer == nil {
 		add("default(category)")
 	}
-	if policy.Location == AtLeastOnce && s.consumers[0x0200] == nil {
+	if policy.Location == uplink.AtLeastOnce && s.consumers[0x0200] == nil {
 		add("0x0200(location)")
 	}
-	if policy.BatchLocation == AtLeastOnce && s.consumers[0x0704] == nil {
+	if policy.BatchLocation == uplink.AtLeastOnce && s.consumers[0x0704] == nil {
 		add("0x0704(batch_location)")
 	}
-	if policy.Alarm == AtLeastOnce && s.consumers[0x0200] == nil {
+	if policy.Alarm == uplink.AtLeastOnce && s.consumers[0x0200] == nil {
 		add("0x0200(alarm)")
 	}
 	if len(missing) > 0 {
@@ -247,18 +247,18 @@ func (s *Server) SetAttachmentProgressStore(store AttachmentProgressStore) {
 // Handler 返回可挂到任意 mux 的 HTTP 处理器，便于测试注入。
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc(PathUplink, s.handle)
-	mux.HandleFunc(PathDeviceLookup, s.handleDeviceLookup)
+	mux.HandleFunc(internalapi.PathUplink, s.handle)
+	mux.HandleFunc(internalapi.PathDeviceLookup, s.handleDeviceLookup)
 	if s.nodes != nil {
 		mux.HandleFunc(gatewaynode.PathRegister, s.handleGatewayRegister)
 		mux.HandleFunc(gatewaynode.PathHeartbeat, s.handleGatewayHeartbeat)
 		mux.HandleFunc(gatewaynode.PathDeregister, s.handleGatewayDeregister)
 	}
 	if s.segments != nil {
-		mux.HandleFunc(PathMediaSegment, s.handleMediaSegment)
+		mux.HandleFunc(internalapi.PathMediaSegment, s.handleMediaSegment)
 	}
 	if s.attachments != nil {
-		mux.HandleFunc(PathAttachmentProgress, s.handleAttachmentProgress)
+		mux.HandleFunc(internalapi.PathAttachmentProgress, s.handleAttachmentProgress)
 	}
 	if s.attachmentFTP != nil {
 		mux.HandleFunc(attachmentnode.PathFTPLogin, s.handleAttachmentFTPLogin)
@@ -336,7 +336,7 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 	}
 
 	r.Body = http.MaxBytesReader(w, r.Body, s.opts.MaxRequestBytes)
-	var envelope HTTPEnvelope
+	var envelope internalapi.UplinkEnvelope
 	if err := json.NewDecoder(r.Body).Decode(&envelope); err != nil {
 		var maxErr *http.MaxBytesError
 		if errors.As(err, &maxErr) {
@@ -395,7 +395,7 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 	}
 
 	confirm := strings.EqualFold(envelope.Reliability, string(contracts.ReliabilityConfirmBeforeAck)) ||
-		strings.EqualFold(envelope.Reliability, string(AtLeastOnce))
+		strings.EqualFold(envelope.Reliability, string(uplink.AtLeastOnce))
 
 	// 鉴权后的上行与终端应答都带 generation；落后于目录的一律 fenced。
 	fenced, err := s.fencedByDirectory(r.Context(), envelope)
@@ -453,7 +453,7 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	event, err := envelopeToEvent(envelope)
+	event, err := envelope.ToEvent()
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_payload", err.Error())
 		return
@@ -508,7 +508,7 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 
 // fencedByDirectory 判断事件是否已经被目录围栏。
 // 鉴权前（generation=0）不做归属校验；0x0102 本身负责建立归属。
-func (s *Server) fencedByDirectory(ctx context.Context, envelope HTTPEnvelope) (bool, error) {
+func (s *Server) fencedByDirectory(ctx context.Context, envelope internalapi.UplinkEnvelope) (bool, error) {
 	if s.sessions == nil || envelope.Generation == 0 || envelope.MsgID == 0x0102 {
 		return false, nil
 	}
@@ -574,57 +574,6 @@ func (s *Server) authorized(r *http.Request) bool {
 		return false
 	}
 	return strings.TrimSpace(strings.TrimPrefix(auth, prefix)) == s.opts.Token
-}
-
-// envelopeToEvent 把 HTTP 信封还原成契约事件。
-// Payload 保留为 json.RawMessage，由具体 consumer 决定如何解码。
-func envelopeToEvent(envelope HTTPEnvelope) (contracts.UplinkEvent, error) {
-	event := contracts.UplinkEvent{
-		EventID:             envelope.EventID,
-		Event:               envelope.Event,
-		Reason:              envelope.Reason,
-		Phone:               envelope.Phone,
-		MsgID:               envelope.MsgID,
-		RawMsgID:            envelope.RawMsgID,
-		Serial:              envelope.Serial,
-		GatewayID:           envelope.GatewayID,
-		InstanceID:          envelope.InstanceID,
-		SessionID:           envelope.SessionID,
-		Generation:          envelope.Generation,
-		Transport:           envelope.Transport,
-		Reliability:         contracts.Reliability(envelope.Reliability),
-		ProtocolVersion:     envelope.ProtocolVersion,
-		HeaderAttr:          envelope.HeaderAttr,
-		FragmentReassembled: envelope.FragmentReassembled,
-		FragmentTotal:       envelope.FragmentTotal,
-		ReplyMsgID:          envelope.ReplyMsgID,
-		ReplyResult:         envelope.ReplyResult,
-		Payload:             envelope.Payload,
-		PayloadRaw:          nil,
-		Meta:                envelope.Meta,
-		Reply:               envelope.Reply,
-	}
-	if envelope.RawMsgID == 0 {
-		event.RawMsgID = envelope.MsgID
-	}
-	if envelope.OccurredAtMS > 0 {
-		event.OccurredAt = time.UnixMilli(envelope.OccurredAtMS)
-	}
-	if envelope.BodyBase64 != "" {
-		decoded, err := base64.StdEncoding.DecodeString(envelope.BodyBase64)
-		if err != nil {
-			return contracts.UplinkEvent{}, fmt.Errorf("bodyBase64 is not valid base64")
-		}
-		event.Body = decoded
-	}
-	if envelope.PayloadBase64 != "" {
-		decoded, err := base64.StdEncoding.DecodeString(envelope.PayloadBase64)
-		if err != nil {
-			return contracts.UplinkEvent{}, fmt.Errorf("payloadBase64 is not valid base64")
-		}
-		event.PayloadRaw = decoded
-	}
-	return event, nil
 }
 
 func (s *Server) handleGatewayRegister(w http.ResponseWriter, r *http.Request) {
