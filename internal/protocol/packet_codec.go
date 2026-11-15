@@ -35,13 +35,13 @@ type PacketCodec interface {
 
 type JT808PacketCodec struct {
 	// stores 用于分包缓存；未注入时回退到进程默认实例（仅测试与独立工具）。
-	stores *runtime.Stores
+	stores *runtime.State
 }
 
 var jt808PacketCodec *JT808PacketCodec
 var codecOnce sync.Once
 
-func NewJT808PacketCodec(stores ...*runtime.Stores) *JT808PacketCodec {
+func NewJT808PacketCodec(stores ...*runtime.State) *JT808PacketCodec {
 	codecOnce.Do(func() {
 		jt808PacketCodec = &JT808PacketCodec{}
 	})
@@ -51,7 +51,7 @@ func NewJT808PacketCodec(stores ...*runtime.Stores) *JT808PacketCodec {
 	return jt808PacketCodec
 }
 
-func (pc *JT808PacketCodec) runtimeStores() *runtime.Stores {
+func (pc *JT808PacketCodec) runtimeState() *runtime.State {
 	if pc != nil && pc.stores != nil {
 		return pc.stores
 	}
@@ -99,7 +99,7 @@ func (pc *JT808PacketCodec) Decode(payload []byte) (*model.PacketData, error) {
 	if pd.Header.IsFragmented() {
 		seg := model.NewSegment(pd)
 		firstSerial := pd.Header.SerialNumber - (pd.Header.Frag.Index - 1)
-		pd.SegCompleted = pc.runtimeStores().Fragment.CacheSegment(context.Background(), seg, pd.Header.SerialNumber)
+		pd.SegCompleted = pc.runtimeState().Fragment.CacheSegment(context.Background(), seg, pd.Header.SerialNumber)
 		// 分包接收完成
 		pd.Body = seg.Data
 		if pd.SegCompleted {

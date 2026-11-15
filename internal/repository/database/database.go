@@ -3,7 +3,7 @@
 // 职责边界：
 //   - 聚合 repository 契约的内存实现，或通过已注册的 SQL 后端装配连接池；
 //   - 提供进程默认实例（Init/Default），供装配层显式下传；
-//   - 不保存运行时状态，运行时状态由 runtime.Stores 独立组装。
+//   - 不保存运行时状态，运行时状态由 runtime.State 独立组装。
 //
 // SQL 驱动不在本包引入：需要 sqlite/mysql 的二进制显式导入
 // repository/database/sqlbackend 完成注册，数据面二进制（gateway/media/attachment）

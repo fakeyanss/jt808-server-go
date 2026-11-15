@@ -13,8 +13,8 @@ import (
 )
 
 var (
-	defaultStores *Stores
-	defaultOnce   sync.Once
+	defaultState *State
+	defaultOnce  sync.Once
 )
 
 // ConnectionRegistry 连接现场注册表（A 类，仅进程内存）。
@@ -62,9 +62,9 @@ type RetransmitTracker interface {
 	DropPhone(ctx context.Context, phone string)
 }
 
-// Stores 聚合运行时状态接口，作为组件构造函数的运行时依赖。
-// 它刻意与 stores.Stores（持久化仓储）分离，避免把连接现场混进可持久化的组装。
-type Stores struct {
+// State 聚合运行时状态接口，作为组件构造函数的运行时依赖。
+// 它刻意与 repository.Repositories（持久化仓储）分离，避免把连接现场混进可持久化的组装。
+type State struct {
 	Conn              ConnectionRegistry
 	Fragment          FragmentAssembler
 	Retrans           RetransmitTracker
@@ -76,9 +76,9 @@ type Stores struct {
 	Tracking          LocationTracker
 }
 
-// NewStores 创建一组互相独立的运行时状态实例，供测试与新代码注入。
-func NewStores() *Stores {
-	return &Stores{
+// NewState 创建一组互相独立的运行时状态实例，供测试与新代码注入。
+func NewState() *State {
+	return &State{
 		Conn:              NewConnectionRegistry(),
 		Fragment:          NewFragmentAssembler(),
 		Retrans:           NewRetransmitTracker(),
@@ -95,9 +95,9 @@ func NewStores() *Stores {
 //
 // 仅作为未装配依赖的测试与独立工具的兼容回退；生产代码必须由装配层
 // （internal/app）显式创建并注入，不要在业务路径直接调用。
-func Default() *Stores {
+func Default() *State {
 	defaultOnce.Do(func() {
-		defaultStores = &Stores{
+		defaultState = &State{
 			Conn:              newDefaultConnectionRegistry(),
 			Fragment:          NewFragmentAssembler(),
 			Retrans:           NewRetransmitTracker(),
@@ -109,5 +109,5 @@ func Default() *Stores {
 			Tracking:          NewLocationTracker(),
 		}
 	})
-	return defaultStores
+	return defaultState
 }

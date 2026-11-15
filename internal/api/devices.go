@@ -157,7 +157,7 @@ func (h *handler) getDeviceParams(c *gin.Context) {
 	}
 	serial := nextDownlinkSerial(session)
 	msg.GetHeader().SerialNumber = serial
-	responses := h.runtimeStores.ParamResponses
+	responses := h.runtimeState.ParamResponses
 	responseCh, cancel, err := responses.Register(phone, serial)
 	if err != nil {
 		c.JSON(http.StatusConflict, gin.H{"err": err.Error()})
@@ -208,7 +208,7 @@ func (h *handler) getDeviceProperties(c *gin.Context) {
 		return
 	}
 	msg.Header.SerialNumber = nextDownlinkSerial(session)
-	responses := h.runtimeStores.PropertyResponses
+	responses := h.runtimeState.PropertyResponses
 	responseCh, cancel, err := responses.Register(phone)
 	if err != nil {
 		c.JSON(http.StatusConflict, gin.H{"err": err.Error()})
@@ -264,7 +264,7 @@ func (h *handler) getDeviceLocation(c *gin.Context) {
 	}
 	serial := nextDownlinkSerial(session)
 	msg.Header.SerialNumber = serial
-	responses := h.runtimeStores.LocationResponses
+	responses := h.runtimeState.LocationResponses
 	responseCh, cancel, err := responses.Register(phone, serial)
 	if err != nil {
 		c.JSON(http.StatusConflict, gin.H{"err": err.Error()})

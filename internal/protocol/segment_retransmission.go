@@ -22,7 +22,7 @@ type segmentRetransmissionState struct {
 	segment     *model.Segment
 	firstSerial uint16
 	header      model.MsgHeader
-	stores      *runtime.Stores
+	stores      *runtime.State
 	timer       *time.Timer
 	attempts    int
 }
@@ -36,7 +36,7 @@ func segmentRetransmissionKey(sessionID, phone string, msgID, firstSerial uint16
 	return fmt.Sprintf("%s/%s/%04x/%04x", sessionID, phone, msgID, firstSerial)
 }
 
-func scheduleSegmentRetransmission(session *model.Session, packet *model.PacketData, stores *runtime.Stores) {
+func scheduleSegmentRetransmission(session *model.Session, packet *model.PacketData, stores *runtime.State) {
 	if session == nil || packet == nil || packet.Header == nil || packet.Header.Frag == nil {
 		return
 	}

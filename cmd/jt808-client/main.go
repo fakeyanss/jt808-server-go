@@ -38,7 +38,7 @@ type (
 var (
 	// 模拟器是独立入口，仓储与运行时状态在进程内显式创建一次，供所有协程共享。
 	clientRepos   *database.Repositories
-	clientRuntime = runtime.NewStores()
+	clientRuntime = runtime.NewState()
 )
 
 func buildDevice(ctx context.Context, cli *client.TCPClient) *domain.Device {

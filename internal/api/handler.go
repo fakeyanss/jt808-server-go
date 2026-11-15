@@ -19,7 +19,7 @@ type handler struct {
 	serv                *server.TCPServer
 	cfg                 *config.Config
 	repos               repository.Repositories
-	runtimeStores       *runtime.Stores
+	runtimeState        *runtime.State
 	apiOptions          config.APIOptions
 	alarmServ           *alarmserver.Server
 	attachments         repository.AttachmentFileRepository
@@ -40,13 +40,13 @@ type handler struct {
 	outboxEnabled bool
 }
 
-func newHandler(serv *server.TCPServer, cfg *config.Config, repos repository.Repositories, runtimeStores *runtime.Stores, apiOptions config.APIOptions, alarmServ *alarmserver.Server, attachments repository.AttachmentFileRepository, attachmentAllocator attachment.AttachmentAllocator, blob storage.BlobStore, downlink contracts.Downlink, sender contracts.DownlinkSender, mediaUpload *mediaupload.Store, queryer Queryer, playback playback.PlaybackLibrary, ftpTasks *control.FTPTaskManager, ftpPort uint16, ftpAdvertiseIP string) *handler {
+func newHandler(serv *server.TCPServer, cfg *config.Config, repos repository.Repositories, runtimeState *runtime.State, apiOptions config.APIOptions, alarmServ *alarmserver.Server, attachments repository.AttachmentFileRepository, attachmentAllocator attachment.AttachmentAllocator, blob storage.BlobStore, downlink contracts.Downlink, sender contracts.DownlinkSender, mediaUpload *mediaupload.Store, queryer Queryer, playback playback.PlaybackLibrary, ftpTasks *control.FTPTaskManager, ftpPort uint16, ftpAdvertiseIP string) *handler {
 	return &handler{
-		serv: serv, cfg: cfg, repos: repos, runtimeStores: runtimeStores, apiOptions: apiOptions,
+		serv: serv, cfg: cfg, repos: repos, runtimeState: runtimeState, apiOptions: apiOptions,
 		alarmServ: alarmServ, attachments: attachments, attachmentAllocator: attachmentAllocator,
 		blob: blob, downlink: downlink, sender: sender, mediaUpload: mediaUpload, queryer: queryer,
 		playback: playback, ftpTasks: ftpTasks, ftpPort: ftpPort, ftpAdvertiseIP: ftpAdvertiseIP,
-		devices: repos.Devices, geo: repos.Geo, connRegistry: runtimeStores.Conn,
+		devices: repos.Devices, geo: repos.Geo, connRegistry: runtimeState.Conn,
 		outboxEnabled: downlink != nil && downlink.Enabled(),
 	}
 }

@@ -61,7 +61,7 @@ func (serv *TCPServer) SetDeps(deps protocol.ProcessorDeps) {
 	serv.deps = deps
 }
 
-func (serv *TCPServer) runtimeStores() *runtime.Stores {
+func (serv *TCPServer) runtimeState() *runtime.State {
 	if serv.deps.Runtime != nil {
 		return serv.deps.Runtime
 	}
@@ -192,7 +192,7 @@ func (serv *TCPServer) accept(conn net.Conn) *model.Session {
 		session.OnReliableResult = observe
 	}
 	serv.sessions[session.ID] = session
-	_ = serv.runtimeStores().Conn.Bind(context.Background(), session)
+	_ = serv.runtimeState().Conn.Bind(context.Background(), session)
 	serv.mutex.Unlock()
 
 	if serv.closing.Load() {
@@ -215,7 +215,7 @@ func (serv *TCPServer) remove(session *model.Session) {
 
 	delete(serv.sessions, session.ID)
 	session.Conn.Close()
-	serv.runtimeStores().Conn.Unbind(context.Background(), session.ID)
+	serv.runtimeState().Conn.Unbind(context.Background(), session.ID)
 	// delete(serv.sessions, session.ID)
 
 	log.Debug().Str("id", session.ID).Msg("Closing connection from remote.")
@@ -357,7 +357,7 @@ func (serv *TCPServer) Send(id string, msg model.JT808Msg, opts ...SendOption) e
 		opt(&settings)
 	}
 	// session := serv.sessions[id]
-	session, err := serv.runtimeStores().Conn.Get(context.Background(), id)
+	session, err := serv.runtimeState().Conn.Get(context.Background(), id)
 	if err != nil {
 		if errors.Is(err, runtime.ErrSessionClosed) {
 			log.Warn().Str("id", id).Msg("Fail to get session from cache, maybe conn was closed.")

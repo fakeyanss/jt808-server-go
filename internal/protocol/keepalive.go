@@ -33,7 +33,7 @@ func NewKeepaliveTimer() *KeepaliveTimer {
 
 // Register 为已注册设备登记保活检查任务。
 // 仓储与运行时状态由调用方显式注入，定时任务不再读取进程全局单例。
-func (t *KeepaliveTimer) Register(phone string, keepalive time.Duration, repos repository.Repositories, rt *runtime.Stores) {
+func (t *KeepaliveTimer) Register(phone string, keepalive time.Duration, repos repository.Repositories, rt *runtime.State) {
 	if phone == "" || keepalive <= 0 || repos.Devices == nil || rt == nil {
 		return
 	}
@@ -52,7 +52,7 @@ func (t *KeepaliveTimer) Jobs() []*gron.Entry {
 type CheckDeviceJob struct {
 	phone   string
 	repos   repository.Repositories
-	runtime *runtime.Stores
+	runtime *runtime.State
 }
 
 func (j *CheckDeviceJob) JobID() string {
@@ -107,7 +107,7 @@ func checkDeviceKeepalive(t *KeepaliveTimer, j *CheckDeviceJob) {
 
 // checkSQLBackedKeepalive 处理运行时状态不落库的后端：
 // 只关闭进程内在线会话，绝不删除 devices 静态档案（避免重启或误判丢注册信息）。
-func checkSQLBackedKeepalive(ctx context.Context, rt *runtime.Stores, phone string, keepalive time.Duration, lastCom time.Time) {
+func checkSQLBackedKeepalive(ctx context.Context, rt *runtime.State, phone string, keepalive time.Duration, lastCom time.Time) {
 	if lastCom.IsZero() {
 		// 进程内没有可用的最近通信时间（新进程且无心跳），无法判定，保留档案。
 		return

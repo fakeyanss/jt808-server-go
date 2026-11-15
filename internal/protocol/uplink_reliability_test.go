@@ -117,7 +117,7 @@ func runUplinkPipelineWithSink(
 
 	pipeline := NewPipeline(serverEnd, WithDeps(ProcessorDeps{
 		Repos:      stores.Repositories,
-		Runtime:    runtime.NewStores(),
+		Runtime:    runtime.NewState(),
 		Uplink:     &policy,
 		UplinkSink: sink,
 		GatewayID:  "gw-test",
