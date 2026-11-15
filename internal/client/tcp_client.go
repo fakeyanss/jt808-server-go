@@ -30,6 +30,15 @@ func (cli *TCPClient) SetDeps(deps protocol.ProcessorDeps) {
 	cli.deps = deps
 }
 
+// runtimeStores 返回注入的运行时状态；未注入时回退到进程默认实例，
+// 仅供未装配依赖的测试与独立工具使用。
+func (cli *TCPClient) runtimeStores() *runtime.Stores {
+	if cli.deps.Runtime != nil {
+		return cli.deps.Runtime
+	}
+	return runtime.Default()
+}
+
 func (cli *TCPClient) Dial(addr string) error {
 	return cli.DialTransport(addr, model.TCPProto)
 }
@@ -157,10 +166,10 @@ func (cli *TCPClient) SendFragmentsWithFault(msg model.JT808Msg, fragmentSize in
 	if dropIndex > uint16(total) {
 		return errors.New("dropped fragment index exceeds fragment count")
 	}
-	codec := protocol.NewJT808PacketCodec()
+	codec := protocol.NewJT808PacketCodec(cli.deps.Runtime)
 	serials := cli.Session.GetNextSerialNums(total)
 	if media, ok := msg.(*model.Msg0801); ok {
-		runtime.Default().Retrans.LinkMedia(context.Background(), header.PhoneNumber, media.MultiMediaID, serials[0])
+		cli.runtimeStores().Retrans.LinkMedia(context.Background(), header.PhoneNumber, media.MultiMediaID, serials[0])
 	}
 	frames := make([][]byte, total)
 	for idx := 0; idx < total; idx++ {
@@ -181,7 +190,7 @@ func (cli *TCPClient) SendFragmentsWithFault(msg model.JT808Msg, fragmentSize in
 			return err
 		}
 		frames[idx] = frame
-		runtime.Default().Retrans.CacheFrame(context.Background(), header.PhoneNumber, serials[0], uint16(idx+1), uint16(total), frame)
+		cli.runtimeStores().Retrans.CacheFrame(context.Background(), header.PhoneNumber, serials[0], uint16(idx+1), uint16(total), frame)
 	}
 	for sent := 0; sent < total; sent++ {
 		idx := sent

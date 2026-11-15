@@ -22,6 +22,7 @@ internal/app     组合根：唯一允许依赖全部包的装配层
 
 - `internal/repository` 只放契约（接口、读写 DTO、哨兵错误、保留策略），不引入任何后端实现。
 - `internal/protocol` 只依赖 `repository` 的接口聚合，不依赖 `repository/database`、`sqlite`、`mysql`；协议内核不直接取全局单例。
+- `database.Default()` 与 `runtime.Default()` 只保留为未装配依赖的测试与独立工具回退；生产代码一律由 `internal/app` 创建实例并通过 `ProcessorDeps`、`api.Run` 参数显式注入。
 - `internal/business` 只依赖 `repository` 契约，不直接写 SQL。
 - `internal/repository/database` 只做装配与聚合，不引入数据库驱动；驱动注册集中在 `database/sqlbackend`，仅 control、standalone、migrate 三个入口显式导入。
 - `internal/storage` 自己定义 `BlobStore` 并给出实现，不依赖 `contracts`。

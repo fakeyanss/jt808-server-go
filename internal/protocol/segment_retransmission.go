@@ -22,6 +22,7 @@ type segmentRetransmissionState struct {
 	segment     *model.Segment
 	firstSerial uint16
 	header      model.MsgHeader
+	stores      *runtime.Stores
 	timer       *time.Timer
 	attempts    int
 }
@@ -35,7 +36,7 @@ func segmentRetransmissionKey(sessionID, phone string, msgID, firstSerial uint16
 	return fmt.Sprintf("%s/%s/%04x/%04x", sessionID, phone, msgID, firstSerial)
 }
 
-func scheduleSegmentRetransmission(session *model.Session, packet *model.PacketData) {
+func scheduleSegmentRetransmission(session *model.Session, packet *model.PacketData, stores *runtime.Stores) {
 	if session == nil || packet == nil || packet.Header == nil || packet.Header.Frag == nil {
 		return
 	}
@@ -50,8 +51,10 @@ func scheduleSegmentRetransmission(session *model.Session, packet *model.PacketD
 	segmentRetransmissions.Lock()
 	state := segmentRetransmissions.states[key]
 	if state == nil {
-		state = &segmentRetransmissionState{session: session, segment: segment, firstSerial: firstSerial, header: header}
+		state = &segmentRetransmissionState{session: session, segment: segment, firstSerial: firstSerial, header: header, stores: stores}
 		segmentRetransmissions.states[key] = state
+	} else if stores != nil {
+		state.stores = stores
 	}
 	if state.timer != nil {
 		state.timer.Stop()
@@ -86,7 +89,11 @@ func requestMissingSegments(key string, state *segmentRetransmissionState) {
 	state.timer = nil
 	segmentRetransmissions.Unlock()
 
-	missing := runtime.Default().Fragment.MissingIndexes(context.Background(), state.segment, state.firstSerial)
+	stores := state.stores
+	if stores == nil {
+		stores = runtime.Default()
+	}
+	missing := stores.Fragment.MissingIndexes(context.Background(), state.segment, state.firstSerial)
 	if len(missing) == 0 {
 		cancelSegmentRetransmission(state.session, state.segment.Phone, state.segment.MsgID, state.firstSerial)
 		return

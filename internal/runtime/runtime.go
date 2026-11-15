@@ -92,9 +92,9 @@ func NewStores() *Stores {
 }
 
 // Default 返回进程默认运行时状态实例。
-// 保留为全局入口的理由：msg_processor 的 processFunc 注册表是包级函数，
-// 签名固定为 (ctx, data) error，无法逐条注入依赖；收口为单一 Default() 后，
-// 运行时状态的来源可追溯。其余组件通过构造函数注入 Stores。
+//
+// 仅作为未装配依赖的测试与独立工具的兼容回退；生产代码必须由装配层
+// （internal/app）显式创建并注入，不要在业务路径直接调用。
 func Default() *Stores {
 	defaultOnce.Do(func() {
 		defaultStores = &Stores{

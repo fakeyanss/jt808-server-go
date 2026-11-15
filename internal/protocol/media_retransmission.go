@@ -24,6 +24,7 @@ type mediaRetransmissionState struct {
 	firstSerial uint16
 	mediaID     uint32
 	header      model.MsgHeader
+	stores      *runtime.Stores
 	timer       *time.Timer
 	attempts    int
 }
@@ -40,7 +41,7 @@ func mediaRetransmissionKey(sessionID, phone string, msgID, firstSerial uint16) 
 // scheduleMediaRetransmission registers an in-progress media upload (0x0801)
 // for missing-packet detection. The first fragment's body carries the
 // MultiMediaID; later fragments rely on the state cached by the first one.
-func scheduleMediaRetransmission(session *model.Session, packet *model.PacketData) {
+func scheduleMediaRetransmission(session *model.Session, packet *model.PacketData, stores *runtime.Stores) {
 	if session == nil || packet == nil || packet.Header == nil || packet.Header.Frag == nil {
 		return
 	}
@@ -69,8 +70,11 @@ func scheduleMediaRetransmission(session *model.Session, packet *model.PacketDat
 			firstSerial: firstSerial,
 			mediaID:     mediaID,
 			header:      header,
+			stores:      stores,
 		}
 		mediaRetransmissions.states[key] = state
+	} else if stores != nil {
+		state.stores = stores
 	}
 	if mediaID != 0 {
 		state.mediaID = mediaID
@@ -108,7 +112,11 @@ func requestMissingMediaPackets(key string, state *mediaRetransmissionState) {
 	state.timer = nil
 	mediaRetransmissions.Unlock()
 
-	missing := runtime.Default().Fragment.MissingIndexes(context.Background(), state.segment, state.firstSerial)
+	stores := state.stores
+	if stores == nil {
+		stores = runtime.Default()
+	}
+	missing := stores.Fragment.MissingIndexes(context.Background(), state.segment, state.firstSerial)
 	if len(missing) == 0 {
 		cancelMediaRetransmission(state.session, state.segment.Phone, state.segment.MsgID, state.firstSerial)
 		return
