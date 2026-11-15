@@ -54,7 +54,7 @@ func NewPipeline(conn net.Conn, opts ...PipelineOption) *Pipeline {
 	}
 	return &Pipeline{
 		fh: NewJT808FrameHandler(conn),
-		pc: NewJT808PacketCodec(),
+		pc: NewJT808PacketCodec(settings.deps.Runtime),
 		mp: NewJT808MsgProcessor(settings.hooks, WithProcessorDeps(settings.deps)),
 	}
 }

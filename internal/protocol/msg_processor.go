@@ -572,7 +572,7 @@ func (mp *JT808MsgProcessor) Decode(ctx context.Context, pkt *model.PacketData) 
 
 	// process segment packet
 	if pkt.Header.IsFragmented() && !pkt.SegCompleted {
-		return processSegmentPacket(ctx, pkt)
+		return processSegmentPacket(ctx, pkt, mp.deps.Runtime)
 	}
 
 	act := mp.options[msgID]
@@ -926,7 +926,7 @@ func decodeMessageSafely(msg model.JT808Msg, pkt *model.PacketData) (err error) 
 	return msg.Decode(pkt)
 }
 
-func processSegmentPacket(ctx context.Context, pkt *model.PacketData) (*model.ProcessData, error) {
+func processSegmentPacket(ctx context.Context, pkt *model.PacketData, stores *runtime.Stores) (*model.ProcessData, error) {
 	// JT1078 4.1节定义，对每个分包回复8001
 	headerCopy := *pkt.Header
 	attrCopy := *pkt.Header.Attr
@@ -943,9 +943,9 @@ func processSegmentPacket(ctx context.Context, pkt *model.PacketData) (*model.Pr
 	}
 	if session, ok := ctx.Value(model.SessionCtxKey{}).(*model.Session); ok && session != nil {
 		if pkt.Header.MsgID == 0x0801 {
-			scheduleMediaRetransmission(session, pkt)
+			scheduleMediaRetransmission(session, pkt, stores)
 		} else {
-			scheduleSegmentRetransmission(session, pkt)
+			scheduleSegmentRetransmission(session, pkt, stores)
 		}
 	}
 	return &model.ProcessData{Outgoing: outgoingMsg}, nil

@@ -34,19 +34,25 @@ type (
 	DevicePhoneCtxKey struct{}
 )
 
+var (
+	// 模拟器是独立入口，仓储与运行时状态在进程内显式创建一次，供所有协程共享。
+	clientRepos   *database.Repositories
+	clientRuntime = runtime.NewStores()
+)
+
 func buildDevice(ctx context.Context, cli *client.TCPClient) *model.Device {
 	deviceConf := ctx.Value(DeviceConfCtxKey{}).(*config.DeviceConf)
 	device := datagen.GenDevice(deviceConf)
 	device.SessionID = cli.Session.ID
 	device.TransProto = cli.Session.GetTransProto()
 	device.Conn = cli.Session.Conn
-	_ = database.Default().Devices.Upsert(ctx, device)
+	_ = clientRepos.Devices.Upsert(ctx, device)
 	return device
 }
 
 func getDevice(ctx context.Context) *model.Device {
 	phone := ctx.Value(DevicePhoneCtxKey{}).(string)
-	device, err := database.Default().Devices.GetByPhone(ctx, phone)
+	device, err := clientRepos.Devices.GetByPhone(ctx, phone)
 	if err != nil {
 		log.Fatal().Err(err).Str("phone", phone).Msg("Fail to find device cache")
 	}
@@ -86,13 +92,13 @@ func buildDeviceGeo(ctx context.Context) {
 	device := getDevice(ctx)
 	deviceGeoConf := ctx.Value(DeviceGeoConfCtxKey{}).(*config.DeviceGeoConf)
 	deivceGeo := datagen.GenDeviceGeo(deviceGeoConf, device)
-	_ = database.Default().Geo.Append(ctx, deivceGeo)
+	_ = clientRepos.Geo.Append(ctx, deivceGeo)
 }
 
 func reportLocation(ctx context.Context, cli *client.TCPClient) {
 	deviceGeoConf := ctx.Value(DeviceGeoConfCtxKey{}).(*config.DeviceGeoConf)
-	geo := database.Default().Geo
-	tracker := runtime.Default().Tracking
+	geo := clientRepos.Geo
+	tracker := clientRuntime.Tracking
 	device := getDevice(ctx)
 	fallback := time.Duration(deviceGeoConf.LocationReportInterval) * time.Second
 	sendLocation := func() {
@@ -130,8 +136,8 @@ func dialAndSend(cfg *config.Config, cliWg *sync.WaitGroup, fragmentSize int, re
 	cli := client.NewTCPClient()
 	// 模拟器与协议层共用同一份设备缓存，注册应答等行为才能读到本机档案。
 	cli.SetDeps(protocol.ProcessorDeps{
-		Repos:   database.Default().Repositories,
-		Runtime: runtime.Default(),
+		Repos:   clientRepos.Repositories,
+		Runtime: clientRuntime,
 	})
 	addr := cfg.Client.Conn.RemoteAddr
 	for retry := 1; ; retry++ {
@@ -176,7 +182,7 @@ func dialAndSend(cfg *config.Config, cliWg *sync.WaitGroup, fragmentSize int, re
 		routines.GoSafe(func() {
 			// device status checker
 			for {
-				renewDevice, _ := database.Default().Devices.GetByPhone(ctx, d.Phone)
+				renewDevice, _ := clientRepos.Devices.GetByPhone(ctx, d.Phone)
 				if renewDevice.Status == model.DeviceStatusOnline {
 					wg.Done()
 					return
@@ -219,7 +225,7 @@ func dialAndSend(cfg *config.Config, cliWg *sync.WaitGroup, fragmentSize int, re
 					datagen.GenMsg0800(d), // 多媒体事件
 					datagen.GenMsg0801(d), // 多媒体数据
 				} {
-					database.Default().Industry.Record(msg)
+					clientRepos.Industry.Record(msg)
 					cli.Send(msg)
 				}
 			})
@@ -264,6 +270,12 @@ func main() {
 
 	logCfg := cfg.ParseLogConf()
 	log.Logger = *logger.Configure(logCfg).Logger
+
+	repos, err := database.Open(database.Config{})
+	if err != nil {
+		log.Fatal().Err(err).Msg("Fail to open simulator repositories")
+	}
+	clientRepos = repos
 
 	var cliWg sync.WaitGroup
 	cliWg.Add(cfg.Client.Concurrency)

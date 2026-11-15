@@ -229,8 +229,7 @@ func Init(cfg Config) (*Repositories, error) {
 }
 
 // Default 返回进程默认仓储实例；未调用 Init 时懒加载内存后端。
-// 业务处理器已改为通过 ProcessorDeps 显式注入，Default 仅作为
-// 未注入时的回退入口与装配层之外的兼容取用点。
+// 仅供测试与兼容取用；生产装配必须使用 Init/Open 返回的实例并显式下传。
 func Default() *Repositories {
 	defaultMu.RLock()
 	instance := defaultRepositories

@@ -42,7 +42,7 @@ type Queryer interface {
 // Run 启动业务 API。downlink 为下行契约实现；sender 是豁免清单（查询/只读/幂等）
 // 的单发通道，二者在 control-only 下均可跨进程工作。未启用 outbox 时下行入口
 // 直接发送，不提供命令状态查询。
-func Run(ctx context.Context, serv *server.TCPServer, cfg *config.Config, repos repository.Repositories, apiOptions config.APIOptions, alarmServ *alarmserver.Server, attachments repository.AttachmentFileRepository, attachmentAllocator attachment.AttachmentAllocator, blob storage.BlobStore, downlink contracts.Downlink, sender contracts.DownlinkSender, mediaUpload *mediaupload.Store, queryer Queryer, playback playback.PlaybackLibrary, ftpTasks *control.FTPTaskManager, ftpPort uint16, ftpAdvertiseIP string) {
+func Run(ctx context.Context, serv *server.TCPServer, cfg *config.Config, repos repository.Repositories, runtimeStores *runtime.Stores, apiOptions config.APIOptions, alarmServ *alarmserver.Server, attachments repository.AttachmentFileRepository, attachmentAllocator attachment.AttachmentAllocator, blob storage.BlobStore, downlink contracts.Downlink, sender contracts.DownlinkSender, mediaUpload *mediaupload.Store, queryer Queryer, playback playback.PlaybackLibrary, ftpTasks *control.FTPTaskManager, ftpPort uint16, ftpAdvertiseIP string) {
 	// web server structure
 	gin.SetMode(gin.ReleaseMode)
 	router := gin.Default()
@@ -51,7 +51,7 @@ func Run(ctx context.Context, serv *server.TCPServer, cfg *config.Config, repos 
 	api := router.Group("/api")
 	devices := repos.Devices
 	geo := repos.Geo
-	connRegistry := runtime.Default().Conn
+	connRegistry := runtimeStores.Conn
 	outboxEnabled := downlink != nil && downlink.Enabled()
 
 	// 0x0801 媒体文件、0x0805 拍摄记录与 0x0802 检索结果查询；文件下载由 mediaUpload 读取共享卷。
@@ -229,7 +229,7 @@ func Run(ctx context.Context, serv *server.TCPServer, cfg *config.Config, repos 
 		}
 		serial := nextDownlinkSerial(session)
 		msg.GetHeader().SerialNumber = serial
-		responses := runtime.Default().ParamResponses
+		responses := runtimeStores.ParamResponses
 		responseCh, cancel, err := responses.Register(phone, serial)
 		if err != nil {
 			c.JSON(http.StatusConflict, gin.H{"err": err.Error()})
@@ -279,7 +279,7 @@ func Run(ctx context.Context, serv *server.TCPServer, cfg *config.Config, repos 
 			return
 		}
 		msg.Header.SerialNumber = nextDownlinkSerial(session)
-		responses := runtime.Default().PropertyResponses
+		responses := runtimeStores.PropertyResponses
 		responseCh, cancel, err := responses.Register(phone)
 		if err != nil {
 			c.JSON(http.StatusConflict, gin.H{"err": err.Error()})
@@ -334,7 +334,7 @@ func Run(ctx context.Context, serv *server.TCPServer, cfg *config.Config, repos 
 		}
 		serial := nextDownlinkSerial(session)
 		msg.Header.SerialNumber = serial
-		responses := runtime.Default().LocationResponses
+		responses := runtimeStores.LocationResponses
 		responseCh, cancel, err := responses.Register(phone, serial)
 		if err != nil {
 			c.JSON(http.StatusConflict, gin.H{"err": err.Error()})
@@ -569,7 +569,7 @@ func Run(ctx context.Context, serv *server.TCPServer, cfg *config.Config, repos 
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
 		}
-		broker := runtime.Default().RegionResponses
+		broker := runtimeStores.RegionResponses
 		response, cancel, err := broker.Register(phone, request.QueryType)
 		if err != nil {
 			c.JSON(http.StatusConflict, gin.H{"err": err.Error()})

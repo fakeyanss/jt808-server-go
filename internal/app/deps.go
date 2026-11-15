@@ -81,7 +81,9 @@ type deps struct {
 	ftpPort        uint16
 	ftpAdvertiseIP string
 
-	serv            *server.TCPServer
+	serv *server.TCPServer
+	// runtimeStores 是本进程唯一的运行时状态实例，按角色下传给协议、接入与 API 层。
+	runtimeStores   *runtime.Stores
 	outbox          *control.Outbox
 	controlDownlink contracts.DownlinkSender
 
@@ -133,7 +135,7 @@ func buildDeps(spec Spec, cfg *config.Config, s settings) *deps {
 	uplinkSinkOptions := s.uplinkSink
 	clusterOptions := s.options
 
-	d := &deps{spec: spec, cfg: cfg, settings: s, clock: clockpkg.System()}
+	d := &deps{spec: spec, cfg: cfg, settings: s, clock: clockpkg.System(), runtimeStores: runtime.NewStores()}
 
 	standalone := clusterOptions.IsStandalone()
 	hasGateway := standalone || clusterOptions.Roles.Has(config.RoleGateway)
@@ -201,7 +203,7 @@ func buildDeps(spec Spec, cfg *config.Config, s settings) *deps {
 		// 数据面角色不连库：用进程内仓储占位，协议层的设备档案查询改走 AuthProvider。
 		protocolRepos = memory.NewRepositories()
 	}
-	processorDeps := protocol.ProcessorDeps{Repos: protocolRepos, Runtime: runtime.Default(), Uplink: &uplinkPolicy}
+	processorDeps := protocol.ProcessorDeps{Repos: protocolRepos, Runtime: d.runtimeStores, Uplink: &uplinkPolicy}
 
 	// 指标在出口之前创建：409 丢弃、超限丢弃等事件需要在网关侧计数。
 	metrics := observability.NewMetrics()
