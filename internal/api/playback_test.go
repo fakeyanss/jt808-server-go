@@ -15,6 +15,8 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/fakeyanss/jt808-server-go/internal/contracts"
+	"github.com/fakeyanss/jt808-server-go/internal/contracts/media"
+	playbacklib "github.com/fakeyanss/jt808-server-go/internal/media/playback"
 	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
 	"github.com/fakeyanss/jt808-server-go/internal/repository"
 	"github.com/fakeyanss/jt808-server-go/internal/repository/database"
@@ -57,29 +59,29 @@ func (f *fakeStopDownlink) captured() []contracts.DownlinkRequest {
 
 type fakePlaybackLibrary struct {
 	mu           sync.Mutex
-	sessions     map[string]contracts.PlaybackSession
+	sessions     map[string]playbacklib.PlaybackSession
 	releaseErr   error
-	createResult contracts.PlaybackSession
+	createResult playbacklib.PlaybackSession
 	createErr    error
 	createCalls  int
 }
 
-func newFakePlaybackLibrary(sessions ...contracts.PlaybackSession) *fakePlaybackLibrary {
-	f := &fakePlaybackLibrary{sessions: make(map[string]contracts.PlaybackSession)}
+func newFakePlaybackLibrary(sessions ...playbacklib.PlaybackSession) *fakePlaybackLibrary {
+	f := &fakePlaybackLibrary{sessions: make(map[string]playbacklib.PlaybackSession)}
 	for _, session := range sessions {
 		f.sessions[session.ID] = session
 	}
 	return f
 }
 
-func (f *fakePlaybackLibrary) CreatePlaybackSession(context.Context, contracts.PlaybackSessionRequest) (contracts.PlaybackSession, error) {
+func (f *fakePlaybackLibrary) CreatePlaybackSession(context.Context, playbacklib.PlaybackSessionRequest) (playbacklib.PlaybackSession, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.createCalls++
 	return f.createResult, f.createErr
 }
 
-func (f *fakePlaybackLibrary) PlaybackSession(_ context.Context, sessionID string) (contracts.PlaybackSession, bool) {
+func (f *fakePlaybackLibrary) PlaybackSession(_ context.Context, sessionID string) (playbacklib.PlaybackSession, bool) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	session, ok := f.sessions[sessionID]
@@ -96,12 +98,12 @@ func (f *fakePlaybackLibrary) ReleasePlaybackSession(_ context.Context, sessionI
 	return nil
 }
 
-func (f *fakePlaybackLibrary) RecordingCoverage(context.Context, string, uint8, time.Time, time.Time) (contracts.RecordingCoverage, error) {
-	return contracts.RecordingCoverage{}, nil
+func (f *fakePlaybackLibrary) RecordingCoverage(context.Context, string, uint8, time.Time, time.Time) (playbacklib.RecordingCoverage, error) {
+	return playbacklib.RecordingCoverage{}, nil
 }
 
 func (f *fakePlaybackLibrary) OpenRecordingSegment(context.Context, string, string, int64, int64) (io.ReadCloser, int64, error) {
-	return nil, 0, contracts.ErrRecordingNotFound
+	return nil, 0, playbacklib.ErrRecordingNotFound
 }
 
 type playbackTestEnv struct {
@@ -167,7 +169,7 @@ func (e *playbackTestEnv) bind808(t *testing.T, phone string) {
 // TestDeletePlaybackSendsLiveStop 验证实时会话停止走 0x9102，控制字为关闭音视频传输。
 func TestDeletePlaybackSendsLiveStop(t *testing.T) {
 	downlink := &fakeStopDownlink{}
-	playback := newFakePlaybackLibrary(contracts.PlaybackSession{
+	playback := newFakePlaybackLibrary(playbacklib.PlaybackSession{
 		ID: "ms-live", Phone: "18800001111", Channel: 3, Kind: playbackKindLive,
 	})
 	env := newPlaybackTestEnv(t, downlink, playback)
@@ -200,7 +202,7 @@ func TestDeletePlaybackSendsLiveStop(t *testing.T) {
 // TestDeletePlaybackSendsTerminalPlaybackStop 验证终端回放会话走 0x9202，控制字为结束回放。
 func TestDeletePlaybackSendsTerminalPlaybackStop(t *testing.T) {
 	downlink := &fakeStopDownlink{}
-	playback := newFakePlaybackLibrary(contracts.PlaybackSession{
+	playback := newFakePlaybackLibrary(playbacklib.PlaybackSession{
 		ID: "ms-terminal", Phone: "18800002222", Channel: 2, Kind: playbackKindTerminal,
 	})
 	env := newPlaybackTestEnv(t, downlink, playback)
@@ -225,7 +227,7 @@ func TestDeletePlaybackSendsTerminalPlaybackStop(t *testing.T) {
 // TestDeletePlaybackIsIdempotent 验证重复 DELETE 不报错、不重复下发。
 func TestDeletePlaybackIsIdempotent(t *testing.T) {
 	downlink := &fakeStopDownlink{}
-	playback := newFakePlaybackLibrary(contracts.PlaybackSession{
+	playback := newFakePlaybackLibrary(playbacklib.PlaybackSession{
 		ID: "ms-once", Phone: "18800003333", Channel: 1, Kind: playbackKindLive,
 	})
 	env := newPlaybackTestEnv(t, downlink, playback)
@@ -244,7 +246,7 @@ func TestDeletePlaybackIsIdempotent(t *testing.T) {
 // TestDeletePlaybackReleasesWhenTerminalOffline 验证终端离线时仍释放，并标记未下发。
 func TestDeletePlaybackReleasesWhenTerminalOffline(t *testing.T) {
 	downlink := &fakeStopDownlink{}
-	playback := newFakePlaybackLibrary(contracts.PlaybackSession{
+	playback := newFakePlaybackLibrary(playbacklib.PlaybackSession{
 		ID: "ms-offline", Phone: "18800004444", Channel: 1, Kind: playbackKindLive,
 	})
 	env := newPlaybackTestEnv(t, downlink, playback)
@@ -268,7 +270,7 @@ func TestDeletePlaybackQueuesStopWithOutbox(t *testing.T) {
 		enabled: true,
 		result:  contracts.DownlinkResult{ID: "cmd-stop-1", Serial: 9, Accepted: true, Status: "pending"},
 	}
-	playback := newFakePlaybackLibrary(contracts.PlaybackSession{
+	playback := newFakePlaybackLibrary(playbacklib.PlaybackSession{
 		ID: "ms-queue", Phone: "18800005555", Channel: 5, Kind: playbackKindTerminal,
 	})
 	env := newPlaybackTestEnv(t, downlink, playback)
@@ -290,7 +292,7 @@ func TestDeletePlaybackQueuesStopWithOutbox(t *testing.T) {
 // TestDeletePlaybackReleasesWhenDispatchFails 验证下发失败不阻塞本地释放。
 func TestDeletePlaybackReleasesWhenDispatchFails(t *testing.T) {
 	downlink := &fakeStopDownlink{err: context.DeadlineExceeded}
-	playback := newFakePlaybackLibrary(contracts.PlaybackSession{
+	playback := newFakePlaybackLibrary(playbacklib.PlaybackSession{
 		ID: "ms-fail", Phone: "18800006666", Channel: 1, Kind: playbackKindLive,
 	})
 	env := newPlaybackTestEnv(t, downlink, playback)
@@ -311,12 +313,12 @@ func TestDeletePlaybackReleasesWhenDispatchFails(t *testing.T) {
 func TestCreatePlaybackReuseSkipsDownlink(t *testing.T) {
 	downlink := &fakeStopDownlink{enabled: true}
 	playback := newFakePlaybackLibrary()
-	playback.createResult = contracts.PlaybackSession{
+	playback.createResult = playbacklib.PlaybackSession{
 		ID:        "ms-live",
 		Phone:     "18800001111",
 		Channel:   1,
 		Kind:      playbackKindLive,
-		Endpoint:  contracts.MediaEndpoint{IP: "10.0.0.1", TCPPort: 7300, UDPPort: 7300},
+		Endpoint:  media.MediaEndpoint{IP: "10.0.0.1", TCPPort: 7300, UDPPort: 7300},
 		ExpiresAt: time.Now().Add(time.Minute),
 		Reused:    true,
 	}

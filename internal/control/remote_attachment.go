@@ -14,7 +14,7 @@ import (
 
 	"github.com/rs/zerolog/log"
 
-	"github.com/fakeyanss/jt808-server-go/internal/contracts"
+	"github.com/fakeyanss/jt808-server-go/internal/contracts/attachment"
 )
 
 // defaultAttachmentNodeTimeout 是管控调用附件节点状态接口的超时。
@@ -35,7 +35,7 @@ type RemoteAttachmentOptions struct {
 
 // RemoteAttachment 按节点状态选择附件节点，并保证同一 (phone, alarm) 粘性。
 //
-// 没有可用节点时返回 contracts.AttachmentUnavailableError，
+// 没有可用节点时返回 attachment.AttachmentUnavailableError，
 // API 据此返回稳定的 503 + code，而不是静默成功。
 type RemoteAttachment struct {
 	nodes  []AttachmentNode
@@ -51,7 +51,7 @@ type RemoteAttachment struct {
 type attachmentBinding struct {
 	node      int
 	key       string
-	endpoint  contracts.AttachmentEndpoint
+	endpoint  attachment.AttachmentEndpoint
 	expiresAt time.Time
 }
 
@@ -131,11 +131,11 @@ func (r *RemoteAttachment) Check(ctx context.Context) error {
 	return nil
 }
 
-// Allocate 实现 contracts.AttachmentAllocator。
-func (r *RemoteAttachment) Allocate(ctx context.Context, request contracts.AttachmentLeaseRequest) (contracts.AttachmentLease, error) {
+// Allocate 实现 attachment.AttachmentAllocator。
+func (r *RemoteAttachment) Allocate(ctx context.Context, request attachment.AttachmentLeaseRequest) (attachment.AttachmentLease, error) {
 	if r == nil || len(r.nodes) == 0 {
-		return contracts.AttachmentLease{}, &contracts.AttachmentUnavailableError{
-			Code:   contracts.AttachmentCodeNoNodes,
+		return attachment.AttachmentLease{}, &attachment.AttachmentUnavailableError{
+			Code:   attachment.AttachmentCodeNoNodes,
 			Reason: "cluster.attachment.nodes is empty",
 		}
 	}
@@ -149,7 +149,7 @@ func (r *RemoteAttachment) Allocate(ctx context.Context, request contracts.Attac
 				if ttl <= 0 {
 					ttl = r.ttl
 				}
-				lease := contracts.AttachmentLease{
+				lease := attachment.AttachmentLease{
 					LeaseID:   "att-" + key,
 					Phone:     request.Phone,
 					Endpoint:  endpoint,
@@ -196,7 +196,7 @@ func (r *RemoteAttachment) Allocate(ctx context.Context, request contracts.Attac
 			ttl = r.ttl
 		}
 		expiresAt := r.now().Add(ttl)
-		lease := contracts.AttachmentLease{
+		lease := attachment.AttachmentLease{
 			LeaseID:   "att-" + key,
 			Phone:     request.Phone,
 			Endpoint:  endpoint,
@@ -213,8 +213,8 @@ func (r *RemoteAttachment) Allocate(ctx context.Context, request contracts.Attac
 	if len(failures) > 0 {
 		reason += ": " + strings.Join(failures, "; ")
 	}
-	return contracts.AttachmentLease{}, &contracts.AttachmentUnavailableError{
-		Code:   contracts.AttachmentCodeNodesUnavailable,
+	return attachment.AttachmentLease{}, &attachment.AttachmentUnavailableError{
+		Code:   attachment.AttachmentCodeNodesUnavailable,
 		Reason: reason,
 	}
 }
@@ -253,14 +253,14 @@ type attachmentStatus struct {
 	UDPPort       uint16 `json:"udpPort"`
 }
 
-func (s attachmentStatus) endpoint(node AttachmentNode) contracts.AttachmentEndpoint {
+func (s attachmentStatus) endpoint(node AttachmentNode) attachment.AttachmentEndpoint {
 	ip := s.AdvertiseIP
 	if ip == "" {
 		if parsed, err := url.Parse(node.URL); err == nil {
 			ip = parsed.Hostname()
 		}
 	}
-	return contracts.AttachmentEndpoint{IP: ip, TCPPort: s.TCPPort, UDPPort: s.UDPPort}
+	return attachment.AttachmentEndpoint{IP: ip, TCPPort: s.TCPPort, UDPPort: s.UDPPort}
 }
 
 func (r *RemoteAttachment) fetchStatuses(ctx context.Context) []nodeAttachmentStatus {
@@ -303,7 +303,7 @@ func attachmentStatusAt(statuses []nodeAttachmentStatus, index int) (nodeAttachm
 	return nodeAttachmentStatus{}, false
 }
 
-func (r *RemoteAttachment) remember(key, leaseID string, node int, endpoint contracts.AttachmentEndpoint, expiresAt time.Time) {
+func (r *RemoteAttachment) remember(key, leaseID string, node int, endpoint attachment.AttachmentEndpoint, expiresAt time.Time) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	binding := attachmentBinding{node: node, key: key, endpoint: endpoint, expiresAt: expiresAt}
@@ -335,4 +335,4 @@ func attachmentKey(phone, alarmID string) string {
 	return phone + "/" + alarmID
 }
 
-var _ contracts.AttachmentAllocator = (*RemoteAttachment)(nil)
+var _ attachment.AttachmentAllocator = (*RemoteAttachment)(nil)

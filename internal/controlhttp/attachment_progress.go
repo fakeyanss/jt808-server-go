@@ -8,13 +8,13 @@ import (
 
 	"github.com/rs/zerolog/log"
 
-	"github.com/fakeyanss/jt808-server-go/internal/contracts"
+	"github.com/fakeyanss/jt808-server-go/internal/contracts/attachment"
 )
 
 // AttachmentProgressStore 是 control 侧附件进度的落库与查询能力。
 type AttachmentProgressStore interface {
-	Save(ctx context.Context, progress contracts.AttachmentProgress) error
-	Load(ctx context.Context, key contracts.AttachmentProgressKey) (*contracts.AttachmentProgress, error)
+	Save(ctx context.Context, progress attachment.AttachmentProgress) error
+	Load(ctx context.Context, key attachment.AttachmentProgressKey) (*attachment.AttachmentProgress, error)
 }
 
 // handleAttachmentProgress 同时承担两条出站请求：
@@ -44,7 +44,7 @@ func (s *Server) handleAttachmentProgress(w http.ResponseWriter, r *http.Request
 
 func (s *Server) saveAttachmentProgress(w http.ResponseWriter, r *http.Request, store AttachmentProgressStore) {
 	r.Body = http.MaxBytesReader(w, r.Body, 4<<20)
-	var progress contracts.AttachmentProgress
+	var progress attachment.AttachmentProgress
 	if err := json.NewDecoder(r.Body).Decode(&progress); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_json", err.Error())
 		return
@@ -60,7 +60,7 @@ func (s *Server) saveAttachmentProgress(w http.ResponseWriter, r *http.Request, 
 
 func (s *Server) loadAttachmentProgress(w http.ResponseWriter, r *http.Request, store AttachmentProgressStore) {
 	query := r.URL.Query()
-	key := contracts.AttachmentProgressKey{
+	key := attachment.AttachmentProgressKey{
 		Source:   strings.TrimSpace(query.Get("source")),
 		Phone:    strings.TrimSpace(query.Get("phone")),
 		AlarmNo:  strings.TrimSpace(query.Get("alarmNo")),
@@ -72,7 +72,7 @@ func (s *Server) loadAttachmentProgress(w http.ResponseWriter, r *http.Request, 
 	}
 	progress, err := store.Load(r.Context(), key)
 	if err != nil {
-		if err == contracts.ErrAttachmentProgressNotFound {
+		if err == attachment.ErrAttachmentProgressNotFound {
 			writeError(w, http.StatusNotFound, "not_found", "attachment progress is not found")
 			return
 		}

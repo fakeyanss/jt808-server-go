@@ -4,7 +4,7 @@ import (
 	"errors"
 	"time"
 
-	"github.com/fakeyanss/jt808-server-go/internal/contracts"
+	"github.com/fakeyanss/jt808-server-go/internal/contracts/attachment"
 	"github.com/fakeyanss/jt808-server-go/internal/storage"
 )
 
@@ -55,9 +55,9 @@ var (
 // 每个切片窗口到齐后切段上传对象存储，进度通过 Progress 出站上报 control。
 // 附件节点不持有任何仓储：水位、段列表与终态都由 control 落库。
 type StorageConfig struct {
-	Blob contracts.BlobStore
+	Blob storage.BlobStore
 	// Progress 是进度上报与恢复点查询通道；为空时只写对象存储、不对外报进度。
-	Progress contracts.AttachmentProgressSink
+	Progress attachment.AttachmentProgressSink
 	Source   string
 	// SegmentSize 是单个对象切片大小；<=0 时使用 DefaultSegmentSize。
 	SegmentSize int64

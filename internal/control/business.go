@@ -38,7 +38,7 @@ type BusinessOptions struct {
 	// Segments 是平台录像切片索引；用于回收 media/segments/ 下无引用的 pending 对象。
 	Segments repository.RecordingSegmentRepository
 	// Blob 是 sharedVolume 文件后端；为空时 0x0801 回退到本地媒体目录。
-	Blob contracts.BlobStore
+	Blob storage.BlobStore
 	// MediaUpload 是本地媒体目录，仅 Blob 为空时使用。
 	MediaUpload *mediaupload.Store
 	// Hooks 是控制面识别到报警/位置时的动作出口；autoUpload 依赖它在控制面触发 0x9208。
@@ -244,7 +244,7 @@ func (b *BusinessExecutor) ingestMedia(ctx context.Context, event contracts.Upli
 	}
 	// 对象存储按来源分区：0x0801 图片与 1078 切片、附件分开前缀，便于按来源清理。
 	key = storage.MediaUploads + key
-	info, err := b.opts.Blob.Put(ctx, key, bytes.NewReader(upload.FragmentData), contracts.BlobOptions{ContentType: "image/jpeg"})
+	info, err := b.opts.Blob.Put(ctx, key, bytes.NewReader(upload.FragmentData), storage.BlobOptions{ContentType: "image/jpeg"})
 	if err != nil {
 		return contracts.UplinkResult{}, fmt.Errorf("put media %s: %w", key, err)
 	}

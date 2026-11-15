@@ -16,8 +16,8 @@ import (
 	"github.com/rs/zerolog/log"
 
 	"github.com/fakeyanss/jt808-server-go/internal/clock"
-	"github.com/fakeyanss/jt808-server-go/internal/contracts"
 	"github.com/fakeyanss/jt808-server-go/internal/media/playback"
+	"github.com/fakeyanss/jt808-server-go/internal/storage"
 	"github.com/fakeyanss/jt808-server-go/pkg/routines"
 )
 
@@ -51,7 +51,7 @@ type Config struct {
 	RingBytes    int64
 	RingDuration time.Duration
 	// Blob 是切片完成后的上传后端；为空时切片保留在本地目录。
-	Blob contracts.BlobStore
+	Blob storage.BlobStore
 	// SegmentSink 接收切片完成事件；为空时只记日志。
 	SegmentSink SegmentSink
 	// Clock 是进程内统一时钟源；为空时使用系统时钟。

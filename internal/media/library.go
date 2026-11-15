@@ -11,7 +11,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/fakeyanss/jt808-server-go/internal/contracts"
+	"github.com/fakeyanss/jt808-server-go/internal/contracts/media"
+	"github.com/fakeyanss/jt808-server-go/internal/media/playback"
 )
 
 // segmentIndex 是内存中的平台录像切片索引。
@@ -78,10 +79,10 @@ func (s *Server) onSegment(ctx context.Context, info SegmentInfo) error {
 }
 
 // CreatePlaybackSession 申请播放会话，返回终端应推流的端点与播放地址。
-func (s *Server) CreatePlaybackSession(ctx context.Context, request contracts.PlaybackSessionRequest) (contracts.PlaybackSession, error) {
+func (s *Server) CreatePlaybackSession(ctx context.Context, request playback.PlaybackSessionRequest) (playback.PlaybackSession, error) {
 	kind, err := NormalizeStreamKind(StreamKind(request.Kind))
 	if err != nil {
-		return contracts.PlaybackSession{}, err
+		return playback.PlaybackSession{}, err
 	}
 	info, err := s.Acquire(SessionRequest{
 		Phone:   request.Phone,
@@ -93,11 +94,11 @@ func (s *Server) CreatePlaybackSession(ctx context.Context, request contracts.Pl
 		var conflict *SessionConflictError
 		if errors.As(err, &conflict) {
 			existing, _, _ := s.Session(conflict.ExistingSessionID)
-			return contracts.PlaybackSession{}, &contracts.PlaybackSessionConflictError{
+			return playback.PlaybackSession{}, &playback.PlaybackSessionConflictError{
 				Existing: toContractSession(existing),
 			}
 		}
-		return contracts.PlaybackSession{}, err
+		return playback.PlaybackSession{}, err
 	}
 	return toContractSession(info), nil
 }
@@ -108,16 +109,16 @@ func (s *Server) ReleasePlaybackSession(_ context.Context, sessionID string) err
 }
 
 // PlaybackSession 返回会话快照；不存在时 found=false。
-func (s *Server) PlaybackSession(_ context.Context, sessionID string) (contracts.PlaybackSession, bool) {
+func (s *Server) PlaybackSession(_ context.Context, sessionID string) (playback.PlaybackSession, bool) {
 	info, _, ok := s.Session(sessionID)
 	if !ok {
-		return contracts.PlaybackSession{}, false
+		return playback.PlaybackSession{}, false
 	}
 	return toContractSession(info), true
 }
 
-func toContractSession(info SessionInfo) contracts.PlaybackSession {
-	out := contracts.PlaybackSession{
+func toContractSession(info SessionInfo) playback.PlaybackSession {
+	out := playback.PlaybackSession{
 		ID:          info.ID,
 		Phone:       info.Phone,
 		Channel:     info.Channel,
@@ -126,14 +127,14 @@ func toContractSession(info SessionInfo) contracts.PlaybackSession {
 		FLVPath:     info.FLVPath,
 		Output:      info.Output,
 		PlaybackURL: info.PlaybackURL,
-		Endpoint: contracts.MediaEndpoint{
+		Endpoint: media.MediaEndpoint{
 			IP:      info.ServerIP,
 			TCPPort: info.TCPPort,
 			UDPPort: info.UDPPort,
 		},
 	}
 	for _, endpoint := range info.Endpoints {
-		out.Endpoints = append(out.Endpoints, contracts.PlaybackEndpoint{
+		out.Endpoints = append(out.Endpoints, playback.PlaybackEndpoint{
 			Protocol: endpoint.Protocol,
 			URL:      endpoint.URL,
 		})
@@ -142,14 +143,14 @@ func toContractSession(info SessionInfo) contracts.PlaybackSession {
 }
 
 // RecordingCoverage 返回平台录像在请求区间内的覆盖情况。
-func (s *Server) RecordingCoverage(_ context.Context, phone string, channel uint8, start, end time.Time) (contracts.RecordingCoverage, error) {
+func (s *Server) RecordingCoverage(_ context.Context, phone string, channel uint8, start, end time.Time) (playback.RecordingCoverage, error) {
 	if !start.Before(end) {
-		return contracts.RecordingCoverage{}, errors.New("start must be before end")
+		return playback.RecordingCoverage{}, errors.New("start must be before end")
 	}
-	result := contracts.RecordingCoverage{Requested: contracts.TimeRange{Start: start, End: end}}
+	result := playback.RecordingCoverage{Requested: playback.TimeRange{Start: start, End: end}}
 	items := s.segments.query(phone, channel, start, end)
 	for _, item := range items {
-		result.Segments = append(result.Segments, contracts.RecordingSegmentInfo{
+		result.Segments = append(result.Segments, playback.RecordingSegmentInfo{
 			ID:        segmentID(item),
 			Phone:     item.Phone,
 			Channel:   item.Channel,
@@ -175,19 +176,19 @@ func (s *Server) RecordingCoverage(_ context.Context, phone string, channel uint
 			}
 			continue
 		}
-		result.Available = append(result.Available, contracts.TimeRange{Start: from, End: to})
+		result.Available = append(result.Available, playback.TimeRange{Start: from, End: to})
 	}
 	cursor := start
 	for _, available := range result.Available {
 		if cursor.Before(available.Start) {
-			result.Missing = append(result.Missing, contracts.TimeRange{Start: cursor, End: available.Start})
+			result.Missing = append(result.Missing, playback.TimeRange{Start: cursor, End: available.Start})
 		}
 		if available.End.After(cursor) {
 			cursor = available.End
 		}
 	}
 	if cursor.Before(end) {
-		result.Missing = append(result.Missing, contracts.TimeRange{Start: cursor, End: end})
+		result.Missing = append(result.Missing, playback.TimeRange{Start: cursor, End: end})
 	}
 	result.Playable = len(result.Missing) == 0
 	return result, nil
@@ -197,14 +198,14 @@ func (s *Server) RecordingCoverage(_ context.Context, phone string, channel uint
 func (s *Server) OpenRecordingSegment(ctx context.Context, phone, segmentIDValue string, offset, length int64) (io.ReadCloser, int64, error) {
 	info, ok := s.segments.find(phone, segmentIDValue)
 	if !ok {
-		return nil, 0, contracts.ErrRecordingNotFound
+		return nil, 0, playback.ErrRecordingNotFound
 	}
 	size := info.Size
 	if size <= 0 {
 		size = 0
 	}
 	if offset < 0 || offset > size {
-		return nil, 0, contracts.ErrRangeNotSatisfiable
+		return nil, 0, playback.ErrRangeNotSatisfiable
 	}
 	if length <= 0 || offset+length > size {
 		length = size - offset
@@ -217,7 +218,7 @@ func (s *Server) OpenRecordingSegment(ctx context.Context, phone, segmentIDValue
 		return reader, size, nil
 	}
 	if info.LocalPath == "" {
-		return nil, 0, contracts.ErrRecordingNotFound
+		return nil, 0, playback.ErrRecordingNotFound
 	}
 	file, err := os.Open(info.LocalPath)
 	if err != nil {

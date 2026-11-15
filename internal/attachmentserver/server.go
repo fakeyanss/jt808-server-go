@@ -24,7 +24,7 @@ import (
 	"github.com/fakeyanss/jt808-server-go/internal/alarmserver"
 	"github.com/fakeyanss/jt808-server-go/internal/attachmentnode"
 	"github.com/fakeyanss/jt808-server-go/internal/clock"
-	"github.com/fakeyanss/jt808-server-go/internal/contracts"
+	"github.com/fakeyanss/jt808-server-go/internal/contracts/attachment"
 	"github.com/fakeyanss/jt808-server-go/internal/ftpserver"
 	"github.com/fakeyanss/jt808-server-go/internal/storage"
 	"github.com/fakeyanss/jt808-server-go/pkg/routines"
@@ -43,9 +43,9 @@ type Config struct {
 	CompletedTTL   time.Duration
 	Retention      time.Duration
 
-	Blob contracts.BlobStore
+	Blob storage.BlobStore
 	// Progress 是向 control 上报进度/查询恢复点的出站通道；为空时只写对象存储。
-	Progress contracts.AttachmentProgressSink
+	Progress attachment.AttachmentProgressSink
 	// StagingDir 是本地暂存根目录；集群下必须有足够空间容纳有界窗口。
 	StagingDir string
 	// SegmentSize 是单个对象切片大小。

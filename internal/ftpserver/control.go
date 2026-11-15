@@ -12,7 +12,7 @@ import (
 	"time"
 
 	"github.com/fakeyanss/jt808-server-go/internal/attachmentnode"
-	"github.com/fakeyanss/jt808-server-go/internal/contracts"
+	"github.com/fakeyanss/jt808-server-go/internal/contracts/attachment"
 	"github.com/fakeyanss/jt808-server-go/internal/internalapi"
 )
 
@@ -33,7 +33,7 @@ type LoginResult struct {
 // 调用方拒绝新登录，但已建立的连接不受影响。
 type Control interface {
 	Login(ctx context.Context, nodeID, username, password string) (LoginResult, error)
-	Report(ctx context.Context, progress contracts.AttachmentProgress) error
+	Report(ctx context.Context, progress attachment.AttachmentProgress) error
 }
 
 // HTTPControl 是 Control 的 HTTP 实现。
@@ -96,7 +96,7 @@ func (c *HTTPControl) Login(ctx context.Context, nodeID, username, password stri
 }
 
 // Report 把进度快照推给 control；失败只影响索引新鲜度，不阻断接收。
-func (c *HTTPControl) Report(ctx context.Context, progress contracts.AttachmentProgress) error {
+func (c *HTTPControl) Report(ctx context.Context, progress attachment.AttachmentProgress) error {
 	if c == nil || c.BaseURL == "" {
 		return nil
 	}

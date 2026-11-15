@@ -10,7 +10,7 @@ import (
 	"github.com/rs/zerolog/log"
 
 	"github.com/fakeyanss/jt808-server-go/internal/attachmentnode"
-	"github.com/fakeyanss/jt808-server-go/internal/contracts"
+	"github.com/fakeyanss/jt808-server-go/internal/contracts/attachment"
 	"github.com/fakeyanss/jt808-server-go/internal/repository"
 )
 
@@ -64,7 +64,7 @@ func (s *Server) handleAttachmentFTPLogin(w http.ResponseWriter, r *http.Request
 	}
 	task, err := store.Authenticate(r.Context(), req.NodeID, req.Username, req.Password)
 	if err != nil {
-		if errors.Is(err, contracts.ErrFTPLoginRejected) {
+		if errors.Is(err, attachment.ErrFTPLoginRejected) {
 			writeError(w, http.StatusUnauthorized, "login_rejected", "ftp credentials are invalid or revoked")
 			return
 		}

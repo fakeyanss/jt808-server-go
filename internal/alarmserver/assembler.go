@@ -13,7 +13,7 @@ import (
 
 	"github.com/rs/zerolog/log"
 
-	"github.com/fakeyanss/jt808-server-go/internal/contracts"
+	"github.com/fakeyanss/jt808-server-go/internal/contracts/attachment"
 )
 
 // byteRange 表示附件文件中已连续覆盖的字节区间 [Offset, Offset+Length)。
@@ -103,7 +103,7 @@ type fileState struct {
 	// store 非空表示该文件使用对象存储模式：本地只有暂存窗口，文件按切片提交。
 	store *StorageConfig
 	// segments 是已提交的对象切片；flushCursor 是已提交到的字节偏移。
-	segments    []contracts.AttachmentProgressSegment
+	segments    []attachment.AttachmentProgressSegment
 	flushCursor int64
 	// stagedMax 是本地暂存文件写到的最高偏移，用于暂存区总量统计。
 	stagedMax int64
@@ -471,7 +471,7 @@ type Assembler struct {
 	// receiving 是本进程正在接收的附件数量，供附件节点状态接口回报剩余额度。
 	receiving atomic.Int64
 	// reportCh/reportDone 是向 control 异步上报进度的队列与停止信号。
-	reportCh     chan contracts.AttachmentProgress
+	reportCh     chan attachment.AttachmentProgress
 	reportDone   chan struct{}
 	reportClosed atomic.Bool
 	reportWG     sync.WaitGroup

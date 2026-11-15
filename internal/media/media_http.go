@@ -14,7 +14,7 @@ import (
 
 	"github.com/rs/zerolog/log"
 
-	"github.com/fakeyanss/jt808-server-go/internal/contracts"
+	"github.com/fakeyanss/jt808-server-go/internal/media/playback"
 	"github.com/fakeyanss/jt808-server-go/pkg/routines"
 )
 
@@ -166,11 +166,11 @@ func (s *Server) handleSegmentContent(w http.ResponseWriter, r *http.Request) {
 	length, _ := strconv.ParseInt(query.Get("length"), 10, 64)
 	reader, size, err := s.OpenRecordingSegment(r.Context(), phone, segmentID, offset, length)
 	if err != nil {
-		if errors.Is(err, contracts.ErrRecordingNotFound) {
+		if errors.Is(err, playback.ErrRecordingNotFound) {
 			writeJSON(w, http.StatusNotFound, errorBody{Code: "recording_not_found", Message: err.Error()})
 			return
 		}
-		if errors.Is(err, contracts.ErrRangeNotSatisfiable) {
+		if errors.Is(err, playback.ErrRangeNotSatisfiable) {
 			writeJSON(w, http.StatusRequestedRangeNotSatisfiable, errorBody{Code: "range_not_satisfiable", Message: err.Error()})
 			return
 		}

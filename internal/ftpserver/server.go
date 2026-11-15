@@ -20,8 +20,9 @@ import (
 	"github.com/rs/zerolog/log"
 
 	"github.com/fakeyanss/jt808-server-go/internal/clock"
-	"github.com/fakeyanss/jt808-server-go/internal/contracts"
+	"github.com/fakeyanss/jt808-server-go/internal/contracts/attachment"
 	"github.com/fakeyanss/jt808-server-go/internal/observability"
+	"github.com/fakeyanss/jt808-server-go/internal/storage"
 )
 
 const (
@@ -55,7 +56,7 @@ type Config struct {
 	IdleTimeout     time.Duration
 	DataTimeout     time.Duration
 
-	Blob    contracts.BlobStore
+	Blob    storage.BlobStore
 	Control Control
 	Clock   clock.Clock
 	Metrics *observability.Metrics
@@ -76,7 +77,7 @@ type Server struct {
 	staging     atomic.Int64
 	active      atomic.Int64
 
-	reportCh     chan contracts.AttachmentProgress
+	reportCh     chan attachment.AttachmentProgress
 	reportDone   chan struct{}
 	reportClosed atomic.Bool
 	reportWG     sync.WaitGroup
@@ -134,7 +135,7 @@ func New(cfg Config) (*Server, error) {
 		transfers:  make(map[string]*transferHandle),
 		lastSeq:    make(map[string]uint32),
 		taskStates: make(map[string]taskState),
-		reportCh:   make(chan contracts.AttachmentProgress, 256),
+		reportCh:   make(chan attachment.AttachmentProgress, 256),
 		reportDone: make(chan struct{}),
 		done:       make(chan struct{}),
 	}
@@ -365,7 +366,7 @@ func (s *Server) startReporter() {
 	}()
 }
 
-func (s *Server) enqueueProgress(progress contracts.AttachmentProgress) {
+func (s *Server) enqueueProgress(progress attachment.AttachmentProgress) {
 	if s.reportClosed.Load() {
 		return
 	}

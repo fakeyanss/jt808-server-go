@@ -6,7 +6,7 @@ import (
 
 	"github.com/rs/zerolog/log"
 
-	"github.com/fakeyanss/jt808-server-go/internal/contracts"
+	"github.com/fakeyanss/jt808-server-go/internal/contracts/attachment"
 	"github.com/fakeyanss/jt808-server-go/pkg/routines"
 )
 
@@ -23,7 +23,7 @@ func (a *Assembler) startProgressReporter() {
 	if a.cfg.Storage == nil || a.cfg.Storage.Progress == nil {
 		return
 	}
-	a.reportCh = make(chan contracts.AttachmentProgress, progressQueueSize)
+	a.reportCh = make(chan attachment.AttachmentProgress, progressQueueSize)
 	a.reportDone = make(chan struct{})
 	a.reportWG.Add(1)
 	sink := a.cfg.Storage.Progress
@@ -47,7 +47,7 @@ func (a *Assembler) startProgressReporter() {
 }
 
 // enqueueProgress 非阻塞投递进度快照。
-func (a *Assembler) enqueueProgress(progress contracts.AttachmentProgress) {
+func (a *Assembler) enqueueProgress(progress attachment.AttachmentProgress) {
 	if a.reportCh == nil || a.reportClosed.Load() {
 		return
 	}

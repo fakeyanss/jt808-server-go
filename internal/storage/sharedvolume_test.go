@@ -9,8 +9,6 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
-
-	"github.com/fakeyanss/jt808-server-go/internal/contracts"
 )
 
 func newTestVolume(t *testing.T, withMarker bool) *SharedVolume {
@@ -40,9 +38,9 @@ func TestSharedVolumePutPromoteAndCommit(t *testing.T) {
 	volume := newTestVolume(t, true)
 	ctx := context.Background()
 
-	info, err := volume.Put(ctx, "188765432105/20261112/1.jpg", bytes.NewReader([]byte("jpeg-bytes")), contracts.BlobOptions{})
+	info, err := volume.Put(ctx, "188765432105/20261112/1.jpg", bytes.NewReader([]byte("jpeg-bytes")), BlobOptions{})
 	require.NoError(t, err)
-	require.Equal(t, contracts.BlobStatePending, info.State)
+	require.Equal(t, BlobStatePending, info.State)
 
 	_, err = volume.Open(ctx, "188765432105/20261112/1.jpg")
 	require.ErrorIs(t, err, os.ErrNotExist, "staging object must not be visible before promote")
@@ -61,12 +59,12 @@ func TestSharedVolumePutPromoteAndCommit(t *testing.T) {
 
 	stat, err := volume.Stat(ctx, info.Key)
 	require.NoError(t, err)
-	require.Equal(t, contracts.BlobStatePending, stat.State)
+	require.Equal(t, BlobStatePending, stat.State)
 
 	require.NoError(t, volume.MarkCommitted(ctx, info.Key))
 	stat, err = volume.Stat(ctx, info.Key)
 	require.NoError(t, err)
-	require.Equal(t, contracts.BlobStateCommitted, stat.State)
+	require.Equal(t, BlobStateCommitted, stat.State)
 }
 
 // 同一 key 重传时覆盖旧文件，不产生第二份对象。
@@ -74,12 +72,12 @@ func TestSharedVolumePutIsIdempotent(t *testing.T) {
 	volume := newTestVolume(t, true)
 	ctx := context.Background()
 
-	first, err := volume.Put(ctx, "188765432105/20261112/1.jpg", bytes.NewReader([]byte("v1")), contracts.BlobOptions{})
+	first, err := volume.Put(ctx, "188765432105/20261112/1.jpg", bytes.NewReader([]byte("v1")), BlobOptions{})
 	require.NoError(t, err)
 	_, err = volume.Promote(ctx, first)
 	require.NoError(t, err)
 
-	second, err := volume.Put(ctx, "188765432105/20261112/1.jpg", bytes.NewReader([]byte("v2")), contracts.BlobOptions{})
+	second, err := volume.Put(ctx, "188765432105/20261112/1.jpg", bytes.NewReader([]byte("v2")), BlobOptions{})
 	require.NoError(t, err)
 	_, err = volume.Promote(ctx, second)
 	require.NoError(t, err)
@@ -127,7 +125,7 @@ func TestSharedVolumeSweepSkipsCommitted(t *testing.T) {
 
 func putAndPromote(t *testing.T, volume *SharedVolume, key, content string) string {
 	t.Helper()
-	info, err := volume.Put(context.Background(), key, bytes.NewReader([]byte(content)), contracts.BlobOptions{})
+	info, err := volume.Put(context.Background(), key, bytes.NewReader([]byte(content)), BlobOptions{})
 	require.NoError(t, err)
 	info, err = volume.Promote(context.Background(), info)
 	require.NoError(t, err)
@@ -138,7 +136,7 @@ func putAndPromote(t *testing.T, volume *SharedVolume, key, content string) stri
 func TestSharedVolumeRejectsUnsafeKeys(t *testing.T) {
 	volume := newTestVolume(t, true)
 	for _, key := range []string{"", "../escape", "/abs/path", "a/../../escape"} {
-		_, err := volume.Put(context.Background(), key, bytes.NewReader(nil), contracts.BlobOptions{})
+		_, err := volume.Put(context.Background(), key, bytes.NewReader(nil), BlobOptions{})
 		require.Error(t, err, "key %q must be rejected", key)
 	}
 }

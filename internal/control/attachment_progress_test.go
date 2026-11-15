@@ -9,7 +9,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/fakeyanss/jt808-server-go/internal/contracts"
+	"github.com/fakeyanss/jt808-server-go/internal/contracts/attachment"
 	"github.com/fakeyanss/jt808-server-go/internal/repository"
 	"github.com/fakeyanss/jt808-server-go/internal/repository/memory"
 	"github.com/fakeyanss/jt808-server-go/internal/storage"
@@ -25,16 +25,16 @@ func TestAttachmentProgressStoreRoundTripAndUpsert(t *testing.T) {
 	store := NewAttachmentProgressStore(files, clk)
 	require.NotNil(t, store)
 
-	progress := contracts.AttachmentProgress{
+	progress := attachment.AttachmentProgress{
 		Source:    storage.SourceSubia,
 		Phone:     "13800138000",
 		AlarmNo:   "A1",
 		FileName:  "clip.bin",
 		TotalSize: 8,
-		Segments: []contracts.AttachmentProgressSegment{
+		Segments: []attachment.AttachmentProgressSegment{
 			{Index: 0, Key: "k0", Offset: 0, Size: 4, State: "pending"},
 		},
-		Status:    contracts.AttachmentStatusReceiving,
+		Status:    attachment.AttachmentStatusReceiving,
 		CreatedAt: clk.now,
 	}
 	require.NoError(t, store.Save(context.Background(), progress))
@@ -45,7 +45,7 @@ func TestAttachmentProgressStoreRoundTripAndUpsert(t *testing.T) {
 	require.Len(t, loaded.Segments, 1)
 
 	// 同一业务键重复上报是 upsert，不新增行。
-	progress.Status = contracts.AttachmentStatusCompleted
+	progress.Status = attachment.AttachmentStatusCompleted
 	progress.Watermark = 8
 	progress.ReceivedBytes = 8
 	require.NoError(t, store.Save(context.Background(), progress))
@@ -54,10 +54,10 @@ func TestAttachmentProgressStoreRoundTripAndUpsert(t *testing.T) {
 	require.Len(t, rows, 1)
 	require.Equal(t, repository.AttachmentStatusCompleted, rows[0].Status)
 
-	_, err = store.Load(context.Background(), contracts.AttachmentProgressKey{
+	_, err = store.Load(context.Background(), attachment.AttachmentProgressKey{
 		Source: storage.SourceSubia, Phone: "13800138000", AlarmNo: "A1", FileName: "missing.bin",
 	})
-	require.ErrorIs(t, err, contracts.ErrAttachmentProgressNotFound)
+	require.ErrorIs(t, err, attachment.ErrAttachmentProgressNotFound)
 }
 
 // 上报全部丢失时，control 仅凭对象 key 就能重建完成状态。
@@ -69,7 +69,7 @@ func TestAttachmentMaintenanceBackfillsFromObjectKeys(t *testing.T) {
 	total := int64(12)
 	for index, offset := range []int64{0, 4, 8} {
 		key := storage.AttachmentSegmentObjectKey(storage.SourceSubia, "13800138000", "A1", "clip.bin", offset, 4, total, index)
-		info, putErr := volume.Put(context.Background(), key, bytes.NewReader(bytes.Repeat([]byte{byte(index)}, 4)), contracts.BlobOptions{})
+		info, putErr := volume.Put(context.Background(), key, bytes.NewReader(bytes.Repeat([]byte{byte(index)}, 4)), storage.BlobOptions{})
 		require.NoError(t, putErr)
 		_, putErr = volume.Promote(context.Background(), info)
 		require.NoError(t, putErr)
@@ -100,7 +100,7 @@ func TestAttachmentMaintenanceBackfillKeepsPartialFileReceiving(t *testing.T) {
 	volume, err := storage.NewSharedVolume(filepath.Join(root, "blob"), false)
 	require.NoError(t, err)
 	key := storage.AttachmentSegmentObjectKey(storage.SourceSubia, "13800138000", "A1", "clip.bin", 0, 4, 12, 0)
-	info, err := volume.Put(context.Background(), key, bytes.NewReader([]byte("abcd")), contracts.BlobOptions{})
+	info, err := volume.Put(context.Background(), key, bytes.NewReader([]byte("abcd")), storage.BlobOptions{})
 	require.NoError(t, err)
 	_, err = volume.Promote(context.Background(), info)
 	require.NoError(t, err)

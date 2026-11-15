@@ -11,7 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/fakeyanss/jt808-server-go/internal/contracts"
+	mediacontract "github.com/fakeyanss/jt808-server-go/internal/contracts/media"
+	"github.com/fakeyanss/jt808-server-go/internal/media/playback"
 	"github.com/fakeyanss/jt808-server-go/internal/repository"
 	"github.com/fakeyanss/jt808-server-go/internal/repository/memory"
 )
@@ -36,7 +37,7 @@ func TestRemoteMediaSelectsLowestLoadRegisteredNode(t *testing.T) {
 	}
 
 	media := NewRemoteMedia(RemoteMediaOptions{NodeRepo: repo})
-	session, err := media.CreatePlaybackSession(context.Background(), contracts.PlaybackSessionRequest{
+	session, err := media.CreatePlaybackSession(context.Background(), playback.PlaybackSessionRequest{
 		Phone: "13800138000", Channel: 1, Kind: "live",
 	})
 	if err != nil {
@@ -87,7 +88,7 @@ func TestRemoteMediaReservationSerializesConcurrentAllocations(t *testing.T) {
 		wg.Add(1)
 		go func(index int) {
 			defer wg.Done()
-			_, err := media.CreatePlaybackSession(context.Background(), contracts.PlaybackSessionRequest{
+			_, err := media.CreatePlaybackSession(context.Background(), playback.PlaybackSessionRequest{
 				Phone: "1380013800" + string(rune('0'+index)), Channel: 1, Kind: "live",
 			})
 			mu.Lock()
@@ -104,8 +105,8 @@ func TestRemoteMediaReservationSerializesConcurrentAllocations(t *testing.T) {
 	if succeeded != 1 {
 		t.Fatalf("expected exactly one allocation to win the last endpoint, got %d", succeeded)
 	}
-	var unavailable *contracts.MediaUnavailableError
-	if lastErr == nil || !errors.As(lastErr, &unavailable) || unavailable.Code != contracts.MediaCodeNodesUnavailable {
+	var unavailable *mediacontract.MediaUnavailableError
+	if lastErr == nil || !errors.As(lastErr, &unavailable) || unavailable.Code != mediacontract.MediaCodeNodesUnavailable {
 		t.Fatalf("expected nodes_unavailable for losers, got %v", lastErr)
 	}
 	stored, err := repo.Get(context.Background(), "media-only")
@@ -141,7 +142,7 @@ func TestRemoteMediaReusesSessionForConcurrentSameChannel(t *testing.T) {
 		wg.Add(1)
 		go func(index int) {
 			defer wg.Done()
-			session, err := media.CreatePlaybackSession(context.Background(), contracts.PlaybackSessionRequest{
+			session, err := media.CreatePlaybackSession(context.Background(), playback.PlaybackSessionRequest{
 				Phone: "13800138000", Channel: 1, Kind: "live",
 			})
 			ids[index] = session.ID
@@ -236,7 +237,7 @@ func TestRemoteMediaReconcileSkipsDownwardWhileAllocationInFlight(t *testing.T) 
 
 	done := make(chan error, 1)
 	go func() {
-		_, err := media.CreatePlaybackSession(context.Background(), contracts.PlaybackSessionRequest{
+		_, err := media.CreatePlaybackSession(context.Background(), playback.PlaybackSessionRequest{
 			Phone: "13800138000", Channel: 1, Kind: "live",
 		})
 		done <- err
@@ -282,11 +283,11 @@ func TestRemoteMediaSkipsExpiredRegisteredNodes(t *testing.T) {
 	}
 	media := NewRemoteMedia(RemoteMediaOptions{NodeRepo: repo})
 
-	_, err := media.CreatePlaybackSession(context.Background(), contracts.PlaybackSessionRequest{
+	_, err := media.CreatePlaybackSession(context.Background(), playback.PlaybackSessionRequest{
 		Phone: "13800138000", Channel: 1, Kind: "live",
 	})
-	var unavailable *contracts.MediaUnavailableError
-	if !errors.As(err, &unavailable) || unavailable.Code != contracts.MediaCodeNodesUnavailable {
+	var unavailable *mediacontract.MediaUnavailableError
+	if !errors.As(err, &unavailable) || unavailable.Code != mediacontract.MediaCodeNodesUnavailable {
 		t.Fatalf("expected expired node to be skipped, got %v", err)
 	}
 	if node.createCalls != 0 {

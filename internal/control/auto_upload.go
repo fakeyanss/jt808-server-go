@@ -11,6 +11,7 @@ import (
 	actionpkg "github.com/fakeyanss/jt808-server-go/internal/action"
 	clockpkg "github.com/fakeyanss/jt808-server-go/internal/clock"
 	"github.com/fakeyanss/jt808-server-go/internal/contracts"
+	"github.com/fakeyanss/jt808-server-go/internal/contracts/attachment"
 	"github.com/fakeyanss/jt808-server-go/internal/coordination"
 	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
 )
@@ -22,7 +23,7 @@ import (
 // 没有可用附件节点时只记录明确告警，不影响报警入库。
 type AutoUploadTrigger struct {
 	next       actionpkg.Hooks
-	allocator  contracts.AttachmentAllocator
+	allocator  attachment.AttachmentAllocator
 	sender     contracts.DownlinkSender
 	dedupStore coordination.Store
 	dedupTTL   time.Duration
@@ -32,7 +33,7 @@ type AutoUploadTrigger struct {
 // NewAutoUploadTrigger 创建自动下发装饰器。
 // dedupStore 为 nil 时退化为进程内去重；多副本必须传入共享 Store。
 // clk 为 nil 时使用系统时钟。
-func NewAutoUploadTrigger(next actionpkg.Hooks, allocator contracts.AttachmentAllocator, sender contracts.DownlinkSender,
+func NewAutoUploadTrigger(next actionpkg.Hooks, allocator attachment.AttachmentAllocator, sender contracts.DownlinkSender,
 	dedupStore coordination.Store, dedupTTL time.Duration, clk clockpkg.Clock) *AutoUploadTrigger {
 	if next == nil {
 		next = actionpkg.Noop{}
@@ -138,7 +139,7 @@ func (t *AutoUploadTrigger) OnAlarm(ctx context.Context, event actionpkg.AlarmEv
 	} else if !first {
 		return
 	}
-	lease, err := t.allocator.Allocate(ctx, contracts.AttachmentLeaseRequest{
+	lease, err := t.allocator.Allocate(ctx, attachment.AttachmentLeaseRequest{
 		Phone: event.Phone, AlarmID: alarmIDHex,
 	})
 	if err != nil {

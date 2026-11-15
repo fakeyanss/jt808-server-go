@@ -10,7 +10,6 @@ import (
 	"github.com/fakeyanss/jt808-server-go/internal/action"
 	"github.com/fakeyanss/jt808-server-go/internal/alarmserver"
 	"github.com/fakeyanss/jt808-server-go/internal/config"
-	"github.com/fakeyanss/jt808-server-go/internal/contracts"
 	"github.com/fakeyanss/jt808-server-go/internal/control"
 	"github.com/fakeyanss/jt808-server-go/internal/controlhttp"
 	"github.com/fakeyanss/jt808-server-go/internal/coordination"
@@ -41,7 +40,7 @@ func (d *deps) setupControl() {
 	}
 
 	var uplinkServer *controlhttp.Server
-	var controlBlob contracts.BlobStore
+	var controlBlob storage.BlobStore
 	var businessExecutor *control.BusinessExecutor
 	var ftpManager *control.FTPTaskManager
 	cancelSweep := func() {}

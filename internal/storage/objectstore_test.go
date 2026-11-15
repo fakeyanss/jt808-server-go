@@ -20,8 +20,6 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
-
-	"github.com/fakeyanss/jt808-server-go/internal/contracts"
 )
 
 const fakeS3Bucket = "jt808-test"
@@ -484,7 +482,7 @@ func TestObjectStorePutWritesStagingObject(t *testing.T) {
 	ctx := context.Background()
 
 	content := []byte("jpeg-bytes-for-staging")
-	info, err := store.Put(ctx, "188765432105/20261112/1.jpg", bytes.NewReader(content), contracts.BlobOptions{
+	info, err := store.Put(ctx, "188765432105/20261112/1.jpg", bytes.NewReader(content), BlobOptions{
 		ContentType: "image/jpeg",
 		Metadata:    map[string]string{"Device": "188765432105"},
 	})
@@ -510,7 +508,7 @@ func TestObjectStorePutWritesStagingObject(t *testing.T) {
 	require.True(t, strings.HasSuffix(info.StagingKey, "/188765432105/20261112/1.jpg"))
 	require.Equal(t, "/"+fakeS3Bucket+"/"+info.StagingKey, put.Path)
 	require.Equal(t, "188765432105/20261112/1.jpg", info.Key)
-	require.Equal(t, contracts.BlobStatePending, info.State)
+	require.Equal(t, BlobStatePending, info.State)
 	require.Equal(t, int64(len(content)), info.Size)
 	require.Equal(t, hex.EncodeToString(sum[:]), info.MD5)
 	require.Equal(t, hex.EncodeToString(sum[:]), info.ETag)
@@ -528,13 +526,13 @@ func TestObjectStorePromoteAndMarkCommitted(t *testing.T) {
 
 	key := "188765432105/20261112/clip.mp4"
 	content := []byte("video-bytes")
-	info, err := store.Put(ctx, key, bytes.NewReader(content), contracts.BlobOptions{ContentType: "video/mp4"})
+	info, err := store.Put(ctx, key, bytes.NewReader(content), BlobOptions{ContentType: "video/mp4"})
 	require.NoError(t, err)
 
 	promoted, err := store.Promote(ctx, info)
 	require.NoError(t, err)
 	require.Equal(t, key, promoted.Key)
-	require.Equal(t, contracts.BlobStatePending, promoted.State)
+	require.Equal(t, BlobStatePending, promoted.State)
 
 	copies := fake.copyRequests(key)
 	require.Len(t, copies, 1)
@@ -555,7 +553,7 @@ func TestObjectStorePromoteAndMarkCommitted(t *testing.T) {
 	stat, err := store.Stat(ctx, key)
 	require.NoError(t, err)
 	require.Equal(t, key, stat.Key)
-	require.Equal(t, contracts.BlobStateCommitted, stat.State)
+	require.Equal(t, BlobStateCommitted, stat.State)
 	require.Equal(t, int64(len(content)), stat.Size)
 	require.Equal(t, promoted.ETag, stat.ETag)
 }
@@ -647,7 +645,7 @@ func TestObjectStoreSweepReclaimsExpiredPendingWithoutBusinessRow(t *testing.T) 
 
 	key := "recordings/13800138000/1_1700000000000.ts"
 	content := []byte("segment-bytes")
-	info, err := store.Put(ctx, key, bytes.NewReader(content), contracts.BlobOptions{ContentType: "video/mp2t"})
+	info, err := store.Put(ctx, key, bytes.NewReader(content), BlobOptions{ContentType: "video/mp2t"})
 	require.NoError(t, err)
 	_, err = store.Promote(ctx, info)
 	require.NoError(t, err)
@@ -675,7 +673,7 @@ func TestObjectStoreSweepRemovesStaleMarkerButKeepsReferencedObject(t *testing.T
 	ctx := context.Background()
 
 	key := "media/188765432105/20261112/1.jpg"
-	info, err := store.Put(ctx, key, bytes.NewReader([]byte("jpeg")), contracts.BlobOptions{ContentType: "image/jpeg"})
+	info, err := store.Put(ctx, key, bytes.NewReader([]byte("jpeg")), BlobOptions{ContentType: "image/jpeg"})
 	require.NoError(t, err)
 	_, err = store.Promote(ctx, info)
 	require.NoError(t, err)
@@ -693,7 +691,7 @@ func TestObjectStoreSweepKeepsCommittedObjectWithStaleMarker(t *testing.T) {
 	ctx := context.Background()
 
 	key := "recordings/13800138000/1_1700000000002.ts"
-	info, err := store.Put(ctx, key, bytes.NewReader([]byte("committed-segment")), contracts.BlobOptions{})
+	info, err := store.Put(ctx, key, bytes.NewReader([]byte("committed-segment")), BlobOptions{})
 	require.NoError(t, err)
 	_, err = store.Promote(ctx, info)
 	require.NoError(t, err)
@@ -715,7 +713,7 @@ func TestObjectStoreDeleteRemovesPendingMarker(t *testing.T) {
 	ctx := context.Background()
 
 	key := "recordings/13800138000/1_1700000000001.ts"
-	info, err := store.Put(ctx, key, bytes.NewReader([]byte("segment")), contracts.BlobOptions{})
+	info, err := store.Put(ctx, key, bytes.NewReader([]byte("segment")), BlobOptions{})
 	require.NoError(t, err)
 	_, err = store.Promote(ctx, info)
 	require.NoError(t, err)

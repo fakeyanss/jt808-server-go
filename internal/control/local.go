@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"github.com/fakeyanss/jt808-server-go/internal/contracts"
+	"github.com/fakeyanss/jt808-server-go/internal/contracts/attachment"
+	"github.com/fakeyanss/jt808-server-go/internal/contracts/media"
 	"github.com/fakeyanss/jt808-server-go/internal/mediaupload"
 	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
 	"github.com/fakeyanss/jt808-server-go/internal/repository"
@@ -129,25 +131,25 @@ func (a *LocalAttachment) Root() string {
 // StaticMediaAllocator 是 standalone 形态的媒体端点分配器：
 // 所有租约返回同一个本地端点，粘性天然成立。
 type StaticMediaAllocator struct {
-	endpoint contracts.MediaEndpoint
+	endpoint media.MediaEndpoint
 	ttl      time.Duration
 	mu       sync.Mutex
-	leases   map[string]contracts.MediaLease
+	leases   map[string]media.MediaLease
 	nextID   uint64
 }
 
 // NewStaticMediaAllocator 创建固定端点的媒体分配器。
-func NewStaticMediaAllocator(endpoint contracts.MediaEndpoint, ttl time.Duration) *StaticMediaAllocator {
+func NewStaticMediaAllocator(endpoint media.MediaEndpoint, ttl time.Duration) *StaticMediaAllocator {
 	if ttl <= 0 {
 		ttl = 10 * time.Minute
 	}
-	return &StaticMediaAllocator{endpoint: endpoint, ttl: ttl, leases: make(map[string]contracts.MediaLease)}
+	return &StaticMediaAllocator{endpoint: endpoint, ttl: ttl, leases: make(map[string]media.MediaLease)}
 }
 
 // Allocate 返回固定端点租约。
-func (a *StaticMediaAllocator) Allocate(_ context.Context, request contracts.MediaLeaseRequest) (contracts.MediaLease, error) {
+func (a *StaticMediaAllocator) Allocate(_ context.Context, request media.MediaLeaseRequest) (media.MediaLease, error) {
 	if a.endpoint.IP == "" {
-		return contracts.MediaLease{}, fmt.Errorf("media endpoint is not configured")
+		return media.MediaLease{}, fmt.Errorf("media endpoint is not configured")
 	}
 	ttl := request.TTL
 	if ttl <= 0 {
@@ -156,7 +158,7 @@ func (a *StaticMediaAllocator) Allocate(_ context.Context, request contracts.Med
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.nextID++
-	lease := contracts.MediaLease{
+	lease := media.MediaLease{
 		LeaseID:   fmt.Sprintf("media-%d", a.nextID),
 		Phone:     request.Phone,
 		Channel:   request.Channel,
@@ -177,25 +179,25 @@ func (a *StaticMediaAllocator) Release(_ context.Context, leaseID string) error 
 
 // StaticAttachmentAllocator 是 standalone 形态的附件端点分配器。
 type StaticAttachmentAllocator struct {
-	endpoint contracts.AttachmentEndpoint
+	endpoint attachment.AttachmentEndpoint
 	ttl      time.Duration
 	mu       sync.Mutex
-	leases   map[string]contracts.AttachmentLease
+	leases   map[string]attachment.AttachmentLease
 	nextID   uint64
 }
 
 // NewStaticAttachmentAllocator 创建固定端点的附件分配器。
-func NewStaticAttachmentAllocator(endpoint contracts.AttachmentEndpoint, ttl time.Duration) *StaticAttachmentAllocator {
+func NewStaticAttachmentAllocator(endpoint attachment.AttachmentEndpoint, ttl time.Duration) *StaticAttachmentAllocator {
 	if ttl <= 0 {
 		ttl = 10 * time.Minute
 	}
-	return &StaticAttachmentAllocator{endpoint: endpoint, ttl: ttl, leases: make(map[string]contracts.AttachmentLease)}
+	return &StaticAttachmentAllocator{endpoint: endpoint, ttl: ttl, leases: make(map[string]attachment.AttachmentLease)}
 }
 
 // Allocate 返回固定端点租约。
-func (a *StaticAttachmentAllocator) Allocate(_ context.Context, request contracts.AttachmentLeaseRequest) (contracts.AttachmentLease, error) {
+func (a *StaticAttachmentAllocator) Allocate(_ context.Context, request attachment.AttachmentLeaseRequest) (attachment.AttachmentLease, error) {
 	if a.endpoint.IP == "" {
-		return contracts.AttachmentLease{}, fmt.Errorf("attachment endpoint is not configured")
+		return attachment.AttachmentLease{}, fmt.Errorf("attachment endpoint is not configured")
 	}
 	ttl := request.TTL
 	if ttl <= 0 {
@@ -204,7 +206,7 @@ func (a *StaticAttachmentAllocator) Allocate(_ context.Context, request contract
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.nextID++
-	lease := contracts.AttachmentLease{
+	lease := attachment.AttachmentLease{
 		LeaseID:   fmt.Sprintf("attachment-%d", a.nextID),
 		Phone:     request.Phone,
 		Endpoint:  a.endpoint,

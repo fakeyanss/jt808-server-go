@@ -7,7 +7,6 @@ import (
 
 	"github.com/rs/zerolog/log"
 
-	"github.com/fakeyanss/jt808-server-go/internal/contracts"
 	"github.com/fakeyanss/jt808-server-go/internal/repository"
 	"github.com/fakeyanss/jt808-server-go/internal/storage"
 )
@@ -20,11 +19,11 @@ import (
 // 它只增不删，过期切片仍由保留期清理负责。
 type RecordingIndexer struct {
 	segments repository.RecordingSegmentRepository
-	blob     contracts.BlobStore
+	blob     storage.BlobStore
 }
 
 // NewRecordingIndexer 构造切片索引补齐器；segments 或 blob 为空时禁用。
-func NewRecordingIndexer(segments repository.RecordingSegmentRepository, blob contracts.BlobStore) *RecordingIndexer {
+func NewRecordingIndexer(segments repository.RecordingSegmentRepository, blob storage.BlobStore) *RecordingIndexer {
 	if segments == nil || blob == nil {
 		return nil
 	}
@@ -36,7 +35,7 @@ func (i *RecordingIndexer) Backfill(ctx context.Context) (int, error) {
 	if i == nil {
 		return 0, nil
 	}
-	lister, ok := i.blob.(contracts.BlobLister)
+	lister, ok := i.blob.(storage.BlobLister)
 	if !ok {
 		return 0, fmt.Errorf("blob backend %T does not support listing", i.blob)
 	}

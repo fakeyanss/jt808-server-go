@@ -1,10 +1,77 @@
-package contracts
+// Package attachment 定义附件节点、管控与管理面之间的附件调度与进度契约。
+package attachment
 
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 )
+
+// AttachmentEndpoint 是苏标附件节点的可达地址。
+type AttachmentEndpoint struct {
+	IP      string
+	TCPPort uint16
+	UDPPort uint16
+}
+
+// AttachmentLeaseRequest 描述一次附件端点申请。
+type AttachmentLeaseRequest struct {
+	Phone       string
+	AlarmID     string
+	AlarmSerial uint16
+	TTL         time.Duration
+}
+
+// AttachmentLease 是一段时间内有效的附件端点租约。
+type AttachmentLease struct {
+	LeaseID   string
+	Phone     string
+	Endpoint  AttachmentEndpoint
+	ExpiresAt time.Time
+}
+
+// AttachmentAllocator 决定附件上传落在哪个节点，并保证粘性。
+type AttachmentAllocator interface {
+	Allocate(ctx context.Context, request AttachmentLeaseRequest) (AttachmentLease, error)
+	Release(ctx context.Context, leaseID string) error
+}
+
+// 附件调度失败的错误码。API 返回 503 + code + reason，禁止静默降级。
+const (
+	// AttachmentCodeNoNodes 表示没有配置任何附件节点。
+	AttachmentCodeNoNodes = "no_attachment_node_configured"
+	// AttachmentCodeNodesUnavailable 表示配置了节点但没有一个可接受新的上传。
+	AttachmentCodeNodesUnavailable = "no_attachment_node_available"
+)
+
+// AttachmentUnavailableError 表示当前没有可承载附件上传的节点。
+type AttachmentUnavailableError struct {
+	Code   string
+	Reason string
+}
+
+func (e *AttachmentUnavailableError) Error() string {
+	if e == nil {
+		return "attachment service is unavailable"
+	}
+	if e.Reason == "" {
+		return e.Code
+	}
+	return fmt.Sprintf("%s: %s", e.Code, e.Reason)
+}
+
+// AttachmentReader 提供附件组装状态与文件目录的只读视图。
+type AttachmentReader interface {
+	Stats() (active, completed int64)
+	Root() string
+}
+
+// ErrFTPLoginRejected 表示 FTP 一次性账号无效、已吊销或任务已终态。
+//
+// 附件节点用它区分“账号被拒”（530）与“control 不可达”（421/503）：
+// 前者不应重试，后者必须继续重试但不得放行新登录。
+var ErrFTPLoginRejected = errors.New("ftp login rejected")
 
 // ErrAttachmentProgressNotFound 表示 control 侧没有该文件的进度记录。
 //

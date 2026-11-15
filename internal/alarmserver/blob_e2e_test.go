@@ -10,7 +10,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/fakeyanss/jt808-server-go/internal/contracts"
+	"github.com/fakeyanss/jt808-server-go/internal/contracts/attachment"
 	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
 	"github.com/fakeyanss/jt808-server-go/internal/storage"
 )
@@ -83,13 +83,13 @@ func TestServerEndToEndObjectStorageSegments(t *testing.T) {
 	retransmit := receive9212(t, reader)
 	require.Equal(t, uint8(0), retransmit.Result)
 
-	key := contracts.AttachmentProgressKey{Source: storage.SourceSubia, Phone: phone, AlarmNo: "ALARM-OBJ-1", FileName: fileName}
-	progress := sink.waitStatus(t, key, contracts.AttachmentStatusCompleted)
+	key := attachment.AttachmentProgressKey{Source: storage.SourceSubia, Phone: phone, AlarmNo: "ALARM-OBJ-1", FileName: fileName}
+	progress := sink.waitStatus(t, key, attachment.AttachmentStatusCompleted)
 	require.EqualValues(t, size, progress.ReceivedBytes)
 	require.Len(t, progress.Segments, 2)
 	for _, segment := range progress.Segments {
 		stored, statErr := volume.Stat(context.Background(), segment.Key)
 		require.NoError(t, statErr)
-		require.Equal(t, contracts.BlobStateCommitted, stored.State)
+		require.Equal(t, storage.BlobStateCommitted, stored.State)
 	}
 }

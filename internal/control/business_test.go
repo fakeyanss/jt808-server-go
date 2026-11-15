@@ -135,7 +135,7 @@ func TestBusinessExecutorIngestsImageMedia(t *testing.T) {
 
 	info, err := volume.Stat(context.Background(), file.RelativePath)
 	require.NoError(t, err)
-	require.Equal(t, contracts.BlobStateCommitted, info.State)
+	require.Equal(t, storage.BlobStateCommitted, info.State)
 }
 
 // 写库失败时返回错误（网关不应答），文件停留在 pending 交给巡检。
@@ -160,7 +160,7 @@ func TestBusinessExecutorKeepsPendingWhenSaveFails(t *testing.T) {
 
 	info, statErr := volume.Stat(context.Background(), "media/uploads/"+phone+"/20261112/9103.jpg")
 	require.NoError(t, statErr)
-	require.Equal(t, contracts.BlobStatePending, info.State)
+	require.Equal(t, storage.BlobStatePending, info.State)
 }
 
 // 状态标记失败不影响业务成功：引用已建立，由巡检补 committed。

@@ -15,13 +15,13 @@ import (
 
 	"github.com/fakeyanss/jt808-server-go/internal/attachmentnode"
 	"github.com/fakeyanss/jt808-server-go/internal/clock"
-	"github.com/fakeyanss/jt808-server-go/internal/contracts"
+	"github.com/fakeyanss/jt808-server-go/internal/contracts/attachment"
 	"github.com/fakeyanss/jt808-server-go/internal/observability"
 	"github.com/fakeyanss/jt808-server-go/internal/repository"
 )
 
 // ErrFTPLoginRejected 表示账号无效、已吊销或任务已终态。
-var ErrFTPLoginRejected = contracts.ErrFTPLoginRejected
+var ErrFTPLoginRejected = attachment.ErrFTPLoginRejected
 
 // DefaultFTPTaskTTL 是任务的绝对存活时间：超时后吊销账号并标记 expired。
 const DefaultFTPTaskTTL = 24 * time.Hour
