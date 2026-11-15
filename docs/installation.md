@@ -28,7 +28,7 @@ make release OS=linux ARCH=arm64   # 只构建单个平台
 
 release 产物形态：每个平台一个压缩包（linux/darwin 为 `tar.gz`，windows 为 `zip`），包内含 `jt-server-standalone`、`jt-signal`、`jt-control`、`jt-media`、`jt-attachment`、`jt808-migrate`、`jt808-client-go` 七个二进制，加 `LICENSE`、`README.md`、`VERSION`；全平台的 `sha256` 校验和由 release workflow 生成。
 
-单机入口是 `jt-server-standalone`：一个进程承担全部角色。历史上的 `jt808-server` 通用入口已移除（v1.0.0 的发布包里还有），升级时需要把启动命令换成 `jt-server-standalone`。它按固定 standalone 形态运行，配置里出现 `server.mode=cluster` 或 cluster 角色时会拒绝启动；需要拆分角色时使用对应的固定角色二进制，避免配置与二进制职责错配。
+单机入口是 `jt-server-standalone`：一个进程承担全部角色。它按固定 standalone 形态运行，配置里出现 `server.mode=cluster` 或 cluster 角色时会拒绝启动；需要拆分角色时使用对应的固定角色二进制，避免配置与二进制职责错配。
 
 ## 3. 单机运行
 

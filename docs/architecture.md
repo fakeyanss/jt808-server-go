@@ -141,7 +141,7 @@ flowchart LR
 | `jt-attachment` | attachment | 附件 TCP/UDP、暂存、对象切片、进度上报、1078 FTP |
 | `jt-server-standalone` | 全部 | 单进程运行，配置中出现 cluster 角色时启动失败 |
 
-`jt-server-standalone` 是单机入口：一个进程承担全部角色，配置中出现 cluster 角色时启动失败。历史上的 `jt808-server` 通用入口（按配置决定形态）已移除，需要多角色同机调试时按角色分别启动。
+`jt-server-standalone` 是单机入口：一个进程承担全部角色，配置中出现 cluster 角色时启动失败。需要多角色同机运行时，按角色分别启动对应的二进制。
 
 ## 4. 集群关键流程
 
