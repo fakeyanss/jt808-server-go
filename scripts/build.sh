@@ -1,107 +1,150 @@
 #!/usr/bin/env bash
 
-set -eo pipefail
+# 统一构建入口。编译、镜像与发布包的入口清单都来自 build/targets.tsv，
+# 不要在这里再维护第二份二进制列表。
+#
+# 用法:
+#   scripts/build.sh test                        # 单元测试与覆盖率报告
+#   scripts/build.sh compile                     # 本机平台，全部目标 -> target/debug/
+#   scripts/build.sh image <outdir>              # 镜像内目标，输出到 outdir（Dockerfile 使用）
+#   scripts/build.sh release <version>            # 6 个平台打包 -> target/dist/
+#   scripts/build.sh release <version> <os> <arch> # 单平台，供 CI matrix 使用
+#   scripts/build.sh clean
 
-function test() {
-	output=$target_dir/test
-	mkdir -p $output
+set -euo pipefail
 
-	# 测试覆盖率文件
-	covprof=${output}/covprof.out  # coverage profile
-	covfunc=${output}/covfunc.txt  # coverage profile information for each function
-	covhtml=${output}/covhtml.html # HTML representation of coverage profile
+root_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+manifest="$root_dir/build/targets.tsv"
+target_dir="$root_dir/target"
+binary_name="jt808-server-go"
+ldflags="-s -w"
 
-	gopkgs=$(go list ./... | grep -vE "vendor")
-	go test -race -timeout=120s -v -cover $gopkgs -coverprofile=$covprof | tee $output/unittest.txt
-	go tool cover -func=$covprof -o $covfunc
-	go tool cover -html=$covprof -o $covhtml
+cd "$root_dir"
+
+# 按清单筛选目标，输出 "<二进制名>\t<包路径>"。
+# filter: all / image / release
+function targets() {
+	local filter=$1
+	awk -F'\t' -v filter="$filter" '
+		/^[[:space:]]*#/ || NF < 4 { next }
+		filter == "all" ||
+		(filter == "image" && $3 == 1) ||
+		(filter == "release" && $4 == 1) { print $1 "\t" $2 }
+	' "$manifest"
 }
 
-function compile() {
-	output=$target_dir/debug/$target
-	mkdir -p $output
-	copy_conf $output/configs
+function build_targets() {
+	local outdir=$1 os=$2 arch=$3 filter=$4
+	local exe="" name pkg
+	if [ "$os" = "windows" ]; then
+		exe=".exe"
+	fi
 
-	go build -o $output/$target \
-		-ldflags "-X main.buildTime=$time -X main.buildCommit=$version" \
-		$build_file	
+	mkdir -p "$outdir"
+	while IFS=$'\t' read -r name pkg; do
+		[ -n "$name" ] || continue
+		echo "==> build $name ($os/$arch)"
+		CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" \
+			go build -trimpath -buildvcs=false -ldflags "$ldflags" \
+			-o "$outdir/$name$exe" "$pkg"
+	done < <(targets "$filter")
+}
+
+function test() {
+	local output=$target_dir/test
+	mkdir -p "$output"
+
+	# 测试覆盖率文件
+	local covprof=${output}/covprof.out  # coverage profile
+	local covfunc=${output}/covfunc.txt  # coverage profile information for each function
+	local covhtml=${output}/covhtml.html # HTML representation of coverage profile
+
+	local gopkgs
+	gopkgs=$(go list ./... | grep -vE "vendor")
+	go test -race -timeout=120s -v -cover $gopkgs -coverprofile="$covprof" | tee "$output/unittest.txt"
+	go tool cover -func="$covprof" -o "$covfunc"
+	go tool cover -html="$covprof" -o "$covhtml"
+}
+
+function image() {
+	local outdir=${1:?usage: $0 image <outdir>}
+	# 多架构构建时由 buildx 注入 TARGETOS/TARGETARCH；本机直接构建时回退到 go env。
+	build_targets "$outdir" "${TARGETOS:-$(go env GOOS)}" "${TARGETARCH:-$(go env GOARCH)}" image
 }
 
 function release() {
-	os=$1
-	arch=$2
-	package="${target}_${os}_${arch}"
-	output=$target_dir/release/$package
+	local version=${1:-}
+	if [ -z "$version" ]; then
+		echo "usage: $0 release <version> [<os> <arch>]" >&2
+		exit 1
+	fi
 
-	echo "build $package..."
-	mkdir -p $output
-	copy_conf $output/configs
+	local dist_dir="$target_dir/dist"
+	local platforms=()
+	if [ -n "${2:-}" ] && [ -n "${3:-}" ]; then
+		platforms=("$2 $3")
+	else
+		platforms=(
+			"linux amd64"
+			"linux arm64"
+			"darwin amd64"
+			"darwin arm64"
+			"windows amd64"
+			"windows arm64"
+		)
+	fi
 
-	# 编译静态链接，Linux alpine 发行版要求可执行文件是静态链接
-	CGO_ENABLED=0 GOOS=$os GOARCH=$arch \
-		go build -tags $target \
-		-o $output/$target \
-		-ldflags "-X main.buildTime=$time -X main.buildCommit=$version" \
-		$build_file	
-}
+	mkdir -p "$dist_dir"
+	# macOS 打包时避免写入 AppleDouble 资源分支文件
+	export COPYFILE_DISABLE=1
 
-function copy_conf() {
-	# 只复制运行时配置文件（yaml/txt），不复制 configs.go，避免构建产物目录
-	# 被 go list ./... 识别成一个额外的 Go 包。
-	conf_dir=$1
-	mkdir -p $conf_dir
-	for f in "$conf_src"*.yaml "$conf_src"*.txt; do
-		if [ -e "$f" ]; then
-			cp "$f" "$conf_dir"/
+	local platform os arch package stage
+	for platform in "${platforms[@]}"; do
+		read -r os arch <<<"$platform"
+		package="${binary_name}_${version}_${os}_${arch}"
+		stage="$dist_dir/$package"
+
+		echo "==> package $package"
+		rm -rf "$stage"
+		mkdir -p "$stage"
+
+		build_targets "$stage" "$os" "$arch" release
+
+		cp "$root_dir/LICENSE" "$stage/LICENSE"
+		cp "$root_dir/README.md" "$stage/README.md"
+		printf '%s\n' "$version" >"$stage/VERSION"
+
+		if [ "$os" = "windows" ]; then
+			rm -f "$dist_dir/$package.zip"
+			(cd "$dist_dir" && zip -qr "$package.zip" "$package")
+		else
+			tar -czf "$dist_dir/$package.tar.gz" -C "$dist_dir" "$package"
 		fi
+
+		echo "==> packaged $dist_dir/$package"
 	done
 }
 
-# target: jt808-server-go / jt808-client-go / jt808-migrate
-target=$2
-project_dir=$(git rev-parse --show-toplevel)
-target_dir="${project_dir}/target"
-time=$(date +'%Y-%m-%dT%H:%M:%S')
-version=$(git rev-parse --short HEAD)
-build_file="cmd/jt808-server/main.go"
-conf_src="$project_dir/configs/"
-if [[ $target == "jt808-client-go" ]]; then
-	build_file="cmd/jt808-client/main.go"
-	conf_src="$project_dir/client/configs/"
-elif [[ $target == "jt808-migrate" ]]; then
-	build_file="cmd/jt808-migrate/main.go"
-fi
-
-ret=0
-case "$1" in
+case "${1:-}" in
 test)
 	test
 	;;
 compile)
-	compile $2
+	build_targets "$target_dir/debug" "$(go env GOOS)" "$(go env GOARCH)" all
+	;;
+image)
+	image "${2:-}"
 	;;
 release)
-	if [[ -n "${3:-}" && -n "${4:-}" ]]; then
-		# 单平台构建，供 Dockerfile 等只需要一个目标的场景使用
-		release "$3" "$4"
-	else
-		# OS X Mac
-		release darwin amd64
-		release darwin arm64
-
-		# Linux
-		release linux amd64
-		release linux arm64
-	fi
+	release "${2:-}" "${3:-}" "${4:-}"
 	;;
 clean)
-	echo "clean test and compile output..."
-	rm -rf $target_dir
+	echo "clean build output..."
+	rm -rf "$target_dir"
 	;;
 *)
-	echo "UnknownArgs"
-	ret=1
+	echo "UnknownArgs: ${1:-}" >&2
+	echo "usage: $0 {test|compile|image <outdir>|release <version> [<os> <arch>]|clean}" >&2
+	exit 1
 	;;
 esac
-
-exit $ret

@@ -19,22 +19,14 @@
 git clone https://github.com/fakeyanss/jt808-server-go.git
 cd jt808-server-go
 
-make compile            # target/debug/jt808-server-go（通用入口）
-make release            # darwin/linux × amd64/arm64 交叉编译
-make compile-migrate    # target/debug/jt808-migrate
-make compile-client     # target/debug/jt808-client-go
+make compile            # 全部入口 -> target/debug/
+make release            # linux/darwin/windows × amd64/arm64 打包 -> target/dist/
+make release OS=linux ARCH=arm64   # 只构建单个平台
 ```
 
-按角色构建生产二进制：
+`make compile`、`make release`、`build/Dockerfile` 与 release workflow 共用 [build/targets.tsv](../build/targets.tsv) 这一份入口清单（二进制名、包路径、是否进镜像、是否进 release 包）。新增或下线入口时只改该文件，不要再在脚本里另抄一份列表。
 
-```sh
-go build -o bin/jt-server-standalone ./cmd/jt-server-standalone
-go build -o bin/jt-signal            ./cmd/jt-signal
-go build -o bin/jt-control           ./cmd/jt-control
-go build -o bin/jt-media             ./cmd/jt-media
-go build -o bin/jt-attachment        ./cmd/jt-attachment
-go build -o bin/jt808-migrate        ./cmd/jt808-migrate
-```
+release 产物形态：每个平台一个压缩包（linux/darwin 为 `tar.gz`，windows 为 `zip`），包内是全部入口二进制加 `LICENSE`、`README.md`、`VERSION`；全平台的 `sha256` 校验和由 release workflow 生成。
 
 `jt808-server` 是保留的通用入口，完全按配置文件的 `server.mode` 与 `cluster.roles` 运行，适合同机调试任意角色组合；生产部署应使用固定角色的二进制，避免配置与二进制职责错配。
 

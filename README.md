@@ -163,18 +163,17 @@ curl -s http://localhost:8008/api/device
 ## 安装与运行
 
 ```sh
-make compile            # target/debug/jt808-server-go（通用入口，按配置决定形态）
-make release            # 交叉编译 darwin/linux amd64+arm64
-make compile-migrate    # 数据库迁移工具
-make compile-client     # 终端模拟器
+make compile            # 全部入口编译到 target/debug/（通用入口 jt808-server-go 按配置决定形态）
+make release            # 交叉编译 6 个平台并打包到 target/dist/
 
-# 按角色构建生产二进制
-go build -o bin/jt-server-standalone ./cmd/jt-server-standalone
-go build -o bin/jt-signal           ./cmd/jt-signal
-go build -o bin/jt-control          ./cmd/jt-control
-go build -o bin/jt-media            ./cmd/jt-media
-go build -o bin/jt-attachment       ./cmd/jt-attachment
+# 只构建单个平台
+make release OS=linux ARCH=arm64
+
+# 数据库迁移（SQLite/MySQL 首次部署或升级后）
+./target/debug/jt808-migrate -c configs/default.yaml
 ```
+
+`make compile` 与 `make release` 的二进制清单都来自 [build/targets.tsv](build/targets.tsv)，镜像构建复用同一份清单；增删入口只改这一个文件。
 
 ```sh
 # 单机运行
