@@ -19,6 +19,17 @@ type hookRecorder struct {
 	locations   []actionpkg.LocationEvent
 	alarms      []actionpkg.AlarmEvent
 	disconnects []actionpkg.DisconnectEvent
+	waybills    []actionpkg.WaybillEvent
+	drivers     []actionpkg.DriverIdentityEvent
+	canBus      []actionpkg.CANBusEvent
+	tachographs []actionpkg.TachographEvent
+	reports     []actionpkg.EventReportEvent
+	controls    []actionpkg.VehicleControlAckEvent
+	upgrades    []actionpkg.TerminalUpgradeResultEvent
+	mediaEvents []actionpkg.MediaEvent
+	mediaUpload []actionpkg.MediaUploadEvent
+	fileUploads []actionpkg.FileUploadCompleteEvent
+	attachments []actionpkg.AttachmentInfoEvent
 }
 
 func (h *hookRecorder) OnRegister(_ context.Context, event actionpkg.RegisterEvent) {
@@ -39,6 +50,50 @@ func (h *hookRecorder) OnAlarm(_ context.Context, event actionpkg.AlarmEvent) {
 
 func (h *hookRecorder) OnDisconnect(_ context.Context, event actionpkg.DisconnectEvent) {
 	h.disconnects = append(h.disconnects, event)
+}
+
+func (h *hookRecorder) OnWaybill(_ context.Context, event actionpkg.WaybillEvent) {
+	h.waybills = append(h.waybills, event)
+}
+
+func (h *hookRecorder) OnDriverIdentity(_ context.Context, event actionpkg.DriverIdentityEvent) {
+	h.drivers = append(h.drivers, event)
+}
+
+func (h *hookRecorder) OnCANBus(_ context.Context, event actionpkg.CANBusEvent) {
+	h.canBus = append(h.canBus, event)
+}
+
+func (h *hookRecorder) OnTachograph(_ context.Context, event actionpkg.TachographEvent) {
+	h.tachographs = append(h.tachographs, event)
+}
+
+func (h *hookRecorder) OnEventReport(_ context.Context, event actionpkg.EventReportEvent) {
+	h.reports = append(h.reports, event)
+}
+
+func (h *hookRecorder) OnVehicleControlAck(_ context.Context, event actionpkg.VehicleControlAckEvent) {
+	h.controls = append(h.controls, event)
+}
+
+func (h *hookRecorder) OnTerminalUpgradeResult(_ context.Context, event actionpkg.TerminalUpgradeResultEvent) {
+	h.upgrades = append(h.upgrades, event)
+}
+
+func (h *hookRecorder) OnMediaEvent(_ context.Context, event actionpkg.MediaEvent) {
+	h.mediaEvents = append(h.mediaEvents, event)
+}
+
+func (h *hookRecorder) OnMediaUpload(_ context.Context, event actionpkg.MediaUploadEvent) {
+	h.mediaUpload = append(h.mediaUpload, event)
+}
+
+func (h *hookRecorder) OnFileUploadComplete(_ context.Context, event actionpkg.FileUploadCompleteEvent) {
+	h.fileUploads = append(h.fileUploads, event)
+}
+
+func (h *hookRecorder) OnAttachmentInfo(_ context.Context, event actionpkg.AttachmentInfoEvent) {
+	h.attachments = append(h.attachments, event)
 }
 
 // 网关侧钩子的 eventId 必须与投递给管控的 eventId 完全一致，外部才能去重。

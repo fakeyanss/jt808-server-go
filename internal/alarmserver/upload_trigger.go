@@ -78,6 +78,50 @@ func (t *UploadTrigger) OnDisconnect(ctx context.Context, event actionpkg.Discon
 	t.next.OnDisconnect(ctx, event)
 }
 
+func (t *UploadTrigger) OnWaybill(ctx context.Context, event actionpkg.WaybillEvent) {
+	t.next.OnWaybill(ctx, event)
+}
+
+func (t *UploadTrigger) OnDriverIdentity(ctx context.Context, event actionpkg.DriverIdentityEvent) {
+	t.next.OnDriverIdentity(ctx, event)
+}
+
+func (t *UploadTrigger) OnCANBus(ctx context.Context, event actionpkg.CANBusEvent) {
+	t.next.OnCANBus(ctx, event)
+}
+
+func (t *UploadTrigger) OnTachograph(ctx context.Context, event actionpkg.TachographEvent) {
+	t.next.OnTachograph(ctx, event)
+}
+
+func (t *UploadTrigger) OnEventReport(ctx context.Context, event actionpkg.EventReportEvent) {
+	t.next.OnEventReport(ctx, event)
+}
+
+func (t *UploadTrigger) OnVehicleControlAck(ctx context.Context, event actionpkg.VehicleControlAckEvent) {
+	t.next.OnVehicleControlAck(ctx, event)
+}
+
+func (t *UploadTrigger) OnTerminalUpgradeResult(ctx context.Context, event actionpkg.TerminalUpgradeResultEvent) {
+	t.next.OnTerminalUpgradeResult(ctx, event)
+}
+
+func (t *UploadTrigger) OnMediaEvent(ctx context.Context, event actionpkg.MediaEvent) {
+	t.next.OnMediaEvent(ctx, event)
+}
+
+func (t *UploadTrigger) OnMediaUpload(ctx context.Context, event actionpkg.MediaUploadEvent) {
+	t.next.OnMediaUpload(ctx, event)
+}
+
+func (t *UploadTrigger) OnFileUploadComplete(ctx context.Context, event actionpkg.FileUploadCompleteEvent) {
+	t.next.OnFileUploadComplete(ctx, event)
+}
+
+func (t *UploadTrigger) OnAttachmentInfo(ctx context.Context, event actionpkg.AttachmentInfoEvent) {
+	t.next.OnAttachmentInfo(ctx, event)
+}
+
 // OnAlarm 只在报警首次上报时下发一次 0x9208。
 //
 // 报警标识号必须来自 0x0200 扩展项（0x64~0x67），取不到时跳过并记 warn，
