@@ -187,7 +187,7 @@ go run ./tools/registrydoc -check   # 校验手册与注册表一致，漂移时
 | `0x0900` | 上行 | `数据上行透传` | `Msg0900` | `Msg8001` | `processIndustryReport` |
 | `0x0901` | 上行 | `数据压缩上报` | `Msg0901` | `Msg8001` | `processIndustryReport` |
 | `0x1205` | 上行 | `终端上传音视频资源列表` | `Msg1205` | — | `processMediaResourceList` |
-| `0x1206` | 上行 | `文件上传完成通知，终端上行，无需应答` | `Msg1206` | — | `processMediaSignaling` |
+| `0x1206` | 上行 | `文件上传完成通知，终端上行，无需应答` | `Msg1206` | — | `processFileUploadNotice` |
 | `0x1210` | 上行 | — | `Msg1210` | `Msg0001` | `processAttachmentSignaling` |
 | `0x1211` | 上行 | — | `Msg1211` | `Msg0001` | `processAttachmentSignaling` |
 | `0x1212` | 上行 | — | `Msg1212` | — | `processAttachmentSignaling` |
@@ -200,7 +200,7 @@ go run ./tools/registrydoc -check   # 校验手册与注册表一致，漂移时
 | `0x8105` | 下行 | `终端控制，由终端模拟器自动确认` | `Msg8105` | `Msg0001` | — |
 | `0x8106` | 下行 | — | `Msg8106` | `Msg0104` | `processMsg8106` |
 | `0x8107` | 下行 | — | `Msg8107` | `Msg0107` | `processMsg8107` |
-| `0x8108` | 下行 | `终端升级` | `Msg8108` | `Msg0001` | `processIndustryReport` |
+| `0x8108` | 下行 | `终端升级` | `Msg8108` | `Msg0001` | `processIndustryRecord` |
 | `0x8201` | 下行 | — | `Msg8201` | `Msg0201` | `processMsg8201` |
 | `0x8202` | 下行 | — | `Msg8202` | `Msg0001` | `processMsg8202` |
 | `0x8203` | 下行 | — | `Msg8203` | `Msg0001` | — |
@@ -210,7 +210,7 @@ go run ./tools/registrydoc -check   # 校验手册与注册表一致，漂移时
 | `0x8302` | 下行 | `提问下发` | `Msg8302` | `Msg0001` | `processMsg8302` |
 | `0x8303` | 下行 | `信息点播菜单设置` | `Msg8303` | `Msg0001` | `processMsg8303` |
 | `0x8304` | 下行 | `信息服务` | `Msg8304` | `Msg0001` | `processMsg8304` |
-| `0x8400` | 下行 | `电话回拨` | `Msg8400` | `Msg0001` | `processIndustryReport` |
+| `0x8400` | 下行 | `电话回拨` | `Msg8400` | `Msg0001` | `processIndustryRecord` |
 | `0x8401` | 下行 | `设置电话本` | `Msg8401` | `Msg0001` | `processMsg8401` |
 | `0x8500` | 下行 | `车辆控制` | `Msg8500` | `Msg0500` | `processMsg8500` |
 | `0x8600` | 下行 | — | `MsgRegionRouteSet` | `Msg0001` | `processRegionRouteSet` |
@@ -231,10 +231,10 @@ go run ./tools/registrydoc -check   # 校验手册与注册表一致，漂移时
 | `0x8803` | 下行 | — | `Msg8803` | `Msg0001` | `processMsg8803` |
 | `0x8804` | 下行 | — | `Msg8804` | `Msg0001` | `processMsg8804` |
 | `0x8805` | 下行 | — | `Msg8805` | `Msg0001` | `processMsg8805` |
-| `0x8900` | 下行 | `数据下行透传` | `Msg8900` | `Msg0001` | `processIndustryReport` |
+| `0x8900` | 下行 | `数据下行透传` | `Msg8900` | `Msg0001` | `processIndustryRecord` |
 | `0x9101` | 下行 | `实时音视频传输请求，接收方（终端）按协议回通用应答` | `Msg9101` | `Msg0001` | — |
 | `0x9102` | 下行 | `音视频实时传输控制` | `Msg9102` | `Msg0001` | — |
-| `0x9105` | 上行 | `实时音视频传输状态通知，终端上行，无需应答` | `Msg9105` | — | `processMediaSignaling` |
+| `0x9105` | 上行 | `实时音视频传输状态通知，终端上行，无需应答` | `Msg9105` | — | `processMsg9105` |
 | `0x9201` | 下行 | `平台下发远程录像回放请求` | `Msg9201` | `Msg0001` | — |
 | `0x9202` | 下行 | `平台下发远程录像回放控制` | `Msg9202` | `Msg0001` | — |
 | `0x9205` | 下行 | `查询终端音视频资源列表` | `Msg9205` | `Msg1205` | `processMsg9205` |

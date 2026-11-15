@@ -2,9 +2,6 @@ package protocol
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
-	"fmt"
 	"sync"
 	"time"
 
@@ -126,7 +123,7 @@ func (mp *JT808MsgProcessor) processRegisterProtocol(ctx context.Context, data *
 		}
 	}
 
-	code := registerAuthCode(in)
+	code := RegisterAuthCode(in)
 	out.AuthCode = code
 	if mp.deps.RegisterCache != nil {
 		sessionID := ""
@@ -144,42 +141,6 @@ func (mp *JT808MsgProcessor) processRegisterProtocol(ctx context.Context, data *
 		mp.deps.RegisterCache.Put(in.Header.PhoneNumber, code, sessionID)
 	}
 	return nil
-}
-
-// processRegisterBusiness 是 0x0100 的管控半边：把注册信息与鉴权码落库。
-//
-// 只写注册拥有的静态字段，不做整行覆盖：多副本下 0x0100 可能晚于 0x0102
-// 到达，整行写回会冲掉鉴权刚置上的在线状态、会话与最后通信时间。
-func (mp *JT808MsgProcessor) processRegisterBusiness(ctx context.Context, data *model.ProcessData) error {
-	in, ok := data.Incoming.(*model.Msg0100)
-	if !ok || in == nil {
-		return nil
-	}
-	devices := mp.deps.Repos.Devices
-
-	existing, err := devices.GetByPhone(ctx, in.Header.PhoneNumber)
-	if err != nil && !errors.Is(err, repository.ErrDeviceNotFound) {
-		return err
-	}
-	device := existing
-	if device == nil {
-		device = &model.Device{
-			ID:              in.DeviceID,
-			Plate:           in.PlateNumber,
-			Phone:           in.Header.PhoneNumber,
-			Keepalive:       time.Minute,
-			Status:          model.DeviceStatusOffline,
-			VersionDesc:     in.Header.Attr.VersionDesc,
-			ProtocolVersion: in.Header.ProtocolVersion,
-		}
-	} else {
-		device.ID = in.DeviceID
-		device.Plate = in.PlateNumber
-		device.VersionDesc = in.Header.Attr.VersionDesc
-		device.ProtocolVersion = in.Header.ProtocolVersion
-	}
-	device.AuthCode = registerAuthCode(in)
-	return devices.SaveRegistration(ctx, device)
 }
 
 // processAuthProtocol 是 0x0102 的网关半边：本地校验鉴权码并回 0x8001。
@@ -228,62 +189,8 @@ func (mp *JT808MsgProcessor) processAuthProtocol(ctx context.Context, data *mode
 	return nil
 }
 
-// processAuthBusiness 是 0x0102 的管控半边：鉴权通过后更新在线状态。
-// 鉴权失败只在会话一致时清理未完成注册的档案，避免伪造报文删档。
-func (mp *JT808MsgProcessor) processAuthBusiness(ctx context.Context, data *model.ProcessData) error {
-	in, ok := data.Incoming.(*model.Msg0102)
-	if !ok || in == nil {
-		return nil
-	}
-	devices := mp.deps.Repos.Devices
-	phone := in.Header.PhoneNumber
-	device, err := devices.GetByPhone(ctx, phone)
-	if errors.Is(err, repository.ErrDeviceNotFound) {
-		return repository.ErrDeviceNotFound
-	}
-	if err != nil {
-		return err
-	}
-
-	if in.AuthCode != device.AuthCode {
-		event := UplinkEventFromContext(ctx)
-		if event.SessionID == "" || device.SessionID == event.SessionID {
-			_ = devices.DeleteByPhone(ctx, phone)
-		}
-		return nil
-	}
-
-	event := UplinkEventFromContext(ctx)
-	if event.SessionID != "" {
-		device.SessionID = event.SessionID
-	}
-	device.Status = model.DeviceStatusOnline
-	device.LastestComTime = time.Now()
-	device.IMEI = in.IMEI
-	device.SoftwareVersion = in.SoftwareVersion
-	return devices.SaveAuthState(ctx, device)
-}
-
-// processTerminalReplyBusiness 是 0x0001 的管控半边占位实现。
-//
-// 应答不在这里落库：管控的 uplink HTTP 入口在解析出 TerminalReply 后直接调用
-// TerminalReplyHandler（outbox），此处只用于归属声明与注册表一致性校验。
-func (mp *JT808MsgProcessor) processTerminalReplyBusiness(context.Context, *model.ProcessData) error {
-	return nil
-}
-
-// registerAuthCode 计算注册鉴权码；standalone 与网关半边共用同一算法。
-func registerAuthCode(in *model.Msg0100) string {
+// RegisterAuthCode 计算注册鉴权码；standalone、网关半边与管控半边共用同一算法。
+func RegisterAuthCode(in *model.Msg0100) string {
 	device := &model.Device{ID: in.DeviceID, Plate: in.PlateNumber, Phone: in.Header.PhoneNumber}
 	return genAuthCode(device)
-}
-
-// locationDedupKey 把事件 ID 与数据项下标压成短幂等键；没有事件上下文时返回空串，
-// 写入 NULL 后不参与唯一约束。
-func locationDedupKey(eventID string, itemIndex int) string {
-	if eventID == "" {
-		return ""
-	}
-	sum := sha256.Sum256([]byte(fmt.Sprintf("%s|%d", eventID, itemIndex)))
-	return hex.EncodeToString(sum[:])[:32]
 }

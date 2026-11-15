@@ -2,7 +2,6 @@ package protocol
 
 import (
 	"context"
-	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -41,43 +40,6 @@ func TestRegionRouteDeletionProducesGenericAcknowledgement(t *testing.T) {
 			require.Equal(t, messageID, result.Outgoing.(*model.Msg0001).AnswerMessageID)
 		})
 	}
-}
-
-// 0x0802 是 0x8802 检索命令的应答，必须按 (phone, answerSerial) 落库并可查询。
-func TestProcessMsg0802PersistsSearchResults(t *testing.T) {
-	const phone = "188765432802"
-	ctx := context.Background()
-	msg := &model.Msg0802{
-		Header:       &model.MsgHeader{MsgID: 0x0802, PhoneNumber: phone, Attr: &model.MsgBodyAttr{}},
-		AnswerSerial: 21,
-		Items: []model.MediaSearchItem{{
-			MediaID: 9001, MediaType: 0, ChannelID: 1, EventID: 2,
-			Location: model.Msg0200{AlarmSign: 4, Latitude: 31000000, Time: "261028103000"},
-		}},
-	}
-	require.NoError(t, NewJT808MsgProcessor(nil, WithProcessorDeps(ProcessorDeps{Repos: defaultTestRepositories()})).processMsg0802(ctx, &model.ProcessData{Incoming: msg}))
-
-	got, err := database.Default().MediaSearches.List(ctx, phone, 10)
-	require.NoError(t, err)
-	require.Len(t, got, 1)
-	require.Equal(t, uint16(21), got[0].AnswerSerial)
-	require.Equal(t, uint32(9001), got[0].MediaID)
-	require.Equal(t, uint32(31000000), got[0].Latitude)
-	require.True(t, got[0].LocationTime.Equal(time.Date(2026, 10, 28, 10, 30, 0, 0, hex.ProtocolTimeZone)))
-
-	// 终端重传同一条应答但结果变空时，旧结果必须被覆盖清空。
-	msg.Items = nil
-	require.NoError(t, NewJT808MsgProcessor(nil, WithProcessorDeps(ProcessorDeps{Repos: defaultTestRepositories()})).processMsg0802(ctx, &model.ProcessData{Incoming: msg}))
-	got, err = database.Default().MediaSearches.List(ctx, phone, 10)
-	require.NoError(t, err)
-	require.Empty(t, got)
-}
-
-func TestParseMediaSearchLocationTime(t *testing.T) {
-	require.True(t, parseMediaSearchLocationTime("261028103000").Equal(
-		time.Date(2026, 10, 28, 10, 30, 0, 0, hex.ProtocolTimeZone)))
-	require.True(t, parseMediaSearchLocationTime("26102810300").IsZero())
-	require.True(t, parseMediaSearchLocationTime("261340103000").IsZero())
 }
 
 func TestProcessMsg0107PersistsAndDeliversTerminalProperties(t *testing.T) {
@@ -202,73 +164,6 @@ func TestSimulatorParameterTemplateDecodes(t *testing.T) {
 	last := reply.Parameters.Params[38]
 	require.Equal(t, uint32(0x0076), last.ParamID)
 	require.Equal(t, uint8(15), last.ParamLen)
-}
-
-func locationReportBody(alarmSign uint32) []byte {
-	body := make([]byte, 28)
-	binary.BigEndian.PutUint32(body[0:4], alarmSign)
-	binary.BigEndian.PutUint32(body[8:12], 39543265)   // 纬度
-	binary.BigEndian.PutUint32(body[12:16], 116235432) // 经度
-	copy(body[22:28], []byte{0x26, 0x11, 0x01, 0x12, 0x00, 0x00})
-	return body
-}
-
-// 位置上报写入定位缓存。
-func TestLocationReportWritesGeo(t *testing.T) {
-	const phone = "188765499002"
-	database.Default().Devices.Upsert(context.Background(), &model.Device{Phone: phone, Keepalive: time.Minute})
-	t.Cleanup(func() {
-		database.Default().Devices.DeleteByPhone(context.Background(), phone)
-		database.Default().Geo.Delete(context.Background(), phone)
-	})
-
-	processor := NewJT808MsgProcessor(nil, WithProcessorDeps(ProcessorDeps{Repos: defaultTestRepositories()}))
-	header := &model.MsgHeader{MsgID: 0x0200, SerialNumber: 32, PhoneNumber: phone, Attr: &model.MsgBodyAttr{}}
-	result, err := processor.Process(context.Background(), &model.PacketData{Header: header, Body: locationReportBody(0)})
-	require.NoError(t, err)
-	require.IsType(t, &model.Msg8001{}, result.Outgoing)
-
-	geo, err := database.Default().Geo.Latest(context.Background(), phone)
-	require.NoError(t, err)
-	require.Equal(t, phone, geo.Phone)
-}
-
-// 旧位置不能把新在线态改成休眠：只有不早于最新定位的 ACC 关上报才推导 Sleeping。
-func TestLocationReportStaleAccOffDoesNotRegressStatus(t *testing.T) {
-	const phone = "188765499003"
-	ctx := context.Background()
-	devices := database.Default().Devices
-	require.NoError(t, devices.Upsert(ctx, &model.Device{
-		Phone: phone, Keepalive: time.Minute, Status: model.DeviceStatusOnline,
-	}))
-	t.Cleanup(func() {
-		_ = devices.DeleteByPhone(ctx, phone)
-		_ = database.Default().Geo.Delete(ctx, phone)
-	})
-
-	processor := NewJT808MsgProcessor(nil, WithProcessorDeps(ProcessorDeps{Repos: defaultTestRepositories()}))
-	send := func(statusSign uint32, when [6]byte) {
-		body := locationReportBody(0)
-		binary.BigEndian.PutUint32(body[4:8], statusSign)
-		copy(body[22:28], when[:])
-		header := &model.MsgHeader{MsgID: 0x0200, SerialNumber: 32, PhoneNumber: phone, Attr: &model.MsgBodyAttr{}}
-		_, err := processor.Process(ctx, &model.PacketData{Header: header, Body: body})
-		require.NoError(t, err)
-	}
-
-	// ACC 开，位置时间 12:00。
-	send(1, [6]byte{0x26, 0x11, 0x01, 0x12, 0x00, 0x00})
-	// 晚到的旧位置 11:00，ACC 关；不得把在线态改成休眠。
-	send(0, [6]byte{0x26, 0x11, 0x01, 0x11, 0x00, 0x00})
-	device, err := devices.GetByPhone(ctx, phone)
-	require.NoError(t, err)
-	require.Equal(t, model.DeviceStatusOnline, device.Status)
-
-	// 更新的位置 13:00，ACC 关；允许推导休眠。
-	send(0, [6]byte{0x26, 0x11, 0x01, 0x13, 0x00, 0x00})
-	device, err = devices.GetByPhone(ctx, phone)
-	require.NoError(t, err)
-	require.Equal(t, model.DeviceStatusSleeping, device.Status)
 }
 
 func TestSimulatorRepliesToRegionDriverRecorderAndMultimediaCommands(t *testing.T) {

@@ -50,14 +50,15 @@ TCP 与 UDP 复用同一条 Pipeline，每个会话一个协程串行处理：
 
 业务处理与写回应答在同一个会话协程内执行，因此落库耗时会直接体现在应答时延上。这正是上行可靠性按消息分类选择“先应答”还是“先落库”的原因。
 
-集群网关的 `ApplyBusiness` 还会按消息归属分流：`OwnerGateway` 在本进程处理，`OwnerBoth` 先跑协议半边再投递，`OwnerControl` 只投递。`UplinkSink.Deliver` 对 `best_effort` 进入有界队列，对 `at_least_once` 同步等待 control 确认。
+集群网关的 `ApplyBusiness` 还会按消息归属分流：`OwnerGateway` 在本进程处理，`OwnerBoth` 先跑协议半边再投递，`OwnerControl` 只投递。`UplinkSink.Deliver` 对 `best_effort` 进入有界队列，对 `at_least_once` 同步等待 control 确认。单机进程没有上行出口时，`OwnerControl` 交给注入的 `internal/business` 执行，协议内核不再包含业务落库实现；集群网关不注入该依赖。
 
 ## 2. 模块职责
 
 | 模块 | 职责 | 不负责 |
 |---|---|---|
 | 终端接入 | TCP/UDP 监听、会话生命周期、保活判定、下行写回与会话内重传 | 不解析业务字段，不决定落库 |
-| 协议内核 | 消息头/消息体编解码、版本判别、分包重组、MsgID 注册与分发 | 不持有连接，不直接写数据库 |
+| 协议内核 | 消息头/消息体编解码、版本判别、分包重组、MsgID 注册与分发 | 不持有连接，不直接写数据库，不承载管控业务落库 |
+| 管控业务（`internal/business`） | 注册/鉴权、定位与报警、行业上报、多媒体与附件元数据的业务处理与落库 | 不解析帧、不持有 socket；集群下由 control 调用，单机由协议内核注入 |
 | 业务处理 | 消息语义、行业数据缓存、查询应答协调、生成应答内容 | 不关心 socket 与帧格式 |
 | 下行投递 | outbox 落库、幂等、租约、退避、过期与重投 | 不建立终端连接，不编码协议帧 |
 | 元数据 | 仓储接口与 `memory`/SQLite/MySQL 实现、迁移版本校验 | 不理解协议消息与应答语义 |

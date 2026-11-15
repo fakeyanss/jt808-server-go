@@ -182,25 +182,6 @@ func TestFileUploadCompleteEvent(t *testing.T) {
 	require.Equal(t, uint8(1), event.Result)
 }
 
-func TestControlPathDispatchesExtendedEvent(t *testing.T) {
-	header := actionHeader(0x0701, "13800000012", 12)
-	data := &model.ProcessData{Incoming: &model.Msg0701{Header: header, Content: "运单B"}}
-	ctx := context.WithValue(context.Background(), model.PacketDecodeCtxKey{}, &model.PacketData{
-		Header: header, Body: []byte{0x01}, SegCompleted: true,
-	})
-	ctx = context.WithValue(ctx, UplinkEventCtxKey{}, UplinkEventContext{
-		EventID: "evt-waybill", Phone: header.PhoneNumber,
-	})
-
-	hooks := &hookRecorder{}
-	mp := NewJT808MsgProcessor(hooks, WithProcessorDeps(ProcessorDeps{Repos: newTestRepositories()}))
-	require.NoError(t, mp.ApplyControlBusiness(ctx, 0x0701, data))
-
-	require.Len(t, hooks.waybills, 1)
-	require.Equal(t, "evt-waybill", hooks.waybills[0].EventID)
-	require.Equal(t, "运单B", hooks.waybills[0].Content)
-}
-
 func TestAttachmentInfoEvent(t *testing.T) {
 	header := actionHeader(0x1210, "13800000011", 11)
 	alarmSign := make([]byte, 16)

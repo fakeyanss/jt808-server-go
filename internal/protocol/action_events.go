@@ -9,34 +9,39 @@ import (
 )
 
 // dispatchExtendedHooks 派发一期的扩展业务事件。
-// 只在消息已成功解码（类型断言成立）后调用，解析失败的报文不会走到这里。
 func (mp *JT808MsgProcessor) dispatchExtendedHooks(ctx context.Context, data *model.ProcessData) {
+	DispatchExtendedHooks(ctx, mp.hooks, data)
+}
+
+// DispatchExtendedHooks 派发一期的扩展业务事件。
+// 只在消息已成功解码（类型断言成立）后调用，解析失败的报文不会走到这里。
+func DispatchExtendedHooks(ctx context.Context, hooks actionpkg.Hooks, data *model.ProcessData) {
 	if data == nil || data.Incoming == nil {
 		return
 	}
 	switch in := data.Incoming.(type) {
 	case *model.Msg0701:
-		mp.hooks.OnWaybill(ctx, newWaybillEvent(hookEventID(ctx, 0x0701, in), in))
+		hooks.OnWaybill(ctx, newWaybillEvent(hookEventID(ctx, 0x0701, in), in))
 	case *model.Msg0702:
-		mp.hooks.OnDriverIdentity(ctx, newDriverIdentityEvent(hookEventID(ctx, 0x0702, in), in))
+		hooks.OnDriverIdentity(ctx, newDriverIdentityEvent(hookEventID(ctx, 0x0702, in), in))
 	case *model.Msg0705:
-		mp.hooks.OnCANBus(ctx, newCANBusEvent(hookEventID(ctx, 0x0705, in), in))
+		hooks.OnCANBus(ctx, newCANBusEvent(hookEventID(ctx, 0x0705, in), in))
 	case *model.Msg0700:
-		mp.hooks.OnTachograph(ctx, newTachographEvent(hookEventID(ctx, 0x0700, in), in))
+		hooks.OnTachograph(ctx, newTachographEvent(hookEventID(ctx, 0x0700, in), in))
 	case *model.Msg0301:
-		mp.hooks.OnEventReport(ctx, newEventReportEvent(hookEventID(ctx, 0x0301, in), in))
+		hooks.OnEventReport(ctx, newEventReportEvent(hookEventID(ctx, 0x0301, in), in))
 	case *model.Msg0500:
-		mp.hooks.OnVehicleControlAck(ctx, newVehicleControlAckEvent(hookEventID(ctx, 0x0500, in), in))
+		hooks.OnVehicleControlAck(ctx, newVehicleControlAckEvent(hookEventID(ctx, 0x0500, in), in))
 	case *model.Msg0108:
-		mp.hooks.OnTerminalUpgradeResult(ctx, newTerminalUpgradeResultEvent(hookEventID(ctx, 0x0108, in), in))
+		hooks.OnTerminalUpgradeResult(ctx, newTerminalUpgradeResultEvent(hookEventID(ctx, 0x0108, in), in))
 	case *model.Msg0800:
-		mp.hooks.OnMediaEvent(ctx, newMediaEvent(hookEventID(ctx, 0x0800, in), in))
+		hooks.OnMediaEvent(ctx, newMediaEvent(hookEventID(ctx, 0x0800, in), in))
 	case *model.Msg0801:
-		mp.hooks.OnMediaUpload(ctx, newMediaUploadEvent(hookEventID(ctx, 0x0801, in), in))
+		hooks.OnMediaUpload(ctx, newMediaUploadEvent(hookEventID(ctx, 0x0801, in), in))
 	case *model.Msg1206:
-		mp.hooks.OnFileUploadComplete(ctx, newFileUploadCompleteEvent(hookEventID(ctx, 0x1206, in), in))
+		hooks.OnFileUploadComplete(ctx, newFileUploadCompleteEvent(hookEventID(ctx, 0x1206, in), in))
 	case *model.Msg1210:
-		mp.hooks.OnAttachmentInfo(ctx, newAttachmentInfoEvent(hookEventID(ctx, 0x1210, in), in))
+		hooks.OnAttachmentInfo(ctx, newAttachmentInfoEvent(hookEventID(ctx, 0x1210, in), in))
 	}
 }
 

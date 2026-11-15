@@ -1,5 +1,6 @@
-// Command registrydoc 从 internal/protocol/msg_processor.go 的消息注册表导出
-// Markdown 表格，并校验 docs/protocol-coverage.md 中的手工状态表与注册表一致。
+// Command registrydoc 从 internal/protocol/msg_processor.go 的消息注册表与
+// internal/business/registry.go 的业务注册表导出 Markdown 表格，
+// 并校验 docs/protocol-coverage.md 中的手工状态表与注册表一致。
 //
 // 用法：
 //
@@ -36,6 +37,7 @@ type registryEntry struct {
 
 func main() {
 	sourcePath := flag.String("source", "internal/protocol/msg_processor.go", "注册表源文件")
+	businessPath := flag.String("business", "internal/business/registry.go", "管控业务注册表源文件")
 	ownershipPath := flag.String("ownership", "internal/protocol/ownership.go", "消息归属表源文件")
 	docPath := flag.String("doc", "docs/protocol-coverage.md", "覆盖矩阵文档")
 	write := flag.Bool("write", false, "把生成的表格写回文档")
@@ -52,6 +54,22 @@ func main() {
 	entries, functions, err := parseRegistry(*sourcePath)
 	if err != nil {
 		fatalf("解析注册表失败: %v", err)
+	}
+	// 管控业务处理函数在 internal/business，合并后归属校验才能看到 process。
+	businessEntries, businessFunctions, err := parseRegistry(*businessPath)
+	if err != nil {
+		fatalf("解析业务注册表失败: %v", err)
+	}
+	for name := range businessFunctions {
+		functions[name] = true
+	}
+	entries, mergeProblems := mergeBusinessProcess(entries, businessEntries)
+	if len(mergeProblems) > 0 {
+		fmt.Fprintln(os.Stderr, "业务注册表与协议注册表不一致：")
+		for _, p := range mergeProblems {
+			fmt.Fprintf(os.Stderr, "  - %s\n", p)
+		}
+		os.Exit(1)
 	}
 	ownership, err := parseOwnership(*ownershipPath)
 	if err != nil {
@@ -95,6 +113,27 @@ func main() {
 func fatalf(format string, args ...any) {
 	fmt.Fprintf(os.Stderr, format+"\n", args...)
 	os.Exit(1)
+}
+
+// mergeBusinessProcess 把管控业务注册表里的 process 合并到协议注册项，
+// 并拒绝业务表里出现协议注册表未声明的消息 ID（解码入口必须存在）。
+func mergeBusinessProcess(entries, businessEntries []registryEntry) ([]registryEntry, []string) {
+	index := make(map[uint16]int, len(entries))
+	for i, entry := range entries {
+		index[entry.id] = i
+	}
+	var problems []string
+	for _, business := range businessEntries {
+		position, ok := index[business.id]
+		if !ok {
+			problems = append(problems, fmt.Sprintf("`0x%04X` 在业务注册表中但协议注册表未声明", business.id))
+			continue
+		}
+		if business.process != "" {
+			entries[position].process = business.process
+		}
+	}
+	return entries, problems
 }
 
 // parseRegistry 解析 options[0xXXXX] = &action{...} 以及

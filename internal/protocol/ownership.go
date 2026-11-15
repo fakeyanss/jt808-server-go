@@ -161,6 +161,12 @@ var (
 )
 
 // NewProcessData 按注册表构造一个消息处理上下文（含入站/出站类型）。
+// 供不需要处理器实例的调用方（如管控业务执行器）使用。
+func NewProcessData(msgID uint16) *model.ProcessData {
+	return (&JT808MsgProcessor{}).NewProcessData(msgID)
+}
+
+// NewProcessData 按注册表构造一个消息处理上下文（含入站/出站类型）。
 func (mp *JT808MsgProcessor) NewProcessData(msgID uint16) *model.ProcessData {
 	bodyRegistryOnce.Do(func() {
 		bodyRegistry = (&JT808MsgProcessor{}).initProcessOption()

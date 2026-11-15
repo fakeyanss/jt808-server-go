@@ -1,4 +1,4 @@
-package protocol
+package protocol_test
 
 import (
 	"context"
@@ -45,7 +45,7 @@ func TestProcess1078CommandsProduceGenericAcknowledgement(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			header, body := encode1078Body(t, tc.msg)
-			result, err := NewJT808MsgProcessor(nil, WithProcessorDeps(ProcessorDeps{Repos: defaultTestRepositories()})).Process(context.Background(), &model.PacketData{Header: header, Body: body})
+			result, err := newBusinessProcessor().Process(context.Background(), &model.PacketData{Header: header, Body: body})
 			require.NoError(t, err)
 			require.NotNil(t, result)
 			ack, ok := result.Outgoing.(*model.Msg0001)
@@ -72,7 +72,7 @@ func TestProcess1078MediaMetadataPersists(t *testing.T) {
 		},
 	}
 	_, listBody := encode1078Body(t, list)
-	result, err := NewJT808MsgProcessor(nil, WithProcessorDeps(ProcessorDeps{Repos: defaultTestRepositories()})).Process(ctx, &model.PacketData{Header: listHeader, Body: listBody})
+	result, err := newBusinessProcessor().Process(ctx, &model.PacketData{Header: listHeader, Body: listBody})
 	require.NoError(t, err)
 	require.Nil(t, result)
 
@@ -94,7 +94,7 @@ func TestProcess1078MediaMetadataPersists(t *testing.T) {
 		MediaType:  2,
 	}
 	_, taskBody := encode1078Body(t, task)
-	result, err = NewJT808MsgProcessor(nil, WithProcessorDeps(ProcessorDeps{Repos: defaultTestRepositories()})).Process(ctx, &model.PacketData{Header: taskHeader, Body: taskBody})
+	result, err = newBusinessProcessor().Process(ctx, &model.PacketData{Header: taskHeader, Body: taskBody})
 	require.NoError(t, err)
 	require.IsType(t, &model.Msg0001{}, result.Outgoing)
 
@@ -107,7 +107,7 @@ func TestProcess1078MediaMetadataPersists(t *testing.T) {
 	noticeHeader := new1078Header(0x1206, phone, 33)
 	notice := &model.Msg1206{Header: noticeHeader, AnswerSerialNumber: 32, Result: 0}
 	_, noticeBody := encode1078Body(t, notice)
-	_, err = NewJT808MsgProcessor(nil, WithProcessorDeps(ProcessorDeps{Repos: defaultTestRepositories()})).Process(ctx, &model.PacketData{Header: noticeHeader, Body: noticeBody})
+	_, err = newBusinessProcessor().Process(ctx, &model.PacketData{Header: noticeHeader, Body: noticeBody})
 	require.NoError(t, err)
 
 	storedNotice, err := database.Default().Media.UploadNotice(ctx, phone, 32)
@@ -122,7 +122,7 @@ func TestProcess1078UplinkSignalingRecordsState(t *testing.T) {
 	msg := &model.Msg9105{Header: header, LogicChannelID: 1, PacketLossRate: 5}
 	_, body := encode1078Body(t, msg)
 
-	result, err := NewJT808MsgProcessor(nil, WithProcessorDeps(ProcessorDeps{Repos: defaultTestRepositories()})).Process(context.Background(), &model.PacketData{Header: header, Body: body})
+	result, err := newBusinessProcessor().Process(context.Background(), &model.PacketData{Header: header, Body: body})
 	require.NoError(t, err)
 	require.Nil(t, result)
 
@@ -134,7 +134,7 @@ func TestProcess1078UplinkSignalingRecordsState(t *testing.T) {
 	noticeHeader := new1078Header(0x1206, phone, 22)
 	notice := &model.Msg1206{Header: noticeHeader, AnswerSerialNumber: 15, Result: 1}
 	_, noticeBody := encode1078Body(t, notice)
-	_, err = NewJT808MsgProcessor(nil, WithProcessorDeps(ProcessorDeps{Repos: defaultTestRepositories()})).Process(context.Background(), &model.PacketData{Header: noticeHeader, Body: noticeBody})
+	_, err = newBusinessProcessor().Process(context.Background(), &model.PacketData{Header: noticeHeader, Body: noticeBody})
 	require.NoError(t, err)
 
 	stored := database.Default().Industry.FileUploadNotice(phone)
