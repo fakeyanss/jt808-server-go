@@ -68,6 +68,50 @@ func (cb *HTTPCallback) OnDisconnect(ctx context.Context, event DisconnectEvent)
 	cb.enqueue("disconnect", event)
 }
 
+func (cb *HTTPCallback) OnWaybill(ctx context.Context, event WaybillEvent) {
+	cb.enqueue("waybill", event)
+}
+
+func (cb *HTTPCallback) OnDriverIdentity(ctx context.Context, event DriverIdentityEvent) {
+	cb.enqueue("driverIdentity", event)
+}
+
+func (cb *HTTPCallback) OnCANBus(ctx context.Context, event CANBusEvent) {
+	cb.enqueue("canBus", event)
+}
+
+func (cb *HTTPCallback) OnTachograph(ctx context.Context, event TachographEvent) {
+	cb.enqueue("tachograph", event)
+}
+
+func (cb *HTTPCallback) OnEventReport(ctx context.Context, event EventReportEvent) {
+	cb.enqueue("eventReport", event)
+}
+
+func (cb *HTTPCallback) OnVehicleControlAck(ctx context.Context, event VehicleControlAckEvent) {
+	cb.enqueue("vehicleControlAck", event)
+}
+
+func (cb *HTTPCallback) OnTerminalUpgradeResult(ctx context.Context, event TerminalUpgradeResultEvent) {
+	cb.enqueue("terminalUpgradeResult", event)
+}
+
+func (cb *HTTPCallback) OnMediaEvent(ctx context.Context, event MediaEvent) {
+	cb.enqueue("mediaEvent", event)
+}
+
+func (cb *HTTPCallback) OnMediaUpload(ctx context.Context, event MediaUploadEvent) {
+	cb.enqueue("mediaUpload", event)
+}
+
+func (cb *HTTPCallback) OnFileUploadComplete(ctx context.Context, event FileUploadCompleteEvent) {
+	cb.enqueue("fileUploadComplete", event)
+}
+
+func (cb *HTTPCallback) OnAttachmentInfo(ctx context.Context, event AttachmentInfoEvent) {
+	cb.enqueue("attachmentInfo", event)
+}
+
 func (cb *HTTPCallback) enqueue(name string, payload interface{}) {
 	if cb == nil || cb.url == "" {
 		return

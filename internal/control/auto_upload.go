@@ -72,6 +72,50 @@ func (t *AutoUploadTrigger) OnDisconnect(ctx context.Context, event actionpkg.Di
 	t.next.OnDisconnect(ctx, event)
 }
 
+func (t *AutoUploadTrigger) OnWaybill(ctx context.Context, event actionpkg.WaybillEvent) {
+	t.next.OnWaybill(ctx, event)
+}
+
+func (t *AutoUploadTrigger) OnDriverIdentity(ctx context.Context, event actionpkg.DriverIdentityEvent) {
+	t.next.OnDriverIdentity(ctx, event)
+}
+
+func (t *AutoUploadTrigger) OnCANBus(ctx context.Context, event actionpkg.CANBusEvent) {
+	t.next.OnCANBus(ctx, event)
+}
+
+func (t *AutoUploadTrigger) OnTachograph(ctx context.Context, event actionpkg.TachographEvent) {
+	t.next.OnTachograph(ctx, event)
+}
+
+func (t *AutoUploadTrigger) OnEventReport(ctx context.Context, event actionpkg.EventReportEvent) {
+	t.next.OnEventReport(ctx, event)
+}
+
+func (t *AutoUploadTrigger) OnVehicleControlAck(ctx context.Context, event actionpkg.VehicleControlAckEvent) {
+	t.next.OnVehicleControlAck(ctx, event)
+}
+
+func (t *AutoUploadTrigger) OnTerminalUpgradeResult(ctx context.Context, event actionpkg.TerminalUpgradeResultEvent) {
+	t.next.OnTerminalUpgradeResult(ctx, event)
+}
+
+func (t *AutoUploadTrigger) OnMediaEvent(ctx context.Context, event actionpkg.MediaEvent) {
+	t.next.OnMediaEvent(ctx, event)
+}
+
+func (t *AutoUploadTrigger) OnMediaUpload(ctx context.Context, event actionpkg.MediaUploadEvent) {
+	t.next.OnMediaUpload(ctx, event)
+}
+
+func (t *AutoUploadTrigger) OnFileUploadComplete(ctx context.Context, event actionpkg.FileUploadCompleteEvent) {
+	t.next.OnFileUploadComplete(ctx, event)
+}
+
+func (t *AutoUploadTrigger) OnAttachmentInfo(ctx context.Context, event actionpkg.AttachmentInfoEvent) {
+	t.next.OnAttachmentInfo(ctx, event)
+}
+
 // OnAlarm 只在同一报警标识号首次上报时触发一次。
 func (t *AutoUploadTrigger) OnAlarm(ctx context.Context, event actionpkg.AlarmEvent) {
 	t.next.OnAlarm(ctx, event)

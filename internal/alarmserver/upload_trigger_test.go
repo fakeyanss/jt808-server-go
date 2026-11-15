@@ -26,6 +26,29 @@ func (h *recordingHooks) OnAlarm(_ context.Context, event actionpkg.AlarmEvent) 
 }
 func (h *recordingHooks) OnDisconnect(context.Context, actionpkg.DisconnectEvent) {}
 
+func (h *recordingHooks) OnWaybill(context.Context, actionpkg.WaybillEvent) {}
+
+func (h *recordingHooks) OnDriverIdentity(context.Context, actionpkg.DriverIdentityEvent) {}
+
+func (h *recordingHooks) OnCANBus(context.Context, actionpkg.CANBusEvent) {}
+
+func (h *recordingHooks) OnTachograph(context.Context, actionpkg.TachographEvent) {}
+
+func (h *recordingHooks) OnEventReport(context.Context, actionpkg.EventReportEvent) {}
+
+func (h *recordingHooks) OnVehicleControlAck(context.Context, actionpkg.VehicleControlAckEvent) {}
+
+func (h *recordingHooks) OnTerminalUpgradeResult(context.Context, actionpkg.TerminalUpgradeResultEvent) {
+}
+
+func (h *recordingHooks) OnMediaEvent(context.Context, actionpkg.MediaEvent) {}
+
+func (h *recordingHooks) OnMediaUpload(context.Context, actionpkg.MediaUploadEvent) {}
+
+func (h *recordingHooks) OnFileUploadComplete(context.Context, actionpkg.FileUploadCompleteEvent) {}
+
+func (h *recordingHooks) OnAttachmentInfo(context.Context, actionpkg.AttachmentInfoEvent) {}
+
 func testUploadAlarmID() []byte {
 	id := make([]byte, 16)
 	for i := range id {

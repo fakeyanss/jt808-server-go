@@ -19,6 +19,31 @@
 | `server.action.http.url` | 空 | 生命周期 Hook 回调地址；空则不启用 |
 | `server.action.http.timeoutMs` | `2000` | Hook 回调超时 |
 
+回调为异步 JSON POST，单后台协程 + 有界队列（256），队列满丢弃并记 warn；不重试、不带鉴权头。每个事件都带 `eventId`（同一条报文在 gateway/control 两侧一致，0x0704 的逐条位置追加 `#index`），便于消费端幂等与关联。
+
+**单点发出**：standalone 由单机进程派发；cluster 只由 control 派发（注册/鉴权来自上行事件，定位/报警来自业务处理，断连来自 release 回调），gateway 不再重复发送。
+
+| 事件 `event` | 消息 | payload 业务字段（除 `eventId/phone/serial/time` 外） |
+|---|---|---|
+| `register` | 0x0100 | `deviceId`、`plate`、`protocolVersion`、`versionDesc`、`result`（0x8100 结果） |
+| `auth` | 0x0102 | `imei`、`softwareVersion`、`success` |
+| `location` | 0x0200 / 0x0704 | `alarmSign`、`statusSign`、`latitude`、`longitude`、`altitude`、`speed`、`direction` |
+| `alarm` | 0x0200 / 0x0704 | `alarmSign`、`latitude`、`longitude`、`extItems`、`extRaw`、`alarmId`（16 字节苏标标识号） |
+| `disconnect` | 会话事件 | `sessionId`、`transport`、`reason`（`logout` / `transport_closed`） |
+| `waybill` | 0x0701 | `content`（GBK 解码后的运单文本） |
+| `driverIdentity` | 0x0702 | `state`（1 上岗/2 下班）、`readResult`、`name`、`qualificationCode`、`issuingAuthority`、`validUntil`、`identityNumber` |
+| `canBus` | 0x0705 | `count`、`items[]`（`canId`、8 字节 `data`） |
+| `tachograph` | 0x0700 | `answerSerial`、`command`、`data`（原始命令数据块） |
+| `eventReport` | 0x0301 | `reportId`（协议中的"事件ID"） |
+| `vehicleControlAck` | 0x0500 | `controlFlags`（回显 0x8500 控制标志） |
+| `terminalUpgradeResult` | 0x0108 | `upgradeType`、`result`（0 成功/1 失败/2 取消） |
+| `mediaEvent` | 0x0800 | `multiMediaId`、`multiMediaType`、`multiMediaContainer`、`mediaEventId`、`logicChannelId` |
+| `mediaUpload` | 0x0801 | 同上，另加 `fragmentBytes`（本包媒体字节数，不含媒体内容） |
+| `fileUploadComplete` | 0x1206 | `answerSerialNumber`、`result`（0 成功/1 失败） |
+| `attachmentInfo` | 0x1210 | `terminalId`、`alarmSign`（16 字节）、`alarmNo`、`infoType`、`attachmentCount`、`attachments[]`（`fileName`、`fileSize`） |
+
+`time` 优先取协议自带时间（0x0702、0x0705），其余消息取接收时间，格式 `YYMMDDhhmmss`。解析失败的报文不产生事件；事件构造失败不影响业务处理与应答。
+
 ## 2. 日志
 
 | 配置键 | 默认 | 说明 |

@@ -838,7 +838,11 @@ func (mp *JT808MsgProcessor) ApplyControlBusiness(ctx context.Context, msgID uin
 	if !ok || act.process == nil {
 		return nil
 	}
-	return act.process(ctx, data)
+	err := act.process(ctx, data)
+	// 扩展业务事件与业务处理共用同一套构造/派发逻辑；
+	// 事件失败不回传，绝不影响业务结果与应答。
+	mp.dispatchExtendedHooks(ctx, data)
+	return err
 }
 
 // applyHookReply 用网关随事件带来的应答结果补齐管控侧钩子载荷。
@@ -935,6 +939,8 @@ func (mp *JT808MsgProcessor) dispatchHooks(ctx context.Context, data *model.Proc
 		for i := range in.Items {
 			mp.notifyLocation(ctx, &in.Items[i].Loc, fmt.Sprintf("%s#%d", base, i))
 		}
+	default:
+		mp.dispatchExtendedHooks(ctx, data)
 	}
 }
 
