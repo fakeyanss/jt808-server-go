@@ -1,7 +1,6 @@
 # 初始化项目目录变量
+# Go 环境直接使用开发机上的 `go env`，仓库不再提供 go.env。
 CURDIR := $(shell pwd)
-# 设置编译时所需要的 Go 环境
-export GOENV = $(CURDIR)/go.env
 # 二进制清单只有一份：build/targets.tsv，由 scripts/build.sh 读取
 BUILD_COMMIT := $(shell git rev-parse --short HEAD)
 # release 版本号：默认取最近的 tag，可用 make release VERSION=v1.2.3 覆盖
