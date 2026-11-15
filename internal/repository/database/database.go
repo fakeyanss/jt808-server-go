@@ -6,7 +6,7 @@
 //   - 不保存运行时状态，运行时状态由 runtime.Stores 独立组装。
 //
 // SQL 驱动不在本包引入：需要 sqlite/mysql 的二进制显式导入
-// repository/database/sqlstore 完成注册，数据面二进制（gateway/media/attachment）
+// repository/database/sqlbackend 完成注册，数据面二进制（gateway/media/attachment）
 // 因此不会链接任何数据库驱动。依赖方向：database → repository。
 package database
 
@@ -125,7 +125,7 @@ var registry = struct {
 }
 
 // RegisterBackend 注册一个 SQL 后端。只有需要该后端的二进制才导入对应实现包
-// （见 repository/database/sqlstore），未注册的后端在 Open/Migrate 时明确报错。
+// （见 repository/database/sqlbackend），未注册的后端在 Open/Migrate 时明确报错。
 func RegisterBackend(name string, opener BackendOpener, migrator BackendMigrator) {
 	registry.mu.Lock()
 	defer registry.mu.Unlock()
@@ -143,13 +143,13 @@ func Open(cfg Config) (*Repositories, error) {
 	opener := registry.open[backend]
 	registry.mu.RUnlock()
 	if opener == nil {
-		return nil, fmt.Errorf("database backend %q is not linked into this binary; import repository/database/sqlstore to enable it", cfg.Type)
+		return nil, fmt.Errorf("database backend %q is not linked into this binary; import repository/database/sqlbackend to enable it", cfg.Type)
 	}
 	return opener(cfg)
 }
 
 // NewSQLRepositories 把 SQL 后端句柄装配为统一 Repositories。
-// 由注册的后端实现（repository/database/sqlstore）调用。
+// 由注册的后端实现（repository/database/sqlbackend）调用。
 func NewSQLRepositories(backend string, cfg Config, handle SQLBackend) (*Repositories, error) {
 	industry, err := handle.IndustryRepository()
 	if err != nil {
@@ -201,7 +201,7 @@ func Migrate(cfg Config) (int, error) {
 	migrator := registry.migrate[backend]
 	registry.mu.RUnlock()
 	if migrator == nil {
-		return 0, fmt.Errorf("database backend %q is not linked into this binary; import repository/database/sqlstore to enable it", cfg.Type)
+		return 0, fmt.Errorf("database backend %q is not linked into this binary; import repository/database/sqlbackend to enable it", cfg.Type)
 	}
 	return migrator(cfg)
 }

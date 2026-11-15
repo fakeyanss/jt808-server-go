@@ -1,9 +1,9 @@
-// Package sqlstore 把 sqlite 与 mysql 后端注册到 database 装配层。
+// Package sqlbackend 把 sqlite 与 mysql 后端注册到 database 装配层。
 //
 // 只有需要 SQL 后端的二进制（jt-control、jt-server-standalone、jt808-migrate）
 // 显式导入本包；gateway/media/attachment 等数据面二进制不导入，因此不会链接
 // modernc.org/sqlite 与 go-sql-driver/mysql。
-package sqlstore
+package sqlbackend
 
 import (
 	"github.com/fakeyanss/jt808-server-go/internal/repository/database"
