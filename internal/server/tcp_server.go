@@ -240,20 +240,12 @@ func serveSession(session *model.Session, hooks action.Hooks, deps protocol.Proc
 	if deps.Runtime == nil {
 		deps.Runtime = runtime.Default()
 	}
+	closeReason := "transport_closed"
 	defer func() {
 		session.ClosePending()
 		session.Conn.Close()
 		deps.Runtime.Conn.Unbind(context.Background(), session.ID)
-		transport := string(session.GetTransProto())
-		if deps.OnSessionClosed != nil {
-			deps.OnSessionClosed(session.ID, session.Phone(), transport, session.Generation())
-		}
-		hooks.OnDisconnect(context.Background(), action.DisconnectEvent{
-			EventID:   session.ID,
-			Phone:     session.Phone(),
-			SessionID: session.ID,
-			Transport: transport,
-		})
+		endSession(session, hooks, deps, closeReason)
 		log.Debug().Str("id", session.ID).Msg("Closing connection from remote.")
 	}()
 
@@ -264,6 +256,12 @@ func serveSession(session *model.Session, hooks action.Hooks, deps protocol.Proc
 		ctx := context.WithValue(context.Background(), model.SessionCtxKey{}, session)
 
 		err := pg.ProcessConnRead(ctx)
+
+		// 0x0003 注销成功：结束会话归属并关闭连接，避免把下行继续路由到已注销终端。
+		if session.LoggedOut() {
+			closeReason = "logout"
+			return
+		}
 
 		// 应答已发送：拒绝冒名连接（鉴权失败且手机号已有在线会话）后关闭本连接。
 		if session.ShouldCloseAfterResponse() {
@@ -290,6 +288,28 @@ func serveSession(session *model.Session, hooks action.Hooks, deps protocol.Proc
 func isTimeout(err error) bool {
 	var netErr net.Error
 	return errors.As(err, &netErr) && netErr.Timeout()
+}
+
+// endSession 幂等结束会话：上报 release 并派发断连事件。
+// cluster 的 action 钩子由 control 统一派发，网关侧只在 standalone 生效。
+func endSession(session *model.Session, hooks action.Hooks, deps protocol.ProcessorDeps, reason string) {
+	if session == nil || !session.MarkEnded() {
+		return
+	}
+	transport := string(session.GetTransProto())
+	if deps.OnSessionClosed != nil {
+		deps.OnSessionClosed(session.ID, session.Phone(), transport, session.Generation())
+	}
+	if deps.SkipActionHooks {
+		return
+	}
+	hooks.OnDisconnect(context.Background(), action.DisconnectEvent{
+		EventID:   session.ID,
+		Phone:     session.Phone(),
+		SessionID: session.ID,
+		Transport: transport,
+		Reason:    reason,
+	})
 }
 
 // SendOption 配置一次下行发送。

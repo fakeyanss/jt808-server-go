@@ -108,6 +108,14 @@ func TestSessionDirectoryRouteFollowsNodeLiveness(t *testing.T) {
 	require.NoError(t, err)
 	require.False(t, ok)
 
+	// 归属释放后下行路由立即失效。
+	require.NoError(t, dir.Release(ctx, phone, owner, 1))
+	_, ok, err = dir.Route(ctx, phone, "", routeAt)
+	require.NoError(t, err)
+	require.False(t, ok)
+	_, err = dir.Claim(ctx, phone, owner, routeAt)
+	require.NoError(t, err)
+
 	// 节点注销后立即不可路由。
 	require.NoError(t, nodes.Deregister(ctx, "gw-1", "inst-a", routeAt))
 	_, ok, err = dir.Route(ctx, phone, "", routeAt)
@@ -130,4 +138,26 @@ func TestSessionDirectoryRouteFollowsNodeLiveness(t *testing.T) {
 	_, ok, err = dir.Route(ctx, phone, "", routeAt)
 	require.NoError(t, err)
 	require.False(t, ok)
+}
+
+func TestSessionDirectoryDeleteByGateway(t *testing.T) {
+	ctx := context.Background()
+	dir := openTestSQLite(t).SessionDirectoryRepository()
+	now := time.UnixMilli(1_800_000_000_000)
+
+	gw1 := repository.SessionOwner{GatewayID: "gw-1", InstanceID: "inst-a", SessionID: "sess-1"}
+	gw2 := repository.SessionOwner{GatewayID: "gw-2", InstanceID: "inst-b", SessionID: "sess-2"}
+	_, err := dir.Claim(ctx, "13800000001", gw1, now)
+	require.NoError(t, err)
+	_, err = dir.Claim(ctx, "13800000002", gw2, now)
+	require.NoError(t, err)
+
+	require.NoError(t, dir.DeleteByGateway(ctx, gw1.GatewayID, gw1.InstanceID))
+
+	record, err := dir.Get(ctx, "13800000001")
+	require.NoError(t, err)
+	require.Nil(t, record)
+	record, err = dir.Get(ctx, "13800000002")
+	require.NoError(t, err)
+	require.NotNil(t, record)
 }

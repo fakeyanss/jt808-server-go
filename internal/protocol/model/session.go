@@ -76,10 +76,12 @@ type Session struct {
 	// closeAfterResponse 用于拒绝冒名连接：应答帧发送完成后由服务层关闭连接。
 	closeAfterResponse bool
 
-	// stateMu 保护 phone/generation：前者在鉴权成功时绑定，后者来自 control claim。
+	// stateMu 保护 phone/generation/loggedOut/ended。
 	stateMu    sync.Mutex
 	phone      string
 	generation uint64
+	loggedOut  bool
+	ended      bool
 }
 
 const (
@@ -120,6 +122,31 @@ func (s *Session) Generation() uint64 {
 	s.stateMu.Lock()
 	defer s.stateMu.Unlock()
 	return s.generation
+}
+
+// MarkLoggedOut 记录终端已成功发送 0x0003；服务层据此结束会话归属。
+func (s *Session) MarkLoggedOut() {
+	s.stateMu.Lock()
+	s.loggedOut = true
+	s.stateMu.Unlock()
+}
+
+// LoggedOut 返回终端是否已主动注销。
+func (s *Session) LoggedOut() bool {
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
+	return s.loggedOut
+}
+
+// MarkEnded 把会话标记为已结束；只有第一次调用返回 true，用于幂等释放归属。
+func (s *Session) MarkEnded() bool {
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
+	if s.ended {
+		return false
+	}
+	s.ended = true
+	return true
 }
 
 // TrackReliable 记录一条等待终端应答的可靠报文。

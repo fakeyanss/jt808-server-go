@@ -318,6 +318,10 @@ func (statements) DeleteSessionDirectory() string {
 		WHERE phone = ? AND gateway_id = ? AND instance_id = ? AND session_id = ? AND generation = ?`
 }
 
+func (statements) DeleteSessionDirectoryByGateway() string {
+	return `DELETE FROM session_directory WHERE gateway_id = ? AND instance_id = ?`
+}
+
 func (statements) ValidateSessionDirectory() string {
 	return `SELECT 1 FROM session_directory
 		WHERE phone = ? AND gateway_id = ? AND instance_id = ? AND session_id = ? AND generation <= ?`

@@ -25,9 +25,18 @@ type UDPServer struct {
 	sessions           map[string]*udpSessionConn
 	ackTimeout         time.Duration
 	maxRetransmissions int
+	maxSessions        int
 	hooks              action.Hooks
 	deps               protocol.ProcessorDeps
 	metrics            *observability.Metrics
+}
+
+// defaultUDPMaxSessions 限制同时存在的远端会话数，避免异常源地址耗尽内存。
+const defaultUDPMaxSessions = 10000
+
+// SetMaxSessions 设置会话上限；<=0 表示不限制。
+func (s *UDPServer) SetMaxSessions(limit int) {
+	s.maxSessions = limit
 }
 
 // SetMetrics 注入进程级指标计数器；未注入时不计数。
@@ -48,7 +57,7 @@ func (s *UDPServer) runtimeStores() *runtime.Stores {
 }
 
 func NewUDPServer() *UDPServer {
-	return &UDPServer{sessions: make(map[string]*udpSessionConn)}
+	return &UDPServer{sessions: make(map[string]*udpSessionConn), maxSessions: defaultUDPMaxSessions}
 }
 
 // SetHooks 设置生命周期钩子。未设置时使用 action.Noop。
@@ -84,6 +93,11 @@ func (s *UDPServer) Start() {
 		s.mu.Lock()
 		conn := s.sessions[key]
 		if conn == nil {
+			if s.maxSessions > 0 && len(s.sessions) >= s.maxSessions {
+				s.mu.Unlock()
+				log.Warn().Str("remote", key).Int("limit", s.maxSessions).Msg("UDP session limit reached, dropping datagram")
+				continue
+			}
 			conn = newUDPSessionConn(s.listener, remote, func() { s.remove(key) })
 			s.sessions[key] = conn
 			session := &model.Session{ID: key, Conn: conn, Transport: model.UDPProto, ConnectedAt: time.Now(), AckTimeout: s.ackTimeout, MaxRetries: s.maxRetransmissions}

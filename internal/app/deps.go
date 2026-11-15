@@ -229,6 +229,9 @@ func buildDeps(spec Spec, cfg *config.Config, s settings) *deps {
 		}
 		uplinkSink = sink
 		processorDeps.UplinkSink = sink
+		// cluster 的回调统一由 control 派发：网关只负责投递上行事件，
+		// 避免同一事件在 gateway 与 control 各发一次。
+		processorDeps.SkipActionHooks = hasGateway && !standalone
 		processorDeps.GatewayID = uplinkSinkOptions.HTTP.GatewayID
 		log.Info().
 			Str("url", uplinkSinkOptions.HTTP.URL).

@@ -46,3 +46,25 @@ func TestSessionDirectoryRepositoryLifecycle(t *testing.T) {
 	require.NoError(t, err)
 	require.Nil(t, record)
 }
+
+func TestSessionDirectoryRepositoryDeleteByGateway(t *testing.T) {
+	ctx := context.Background()
+	dir := NewSessionDirectoryRepository()
+	now := time.Unix(1_800_000_000, 0)
+
+	gw1 := repository.SessionOwner{GatewayID: "gw-1", InstanceID: "inst-a", SessionID: "sess-1"}
+	gw2 := repository.SessionOwner{GatewayID: "gw-2", InstanceID: "inst-b", SessionID: "sess-2"}
+	_, err := dir.Claim(ctx, "13800000001", gw1, now)
+	require.NoError(t, err)
+	_, err = dir.Claim(ctx, "13800000002", gw2, now)
+	require.NoError(t, err)
+
+	require.NoError(t, dir.DeleteByGateway(ctx, gw1.GatewayID, gw1.InstanceID))
+
+	record, err := dir.Get(ctx, "13800000001")
+	require.NoError(t, err)
+	require.Nil(t, record)
+	record, err = dir.Get(ctx, "13800000002")
+	require.NoError(t, err)
+	require.NotNil(t, record)
+}

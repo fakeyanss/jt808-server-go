@@ -66,6 +66,12 @@ func (r *sessionDirectoryRepository) Release(ctx context.Context, phone string, 
 	return err
 }
 
+func (r *sessionDirectoryRepository) DeleteByGateway(ctx context.Context, gatewayID, instanceID string) error {
+	_, err := r.store.db.ExecContext(ctx, r.store.stmts.DeleteSessionDirectoryByGateway(),
+		gatewayID, instanceID)
+	return err
+}
+
 func (r *sessionDirectoryRepository) Validate(ctx context.Context, phone string, owner repository.SessionOwner, generation uint64) (bool, error) {
 	var exists int
 	err := r.store.readDB.QueryRowContext(ctx, r.store.stmts.ValidateSessionDirectory(),

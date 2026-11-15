@@ -93,6 +93,47 @@ func TestGatewayBatchLocationHookEventIDsArePerItem(t *testing.T) {
 	require.Equal(t, base+"#1", hooks.locations[1].EventID)
 }
 
+// cluster 网关只投递上行事件，不在本进程派发 action 钩子；standalone 保持本地派发。
+func TestGatewaySkipsActionHooksWhenUplinkSinkEnabled(t *testing.T) {
+	header := &model.MsgHeader{
+		MsgID:        0x0100,
+		PhoneNumber:  "188765499025",
+		SerialNumber: 13,
+		Attr:         &model.MsgBodyAttr{VersionDesc: model.Version2019},
+	}
+	body := []byte{0x01, 0x02}
+	ctx := context.WithValue(context.Background(), model.SessionCtxKey{}, &model.Session{ID: "sess-hook-test"})
+	ctx = context.WithValue(ctx, model.PacketDecodeCtxKey{}, &model.PacketData{
+		Header: header, Body: body, SegCompleted: true,
+	})
+	data := &model.ProcessData{
+		Incoming: &model.Msg0100{Header: header, DeviceID: "device-2", PlateNumber: "京A12346"},
+		Outgoing: &model.Msg8100{Result: model.ResultCodeType(model.ResultSuccess)},
+	}
+
+	clusterHooks := &hookRecorder{}
+	clusterSink := &fakeUplinkSink{}
+	cluster := NewJT808MsgProcessor(clusterHooks, WithProcessorDeps(ProcessorDeps{
+		Repos:           database.NewMemory(),
+		UplinkSink:      clusterSink,
+		SkipActionHooks: true,
+	}))
+	require.NoError(t, cluster.ApplyBusiness(ctx, 0x0100, data))
+	require.Equal(t, 1, clusterSink.count())
+	require.Empty(t, clusterHooks.registers)
+
+	standaloneHooks := &hookRecorder{}
+	standalone := NewJT808MsgProcessor(standaloneHooks, WithProcessorDeps(ProcessorDeps{
+		Repos: database.NewMemory(),
+	}))
+	require.NoError(t, standalone.ApplyBusiness(ctx, 0x0100,
+		&model.ProcessData{
+			Incoming: &model.Msg0100{Header: header, DeviceID: "device-3", PlateNumber: "京A12347"},
+			Outgoing: &model.Msg8100{Result: model.ResultCodeType(model.ResultSuccess)},
+		}))
+	require.Len(t, standaloneHooks.registers, 1)
+}
+
 // control 侧注册钩子复用网关 eventId，并用网关随事件带来的 0x8100 结果填充载荷。
 func TestControlRegisterHookUsesEventIDAndGatewayReply(t *testing.T) {
 	stores := database.NewMemory()
