@@ -1950,6 +1950,9 @@ func (c *Config) ParseServerMode() (ClusterOptions, error) {
 		if mode == ServerModeCluster {
 			return options, fmt.Errorf("cluster section is required when server.mode=%s", ServerModeCluster)
 		}
+		if problem := standaloneUplinkSinkProblem(c); problem != "" {
+			return options, fmt.Errorf("%s", problem)
+		}
 		return options, nil
 	}
 
@@ -1990,6 +1993,12 @@ func (c *Config) ParseServerMode() (ClusterOptions, error) {
 		if len(conf.Roles) > 0 {
 			problems = append(problems, "cluster.roles must be empty when server.mode=standalone")
 		}
+		if problem := standaloneUplinkSinkProblem(c); problem != "" {
+			problems = append(problems, problem)
+		}
+		// cluster.* 的角色、监听与存储段在 standalone 下不参与装配（四角色同进程）。
+		// 默认配置本身带有非空的 cluster.downlink/uplink/storage 默认值，不能以“段非空”
+		// 为由拒绝；这些字段在 standalone 下是惰性的，不改变数据流，因此不做校验。
 		if len(problems) > 0 {
 			return options, fmt.Errorf("%s", strings.Join(problems, "; "))
 		}
@@ -2497,6 +2506,21 @@ func validateHTTPURL(name, raw string) error {
 		return fmt.Errorf("%s must be an absolute http(s) URL, got %q", name, raw)
 	}
 	return nil
+}
+
+// standaloneUplinkSinkProblem 校验 standalone 下的上行出口。
+// standalone 四角色同进程、使用本地元数据存储，且不会启动 control 的上行 HTTP 入口；
+// sink=http 会把 control 归属的业务事件投给一个不存在的接收端，表现为静默丢数据或不应答。
+func standaloneUplinkSinkProblem(c *Config) string {
+	if c == nil || c.Uplink == nil {
+		return ""
+	}
+	if strings.ToLower(strings.TrimSpace(c.Uplink.Sink)) != UplinkSinkHTTP {
+		return ""
+	}
+	return "uplink.sink must be local when server.mode=standalone: " +
+		"standalone runs all roles in one process with a local metadata store and does not start the " +
+		"control uplink HTTP receiver; set uplink.sink=local and use server.action.http for outbound notifications"
 }
 
 // loopbackToAddr 判断 url 是否指向本进程的监听地址。

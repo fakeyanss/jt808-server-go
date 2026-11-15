@@ -62,6 +62,38 @@ func TestParseServerModeMatrix(t *testing.T) {
 			wantErr: "cluster.roles must be empty",
 		},
 		{
+			name: "standalone local 上行通过",
+			mutate: func(t *testing.T, cfg *Config) {
+				cfg.Server.Mode = ServerModeStandalone
+				cfg.Cluster.Roles = nil
+				cfg.Uplink = &uplinkConf{Sink: UplinkSinkLocal}
+			},
+		},
+		{
+			name: "standalone 拒绝 http 上行",
+			mutate: func(t *testing.T, cfg *Config) {
+				cfg.Server.Mode = ServerModeStandalone
+				cfg.Cluster.Roles = nil
+				cfg.Uplink = &uplinkConf{
+					Sink: UplinkSinkHTTP,
+					HTTP: &uplinkHTTPConf{URL: "http://control:9102/internal/v1/uplink", Token: "control-token"},
+				}
+			},
+			wantErr: "uplink.sink must be local when server.mode=standalone",
+		},
+		{
+			name: "standalone 无 cluster 段也拒绝 http 上行",
+			mutate: func(t *testing.T, cfg *Config) {
+				cfg.Server.Mode = ServerModeStandalone
+				cfg.Cluster = nil
+				cfg.Uplink = &uplinkConf{
+					Sink: UplinkSinkHTTP,
+					HTTP: &uplinkHTTPConf{URL: "http://control:9102/internal/v1/uplink", Token: "control-token"},
+				}
+			},
+			wantErr: "uplink.sink must be local when server.mode=standalone",
+		},
+		{
 			name: "gateway+control 同进程 local 通过",
 		},
 		{
