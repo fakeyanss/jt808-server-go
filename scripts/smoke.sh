@@ -53,10 +53,12 @@ for p in "$TCP_PORT" "$UDP_PORT" "$HTTP_PORT"; do
 done
 
 # Generate per-run configs from the checked-in defaults with ports rewritten.
+# 只改 server.port 下的四个空格缩进字段；alarmServer.udpPort 等同名键保持默认，
+# 否则会和服务端 UDP 端口撞在一起导致附件服务器绑定失败。
 sed -E \
-  -e "s|(tcpPort: \")[0-9]+|\\1$TCP_PORT|" \
-  -e "s|(udpPort: \")[0-9]+|\\1$UDP_PORT|" \
-  -e "s|(httpPort: \")[0-9]+|\\1$HTTP_PORT|" \
+  -e "s|^(    tcpPort: \")[0-9]+|\\1$TCP_PORT|" \
+  -e "s|^(    udpPort: \")[0-9]+|\\1$UDP_PORT|" \
+  -e "s|^(    httpPort: \")[0-9]+|\\1$HTTP_PORT|" \
   "$ROOT/configs/default.yaml" >"$WORK/server.yaml"
 sed -E "s|(remoteAddr: \"localhost:)[0-9]+|\\1$TCP_PORT|" \
   "$ROOT/client/configs/default.yaml" >"$WORK/client.yaml"
@@ -64,7 +66,7 @@ sed -E "s|(remoteAddr: \"localhost:)[0-9]+|\\1$TCP_PORT|" \
 SBIN="$WORK/bin/server"
 CBIN="$WORK/bin/client"
 echo "smoke: building server and client..."
-( cd "$ROOT" && go build -o "$SBIN" ./cmd/jt808-server && go build -o "$CBIN" ./cmd/jt808-client ) || {
+( cd "$ROOT" && go build -o "$SBIN" ./cmd/jt-server-standalone && go build -o "$CBIN" ./cmd/jt808-client ) || {
   echo "smoke: build failed" >&2
   exit 1
 }

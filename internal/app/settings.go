@@ -69,9 +69,11 @@ func loadSettings(cfg *config.Config, spec Spec) settings {
 		log.Error().Err(probeErr).Msg("Invalid probes configuration")
 		os.Exit(1)
 	}
-	if spec.Mode != "" && !probeEnabled {
+	// 固定集群角色的二进制必须配置探针：节点存活与调度都依赖探针/心跳。
+	// standalone 是单进程通用入口，探针保持可选，与安装文档的默认值一致。
+	if spec.Mode != "" && spec.Mode != config.ServerModeStandalone && !probeEnabled {
 		log.Error().Str("binary", spec.Binary).
-			Msg("probes.addr is required for a role-specific binary; set probes.addr (for example 0.0.0.0:9105)")
+			Msg("probes.addr is required for a cluster role binary; set probes.addr (for example 0.0.0.0:9105)")
 		os.Exit(1)
 	}
 

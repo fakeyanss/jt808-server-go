@@ -72,7 +72,7 @@ sed -E \
   "$ROOT/client/configs/default.yaml" >"$WORK/run/client.yaml"
 
 echo "loadtest: building server and client..."
-( cd "$ROOT" && go build -o "$WORK/bin/server" ./cmd/jt808-server && go build -o "$WORK/bin/client" ./cmd/jt808-client ) || {
+( cd "$ROOT" && go build -o "$WORK/bin/server" ./cmd/jt-server-standalone && go build -o "$WORK/bin/client" ./cmd/jt808-client ) || {
   echo "loadtest: build failed" >&2
   exit 1
 }

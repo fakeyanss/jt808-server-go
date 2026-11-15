@@ -24,7 +24,7 @@ compile: set-env
 	bash $(CURDIR)/scripts/build.sh compile
 
 run: set-env
-	go run $(CURDIR)/cmd/jt808-server/main.go -c configs/default.yaml
+	go run $(CURDIR)/cmd/jt-server-standalone/main.go -c configs/default.yaml
 run-client: set-env
 	go run $(CURDIR)/cmd/jt808-client/main.go -c $(CURDIR)/client/configs/default.yaml
 
