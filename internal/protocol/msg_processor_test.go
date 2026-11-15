@@ -22,7 +22,7 @@ import (
 
 func TestTerminalControlProducesGenericAcknowledgement(t *testing.T) {
 	header := &model.MsgHeader{MsgID: 0x8105, SerialNumber: 17, PhoneNumber: "188765432109", Attr: &model.MsgBodyAttr{}}
-	result, err := NewJT808MsgProcessor(nil).Process(context.Background(), &model.PacketData{Header: header, Body: []byte{2, 'h', 'o', 's', 't'}})
+	result, err := NewJT808MsgProcessor(nil, WithProcessorDeps(ProcessorDeps{Repos: defaultTestRepositories()})).Process(context.Background(), &model.PacketData{Header: header, Body: []byte{2, 'h', 'o', 's', 't'}})
 	require.NoError(t, err)
 	require.IsType(t, &model.Msg0001{}, result.Outgoing)
 	ack := result.Outgoing.(*model.Msg0001)
@@ -35,7 +35,7 @@ func TestRegionRouteDeletionProducesGenericAcknowledgement(t *testing.T) {
 	for _, messageID := range []uint16{0x8601, 0x8603, 0x8605, 0x8607} {
 		t.Run(fmt.Sprintf("%04x", messageID), func(t *testing.T) {
 			header := &model.MsgHeader{MsgID: messageID, SerialNumber: 18, PhoneNumber: "188765432109", Attr: &model.MsgBodyAttr{}}
-			result, err := NewJT808MsgProcessor(nil).Process(context.Background(), &model.PacketData{Header: header, Body: []byte{0}})
+			result, err := NewJT808MsgProcessor(nil, WithProcessorDeps(ProcessorDeps{Repos: defaultTestRepositories()})).Process(context.Background(), &model.PacketData{Header: header, Body: []byte{0}})
 			require.NoError(t, err)
 			require.IsType(t, &model.Msg0001{}, result.Outgoing)
 			require.Equal(t, messageID, result.Outgoing.(*model.Msg0001).AnswerMessageID)
@@ -55,7 +55,7 @@ func TestProcessMsg0802PersistsSearchResults(t *testing.T) {
 			Location: model.Msg0200{AlarmSign: 4, Latitude: 31000000, Time: "261028103000"},
 		}},
 	}
-	require.NoError(t, NewJT808MsgProcessor(nil).processMsg0802(ctx, &model.ProcessData{Incoming: msg}))
+	require.NoError(t, NewJT808MsgProcessor(nil, WithProcessorDeps(ProcessorDeps{Repos: defaultTestRepositories()})).processMsg0802(ctx, &model.ProcessData{Incoming: msg}))
 
 	got, err := database.Default().MediaSearches.List(ctx, phone, 10)
 	require.NoError(t, err)
@@ -67,7 +67,7 @@ func TestProcessMsg0802PersistsSearchResults(t *testing.T) {
 
 	// 终端重传同一条应答但结果变空时，旧结果必须被覆盖清空。
 	msg.Items = nil
-	require.NoError(t, NewJT808MsgProcessor(nil).processMsg0802(ctx, &model.ProcessData{Incoming: msg}))
+	require.NoError(t, NewJT808MsgProcessor(nil, WithProcessorDeps(ProcessorDeps{Repos: defaultTestRepositories()})).processMsg0802(ctx, &model.ProcessData{Incoming: msg}))
 	got, err = database.Default().MediaSearches.List(ctx, phone, 10)
 	require.NoError(t, err)
 	require.Empty(t, got)
@@ -99,7 +99,7 @@ func TestProcessMsg0107PersistsAndDeliversTerminalProperties(t *testing.T) {
 		TerminalID:      "TERM-107",
 		FirmwareVersion: "FW-1.0",
 	}
-	require.NoError(t, NewJT808MsgProcessor(nil).processMsg0107(ctx, &model.ProcessData{Incoming: msg}))
+	require.NoError(t, NewJT808MsgProcessor(nil, WithProcessorDeps(ProcessorDeps{Repos: defaultTestRepositories()})).processMsg0107(ctx, &model.ProcessData{Incoming: msg}))
 
 	select {
 	case got := <-waiter:
@@ -131,7 +131,7 @@ func TestHeartbeatDoesNotPersistRuntime(t *testing.T) {
 	})
 
 	msg := &model.Msg0002{Header: &model.MsgHeader{MsgID: 0x0002, PhoneNumber: phone, Attr: &model.MsgBodyAttr{}}}
-	require.NoError(t, NewJT808MsgProcessor(nil).processMsg0002(ctx, &model.ProcessData{Incoming: msg}))
+	require.NoError(t, NewJT808MsgProcessor(nil, WithProcessorDeps(ProcessorDeps{Repos: defaultTestRepositories()})).processMsg0002(ctx, &model.ProcessData{Incoming: msg}))
 
 	stored, err := devices.GetByPhone(ctx, phone)
 	require.NoError(t, err)
@@ -157,14 +157,14 @@ func TestProcessAcknowledgesResponseBySerial(t *testing.T) {
 	ctx := context.WithValue(context.Background(), model.SessionCtxKey{}, session)
 	// 应答第二条命令。
 	header := &model.MsgHeader{MsgID: 0x0001, PhoneNumber: phone, Attr: &model.MsgBodyAttr{}}
-	_, err := NewJT808MsgProcessor(nil).Process(ctx, &model.PacketData{Header: header, Body: []byte{0, 32, 0x81, 0x03, 0}})
+	_, err := NewJT808MsgProcessor(nil, WithProcessorDeps(ProcessorDeps{Repos: defaultTestRepositories()})).Process(ctx, &model.PacketData{Header: header, Body: []byte{0, 32, 0x81, 0x03, 0}})
 	require.NoError(t, err)
 	require.Equal(t, 1, session.PendingCount(), "only the answered serial may be cleared")
 	require.True(t, session.Acknowledge(0x8103, 31), "the first command must still be pending")
 	require.Equal(t, 0, session.PendingCount())
 
 	// 重复应答不清除任何等待项。
-	_, err = NewJT808MsgProcessor(nil).Process(ctx, &model.PacketData{Header: header, Body: []byte{0, 32, 0x81, 0x03, 0}})
+	_, err = NewJT808MsgProcessor(nil, WithProcessorDeps(ProcessorDeps{Repos: defaultTestRepositories()})).Process(ctx, &model.PacketData{Header: header, Body: []byte{0, 32, 0x81, 0x03, 0}})
 	require.NoError(t, err)
 	require.Equal(t, 0, session.PendingCount())
 }
@@ -185,7 +185,7 @@ func TestProcessIgnoresResponseFromOtherSession(t *testing.T) {
 
 	ctx := context.WithValue(context.Background(), model.SessionCtxKey{}, other)
 	header := &model.MsgHeader{MsgID: 0x0001, PhoneNumber: phone, Attr: &model.MsgBodyAttr{}}
-	_, err := NewJT808MsgProcessor(nil).Process(ctx, &model.PacketData{Header: header, Body: []byte{0, 41, 0x81, 0x03, 0}})
+	_, err := NewJT808MsgProcessor(nil, WithProcessorDeps(ProcessorDeps{Repos: defaultTestRepositories()})).Process(ctx, &model.PacketData{Header: header, Body: []byte{0, 41, 0x81, 0x03, 0}})
 	require.NoError(t, err)
 	require.Equal(t, 1, owner.PendingCount(), "response from another session must not clear pending")
 	require.Equal(t, 0, other.PendingCount())
@@ -193,7 +193,7 @@ func TestProcessIgnoresResponseFromOtherSession(t *testing.T) {
 
 func TestSimulatorParameterTemplateDecodes(t *testing.T) {
 	header := &model.MsgHeader{MsgID: 0x8104, SerialNumber: 20, PhoneNumber: "188765432100", Attr: &model.MsgBodyAttr{}}
-	result, err := NewJT808MsgProcessor(nil).Process(context.Background(), &model.PacketData{Header: header})
+	result, err := NewJT808MsgProcessor(nil, WithProcessorDeps(ProcessorDeps{Repos: defaultTestRepositories()})).Process(context.Background(), &model.PacketData{Header: header})
 	require.NoError(t, err)
 	reply, ok := result.Outgoing.(*model.Msg0104)
 	require.True(t, ok)
@@ -222,7 +222,7 @@ func TestLocationReportWritesGeo(t *testing.T) {
 		database.Default().Geo.Delete(context.Background(), phone)
 	})
 
-	processor := NewJT808MsgProcessor(nil)
+	processor := NewJT808MsgProcessor(nil, WithProcessorDeps(ProcessorDeps{Repos: defaultTestRepositories()}))
 	header := &model.MsgHeader{MsgID: 0x0200, SerialNumber: 32, PhoneNumber: phone, Attr: &model.MsgBodyAttr{}}
 	result, err := processor.Process(context.Background(), &model.PacketData{Header: header, Body: locationReportBody(0)})
 	require.NoError(t, err)
@@ -246,7 +246,7 @@ func TestLocationReportStaleAccOffDoesNotRegressStatus(t *testing.T) {
 		_ = database.Default().Geo.Delete(ctx, phone)
 	})
 
-	processor := NewJT808MsgProcessor(nil)
+	processor := NewJT808MsgProcessor(nil, WithProcessorDeps(ProcessorDeps{Repos: defaultTestRepositories()}))
 	send := func(statusSign uint32, when [6]byte) {
 		body := locationReportBody(0)
 		binary.BigEndian.PutUint32(body[4:8], statusSign)
@@ -290,7 +290,7 @@ func TestSimulatorRepliesToRegionDriverRecorderAndMultimediaCommands(t *testing.
 	for _, tt := range tests {
 		t.Run(fmt.Sprintf("%04x", tt.id), func(t *testing.T) {
 			header := &model.MsgHeader{MsgID: tt.id, SerialNumber: 19, PhoneNumber: "188765432109", Attr: &model.MsgBodyAttr{}}
-			result, err := NewJT808MsgProcessor(nil).Process(context.Background(), &model.PacketData{Header: header, Body: tt.body})
+			result, err := NewJT808MsgProcessor(nil, WithProcessorDeps(ProcessorDeps{Repos: defaultTestRepositories()})).Process(context.Background(), &model.PacketData{Header: header, Body: tt.body})
 			require.NoError(t, err)
 			require.IsType(t, tt.response, result.Outgoing)
 			if ack, ok := result.Outgoing.(*model.Msg0001); ok {
@@ -399,7 +399,7 @@ func TestOnAlarmHTTPCallbackIncludesExtItems(t *testing.T) {
 	}
 
 	callback := actionpkg.NewHTTPCallback(server.URL, time.Second)
-	_, err := NewJT808MsgProcessor(callback).Process(ctx, &model.PacketData{Header: header, Body: body})
+	_, err := NewJT808MsgProcessor(callback, WithProcessorDeps(ProcessorDeps{Repos: defaultTestRepositories()})).Process(ctx, &model.PacketData{Header: header, Body: body})
 	require.NoError(t, err)
 
 	timeout := time.After(2 * time.Second)
@@ -471,7 +471,7 @@ func TestGatewayHandlersUseAuthProviderWithoutDatabase(t *testing.T) {
 		phone: {Phone: phone, Keepalive: time.Minute, AuthCode: "code-1"},
 	}}
 	processor := NewJT808MsgProcessor(nil, WithProcessorDeps(ProcessorDeps{
-		Repos:        repos,
+		Repos:        repos.Repositories,
 		AuthProvider: provider,
 	}))
 	t.Cleanup(func() { runtime.Default().Heartbeat.Remove(ctx, phone) })

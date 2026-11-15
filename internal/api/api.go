@@ -26,7 +26,6 @@ import (
 	"github.com/fakeyanss/jt808-server-go/internal/protocol"
 	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
 	"github.com/fakeyanss/jt808-server-go/internal/repository"
-	"github.com/fakeyanss/jt808-server-go/internal/repository/database"
 	"github.com/fakeyanss/jt808-server-go/internal/runtime"
 	"github.com/fakeyanss/jt808-server-go/internal/server"
 )
@@ -40,20 +39,20 @@ type Queryer interface {
 // Run 启动业务 API。downlink 为下行契约实现；sender 是豁免清单（查询/只读/幂等）
 // 的单发通道，二者在 control-only 下均可跨进程工作。未启用 outbox 时下行入口
 // 直接发送，不提供命令状态查询。
-func Run(ctx context.Context, serv *server.TCPServer, cfg *config.Config, apiOptions config.APIOptions, alarmServ *alarmserver.Server, attachments repository.AttachmentFileRepository, attachmentAllocator contracts.AttachmentAllocator, blob contracts.BlobStore, downlink contracts.Downlink, sender contracts.DownlinkSender, mediaUpload *mediaupload.Store, queryer Queryer, playback contracts.PlaybackLibrary, ftpTasks *control.FTPTaskManager, ftpPort uint16, ftpAdvertiseIP string) {
+func Run(ctx context.Context, serv *server.TCPServer, cfg *config.Config, repos repository.Repositories, apiOptions config.APIOptions, alarmServ *alarmserver.Server, attachments repository.AttachmentFileRepository, attachmentAllocator contracts.AttachmentAllocator, blob contracts.BlobStore, downlink contracts.Downlink, sender contracts.DownlinkSender, mediaUpload *mediaupload.Store, queryer Queryer, playback contracts.PlaybackLibrary, ftpTasks *control.FTPTaskManager, ftpPort uint16, ftpAdvertiseIP string) {
 	// web server structure
 	gin.SetMode(gin.ReleaseMode)
 	router := gin.Default()
 	// 顺序为审计 → 限流 → 鉴权：审计能看到被拒绝的请求，限流在鉴权前挡住洪峰。
 	router.Use(httpguard.Audit(), httpguard.RateLimit(apiOptions.RatePerSecond, apiOptions.Burst), httpguard.Auth(apiOptions.Token))
 	api := router.Group("/api")
-	devices := database.Default().Devices
-	geo := database.Default().Geo
+	devices := repos.Devices
+	geo := repos.Geo
 	connRegistry := runtime.Default().Conn
 	outboxEnabled := downlink != nil && downlink.Enabled()
 
 	// 0x0801 媒体文件、0x0805 拍摄记录与 0x0802 检索结果查询；文件下载由 mediaUpload 读取共享卷。
-	registerMediaRoutes(api, devices, database.Default().MediaFiles, database.Default().MediaCaptures, database.Default().MediaSearches, mediaUpload, blob)
+	registerMediaRoutes(api, devices, repos.MediaFiles, repos.MediaCaptures, repos.MediaSearches, mediaUpload, blob)
 
 	// 播放会话（实时/终端回放）与平台录像覆盖查询；媒体节点返回播放地址。
 	registerPlaybackRoutes(api, devices, connRegistry, downlink, playback)
@@ -104,7 +103,7 @@ func Run(ctx context.Context, serv *server.TCPServer, cfg *config.Config, apiOpt
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
 		}
-		industry := database.Default().Industry
+		industry := repos.Industry
 		var result any
 		switch c.Param("kind") {
 		case "driver":
@@ -124,7 +123,7 @@ func Run(ctx context.Context, serv *server.TCPServer, cfg *config.Config, apiOpt
 		case "transparent", "peripheral":
 			result = industry.TransparentUp(phone)
 		case "upgrade-result":
-			upgrade, err := database.Default().UpgradeResults.Latest(c.Request.Context(), phone)
+			upgrade, err := repos.UpgradeResults.Latest(c.Request.Context(), phone)
 			if errors.Is(err, repository.ErrUpgradeResultNotFound) {
 				c.JSON(http.StatusNotFound, gin.H{"err": "no report received"})
 				return
@@ -1125,7 +1124,7 @@ func Run(ctx context.Context, serv *server.TCPServer, cfg *config.Config, apiOpt
 			return
 		}
 		msg := &model.Msg8203{Header: model.GenMsgHeader(device, 0x8203, nextDownlinkSerial(session)), AlarmSerial: request.AlarmSerial, AlarmType: request.AlarmType}
-		if err := database.Default().Alarms.RegisterConfirmation(c.Request.Context(), phone, msg.Header.SerialNumber, request.AlarmSerial, request.AlarmType); err != nil {
+		if err := repos.Alarms.RegisterConfirmation(c.Request.Context(), phone, msg.Header.SerialNumber, request.AlarmSerial, request.AlarmType); err != nil {
 			log.Error().Err(err).Str("phone", phone).Msg("register alarm confirmation")
 			c.JSON(http.StatusInternalServerError, gin.H{"err": err.Error()})
 			return
@@ -1140,7 +1139,7 @@ func Run(ctx context.Context, serv *server.TCPServer, cfg *config.Config, apiOpt
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
 		}
-		alarms, err := database.Default().Alarms.List(c.Request.Context(), phone)
+		alarms, err := repos.Alarms.List(c.Request.Context(), phone)
 		if err != nil {
 			log.Error().Err(err).Str("phone", phone).Msg("list alarms")
 			c.JSON(http.StatusInternalServerError, gin.H{"err": err.Error()})

@@ -3,6 +3,8 @@ package main
 import (
 	"github.com/fakeyanss/jt808-server-go/internal/app"
 	"github.com/fakeyanss/jt808-server-go/internal/config"
+	// standalone 同进程承担 control，需要注册 sqlite/mysql 后端。
+	_ "github.com/fakeyanss/jt808-server-go/internal/repository/database/sqlstore"
 )
 
 // jt-server-standalone 固定以 standalone 形态运行：一个进程承担全部角色，

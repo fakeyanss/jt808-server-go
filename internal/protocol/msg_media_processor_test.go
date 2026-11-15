@@ -41,7 +41,7 @@ func TestProcess0801PersistsMediaFile(t *testing.T) {
 	stores := database.NewMemory()
 	mediaStore, err := mediaupload.NewStore(t.TempDir())
 	require.NoError(t, err)
-	processor := NewJT808MsgProcessor(nil, WithProcessorDeps(ProcessorDeps{Repos: stores, MediaUpload: mediaStore}))
+	processor := NewJT808MsgProcessor(nil, WithProcessorDeps(ProcessorDeps{Repos: stores.Repositories, MediaUpload: mediaStore}))
 
 	header := &model.MsgHeader{MsgID: 0x0801, PhoneNumber: phone, SerialNumber: 21, Attr: &model.MsgBodyAttr{}}
 	data := []byte("media-payload")
@@ -68,7 +68,7 @@ func TestProcess0801WithoutUploadStoreKeepsIndustrySnapshot(t *testing.T) {
 	ctx := context.Background()
 	const phone = "188765432110"
 	stores := database.NewMemory()
-	processor := NewJT808MsgProcessor(nil, WithProcessorDeps(ProcessorDeps{Repos: stores}))
+	processor := NewJT808MsgProcessor(nil, WithProcessorDeps(ProcessorDeps{Repos: stores.Repositories}))
 
 	header := &model.MsgHeader{MsgID: 0x0801, PhoneNumber: phone, SerialNumber: 22, Attr: &model.MsgBodyAttr{}}
 	_, err := processor.Process(ctx, &model.PacketData{Header: header, Body: encode0801Body(7002, 1, 0, []byte("x"))})
@@ -86,7 +86,7 @@ func TestProcess0805LinksMediaIDsWithUploadedFiles(t *testing.T) {
 	stores := database.NewMemory()
 	mediaStore, err := mediaupload.NewStore(t.TempDir())
 	require.NoError(t, err)
-	processor := NewJT808MsgProcessor(nil, WithProcessorDeps(ProcessorDeps{Repos: stores, MediaUpload: mediaStore}))
+	processor := NewJT808MsgProcessor(nil, WithProcessorDeps(ProcessorDeps{Repos: stores.Repositories, MediaUpload: mediaStore}))
 
 	uploadHeader := &model.MsgHeader{MsgID: 0x0801, PhoneNumber: phone, SerialNumber: 23, Attr: &model.MsgBodyAttr{}}
 	_, err = processor.Process(ctx, &model.PacketData{Header: uploadHeader, Body: encode0801Body(7101, 1, 0, []byte("img-7101"))})
@@ -119,7 +119,7 @@ func TestProcess0801LocationTimeUsesLocalTimezone(t *testing.T) {
 	stores := database.NewMemory()
 	mediaStore, err := mediaupload.NewStore(t.TempDir())
 	require.NoError(t, err)
-	processor := NewJT808MsgProcessor(nil, WithProcessorDeps(ProcessorDeps{Repos: stores, MediaUpload: mediaStore}))
+	processor := NewJT808MsgProcessor(nil, WithProcessorDeps(ProcessorDeps{Repos: stores.Repositories, MediaUpload: mediaStore}))
 
 	header := &model.MsgHeader{MsgID: 0x0801, PhoneNumber: phone, SerialNumber: 25, Attr: &model.MsgBodyAttr{}}
 	_, err = processor.Process(ctx, &model.PacketData{Header: header, Body: encode0801Body(7201, 1, 0, []byte("x"))})

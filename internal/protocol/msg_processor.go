@@ -19,7 +19,6 @@ import (
 	"github.com/fakeyanss/jt808-server-go/internal/mediaupload"
 	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
 	"github.com/fakeyanss/jt808-server-go/internal/repository"
-	"github.com/fakeyanss/jt808-server-go/internal/repository/database"
 	"github.com/fakeyanss/jt808-server-go/internal/runtime"
 	"github.com/fakeyanss/jt808-server-go/internal/uplink"
 )
@@ -44,9 +43,11 @@ type action struct {
 }
 
 // ProcessorDeps 聚合消息处理器的显式依赖。
-// 字段为零值时由构造函数回退到包级默认单例，保证既有装配路径行为不变。
+// Runtime 为空时回退到进程默认实例；Repos 及其它可选依赖由装配层按角色注入。
 type ProcessorDeps struct {
-	Repos   *database.Repositories
+	// Repos 是协议层可用的仓储接口集合；只允许依赖 repository 的接口，
+	// 不得引入具体后端或 database 装配层。数据面角色注入内存实现。
+	Repos   repository.Repositories
 	Runtime *runtime.Stores
 	// Uplink 为空表示上行可靠性未配置（全部 best_effort）。
 	Uplink *uplink.Policy
@@ -83,15 +84,12 @@ type processorSettings struct {
 	deps ProcessorDeps
 }
 
-// WithProcessorDeps 注入处理器依赖。未注入的字段保持默认单例。
+// WithProcessorDeps 注入处理器依赖。未注入的 Runtime 回退到进程默认实例，
+// 其余依赖（尤其是 Repos）必须由装配层显式提供。
 func WithProcessorDeps(deps ProcessorDeps) ProcessorOption {
 	return func(s *processorSettings) {
 		s.deps = deps
 	}
-}
-
-func defaultProcessorDeps() ProcessorDeps {
-	return ProcessorDeps{Repos: database.Default(), Runtime: runtime.Default()}
 }
 
 // 表驱动，初始化消息处理方法组。
@@ -497,7 +495,7 @@ type JT808MsgProcessor struct {
 
 // NewJT808MsgProcessor 创建消息处理器。
 // hooks 为 nil 时使用 action.Noop，保证不影响协议主流程。
-// 未通过 ProcessorOption 注入的依赖回退到包级默认单例。
+// Runtime 未注入时回退到进程默认实例；Repos 必须由调用方显式注入。
 func NewJT808MsgProcessor(hooks actionpkg.Hooks, opts ...ProcessorOption) *JT808MsgProcessor {
 	if hooks == nil {
 		hooks = actionpkg.Noop{}
@@ -506,48 +504,9 @@ func NewJT808MsgProcessor(hooks actionpkg.Hooks, opts ...ProcessorOption) *JT808
 	for _, opt := range opts {
 		opt(&settings)
 	}
-	deps := defaultProcessorDeps()
-	if settings.deps.Repos != nil {
-		deps.Repos = settings.deps.Repos
-	}
-	if settings.deps.Runtime != nil {
-		deps.Runtime = settings.deps.Runtime
-	}
-	if settings.deps.Uplink != nil {
-		deps.Uplink = settings.deps.Uplink
-	}
-	if settings.deps.UplinkSink != nil {
-		deps.UplinkSink = settings.deps.UplinkSink
-	}
-	if settings.deps.GatewayID != "" {
-		deps.GatewayID = settings.deps.GatewayID
-	}
-	if settings.deps.InstanceID != "" {
-		deps.InstanceID = settings.deps.InstanceID
-	}
-	deps.SkipActionHooks = settings.deps.SkipActionHooks
-	if settings.deps.MediaUpload != nil {
-		deps.MediaUpload = settings.deps.MediaUpload
-	}
-	// 集群网关的可选依赖必须逐项透传，否则会静默回退到本地仓储：
-	// AuthProvider 是网关不连库时的档案来源，RegisterCache 保存 0x0100 的鉴权码。
-	if settings.deps.AuthProvider != nil {
-		deps.AuthProvider = settings.deps.AuthProvider
-	}
-	if settings.deps.RegisterCache != nil {
-		deps.RegisterCache = settings.deps.RegisterCache
-	}
-	if settings.deps.UplinkMaxBodyBytes > 0 {
-		deps.UplinkMaxBodyBytes = settings.deps.UplinkMaxBodyBytes
-	}
-	if settings.deps.OnOversized != nil {
-		deps.OnOversized = settings.deps.OnOversized
-	}
-	if settings.deps.QueryResponse != nil {
-		deps.QueryResponse = settings.deps.QueryResponse
-	}
-	if settings.deps.Blob != nil {
-		deps.Blob = settings.deps.Blob
+	deps := settings.deps
+	if deps.Runtime == nil {
+		deps.Runtime = runtime.Default()
 	}
 	mp := &JT808MsgProcessor{
 		hooks: hooks,
@@ -1141,7 +1100,7 @@ func (mp *JT808MsgProcessor) processMsg0100(ctx context.Context, data *model.Pro
 	}
 
 	timer := NewKeepaliveTimer()
-	timer.Register(device.Phone)
+	timer.Register(device.Phone, device.Keepalive, mp.deps.Repos, mp.deps.Runtime)
 	return nil
 }
 

@@ -7,7 +7,6 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
-	"github.com/fakeyanss/jt808-server-go/internal/repository/database"
 )
 
 func actionHeader(msgID uint16, phone string, serial uint16) *model.MsgHeader {
@@ -194,7 +193,7 @@ func TestControlPathDispatchesExtendedEvent(t *testing.T) {
 	})
 
 	hooks := &hookRecorder{}
-	mp := NewJT808MsgProcessor(hooks, WithProcessorDeps(ProcessorDeps{Repos: database.NewMemory()}))
+	mp := NewJT808MsgProcessor(hooks, WithProcessorDeps(ProcessorDeps{Repos: newTestRepositories()}))
 	require.NoError(t, mp.ApplyControlBusiness(ctx, 0x0701, data))
 
 	require.Len(t, hooks.waybills, 1)

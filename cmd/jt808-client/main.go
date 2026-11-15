@@ -13,6 +13,7 @@ import (
 	"github.com/fakeyanss/jt808-server-go/client/datagen"
 	"github.com/fakeyanss/jt808-server-go/internal/client"
 	"github.com/fakeyanss/jt808-server-go/internal/config"
+	"github.com/fakeyanss/jt808-server-go/internal/protocol"
 	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
 	"github.com/fakeyanss/jt808-server-go/internal/repository/database"
 	"github.com/fakeyanss/jt808-server-go/internal/runtime"
@@ -127,6 +128,11 @@ func reportLocation(ctx context.Context, cli *client.TCPClient) {
 
 func dialAndSend(cfg *config.Config, cliWg *sync.WaitGroup, fragmentSize int, reverseFragments bool, dropFragment uint16, faultFrame string, industryReports, logout bool) {
 	cli := client.NewTCPClient()
+	// 模拟器与协议层共用同一份设备缓存，注册应答等行为才能读到本机档案。
+	cli.SetDeps(protocol.ProcessorDeps{
+		Repos:   database.Default().Repositories,
+		Runtime: runtime.Default(),
+	})
 	addr := cfg.Client.Conn.RemoteAddr
 	for retry := 1; ; retry++ {
 		transport := model.TransportProtocol(cfg.Client.Device.TransProto)

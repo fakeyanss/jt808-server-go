@@ -117,6 +117,15 @@ flowchart LR
 
 数据面节点没有指向 MySQL 的边：它们只持有本地连接、媒体流与附件暂存，通过内部 HTTP 与 control 交互，并把文件写入共享存储。control 是唯一的元数据写者。
 
+构建产物同样保持这层隔离：协议内核只依赖 `repository` 的接口聚合，不依赖 `repository/database`；sqlite 与 mysql 驱动集中在 `repository/database/sqlstore`，只有 `jt-control`、`jt-server-standalone`、`jt808-migrate` 三个入口显式导入。因此 `jt-signal`、`jt-media`、`jt-attachment` 的二进制不链接任何数据库驱动。可用以下命令校验：
+
+```sh
+go list -deps ./cmd/jt-signal ./cmd/jt-media ./cmd/jt-attachment \
+  | grep -E 'modernc\.org/sqlite|go-sql-driver/mysql' || echo "no database drivers"
+```
+
+数据面角色本身不打开业务库，`database` 配置段对其不生效；control 角色若使用了未链接的后端，会在装配阶段得到明确错误，而不是静默回退到内存存储。
+
 | 状态 | 归属 | 说明 |
 |---|---|---|
 | 连接、会话、心跳、最近通信时间 | 网关进程内存 | 节点本地；不落库 |

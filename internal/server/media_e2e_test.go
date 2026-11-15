@@ -14,7 +14,9 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/fakeyanss/jt808-server-go/internal/media"
+	"github.com/fakeyanss/jt808-server-go/internal/protocol"
 	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
+	"github.com/fakeyanss/jt808-server-go/internal/repository/database"
 	"github.com/fakeyanss/jt808-server-go/internal/runtime"
 )
 
@@ -26,6 +28,7 @@ func TestE2E1078MediaIngestionOverUDPSocket(t *testing.T) {
 	t.Cleanup(mediaServer.Stop)
 
 	server := NewTCPServer()
+	server.SetDeps(protocol.ProcessorDeps{Repos: database.Default().Repositories})
 	require.NoError(t, server.Listen("127.0.0.1:0"))
 	go server.Start()
 	t.Cleanup(server.Stop)
@@ -86,6 +89,7 @@ func TestE2E1078MediaIngestionOverUDPSocket(t *testing.T) {
 
 func TestE2E1078SignalingAckPairingOverJT808Session(t *testing.T) {
 	server := NewTCPServer()
+	server.SetDeps(protocol.ProcessorDeps{Repos: database.Default().Repositories})
 	require.NoError(t, server.Listen("127.0.0.1:0"))
 	go server.Start()
 	t.Cleanup(server.Stop)

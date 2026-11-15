@@ -1,4 +1,4 @@
-package database
+package database_test
 
 import (
 	"context"
@@ -10,23 +10,26 @@ import (
 
 	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
 	"github.com/fakeyanss/jt808-server-go/internal/repository"
+	"github.com/fakeyanss/jt808-server-go/internal/repository/database"
+	// 测试需要真实 SQL 后端，显式注册驱动实现。
+	_ "github.com/fakeyanss/jt808-server-go/internal/repository/database/sqlstore"
 )
 
 func TestOpenRejectsInvalidConfig(t *testing.T) {
-	_, err := Open(Config{Type: "redis"})
+	_, err := database.Open(database.Config{Type: "redis"})
 	require.Error(t, err)
 
-	_, err = Open(Config{Type: BackendSQLite})
+	_, err = database.Open(database.Config{Type: database.BackendSQLite})
 	require.Error(t, err)
 
-	_, err = Open(Config{Type: BackendMySQL})
+	_, err = database.Open(database.Config{Type: database.BackendMySQL})
 	require.Error(t, err)
 }
 
 func TestOpenDefaultsToMemory(t *testing.T) {
-	repos, err := Open(Config{})
+	repos, err := database.Open(database.Config{})
 	require.NoError(t, err)
-	require.Equal(t, BackendMemory, repos.Backend)
+	require.Equal(t, database.BackendMemory, repos.Backend)
 	require.NoError(t, repos.Close())
 }
 
@@ -34,12 +37,12 @@ func TestOpenSQLitePersistsDevicesAndParams(t *testing.T) {
 	ctx := context.Background()
 	dbPath := filepath.Join(t.TempDir(), "jt808.db")
 
-	_, err := Migrate(Config{Type: BackendSQLite, SQLitePath: dbPath})
+	_, err := database.Migrate(database.Config{Type: database.BackendSQLite, SQLitePath: dbPath})
 	require.NoError(t, err)
 
-	first, err := Open(Config{Type: BackendSQLite, SQLitePath: dbPath})
+	first, err := database.Open(database.Config{Type: database.BackendSQLite, SQLitePath: dbPath})
 	require.NoError(t, err)
-	require.Equal(t, BackendSQLite, first.Backend)
+	require.Equal(t, database.BackendSQLite, first.Backend)
 
 	phone := "188765430001"
 	device := &model.Device{
@@ -60,7 +63,7 @@ func TestOpenSQLitePersistsDevicesAndParams(t *testing.T) {
 	require.NoError(t, first.Params.Replace(ctx, params))
 	require.NoError(t, first.Close())
 
-	second, err := Open(Config{Type: BackendSQLite, SQLitePath: dbPath})
+	second, err := database.Open(database.Config{Type: database.BackendSQLite, SQLitePath: dbPath})
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = second.Close() })
 
@@ -87,20 +90,20 @@ func TestOpenSQLitePersistsDevicesAndParams(t *testing.T) {
 func TestMigrateSQLiteIsRepeatable(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "jt808.db")
 
-	applied, err := Migrate(Config{Type: BackendSQLite, SQLitePath: dbPath})
+	applied, err := database.Migrate(database.Config{Type: database.BackendSQLite, SQLitePath: dbPath})
 	require.NoError(t, err)
 	require.Greater(t, applied, 0)
 
-	again, err := Migrate(Config{Type: BackendSQLite, SQLitePath: dbPath})
+	again, err := database.Migrate(database.Config{Type: database.BackendSQLite, SQLitePath: dbPath})
 	require.NoError(t, err)
 	require.Zero(t, again)
 }
 
 // 内存后端没有 schema，迁移命令应给出明确错误。
 func TestMigrateRejectsUnsupportedTargets(t *testing.T) {
-	_, err := Migrate(Config{Type: BackendMemory})
+	_, err := database.Migrate(database.Config{Type: database.BackendMemory})
 	require.Error(t, err)
 
-	_, err = Migrate(Config{Type: "redis"})
+	_, err = database.Migrate(database.Config{Type: "redis"})
 	require.Error(t, err)
 }
