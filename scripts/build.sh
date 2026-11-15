@@ -130,6 +130,9 @@ test)
 	test
 	;;
 compile)
+	# 先清空输出目录：旧版布局在 target/debug/<name>/ 下留过同名目录，
+	# go build -o 遇到已存在的目录会把二进制写进目录里，产物布局就不平铺了。
+	rm -rf "$target_dir/debug"
 	build_targets "$target_dir/debug" "$(go env GOOS)" "$(go env GOARCH)" all
 	;;
 image)

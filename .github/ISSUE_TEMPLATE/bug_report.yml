@@ -25,7 +25,7 @@ body:
     attributes:
       label: 运行形态
       options:
-        - Standalone（jt-server-standalone / jt808-server）
+        - Standalone（jt-server-standalone）
         - Cluster - gateway（jt-signal）
         - Cluster - control（jt-control）
         - Cluster - media（jt-media）

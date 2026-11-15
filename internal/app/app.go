@@ -12,7 +12,7 @@ import (
 	"github.com/fakeyanss/jt808-server-go/pkg/routines"
 )
 
-// Main 是五个角色二进制与通用入口共用的启动入口。
+// Main 是五个服务端二进制共用的启动入口。
 // 只解析命令行并加载配置，启动与关闭顺序见 lifecycle.go 的 run。
 func Main(spec Spec) {
 	routines.Recover()

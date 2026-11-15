@@ -26,18 +26,18 @@ make release OS=linux ARCH=arm64   # 只构建单个平台
 
 `make compile`、`make release`、`build/Dockerfile` 与 release workflow 共用 [build/targets.tsv](../build/targets.tsv) 这一份入口清单（二进制名、包路径、是否进镜像、是否进 release 包）。新增或下线入口时只改该文件，不要再在脚本里另抄一份列表。
 
-release 产物形态：每个平台一个压缩包（linux/darwin 为 `tar.gz`，windows 为 `zip`），包内是全部入口二进制加 `LICENSE`、`README.md`、`VERSION`；全平台的 `sha256` 校验和由 release workflow 生成。
+release 产物形态：每个平台一个压缩包（linux/darwin 为 `tar.gz`，windows 为 `zip`），包内含 `jt-server-standalone`、`jt-signal`、`jt-control`、`jt-media`、`jt-attachment`、`jt808-migrate`、`jt808-client-go` 七个二进制，加 `LICENSE`、`README.md`、`VERSION`；全平台的 `sha256` 校验和由 release workflow 生成。
 
-`jt808-server` 是保留的通用入口，完全按配置文件的 `server.mode` 与 `cluster.roles` 运行，适合同机调试任意角色组合；生产部署应使用固定角色的二进制，避免配置与二进制职责错配。
+单机入口是 `jt-server-standalone`：一个进程承担全部角色。历史上的 `jt808-server` 通用入口已移除（v1.0.0 的发布包里还有），升级时需要把启动命令换成 `jt-server-standalone`。它按固定 standalone 形态运行，配置里出现 `server.mode=cluster` 或 cluster 角色时会拒绝启动；需要拆分角色时使用对应的固定角色二进制，避免配置与二进制职责错配。
 
 ## 3. 单机运行
 
 ```sh
 # 使用编译进二进制的内嵌默认配置
-./target/debug/jt808-server-go
+./target/debug/jt-server-standalone
 
 # 或读取 YAML
-./target/debug/jt808-server-go -c configs/default.yaml
+./target/debug/jt-server-standalone -c configs/default.yaml
 ```
 
 默认监听：

@@ -81,7 +81,7 @@ flowchart TB
 
     subgraph SA["Standalone：单进程"]
         direction LR
-        S["jt-server-standalone / jt808-server<br/>接入 + 协议 + 业务 + API + 媒体 + 附件"]
+        S["jt-server-standalone<br/>接入 + 协议 + 业务 + API + 媒体 + 附件"]
         SDB[("memory / SQLite / MySQL")]
         S --> SDB
     end
@@ -167,21 +167,18 @@ curl -s http://localhost:8008/api/device
 ## 安装与运行
 
 ```sh
-make compile            # 全部入口编译到 target/debug/（通用入口 jt808-server-go 按配置决定形态）
+make compile            # 全部入口编译到 target/debug/
 make release            # 交叉编译 6 个平台并打包到 target/dist/
 
 # 只构建单个平台
 make release OS=linux ARCH=arm64
-
-# 数据库迁移（SQLite/MySQL 首次部署或升级后）
-./target/debug/jt808-migrate -c configs/default.yaml
 ```
 
 `make compile` 与 `make release` 的二进制清单都来自 [build/targets.tsv](build/targets.tsv)，镜像构建复用同一份清单；增删入口只改这一个文件。
 
 ```sh
-# 单机运行
-./target/debug/jt808-server-go -c configs/default.yaml
+# 单机运行（单进程承担全部角色）
+./target/debug/jt-server-standalone -c configs/default.yaml
 
 # 数据库迁移（SQLite/MySQL 首次部署或升级后）
 ./target/debug/jt808-migrate -c configs/default.yaml

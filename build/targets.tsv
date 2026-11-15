@@ -2,10 +2,9 @@
 # 列（TAB 分隔）：
 #   1. 二进制名（Windows 平台自动加 .exe）
 #   2. Go 包路径
-#   3. 是否进容器镜像（1/0）；镜像只放固定角色，通用入口 jt808-server 与模拟终端不进
+#   3. 是否进容器镜像（1/0）；镜像只放服务端可运行入口，模拟终端不进
 #   4. 是否进 release 包（1/0）
 # 以 # 开头的行为注释。改动本文件即同时影响 `make compile`、镜像与 release 产物。
-jt808-server-go	./cmd/jt808-server	0	1
 jt808-client-go	./cmd/jt808-client	0	1
 jt808-migrate	./cmd/jt808-migrate	1	1
 jt-server-standalone	./cmd/jt-server-standalone	1	1

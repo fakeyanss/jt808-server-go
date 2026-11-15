@@ -75,7 +75,7 @@ func suggestBinary(roles config.RoleSet) string {
 		!roles.Has(config.RoleControl) && !roles.Has(config.RoleAttachment):
 		return "jt-media"
 	default:
-		return "jt808-server (generic entry)"
+		return "one process per role (jt-signal / jt-control / jt-media / jt-attachment)"
 	}
 }
 
