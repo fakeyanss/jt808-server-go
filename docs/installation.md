@@ -99,6 +99,16 @@ docker buildx build --platform linux/amd64,linux/arm64 \
   -f build/Dockerfile -t fakeyanss/jt808-server-go:local .
 ```
 
+构建阶段的 Go 模块代理默认是官方源 `https://proxy.golang.org,direct`，由 `GOPROXY` 构建参数控制。国内网络构建时显式传入代理即可，只对本次构建生效，不会写进运行镜像：
+
+```sh
+docker build -f build/Dockerfile \
+  --build-arg GOPROXY=https://goproxy.cn,direct \
+  -t fakeyanss/jt808-server-go:local .
+```
+
+`make dockerbuild` 不传该参数，等价于使用官方源；需要镜像源时用上面的 `docker build` 命令，或自行追加 `--build-arg`。
+
 镜像内包含 `jt-server-standalone`、`jt-signal`、`jt-control`、`jt-media`、`jt-attachment`、`jt808-migrate` 六个静态二进制，以非 root 用户 `10001:10001` 运行，并带有 CA 证书与时区数据。运行阶段不会写入业务数据；配置、数据与日志都从挂载点读取或写入。
 
 ### 5.2 最短运行
