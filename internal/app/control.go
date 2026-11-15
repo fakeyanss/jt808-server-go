@@ -7,6 +7,7 @@ import (
 
 	"github.com/rs/zerolog/log"
 
+	"github.com/fakeyanss/jt808-server-go/internal/action"
 	"github.com/fakeyanss/jt808-server-go/internal/alarmserver"
 	"github.com/fakeyanss/jt808-server-go/internal/config"
 	"github.com/fakeyanss/jt808-server-go/internal/contracts"
@@ -80,6 +81,13 @@ func (d *deps) setupControl() {
 	}
 	if hasControl && !standalone {
 		log.Info().Msg("control uplink enabled: phone-ordered mailbox is process-local; single replica recommended, multiple replicas supported with per-field ownership")
+		// 控制面自己识别报警并下发 0x9208：附件节点地址来自 HTTP 节点状态，
+		// 不再要求 gateway 与 control 同进程。
+		controlHooks := hooks
+		if alarmOptions.AutoUpload && hasControl && remoteAttachment != nil && controlDownlink != nil {
+			controlHooks = control.NewAutoUploadTrigger(hooks, remoteAttachment, controlDownlink, storeSet.Coordination, 30*time.Minute, d.clock)
+			log.Info().Msg("Automatic 0x9208 attachment upload trigger enabled in control via remote attachment nodes")
+		}
 		srv, srvErr := uplink.NewServer(uplink.ServerOptions{
 			Token:               clusterOptions.Control.Token,
 			DedupTTL:            clusterOptions.Uplink.DedupTTL,
@@ -87,6 +95,15 @@ func (d *deps) setupControl() {
 			MaxRequestBytes:     clusterOptions.Uplink.MaxRequestBytes,
 			MaxDecodedBodyBytes: clusterOptions.Uplink.MaxDecodedBodyBytes,
 			Clock:               d.clock,
+			// 网关在会话关闭时上报 release，控制面据此派发与网关一致的 OnDisconnect。
+			OnSessionReleased: func(ctx context.Context, phone, sessionID, transport string) {
+				controlHooks.OnDisconnect(ctx, action.DisconnectEvent{
+					EventID:   sessionID,
+					Phone:     phone,
+					SessionID: sessionID,
+					Transport: transport,
+				})
+			},
 		})
 		if srvErr != nil {
 			log.Error().Err(srvErr).Msg("Fail to create uplink HTTP server")
@@ -117,11 +134,6 @@ func (d *deps) setupControl() {
 		}
 		// 控制面自己识别报警并下发 0x9208：附件节点地址来自 HTTP 节点状态，
 		// 不再要求 gateway 与 control 同进程。
-		controlHooks := hooks
-		if alarmOptions.AutoUpload && hasControl && remoteAttachment != nil && controlDownlink != nil {
-			controlHooks = control.NewAutoUploadTrigger(hooks, remoteAttachment, controlDownlink, storeSet.Coordination, 30*time.Minute, d.clock)
-			log.Info().Msg("Automatic 0x9208 attachment upload trigger enabled in control via remote attachment nodes")
-		}
 		executor := control.NewBusinessExecutor(control.BusinessOptions{
 			ProcessorDeps: processorDeps,
 			Devices:       storeSet.Devices,

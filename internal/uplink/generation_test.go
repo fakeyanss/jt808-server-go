@@ -115,7 +115,14 @@ func TestUplinkServerAuthClaimBypassesDedup(t *testing.T) {
 
 func TestUplinkServerSessionRelease(t *testing.T) {
 	sessions := memory.NewSessionDirectoryRepository()
-	server, err := NewServer(ServerOptions{Token: testControlToken})
+	type released struct{ phone, sessionID, transport string }
+	var got []released
+	server, err := NewServer(ServerOptions{
+		Token: testControlToken,
+		OnSessionReleased: func(_ context.Context, phone, sessionID, transport string) {
+			got = append(got, released{phone: phone, sessionID: sessionID, transport: transport})
+		},
+	})
 	require.NoError(t, err)
 	server.SetSessionDirectoryRepository(sessions)
 	httpServer := httptest.NewServer(server.Handler())
@@ -131,6 +138,7 @@ func TestUplinkServerSessionRelease(t *testing.T) {
 		Phone:      "13800000003",
 		SessionID:  owner.SessionID,
 		Generation: generation,
+		Transport:  "tcp",
 	}
 	payload, err := json.Marshal(release)
 	require.NoError(t, err)
@@ -146,4 +154,5 @@ func TestUplinkServerSessionRelease(t *testing.T) {
 	record, err := sessions.Get(context.Background(), "13800000003")
 	require.NoError(t, err)
 	require.Nil(t, record)
+	require.Equal(t, []released{{phone: "13800000003", sessionID: "sess-1", transport: "tcp"}}, got)
 }

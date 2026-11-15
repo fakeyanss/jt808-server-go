@@ -41,6 +41,7 @@ type ReleaseRequest struct {
 	Phone      string `json:"phone"`
 	SessionID  string `json:"sessionId"`
 	Generation uint64 `json:"generation"`
+	Transport  string `json:"transport,omitempty"`
 }
 
 // StatusResponse 是注册/心跳的通用响应。

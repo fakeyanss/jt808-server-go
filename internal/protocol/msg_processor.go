@@ -69,7 +69,7 @@ type ProcessorDeps struct {
 	OnOversized func(msgID uint16, phone string, size int)
 	// OnSessionClosed 在网关本地会话关闭后回调；cluster 用它上报 release。
 	// phone 为空或 generation 为 0 时表示该会话没有成功 claim，不需要 release。
-	OnSessionClosed func(sessionID, phone string, generation uint64)
+	OnSessionClosed func(sessionID, phone, transport string, generation uint64)
 	// QueryResponse 把网关收到的查询应答体交给下行等待表。
 	QueryResponse func(msgID uint16, header *model.MsgHeader, body []byte)
 	// Blob 是管控侧 0x0801 的文件写入契约；为空时回退 mediaUpload。
@@ -799,9 +799,15 @@ func (mp *JT808MsgProcessor) ApplyControlBusiness(ctx context.Context, msgID uin
 	case 0x0001:
 		return mp.processTerminalReplyBusiness(ctx, data)
 	case 0x0100:
-		return mp.processRegisterBusiness(ctx, data)
+		err := mp.processRegisterBusiness(ctx, data)
+		mp.applyHookReply(ctx, msgID, data)
+		mp.dispatchHooks(ctx, data)
+		return err
 	case 0x0102:
-		return mp.processAuthBusiness(ctx, data)
+		err := mp.processAuthBusiness(ctx, data)
+		mp.applyHookReply(ctx, msgID, data)
+		mp.dispatchHooks(ctx, data)
+		return err
 	case 0x0200:
 		// 控制面也需要报警事件：自动 0x9208 与报警动作回调在这里触发。
 		// 与网关路径共用 notifyLocation，避免两套报警识别逻辑。
@@ -809,13 +815,14 @@ func (mp *JT808MsgProcessor) ApplyControlBusiness(ctx context.Context, msgID uin
 		if !ok {
 			return nil
 		}
-		mp.notifyLocation(ctx, in)
+		mp.notifyLocation(ctx, in, hookEventID(ctx, 0x0200, in))
 		// 集群下 0x0200 归控制面，位置历史、报警与在线态只能在控制面落库。
 		return mp.processMsg0200(ctx, data)
 	case 0x0704:
 		if in, ok := data.Incoming.(*model.Msg0704); ok {
+			base := hookEventID(ctx, 0x0704, in)
 			for i := range in.Items {
-				mp.notifyLocation(ctx, &in.Items[i].Loc)
+				mp.notifyLocation(ctx, &in.Items[i].Loc, fmt.Sprintf("%s#%d", base, i))
 			}
 		}
 		return nil
@@ -825,6 +832,27 @@ func (mp *JT808MsgProcessor) ApplyControlBusiness(ctx context.Context, msgID uin
 		return nil
 	}
 	return act.process(ctx, data)
+}
+
+// applyHookReply 用网关随事件带来的应答结果补齐管控侧钩子载荷。
+// 管控不重新生成 0x8100/0x8001，注册与鉴权的结果以网关实际发给终端的为准。
+func (mp *JT808MsgProcessor) applyHookReply(ctx context.Context, msgID uint16, data *model.ProcessData) {
+	if data == nil || data.Outgoing != nil {
+		return
+	}
+	event := UplinkEventFromContext(ctx)
+	switch msgID {
+	case 0x0100:
+		if event.ReplyMsgID != 0x8100 {
+			return
+		}
+		data.Outgoing = &model.Msg8100{Result: model.ResultCodeType(event.ReplyResult)}
+	case 0x0102:
+		if event.ReplyMsgID != 0x8001 {
+			return
+		}
+		data.Outgoing = &model.Msg8001{Result: model.ResultCode(event.ReplyResult)}
+	}
 }
 
 // isQueryResponse 判断是否为四类查询的终端应答。
@@ -871,6 +899,7 @@ func (mp *JT808MsgProcessor) dispatchHooks(ctx context.Context, data *model.Proc
 	switch in := data.Incoming.(type) {
 	case *model.Msg0100:
 		event := actionpkg.RegisterEvent{
+			EventID:         hookEventID(ctx, 0x0100, in),
 			Phone:           in.Header.PhoneNumber,
 			DeviceID:        in.DeviceID,
 			Plate:           in.PlateNumber,
@@ -883,6 +912,7 @@ func (mp *JT808MsgProcessor) dispatchHooks(ctx context.Context, data *model.Proc
 		mp.hooks.OnRegister(ctx, event)
 	case *model.Msg0102:
 		event := actionpkg.AuthEvent{
+			EventID:         hookEventID(ctx, 0x0102, in),
 			Phone:           in.Header.PhoneNumber,
 			IMEI:            in.IMEI,
 			SoftwareVersion: in.SoftwareVersion,
@@ -892,10 +922,11 @@ func (mp *JT808MsgProcessor) dispatchHooks(ctx context.Context, data *model.Proc
 		}
 		mp.hooks.OnAuth(ctx, event)
 	case *model.Msg0200:
-		mp.notifyLocation(ctx, in)
+		mp.notifyLocation(ctx, in, hookEventID(ctx, 0x0200, in))
 	case *model.Msg0704:
+		base := hookEventID(ctx, 0x0704, in)
 		for i := range in.Items {
-			mp.notifyLocation(ctx, &in.Items[i].Loc)
+			mp.notifyLocation(ctx, &in.Items[i].Loc, fmt.Sprintf("%s#%d", base, i))
 		}
 	}
 }
@@ -911,8 +942,9 @@ func versionDesc(v model.VersionType) string {
 	}
 }
 
-func (mp *JT808MsgProcessor) notifyLocation(ctx context.Context, in *model.Msg0200) {
+func (mp *JT808MsgProcessor) notifyLocation(ctx context.Context, in *model.Msg0200, eventID string) {
 	mp.hooks.OnLocation(ctx, actionpkg.LocationEvent{
+		EventID:    eventID,
 		Phone:      in.Header.PhoneNumber,
 		Serial:     in.Header.SerialNumber,
 		AlarmSign:  in.AlarmSign,
@@ -927,6 +959,7 @@ func (mp *JT808MsgProcessor) notifyLocation(ctx context.Context, in *model.Msg02
 	if in.AlarmSign != 0 {
 		extItems := in.ParseExtItems()
 		mp.hooks.OnAlarm(ctx, actionpkg.AlarmEvent{
+			EventID:   eventID,
 			Phone:     in.Header.PhoneNumber,
 			Serial:    in.Header.SerialNumber,
 			AlarmSign: in.AlarmSign,
