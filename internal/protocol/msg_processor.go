@@ -73,8 +73,14 @@ type ProcessorDeps struct {
 	SkipActionHooks bool
 	// QueryResponse 把网关收到的查询应答体交给下行等待表。
 	QueryResponse func(msgID uint16, header *model.MsgHeader, body []byte)
-	// Blob 是管控侧 0x0801 的文件写入契约；为空时回退 mediaUpload。
-	Blob contracts.BlobStore
+	// Business 是单机进程内的管控业务入口；集群网关为空，业务在 control 执行。
+	Business BusinessHandler
+}
+
+// BusinessHandler 执行 OwnerControl 消息的业务处理。
+// 由 internal/business 实现，协议内核只依赖该接口，不反向依赖业务包。
+type BusinessHandler interface {
+	Process(ctx context.Context, msgID uint16, data *model.ProcessData) error
 }
 
 // ProcessorOption 配置消息处理器。
@@ -171,14 +177,12 @@ func (mp *JT808MsgProcessor) registerPositionAndAlarm(options processOptions) {
 		genData: func() *model.ProcessData {
 			return &model.ProcessData{Incoming: &model.Msg0200{}, Outgoing: &model.Msg8001{}}
 		},
-		process: mp.processMsg0200,
 	}
 	options[0x0201] = &action{genData: func() *model.ProcessData { return &model.ProcessData{Incoming: &model.Msg0201{}} }, process: mp.processMsg0201}
 	options[0x0704] = &action{ // 批量定位数据上传
 		genData: func() *model.ProcessData {
 			return &model.ProcessData{Incoming: &model.Msg0704{}, Outgoing: &model.Msg8001{}}
 		},
-		process: mp.processMsg0704,
 	}
 	options[0x8201] = &action{genData: func() *model.ProcessData {
 		return &model.ProcessData{Incoming: &model.Msg8201{}, Outgoing: &model.Msg0201{}}
@@ -224,94 +228,93 @@ func (mp *JT808MsgProcessor) registerParamsAndProperties(options processOptions)
 }
 
 // registerIndustryReports 注册行业上报与行业目录相关的入口。
+// 管控侧业务处理已迁至 internal/business，本表只保留解码与网关/模拟器半边。
 func (mp *JT808MsgProcessor) registerIndustryReports(options processOptions) {
 	options[0x0108] = &action{ // 升级结果通知
 		genData: func() *model.ProcessData {
 			return &model.ProcessData{Incoming: &model.Msg0108{}, Outgoing: &model.Msg8001{}}
 		},
-		process: mp.processIndustryReport,
 	}
 	options[0x0301] = &action{ // 事件上报
 		genData: func() *model.ProcessData {
 			return &model.ProcessData{Incoming: &model.Msg0301{}, Outgoing: &model.Msg8001{}}
 		},
-		process: mp.processIndustryReport,
 	}
 	options[0x0302] = &action{ // 提问应答
 		genData: func() *model.ProcessData {
 			return &model.ProcessData{Incoming: &model.Msg0302{}, Outgoing: &model.Msg8001{}}
 		},
-		process: mp.processIndustryReport,
 	}
 	options[0x0303] = &action{ // 信息点播/取消
 		genData: func() *model.ProcessData {
 			return &model.ProcessData{Incoming: &model.Msg0303{}, Outgoing: &model.Msg8001{}}
 		},
-		process: mp.processIndustryReport,
 	}
 	options[0x0500] = &action{ // 车辆控制应答
 		genData: func() *model.ProcessData {
 			return &model.ProcessData{Incoming: &model.Msg0500{}, Outgoing: &model.Msg8001{}}
 		},
-		process: mp.processIndustryReport,
 	}
 	options[0x0700] = &action{genData: func() *model.ProcessData {
 		return &model.ProcessData{Incoming: &model.Msg0700{}, Outgoing: &model.Msg8001{}}
-	}, process: mp.processIndustryReport}
+	}}
 	options[0x0701] = &action{ // 电子运单上报
 		genData: func() *model.ProcessData {
 			return &model.ProcessData{Incoming: &model.Msg0701{}, Outgoing: &model.Msg8001{}}
 		},
-		process: mp.processIndustryReport,
 	}
 	options[0x0702] = &action{genData: func() *model.ProcessData {
 		return &model.ProcessData{Incoming: &model.Msg0702{}, Outgoing: &model.Msg8001{}}
-	}, process: mp.processIndustryReport}
+	}}
 	options[0x0705] = &action{genData: func() *model.ProcessData {
 		return &model.ProcessData{Incoming: &model.Msg0705{}, Outgoing: &model.Msg8001{}}
-	}, process: mp.processIndustryReport}
+	}}
 	options[0x0800] = &action{genData: func() *model.ProcessData {
 		return &model.ProcessData{Incoming: &model.Msg0800{}, Outgoing: &model.Msg8001{}}
-	}, process: mp.processIndustryReport}
+	}}
 	options[0x0801] = &action{genData: func() *model.ProcessData {
 		return &model.ProcessData{Incoming: &model.Msg0801{}, Outgoing: &model.Msg8800{}}
-	}, process: mp.processMsg0801}
+	}}
 	options[0x0802] = &action{genData: func() *model.ProcessData {
 		return &model.ProcessData{Incoming: &model.Msg0802{}, Outgoing: &model.Msg8001{}}
-	}, process: mp.processMsg0802}
+	}}
 	options[0x0805] = &action{genData: func() *model.ProcessData {
 		return &model.ProcessData{Incoming: &model.Msg0805{}, Outgoing: &model.Msg8001{}}
-	}, process: mp.processMsg0805}
+	}}
 	options[0x0900] = &action{ // 数据上行透传
 		genData: func() *model.ProcessData {
 			return &model.ProcessData{Incoming: &model.Msg0900{}, Outgoing: &model.Msg8001{}}
 		},
-		process: mp.processIndustryReport,
 	}
 	options[0x0901] = &action{ // 数据压缩上报
 		genData: func() *model.ProcessData {
 			return &model.ProcessData{Incoming: &model.Msg0901{}, Outgoing: &model.Msg8001{}}
 		},
-		process: mp.processIndustryReport,
 	}
 	options[0x8108] = &action{ // 终端升级
 		genData: func() *model.ProcessData {
 			return &model.ProcessData{Incoming: &model.Msg8108{}, Outgoing: &model.Msg0001{}}
 		},
-		process: mp.processIndustryReport,
+		process: mp.processIndustryRecord,
 	}
 	options[0x8400] = &action{ // 电话回拨
 		genData: func() *model.ProcessData {
 			return &model.ProcessData{Incoming: &model.Msg8400{}, Outgoing: &model.Msg0001{}}
 		},
-		process: mp.processIndustryReport,
+		process: mp.processIndustryRecord,
 	}
 	options[0x8900] = &action{ // 数据下行透传
 		genData: func() *model.ProcessData {
 			return &model.ProcessData{Incoming: &model.Msg8900{}, Outgoing: &model.Msg0001{}}
 		},
-		process: mp.processIndustryReport,
+		process: mp.processIndustryRecord,
 	}
+}
+
+// processIndustryRecord 保存网关/模拟器侧行业快照，仅用于终端模拟器的应答构造。
+func (mp *JT808MsgProcessor) processIndustryRecord(_ context.Context, data *model.ProcessData) error {
+	mp.deps.Repos.Industry.Record(data.Incoming)
+	return nil
 }
 
 // registerMediaAndAttachment 注册多媒体元数据、音视频信令与苏标附件相关的入口。
@@ -320,13 +323,11 @@ func (mp *JT808MsgProcessor) registerMediaAndAttachment(options processOptions) 
 		genData: func() *model.ProcessData {
 			return &model.ProcessData{Incoming: &model.Msg1205{}}
 		},
-		process: mp.processMediaResourceList,
 	}
 	options[0x1206] = &action{ // 文件上传完成通知，终端上行，无需应答
 		genData: func() *model.ProcessData {
 			return &model.ProcessData{Incoming: &model.Msg1206{}}
 		},
-		process: mp.processMediaSignaling,
 	}
 	// 苏标附件信令实际由独立附件服务器端口处理；主链路注册解码与通用应答，
 	// 避免终端误发到 8080 时被判为不支持消息。0x1212 的 0x9212 应答由附件服务器负责。
@@ -334,19 +335,16 @@ func (mp *JT808MsgProcessor) registerMediaAndAttachment(options processOptions) 
 		genData: func() *model.ProcessData {
 			return &model.ProcessData{Incoming: &model.Msg1210{}, Outgoing: &model.Msg0001{}}
 		},
-		process: mp.processAttachmentSignaling,
 	}
 	options[0x1211] = &action{
 		genData: func() *model.ProcessData {
 			return &model.ProcessData{Incoming: &model.Msg1211{}, Outgoing: &model.Msg0001{}}
 		},
-		process: mp.processAttachmentSignaling,
 	}
 	options[0x1212] = &action{
 		genData: func() *model.ProcessData {
 			return &model.ProcessData{Incoming: &model.Msg1212{}}
 		},
-		process: mp.processAttachmentSignaling,
 	}
 	options[0x8800] = &action{genData: func() *model.ProcessData { return &model.ProcessData{Incoming: &model.Msg8800{}} }, process: mp.processMsg8800}
 	options[0x8801] = &action{genData: func() *model.ProcessData {
@@ -378,7 +376,7 @@ func (mp *JT808MsgProcessor) registerMediaAndAttachment(options processOptions) 
 		genData: func() *model.ProcessData {
 			return &model.ProcessData{Incoming: &model.Msg9105{}}
 		},
-		process: mp.processMediaSignaling,
+		process: mp.processMsg9105,
 	}
 	options[0x9201] = &action{ // 平台下发远程录像回放请求
 		genData: func() *model.ProcessData {
@@ -667,8 +665,14 @@ func (mp *JT808MsgProcessor) ApplyBusiness(ctx context.Context, msgID uint16, da
 		default:
 			businessErr = mp.deliverUplink(ctx, msgID, data)
 		}
-	} else if hasAction && act.process != nil {
-		businessErr = act.process(ctx, data)
+	} else {
+		// 单机进程：网关归属与“双方”消息仍走协议半边/本地处理；
+		// 纯管控消息交给注入的 business，协议内核不再包含业务落库实现。
+		if owner, ok := OwnershipOf(msgID); ok && owner == OwnerControl && mp.deps.Business != nil {
+			businessErr = mp.deps.Business.Process(ctx, msgID, data)
+		} else if hasAction && act.process != nil {
+			businessErr = act.process(ctx, data)
+		}
 	}
 	if !mp.deps.SkipActionHooks {
 		mp.dispatchHooks(ctx, data)
@@ -751,55 +755,9 @@ func (mp *JT808MsgProcessor) protocolHalf(msgID uint16) func(context.Context, *m
 	}
 }
 
-// ApplyControlBusiness 是管控侧的业务入口：注册/鉴权只跑业务半边，
-// 其余控制面消息复用同一套 handler。
-func (mp *JT808MsgProcessor) ApplyControlBusiness(ctx context.Context, msgID uint16, data *model.ProcessData) error {
-	switch msgID {
-	case 0x0001:
-		return mp.processTerminalReplyBusiness(ctx, data)
-	case 0x0100:
-		err := mp.processRegisterBusiness(ctx, data)
-		mp.applyHookReply(ctx, msgID, data)
-		mp.dispatchHooks(ctx, data)
-		return err
-	case 0x0102:
-		err := mp.processAuthBusiness(ctx, data)
-		mp.applyHookReply(ctx, msgID, data)
-		mp.dispatchHooks(ctx, data)
-		return err
-	case 0x0200:
-		// 控制面也需要报警事件：自动 0x9208 与报警动作回调在这里触发。
-		// 与网关路径共用 notifyLocation，避免两套报警识别逻辑。
-		in, ok := data.Incoming.(*model.Msg0200)
-		if !ok {
-			return nil
-		}
-		mp.notifyLocation(ctx, in, hookEventID(ctx, 0x0200, in))
-		// 集群下 0x0200 归控制面，位置历史、报警与在线态只能在控制面落库。
-		return mp.processMsg0200(ctx, data)
-	case 0x0704:
-		if in, ok := data.Incoming.(*model.Msg0704); ok {
-			base := hookEventID(ctx, 0x0704, in)
-			for i := range in.Items {
-				mp.notifyLocation(ctx, &in.Items[i].Loc, fmt.Sprintf("%s#%d", base, i))
-			}
-		}
-		return nil
-	}
-	act, ok := mp.options[msgID]
-	if !ok || act.process == nil {
-		return nil
-	}
-	err := act.process(ctx, data)
-	// 扩展业务事件与业务处理共用同一套构造/派发逻辑；
-	// 事件失败不回传，绝不影响业务结果与应答。
-	mp.dispatchExtendedHooks(ctx, data)
-	return err
-}
-
-// applyHookReply 用网关随事件带来的应答结果补齐管控侧钩子载荷。
+// ApplyHookReply 用网关随事件带来的应答结果补齐管控侧钩子载荷。
 // 管控不重新生成 0x8100/0x8001，注册与鉴权的结果以网关实际发给终端的为准。
-func (mp *JT808MsgProcessor) applyHookReply(ctx context.Context, msgID uint16, data *model.ProcessData) {
+func ApplyHookReply(ctx context.Context, msgID uint16, data *model.ProcessData) {
 	if data == nil || data.Outgoing != nil {
 		return
 	}
@@ -857,8 +815,13 @@ func (mp *JT808MsgProcessor) Process(ctx context.Context, pkt *model.PacketData)
 }
 
 // dispatchHooks 在协议处理成功后外发生命周期事件。
-// 事件发送失败由 hooks 实现自行处理，不会改变 Process 的返回值。
 func (mp *JT808MsgProcessor) dispatchHooks(ctx context.Context, data *model.ProcessData) {
+	DispatchHooks(ctx, mp.hooks, data)
+}
+
+// DispatchHooks 在协议处理成功后外发生命周期事件。
+// 事件发送失败由 hooks 实现自行处理，不会改变业务返回值。
+func DispatchHooks(ctx context.Context, hooks actionpkg.Hooks, data *model.ProcessData) {
 	switch in := data.Incoming.(type) {
 	case *model.Msg0100:
 		event := actionpkg.RegisterEvent{
@@ -872,7 +835,7 @@ func (mp *JT808MsgProcessor) dispatchHooks(ctx context.Context, data *model.Proc
 		if out, ok := data.Outgoing.(*model.Msg8100); ok {
 			event.Result = uint8(out.Result)
 		}
-		mp.hooks.OnRegister(ctx, event)
+		hooks.OnRegister(ctx, event)
 	case *model.Msg0102:
 		event := actionpkg.AuthEvent{
 			EventID:         hookEventID(ctx, 0x0102, in),
@@ -883,16 +846,16 @@ func (mp *JT808MsgProcessor) dispatchHooks(ctx context.Context, data *model.Proc
 		if out, ok := data.Outgoing.(*model.Msg8001); ok {
 			event.Success = out.Result == model.ResultSuccess
 		}
-		mp.hooks.OnAuth(ctx, event)
+		hooks.OnAuth(ctx, event)
 	case *model.Msg0200:
-		mp.notifyLocation(ctx, in, hookEventID(ctx, 0x0200, in))
+		NotifyLocation(ctx, hooks, in, hookEventID(ctx, 0x0200, in))
 	case *model.Msg0704:
 		base := hookEventID(ctx, 0x0704, in)
 		for i := range in.Items {
-			mp.notifyLocation(ctx, &in.Items[i].Loc, fmt.Sprintf("%s#%d", base, i))
+			NotifyLocation(ctx, hooks, &in.Items[i].Loc, fmt.Sprintf("%s#%d", base, i))
 		}
 	default:
-		mp.dispatchExtendedHooks(ctx, data)
+		DispatchExtendedHooks(ctx, hooks, data)
 	}
 }
 
@@ -907,8 +870,8 @@ func versionDesc(v model.VersionType) string {
 	}
 }
 
-func (mp *JT808MsgProcessor) notifyLocation(ctx context.Context, in *model.Msg0200, eventID string) {
-	mp.hooks.OnLocation(ctx, actionpkg.LocationEvent{
+func NotifyLocation(ctx context.Context, hooks actionpkg.Hooks, in *model.Msg0200, eventID string) {
+	hooks.OnLocation(ctx, actionpkg.LocationEvent{
 		EventID:    eventID,
 		Phone:      in.Header.PhoneNumber,
 		Serial:     in.Header.SerialNumber,
@@ -923,7 +886,7 @@ func (mp *JT808MsgProcessor) notifyLocation(ctx context.Context, in *model.Msg02
 	})
 	if in.AlarmSign != 0 {
 		extItems := in.ParseExtItems()
-		mp.hooks.OnAlarm(ctx, actionpkg.AlarmEvent{
+		hooks.OnAlarm(ctx, actionpkg.AlarmEvent{
 			EventID:   eventID,
 			Phone:     in.Header.PhoneNumber,
 			Serial:    in.Header.SerialNumber,
@@ -1256,92 +1219,6 @@ func (mp *JT808MsgProcessor) processMsg0201(_ context.Context, data *model.Proce
 func (mp *JT808MsgProcessor) processMsg8202(_ context.Context, data *model.ProcessData) error {
 	in := data.Incoming.(*model.Msg8202)
 	mp.deps.Runtime.Tracking.Set(in.Header.PhoneNumber, in.TimeInterval, in.ValidityPeriod)
-	return nil
-}
-
-// 收到位置信息汇报，回复通用应答
-func (mp *JT808MsgProcessor) processMsg0200(ctx context.Context, data *model.ProcessData) error {
-	in := data.Incoming.(*model.Msg0200)
-
-	devices := mp.deps.Repos.Devices
-	device, err := devices.GetByPhone(ctx, in.Header.PhoneNumber)
-	// 缓存不存在，说明设备不合法，需要返回错误，让服务层处理关闭
-	if errors.Is(err, repository.ErrDeviceNotFound) {
-		return errors.Wrapf(err, "Fail to find device cache, phoneNumber=%s", in.Header.PhoneNumber)
-	}
-	if err := mp.deps.Repos.Alarms.Record(ctx, in.Header.PhoneNumber, in.Header.SerialNumber, in.AlarmSign, in.Latitude, in.Longitude, in.Time); err != nil {
-		// 报警落库失败需要上抛：at_least_once 分类下不应答，由终端重传。
-		return errors.Wrapf(err, "record alarm, phoneNumber=%s", in.Header.PhoneNumber)
-	}
-
-	// 解析状态位编码
-	dg := &model.DeviceGeo{}
-	err = dg.Decode(device.Phone, in)
-	if err != nil {
-		return errors.Wrapf(err, "Fail to decode device geo, phoneNumber=%s", device.Phone)
-	}
-
-	// 与 Geo.Append 的单调守卫使用同一基准：旧位置不能把新在线态改回休眠。
-	latestGeo, latestErr := mp.deps.Repos.Geo.Latest(ctx, device.Phone)
-	staleLocation := latestErr == nil && latestGeo != nil && dg.Time.Before(latestGeo.Time)
-	if !staleLocation && dg.Geo.ACCStatus == 0 { // ACC关闭，设备休眠
-		device.Status = model.DeviceStatusSleeping
-		device.LastestComTime = time.Now()
-		_ = devices.Upsert(ctx, device)
-	}
-
-	_ = mp.deps.Repos.Geo.Append(ctx, dg)
-	return mp.recordLocationHistory(ctx, 0x0200, []*model.Msg0200{in})
-}
-
-// processMsg0704 保存批量定位快照，并把每个数据项写入定位历史。
-// 0x0704 数据项内没有独立消息流水号，无法与报警去重口径对齐，因此只记定位、不记报警。
-func (mp *JT808MsgProcessor) processMsg0704(ctx context.Context, data *model.ProcessData) error {
-	in := data.Incoming.(*model.Msg0704)
-	mp.deps.Repos.Industry.Record(in)
-
-	locs := make([]*model.Msg0200, 0, len(in.Items))
-	for i := range in.Items {
-		locs = append(locs, &in.Items[i].Loc)
-	}
-	return mp.recordLocationHistory(ctx, 0x0704, locs)
-}
-
-// recordLocationHistory 写入定位历史；memory 后端未启用 Locations 时跳过。
-// 返回错误供 at_least_once 分类判定：落库失败时本次不应答，等待终端重传。
-func (mp *JT808MsgProcessor) recordLocationHistory(ctx context.Context, msgID uint16, locs []*model.Msg0200) error {
-	repo := mp.deps.Repos.Locations
-	if repo == nil || len(locs) == 0 {
-		return nil
-	}
-	records := make([]repository.LocationRecord, 0, len(locs))
-	event := UplinkEventFromContext(ctx)
-	for index, loc := range locs {
-		if loc.Header == nil {
-			continue
-		}
-		records = append(records, repository.LocationRecord{
-			Phone:      loc.Header.PhoneNumber,
-			MsgID:      msgID,
-			AlarmSign:  loc.AlarmSign,
-			StatusSign: loc.StatusSign,
-			Latitude:   loc.Latitude,
-			Longitude:  loc.Longitude,
-			Altitude:   loc.Altitude,
-			Speed:      loc.Speed,
-			Direction:  loc.Direction,
-			ExtItems:   loc.ExtItems,
-			OccurredAt: loc.Time,
-			ReceivedAt: time.Now(),
-			DedupKey:   locationDedupKey(event.EventID, index),
-		})
-	}
-	if len(records) == 0 {
-		return nil
-	}
-	if err := repo.Record(ctx, records); err != nil {
-		return errors.Wrapf(err, "record location history, phoneNumber=%s, msgID=0x%04X", records[0].Phone, msgID)
-	}
 	return nil
 }
 
@@ -1683,127 +1560,10 @@ func mediaTimeInRange(t string, start, end *time.Time) bool {
 	return true
 }
 
-func (mp *JT808MsgProcessor) processIndustryReport(ctx context.Context, data *model.ProcessData) error {
+// processMsg9105 记录 0x9105 实时音视频传输状态快照；管控侧业务处理已迁至 internal/business。
+func (mp *JT808MsgProcessor) processMsg9105(_ context.Context, data *model.ProcessData) error {
 	mp.deps.Repos.Industry.Record(data.Incoming)
-	// 0x0108 升级结果需要跨重启保留，写入独立仓储而不是只留内存快照。
-	if result, ok := data.Incoming.(*model.Msg0108); ok && result.Header != nil {
-		return mp.deps.Repos.UpgradeResults.Save(ctx, &repository.UpgradeResult{
-			Phone:       result.Header.PhoneNumber,
-			UpgradeType: result.UpgradeType,
-			Result:      result.Result,
-			Serial:      result.Header.SerialNumber,
-			ReceivedAt:  time.Now(),
-		})
-	}
 	return nil
-}
-
-// processMsg0801 把多媒体数据落盘并写入媒体文件仓储。
-//
-// 到达这里的 0x0801 都是完整消息：分包由 runtime 重组完成后再进入业务，
-// 非分包单包即为完整文件，因此这里不需要再判断包序号。
-// 行业内存快照保留原有行为，落盘失败时仍可通过 Industry 查到最近一条上报。
-func (mp *JT808MsgProcessor) processMsg0801(ctx context.Context, data *model.ProcessData) error {
-	upload, ok := data.Incoming.(*model.Msg0801)
-	if !ok {
-		return nil
-	}
-	mp.deps.Repos.Industry.Record(upload)
-	if mp.deps.MediaUpload == nil {
-		log.Warn().Msg("media upload store not configured, skip 0x0801 persistence")
-		return nil
-	}
-	file, err := mp.deps.MediaUpload.Save(upload)
-	if err != nil {
-		return err
-	}
-	return mp.deps.Repos.MediaFiles.Save(ctx, file)
-}
-
-// processMsg0802 把 0x8802 检索命令的应答（0x0802）写入检索结果仓储。
-// 行业内存快照保留原有行为；落库以 (phone, answerSerial) 为单位整体覆盖，
-// 便于查询“终端最近一次返回了哪些本地媒体”。
-func (mp *JT808MsgProcessor) processMsg0802(ctx context.Context, data *model.ProcessData) error {
-	mp.deps.Repos.Industry.Record(data.Incoming)
-	result, ok := data.Incoming.(*model.Msg0802)
-	if !ok || result.Header == nil {
-		return nil
-	}
-	receivedAt := time.Now()
-	records := make([]repository.MediaSearchRecord, 0, len(result.Items))
-	for _, item := range result.Items {
-		records = append(records, repository.MediaSearchRecord{
-			MediaID:      item.MediaID,
-			MediaType:    item.MediaType,
-			ChannelID:    item.ChannelID,
-			EventID:      item.EventID,
-			AlarmSign:    item.Location.AlarmSign,
-			StatusSign:   item.Location.StatusSign,
-			Latitude:     item.Location.Latitude,
-			Longitude:    item.Location.Longitude,
-			Altitude:     item.Location.Altitude,
-			Speed:        item.Location.Speed,
-			Direction:    item.Location.Direction,
-			LocationTime: parseMediaSearchLocationTime(item.Location.Time),
-			ReceivedAt:   receivedAt,
-		})
-	}
-	return mp.deps.Repos.MediaSearches.Replace(ctx, result.Header.PhoneNumber, result.AnswerSerial, records)
-}
-
-// parseMediaSearchLocationTime 按固定 GMT+8 解析内嵌位置体的 BCD 时间；
-// 缺失或非法时返回零值，避免把平台接收时间误当成终端时间。
-func parseMediaSearchLocationTime(value string) time.Time {
-	if len(value) != 12 {
-		return time.Time{}
-	}
-	parsed, err := time.ParseInLocation("060102150405", value, hex.ProtocolTimeZone)
-	if err != nil {
-		return time.Time{}
-	}
-	return parsed
-}
-
-// processMsg0805 把摄像头立即拍摄命令应答写入拍摄记录，
-// mediaId 与 0x0801 落盘的文件通过 (phone, mediaId) 关联，查询时再判断文件是否已到达。
-func (mp *JT808MsgProcessor) processMsg0805(ctx context.Context, data *model.ProcessData) error {
-	reply, ok := data.Incoming.(*model.Msg0805)
-	if !ok || reply.Header == nil {
-		return nil
-	}
-	mp.deps.Repos.Industry.Record(reply)
-	capture := &repository.MediaCapture{
-		Phone:        reply.Header.PhoneNumber,
-		RecordID:     strconv.FormatUint(uint64(reply.AnswerSerial), 10),
-		AnswerSerial: reply.AnswerSerial,
-		Result:       reply.Result,
-		ReceivedAt:   time.Now(),
-		Items:        make([]repository.MediaCaptureItem, 0, len(reply.MediaIDs)),
-	}
-	for _, mediaID := range reply.MediaIDs {
-		capture.Items = append(capture.Items, repository.MediaCaptureItem{MediaID: mediaID})
-	}
-	return mp.deps.Repos.MediaCaptures.SaveCapture(ctx, capture)
-}
-
-// processMediaSignaling 记录终端上行的 1078 音视频信令状态，
-// 供 API 查询与后续媒体接入使用；0x1206 同时落媒体元数据仓储。
-func (mp *JT808MsgProcessor) processMediaSignaling(ctx context.Context, data *model.ProcessData) error {
-	mp.deps.Repos.Industry.Record(data.Incoming)
-	if notice, ok := data.Incoming.(*model.Msg1206); ok {
-		return mp.deps.Repos.Media.SaveUploadNotice(ctx, notice.Header.PhoneNumber, notice)
-	}
-	return nil
-}
-
-// processMediaResourceList 记录 0x1205 音视频资源列表，并整包覆盖媒体元数据仓储。
-func (mp *JT808MsgProcessor) processMediaResourceList(ctx context.Context, data *model.ProcessData) error {
-	mp.deps.Repos.Industry.Record(data.Incoming)
-	list, ok := data.Incoming.(*model.Msg1205)
-	if !ok || list.Header == nil {
-		return nil
-	}
-	return mp.deps.Repos.Media.ReplaceResourceList(ctx, list.Header.PhoneNumber, list)
 }
 
 // processMediaUploadTask 保存 0x9206 文件上传指令的元数据。
@@ -1813,18 +1573,6 @@ func (mp *JT808MsgProcessor) processMediaUploadTask(ctx context.Context, data *m
 		return nil
 	}
 	return mp.deps.Repos.Media.SaveUploadTask(ctx, task.Header.PhoneNumber, task)
-}
-
-// processAttachmentSignaling 记录主链路上的苏标附件信令。
-// 真正的附件接收、位图与 0x9212 应答在 internal/alarmserver 的独立端口完成。
-func (mp *JT808MsgProcessor) processAttachmentSignaling(_ context.Context, data *model.ProcessData) error {
-	if data == nil || data.Incoming == nil || data.Incoming.GetHeader() == nil {
-		return nil
-	}
-	header := data.Incoming.GetHeader()
-	log.Debug().Uint16("msg_id", header.MsgID).Str("phone", header.PhoneNumber).
-		Msg("Attachment signaling received on main port, handled by alarm server")
-	return nil
 }
 
 // processMsg8301 stores configured event items in the terminal simulator's

@@ -15,6 +15,7 @@ import (
 	"github.com/rs/zerolog/log"
 
 	actionpkg "github.com/fakeyanss/jt808-server-go/internal/action"
+	"github.com/fakeyanss/jt808-server-go/internal/business"
 	clockpkg "github.com/fakeyanss/jt808-server-go/internal/clock"
 	"github.com/fakeyanss/jt808-server-go/internal/contracts"
 	"github.com/fakeyanss/jt808-server-go/internal/mediaupload"
@@ -57,12 +58,12 @@ type BusinessOptions struct {
 
 // BusinessExecutor 是管控侧的上行事件消费者。
 //
-// 它复用 protocol 的 handler 实现：输入从活连接换成“事件 + 原始消息体”，
+// 业务处理复用的是 internal/business 的管控半边：输入从活连接换成“事件 + 原始消息体”，
 // 并按手机号串行处理；多副本下顺序不保证，但字段所有权隔离与 409 有界重投
 // 保证最终状态一致（0x0100 与 0x0102 互不覆盖对方字段）。
 type BusinessExecutor struct {
-	opts BusinessOptions
-	proc *protocol.JT808MsgProcessor
+	opts     BusinessOptions
+	business *business.Processor
 
 	mu       sync.Mutex
 	mailbox  map[string]*phoneMailbox
@@ -86,8 +87,12 @@ func NewBusinessExecutor(opts BusinessOptions) *BusinessExecutor {
 		hooks = actionpkg.Noop{}
 	}
 	return &BusinessExecutor{
-		opts:    opts,
-		proc:    protocol.NewJT808MsgProcessor(hooks, protocol.WithProcessorDeps(processorDeps)),
+		opts: opts,
+		business: business.New(business.Options{
+			Repositories: processorDeps.Repos,
+			Hooks:        hooks,
+			MediaUpload:  opts.MediaUpload,
+		}),
 		mailbox: map[string]*phoneMailbox{},
 	}
 }
@@ -109,7 +114,7 @@ func (b *BusinessExecutor) ConsumeEvent(ctx context.Context, event contracts.Upl
 			Message: fmt.Sprintf("decode 0x%04X: %v", event.MsgID, err),
 		}
 	}
-	data := b.proc.NewProcessData(event.MsgID)
+	data := protocol.NewProcessData(event.MsgID)
 	if data == nil {
 		data = &model.ProcessData{}
 	}
@@ -154,7 +159,7 @@ func (b *BusinessExecutor) ConsumeEvent(ctx context.Context, event contracts.Upl
 	if err != nil {
 		return contracts.UplinkResult{}, err
 	}
-	if err := b.proc.ApplyControlBusiness(ctx, event.MsgID, data); err != nil {
+	if err := b.business.ProcessControl(ctx, event.MsgID, data); err != nil {
 		if errors.Is(err, repository.ErrDeviceNotFound) {
 			return contracts.UplinkResult{}, &uplink.StatusError{
 				Status:  http.StatusConflict,

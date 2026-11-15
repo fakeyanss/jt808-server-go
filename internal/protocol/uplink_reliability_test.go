@@ -2,6 +2,7 @@ package protocol
 
 import (
 	"context"
+	"encoding/binary"
 	"errors"
 	"net"
 	"testing"
@@ -52,6 +53,39 @@ func (r *recordingLocationRepo) ListPage(context.Context, repository.HistoryQuer
 
 // runUplinkPipeline 启动一次完整上行链路，返回应答帧通道。
 // peerEnd 上的读取协程只取第一帧（通用应答），用于判断本轮是否应答。
+// testLocationBusiness 只实现定位历史落库，用于验证协议层的应答时序；
+// 真实业务映射（报警、休眠判定）由 internal/business 的测试覆盖。
+type testLocationBusiness struct {
+	stores *database.Repositories
+}
+
+func (b testLocationBusiness) Process(ctx context.Context, msgID uint16, data *model.ProcessData) error {
+	in, ok := data.Incoming.(*model.Msg0200)
+	if !ok || msgID != 0x0200 || b.stores.Locations == nil {
+		return nil
+	}
+	return b.stores.Locations.Record(ctx, []repository.LocationRecord{{
+		Phone:      in.Header.PhoneNumber,
+		MsgID:      msgID,
+		AlarmSign:  in.AlarmSign,
+		StatusSign: in.StatusSign,
+		Latitude:   in.Latitude,
+		Longitude:  in.Longitude,
+		OccurredAt: in.Time,
+		ReceivedAt: time.Now(),
+	}})
+}
+
+// locationReportBody 构造 0x0200 的 28 字节位置体（含 ACC 与 BCD 时间）。
+func locationReportBody(alarmSign uint32) []byte {
+	body := make([]byte, 28)
+	binary.BigEndian.PutUint32(body[0:4], alarmSign)
+	binary.BigEndian.PutUint32(body[8:12], 39543265)   // 纬度
+	binary.BigEndian.PutUint32(body[12:16], 116235432) // 经度
+	copy(body[22:28], []byte{0x26, 0x11, 0x01, 0x12, 0x00, 0x00})
+	return body
+}
+
 func runUplinkPipeline(t *testing.T, stores *database.Repositories, policy uplink.Policy, alarmSign uint32) (error, <-chan []byte, func()) {
 	t.Helper()
 	return runUplinkPipelineWithSink(t, stores, policy, alarmSign, nil)
@@ -86,6 +120,8 @@ func runUplinkPipelineWithSink(
 		Uplink:     &policy,
 		UplinkSink: sink,
 		GatewayID:  "gw-test",
+		// 协议层测试只关心“先落库后应答”的时序，业务映射由 internal/business 覆盖。
+		Business: testLocationBusiness{stores: stores},
 	}))
 	session := &model.Session{ID: "uplink-reliability", Conn: serverEnd, AckTimeout: time.Hour, MaxRetries: 1}
 

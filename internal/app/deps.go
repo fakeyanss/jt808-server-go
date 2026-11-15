@@ -14,6 +14,7 @@ import (
 	"github.com/fakeyanss/jt808-server-go/internal/adminapi"
 	"github.com/fakeyanss/jt808-server-go/internal/alarmserver"
 	"github.com/fakeyanss/jt808-server-go/internal/attachmentserver"
+	"github.com/fakeyanss/jt808-server-go/internal/business"
 	clockpkg "github.com/fakeyanss/jt808-server-go/internal/clock"
 	"github.com/fakeyanss/jt808-server-go/internal/config"
 	"github.com/fakeyanss/jt808-server-go/internal/contracts"
@@ -347,6 +348,15 @@ func buildDeps(spec Spec, cfg *config.Config, s settings) *deps {
 		}
 		processorDeps.MediaUpload = mediaUploadStore
 		log.Info().Str("dir", mediaUploadStore.Root()).Msg("Media upload store initialized")
+	}
+
+	// 单机进程（无上行出口）在本地执行管控业务；集群网关只投递事件，不注入 business。
+	if processorDeps.UplinkSink == nil {
+		processorDeps.Business = business.New(business.Options{
+			Repositories: processorDeps.Repos,
+			Hooks:        hooks,
+			MediaUpload:  processorDeps.MediaUpload,
+		})
 	}
 
 	// 鉴权提供者是网关只读查询设备档案的契约：gateway+control 同进程直接读本地库，
