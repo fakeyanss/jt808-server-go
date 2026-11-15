@@ -5,5 +5,5 @@
 // SQL 实现在 repository/sqlcore + 方言包 repository/sqlite、repository/mysql，
 // 装配入口在 repository/database，SQL 驱动注册在 repository/database/sqlbackend。
 //
-// 扩展方式见 CONTRIBUTING.md 的“目录结构与扩展方式”。
+// 扩展方式见 docs/codebase.md。
 package repository
