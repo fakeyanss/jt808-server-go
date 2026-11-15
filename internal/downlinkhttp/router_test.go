@@ -31,6 +31,10 @@ func (s *stubSessionDirectory) Release(context.Context, string, repository.Sessi
 	return nil
 }
 
+func (s *stubSessionDirectory) DeleteByGateway(context.Context, string, string) error {
+	return nil
+}
+
 func (s *stubSessionDirectory) Validate(context.Context, string, repository.SessionOwner, uint64) (bool, error) {
 	return false, nil
 }

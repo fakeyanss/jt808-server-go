@@ -1756,7 +1756,7 @@ func TestTCPServerHeartbeatFromUnknownDeviceClosesConn(t *testing.T) {
 	require.Error(t, err, "unknown-device heartbeat must close the connection after acknowledging")
 }
 
-func TestTCPServerLogoutClearsCacheAndKeepsConn(t *testing.T) {
+func TestTCPServerLogoutEndsSession(t *testing.T) {
 	server := NewTCPServer()
 	require.NoError(t, server.Listen("127.0.0.1:0"))
 	go server.Start()
@@ -1773,13 +1773,12 @@ func TestTCPServerLogoutClearsCacheAndKeepsConn(t *testing.T) {
 
 	waitDeviceAbsent(t, phone)
 
-	// The server keeps the connection open after logout, waiting for the
-	// terminal to close it to avoid TCP TIMEWAIT on the server side.
-	require.NoError(t, b.conn.SetReadDeadline(time.Now().Add(300*time.Millisecond)))
+	// 注销现在结束会话归属并关闭连接，避免下行继续路由到已注销终端。
+	require.NoError(t, b.conn.SetReadDeadline(time.Now().Add(2*time.Second)))
 	_, err := b.fh.Recv(context.Background())
 	require.Error(t, err)
 	var netErr net.Error
-	require.True(t, errors.As(err, &netErr) && netErr.Timeout(), "expected read timeout on kept-open conn, got %v", err)
+	require.False(t, errors.As(err, &netErr) && netErr.Timeout(), "expected closed conn after logout, got timeout")
 }
 
 func TestTCPServerUpdatesCommandOutboxOnAck(t *testing.T) {

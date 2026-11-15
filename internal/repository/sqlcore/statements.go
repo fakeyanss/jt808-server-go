@@ -86,6 +86,8 @@ type Statements interface {
 	SelectSessionGeneration() string
 	// DeleteSessionDirectory 按 owner 与 generation 精确删除目录行。
 	DeleteSessionDirectory() string
+	// DeleteSessionDirectoryByGateway 删除某个网关实例的全部目录行。
+	DeleteSessionDirectoryByGateway() string
 	// ValidateSessionDirectory 用一次查询判断事件 generation 是否仍有效。
 	ValidateSessionDirectory() string
 	// SelectSessionDirectory 按 phone 查询目录快照。

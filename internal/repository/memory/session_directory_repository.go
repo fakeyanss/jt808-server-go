@@ -54,6 +54,17 @@ func (r *SessionDirectoryRepository) Release(_ context.Context, phone string, ow
 	return nil
 }
 
+func (r *SessionDirectoryRepository) DeleteByGateway(_ context.Context, gatewayID, instanceID string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for phone, record := range r.records {
+		if record.GatewayID == gatewayID && record.InstanceID == instanceID {
+			delete(r.records, phone)
+		}
+	}
+	return nil
+}
+
 func (r *SessionDirectoryRepository) Validate(_ context.Context, phone string, owner repository.SessionOwner, generation uint64) (bool, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()

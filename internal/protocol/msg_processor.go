@@ -70,6 +70,10 @@ type ProcessorDeps struct {
 	// OnSessionClosed 在网关本地会话关闭后回调；cluster 用它上报 release。
 	// phone 为空或 generation 为 0 时表示该会话没有成功 claim，不需要 release。
 	OnSessionClosed func(sessionID, phone, transport string, generation uint64)
+
+	// SkipActionHooks 为 true 时本进程不派发 action 钩子。
+	// cluster 由 control 统一派发（上行事件 + release），网关不再重复发送。
+	SkipActionHooks bool
 	// QueryResponse 把网关收到的查询应答体交给下行等待表。
 	QueryResponse func(msgID uint16, header *model.MsgHeader, body []byte)
 	// Blob 是管控侧 0x0801 的文件写入契约；为空时回退 mediaUpload。
@@ -528,6 +532,7 @@ func NewJT808MsgProcessor(hooks actionpkg.Hooks, opts ...ProcessorOption) *JT808
 	if settings.deps.OnSessionClosed != nil {
 		deps.OnSessionClosed = settings.deps.OnSessionClosed
 	}
+	deps.SkipActionHooks = settings.deps.SkipActionHooks
 	if settings.deps.MediaUpload != nil {
 		deps.MediaUpload = settings.deps.MediaUpload
 	}
@@ -713,7 +718,9 @@ func (mp *JT808MsgProcessor) ApplyBusiness(ctx context.Context, msgID uint16, da
 	} else if hasAction && act.process != nil {
 		businessErr = act.process(ctx, data)
 	}
-	mp.dispatchHooks(ctx, data)
+	if !mp.deps.SkipActionHooks {
+		mp.dispatchHooks(ctx, data)
+	}
 	return businessErr
 }
 
@@ -1069,6 +1076,7 @@ func (mp *JT808MsgProcessor) processMsg0003(ctx context.Context, data *model.Pro
 		timer := NewKeepaliveTimer()
 		timer.Cancel(phone)
 		mp.deps.Runtime.Heartbeat.Remove(ctx, phone)
+		markSessionLoggedOut(ctx)
 		return nil
 	}
 	devices := mp.deps.Repos.Devices
@@ -1086,8 +1094,18 @@ func (mp *JT808MsgProcessor) processMsg0003(ctx context.Context, data *model.Pro
 	// 清楚缓存
 	_ = devices.DeleteByPhone(ctx, device.Phone)
 	mp.deps.Runtime.Heartbeat.Remove(ctx, device.Phone)
-	// 为避免连接TIMEWAIT，应等待对方主动关闭
+	markSessionLoggedOut(ctx)
 	return nil
+}
+
+// markSessionLoggedOut 记录本会话已注销；服务层在本次读取返回后结束会话归属。
+// 协议层只改会话状态，不直接依赖集群上报。
+func markSessionLoggedOut(ctx context.Context) {
+	session, ok := ctx.Value(model.SessionCtxKey{}).(*model.Session)
+	if !ok || session == nil {
+		return
+	}
+	session.MarkLoggedOut()
 }
 
 // 收到注册，应校验设备ID，如果可注册，则缓存设备信息并返回鉴权码

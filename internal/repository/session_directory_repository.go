@@ -34,6 +34,8 @@ type SessionDirectoryRepository interface {
 	// Release 删除归属行；条件必须同时匹配 owner 与 generation，
 	// 避免旧连接删掉新归属。
 	Release(ctx context.Context, phone string, owner SessionOwner, generation uint64) error
+	// DeleteByGateway 删除某个网关实例的全部归属行；用于网关注销后的目录回收。
+	DeleteByGateway(ctx context.Context, gatewayID, instanceID string) error
 	// Validate 判断事件 generation 是否仍归属于该会话：
 	// 行存在、owner 完全匹配且事件 generation 不低于目录值。
 	Validate(ctx context.Context, phone string, owner SessionOwner, generation uint64) (bool, error)

@@ -75,6 +75,8 @@ type DisconnectEvent struct {
 	Phone     string `json:"phone,omitempty"`
 	SessionID string `json:"sessionId"`
 	Transport string `json:"transport"`
+	// Reason 区分会话结束原因：logout（0x0003）或 transport_closed（连接关闭/超时）。
+	Reason string `json:"reason,omitempty"`
 }
 
 // Noop 是默认钩子实现，所有回调均为空操作。

@@ -716,6 +716,14 @@ func (s *Server) handleGatewayDeregister(w http.ResponseWriter, r *http.Request)
 		writeError(w, http.StatusInternalServerError, "deregister_failed", "failed to deregister gateway node")
 		return
 	}
+	// 网关切走/关闭后不应再保留它的会话归属，否则下行会继续命中已失效的节点。
+	if s.sessions != nil {
+		if err := s.sessions.DeleteByGateway(r.Context(), req.GatewayID, req.InstanceID); err != nil {
+			log.Error().Err(err).Str("gateway_id", req.GatewayID).Msg("Session directory cleanup failed")
+			writeError(w, http.StatusInternalServerError, "deregister_failed", "failed to clean session directory")
+			return
+		}
+	}
 	writeJSON(w, http.StatusOK, gatewaynode.StatusResponse{Status: "offline"})
 }
 
