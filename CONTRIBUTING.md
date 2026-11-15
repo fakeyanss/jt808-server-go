@@ -60,10 +60,10 @@ CI 会在 `main`、`dev/**` 的 push 与 Pull Request 上执行 `make all`、覆
 新增或修改一条 JT/T 808 / 苏标 / 1078 消息时，按以下顺序处理：
 
 1. 在 `internal/protocol/model/` 新建或修改 `msg_XXXX.go`，实现 `Decode` / `Encode`，按 `Header.Attr.VersionDesc` 处理 2011/2013/2019 的字段差异；
-2. 在 `internal/protocol/msg_processor.go` 的注册表登记 MsgID，绑定请求/应答模型与处理函数；
-3. 如果消息有归属差异，同步更新 `internal/protocol/ownership.go`：网关项、管控项、双方项必须与注册表一致；
-4. 在处理函数中完成业务逻辑与应答生成。需要落库时只调用 `internal/repository` 的接口，不直接写 SQL；
-5. 补单元测试。模型测试覆盖编解码往返与版本差异，处理器测试覆盖业务分支；涉及连接、分包或应答配对时，在 `internal/server/` 或端到端测试中补场景；
+2. 在 `internal/protocol/msg_processor.go` 的注册表登记 MsgID，绑定请求/应答模型与网关半边处理函数；控制面业务处理登记在 `internal/business/registry.go`；
+3. 如果消息有归属差异，同步更新 `internal/protocol/ownership.go`：网关项、管控项、双方项必须与两份注册表一致；
+4. `OwnerGateway` 的应答与连接行为留在 `internal/protocol`；`OwnerControl` 的业务与落库放 `internal/business`，只调用 `internal/repository` 的接口，不直接写 SQL；`OwnerBoth` 两边都要实现；
+5. 补单元测试。模型测试覆盖编解码往返与版本差异；网关半边测试放 `internal/protocol`，业务处理测试放 `internal/business`，涉及连接、分包或应答配对时在 `internal/server/` 或端到端测试中补场景；
 6. 刷新覆盖矩阵：
 
    ```sh
@@ -73,14 +73,103 @@ CI 会在 `main`、`dev/**` 的 push 与 Pull Request 上执行 `make all`、覆
 
    自动生成段位于 `docs/protocol-coverage.md` 的 `BEGIN/END GENERATED REGISTRY` 标记之间，**不要手工编辑**。手工状态表需要按代码实际行为更新；状态定义见该文档。
 
-## 存储与迁移
+## 目录结构与扩展方式
 
-- 仓储接口定义在 `internal/repository/`，SQL 方言实现分别在 `internal/repository/sqlite/` 与 `internal/repository/mysql/`。
+### 目录职责
+
+| 路径 | 职责 | 约束 |
+|---|---|---|
+| `internal/protocol/` | 帧处理、编解码、版本判别、分包重组、MsgID 注册与网关半边 | 不持有连接、不直接写库、不承载管控业务落库 |
+| `internal/business/` | 管控业务半边：注册/鉴权落库、定位报警、行业上报、多媒体与附件元数据 | 只依赖 `repository` 接口；由 control 调用或单机注入 |
+| `internal/repository/` | 持久化契约：按领域拆分的 `XxxRepository` 接口、读写 DTO、哨兵错误、保留策略 | 接口唯一来源；不引入任何后端实现 |
+| `internal/repository/memory/` | 内存实现，默认后端与测试基座 | 与 SQL 实现保持同一语义 |
+| `internal/repository/sqlcore/` | 方言无关的 SQL 实现、`Store`（读写池/方言语句/时钟/迁移计划） | 控制流与扫描只写一份 |
+| `internal/repository/sqlite/`、`mysql/` | 方言语句、DDL、连接池与迁移计划；`Backend` 嵌入 `sqlcore.Store` | 只放本方言差异 |
+| `internal/repository/database/` | 后端装配、`Repositories` 聚合、`Init/Default/Close/Check` | 不引入数据库驱动 |
+| `internal/repository/database/sqlbackend/` | 把 sqlite/mysql 的打开与迁移注册进 `database` | 仅 control、standalone、migrate 导入 |
+| `internal/server/` | 连接生命周期、pipeline、会话调度 | 通过 `protocol.ProcessorDeps` 注入依赖 |
+| `internal/control/` | 集群控制面、上行事件消费、节点与会话调度 | 唯一连业务库的角色 |
+| `internal/api/` | 业务 HTTP API | 仓储由装配层注入，不取全局单例 |
+| `tools/registrydoc/` | 生成并校验协议覆盖矩阵 | 生成段禁止手改 |
+
+### 新增仓储
+
+显式装配是有意为之：新增一个仓储必须让编译器提示所有装配点，不要用反射或自动注册消除这些步骤。
+
+1. `internal/repository/<domain>_repository.go`：定义接口与读写 DTO/错误；接口方法要说明读写所有权与快照语义。
+2. `internal/repository/memory/<domain>_repository.go`：实现内存版本，作为测试与 `memory` 后端。
+3. `internal/repository/sqlcore/<domain>_repository.go`：实现方言无关 SQL，并在 `sqlcore.Store` 上暴露 getter。
+4. 需要新 SQL/表时：补 `sqlite/statements.go`、`mysql/statements.go` 与两端 `migrations/v<MAJOR>.<MINOR>.<PATCH>.sql`。
+5. `internal/repository/repositories.go`、`memory/repositories.go`、`database.NewSQLRepositories`：补字段与装配。
+6. 消费方注入：`business.Options.Repositories`、`api.Run` 的 `repository.Repositories` 或 `protocol.ProcessorDeps.Repos`。
+7. 测试至少覆盖 memory 与一条 SQL 后端（`database_test.go` 或 `sqlite`/`mysql` 包内）。
+
+### 新增数据库后端
+
+1. 在 `internal/repository/sqlcore/` 复用现有 `Statements` 接口；方言差异放到新后端包的 `statements.go`。
+2. 新建 `internal/repository/<backend>/`：实现 `Open`、`Migrate`、连接池与 `migrations/`，返回嵌入 `sqlcore.Store` 的 `Backend`。
+3. 在 `internal/repository/database/sqlbackend/` 注册 `open` 与 `migrate` 两个函数。
+4. 需要该后端的入口二进制显式 blank import `sqlbackend`；数据面二进制不要导入。
+5. 同步 `configs/default.yaml` 的后端枚举、`docs/configuration.md` 与 `docs/installation.md` 的部署说明，并补迁移语句。
+6. 用 `go list -deps ./cmd/jt-signal | grep -E 'sqlite|mysql'` 确认数据面没有被带进驱动。
+
+### 新增业务模块（管控侧）
+
+1. 先判断归属：只做协议编解码与网关应答的留在 `internal/protocol`；需要落库的控制面业务放 `internal/business`；跨节点编排与调度放 `internal/control`。
+2. 在 `internal/protocol/msg_processor.go` 注册 `genData`（解码与默认应答），在 `internal/business/registry.go` 注册 `process`（业务处理）。
+3. 在 `internal/protocol/ownership.go` 声明归属；`OwnerControl` 必须有业务处理函数，`OwnerBoth` 必须同时有协议半边与业务半边。
+4. 仓储通过 `business.Options.Repositories` 注入，不在业务代码里调用 `database.Default()`。
+5. 单机链路由 `ProcessorDeps.Business` 注入；集群网关不注入，业务只在 control 执行。
+6. 刷新生成物并跑检查：
+
+   ```sh
+   go run ./tools/registrydoc -write
+   ./scripts/check-coverage.sh
+   ```
+
+### 最小示例
+
+新增一个 `FooRepository` 时，契约与两套实现的最小骨架如下，装配点按上一节补全：
+
+```go
+// internal/repository/foo_repository.go
+type FooRepository interface {
+	Get(ctx context.Context, phone string) (*FooRecord, error)
+	Save(ctx context.Context, record *FooRecord) error
+}
+
+// internal/repository/memory/foo_repository.go
+type fooRepository struct { mu sync.RWMutex; items map[string]*repository.FooRecord }
+func NewFooRepository() repository.FooRepository { return &fooRepository{items: map[string]*repository.FooRecord{}} }
+
+// internal/repository/sqlcore/foo_repository.go
+func (s *Store) FooRepository() repository.FooRepository { return &fooRepository{store: s} }
+```
+
+```go
+// internal/repository/repositories.go
+type Repositories struct {
+	// ...
+	Foo FooRepository
+}
+
+// internal/repository/database/database.go（NewSQLRepositories）
+repos.Foo = handle.FooRepository()
+
+// internal/repository/memory/repositories.go
+Foo: NewFooRepository(),
+```
+
+## 元数据存储与迁移
+
+- 分层约定：`repository` 只放契约；`memory`、`sqlcore` 是两套实现；`sqlite`/`mysql` 只提供方言语句、DDL 与连接；`database` 负责装配与聚合；`sqlbackend` 负责驱动注册。
+- 仓储接口定义在 `internal/repository/`，方言实现由 `sqlcore` 复用，`internal/repository/sqlite/` 与 `internal/repository/mysql/` 只放差异部分。
 - 迁移文件名格式为 `v<MAJOR>.<MINOR>.<PATCH>.sql`，两套目录版本号必须同步推进。
 - 每个迁移文件只写本后端的方言：SQLite 使用 `TEXT`/`BLOB` 与 `ON CONFLICT`，MySQL 使用显式 `ENGINE=InnoDB`/`utf8mb4` 与方言类型。
 - 版本按三段数值比较（`1.10.0` > `1.9.0`），不要用字符串排序。
-- 新增表或字段时，同步检查 `internal/repository/` 的仓储接口、memory 实现与 SQL 实现，避免只改一端。
+- 新增表或字段时，同步检查仓储接口、memory 实现、sqlcore 实现与 `Repositories` 装配，避免只改一端。
 - 主服务启动只校验 schema 版本，不执行 DDL；迁移由 `cmd/jt808-migrate` 独立执行。改迁移后请本地跑一次升级路径。
+- `sqlbackend` 只被 control、standalone、migrate 导入；gateway、media、attachment 不链接数据库驱动，也不应新增数据库依赖。
 
 ## 集群模式开发
 
@@ -89,7 +178,7 @@ CI 会在 `main`、`dev/**` 的 push 与 Pull Request 上执行 `make all`、覆
   - Standalone：不配置 `cluster` 段时行为、端口与外部依赖不变；
   - Cluster：按 `configs/cluster/` 的样例启动相关角色，确认启动校验、探针与关键接口。
 - 集群内部 HTTP 契约、会话目录、节点注册与下行路由的语义以 `docs/architecture.md` 为准；改契约时同步更新文档与配置示例。
-- 集群元数据面只允许 control 连数据库；gateway、media、attachment 不应新增数据库依赖。
+- 集群元数据面只允许 control 连数据库；gateway、media、attachment 不应新增数据库依赖（构建上也不会链接驱动，见上文 `sqlbackend`）。
 
 ## 代码与文档约定
 
@@ -104,7 +193,7 @@ CI 会在 `main`、`dev/**` 的 push 与 Pull Request 上执行 `make all`、覆
   - `api.md`：业务 API
   - `operations.md`：运维手册
 
-  `docs/archive/` 保存历史设计与研究文档，不再维护，除修正事实性错误外不要改写。
+  `docs/archive/` 保存历史设计与研究文档，不再维护，除修正事实性错误外不要改写。目录职责与新增仓储/后端/业务模块的步骤见本文的[目录结构与扩展方式](#目录结构与扩展方式)。
 
 ## Pull Request
 
