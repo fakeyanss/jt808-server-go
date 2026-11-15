@@ -1,4 +1,4 @@
-package uplink
+package controlhttp
 
 import (
 	"context"
@@ -10,9 +10,6 @@ import (
 
 	"github.com/fakeyanss/jt808-server-go/internal/contracts"
 )
-
-// PathAttachmentProgress 是附件节点上报进度、查询恢复点的出站入口。
-const PathAttachmentProgress = "/internal/v1/attachment/progress"
 
 // AttachmentProgressStore 是 control 侧附件进度的落库与查询能力。
 type AttachmentProgressStore interface {

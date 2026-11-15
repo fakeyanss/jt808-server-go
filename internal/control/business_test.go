@@ -14,13 +14,13 @@ import (
 	"github.com/fakeyanss/jt808-server-go/internal/codec/hash"
 	"github.com/fakeyanss/jt808-server-go/internal/codec/hex"
 	"github.com/fakeyanss/jt808-server-go/internal/contracts"
+	"github.com/fakeyanss/jt808-server-go/internal/controlhttp"
 	"github.com/fakeyanss/jt808-server-go/internal/protocol"
 	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
 	"github.com/fakeyanss/jt808-server-go/internal/repository"
 	"github.com/fakeyanss/jt808-server-go/internal/repository/database"
 	"github.com/fakeyanss/jt808-server-go/internal/repository/memory"
 	"github.com/fakeyanss/jt808-server-go/internal/storage"
-	"github.com/fakeyanss/jt808-server-go/internal/uplink"
 )
 
 func locationBody() []byte {
@@ -73,7 +73,7 @@ func TestBusinessExecutorRejectsUnknownDevice(t *testing.T) {
 		Phone:   "188765400001",
 		Body:    locationBody(),
 	})
-	var statusErr *uplink.StatusError
+	var statusErr *controlhttp.StatusError
 	require.ErrorAs(t, err, &statusErr)
 	require.Equal(t, 409, statusErr.Status)
 	require.Equal(t, "unknown_device", statusErr.Code)

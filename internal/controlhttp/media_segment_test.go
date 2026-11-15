@@ -1,4 +1,4 @@
-package uplink
+package controlhttp
 
 import (
 	"bytes"
@@ -12,6 +12,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/fakeyanss/jt808-server-go/internal/internalapi"
 	"github.com/fakeyanss/jt808-server-go/internal/repository/memory"
 )
 
@@ -37,7 +38,7 @@ func TestMediaSegmentReportIsPersistedIdempotently(t *testing.T) {
 	for i := 0; i < 2; i++ {
 		body, err := json.Marshal(payload)
 		require.NoError(t, err)
-		request, err := http.NewRequest(http.MethodPost, httpServer.URL+PathMediaSegment, bytes.NewReader(body))
+		request, err := http.NewRequest(http.MethodPost, httpServer.URL+internalapi.PathMediaSegment, bytes.NewReader(body))
 		require.NoError(t, err)
 		request.Header.Set("Authorization", "Bearer "+testControlToken)
 		response, err := http.DefaultClient.Do(request)
@@ -62,7 +63,7 @@ func TestMediaSegmentReportRequiresToken(t *testing.T) {
 	httpServer := httptest.NewServer(server.Handler())
 	t.Cleanup(httpServer.Close)
 
-	response, err := http.Post(httpServer.URL+PathMediaSegment, "application/json", bytes.NewReader([]byte(`{}`)))
+	response, err := http.Post(httpServer.URL+internalapi.PathMediaSegment, "application/json", bytes.NewReader([]byte(`{}`)))
 	require.NoError(t, err)
 	defer response.Body.Close()
 	require.Equal(t, http.StatusUnauthorized, response.StatusCode)

@@ -1,4 +1,4 @@
-package uplink
+package controlhttp
 
 import (
 	"encoding/json"
@@ -12,9 +12,6 @@ import (
 
 	"github.com/fakeyanss/jt808-server-go/internal/repository"
 )
-
-// PathMediaSegment 是 media 节点上报切片索引的出站入口。
-const PathMediaSegment = "/internal/v1/media/segments"
 
 // mediaSegmentReport 是 media 上报的最小索引载荷。
 //

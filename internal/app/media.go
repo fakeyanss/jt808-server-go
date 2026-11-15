@@ -10,6 +10,7 @@ import (
 
 	"github.com/fakeyanss/jt808-server-go/internal/contracts"
 	"github.com/fakeyanss/jt808-server-go/internal/control"
+	"github.com/fakeyanss/jt808-server-go/internal/internalapi"
 	"github.com/fakeyanss/jt808-server-go/internal/media"
 	"github.com/fakeyanss/jt808-server-go/internal/media/playback"
 	"github.com/fakeyanss/jt808-server-go/internal/medianode"
@@ -137,7 +138,7 @@ func (d *deps) startMedia() {
 // mediaControlBase 从切片上报地址反推 control 基址，复用同源令牌。
 func mediaControlBase(reportURL string) string {
 	trimmed := strings.TrimRight(strings.TrimSpace(reportURL), "/")
-	return strings.TrimSuffix(trimmed, "/internal/v1/media/segments")
+	return strings.TrimSuffix(trimmed, internalapi.PathMediaSegment)
 }
 
 // startMediaNodeReporter 让独立 media 进程向 control 注册并心跳上报小指标负载。

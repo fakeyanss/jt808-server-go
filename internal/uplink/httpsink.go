@@ -3,7 +3,6 @@ package uplink
 import (
 	"bytes"
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -17,6 +16,7 @@ import (
 
 	"github.com/fakeyanss/jt808-server-go/internal/codec/hash"
 	"github.com/fakeyanss/jt808-server-go/internal/contracts"
+	"github.com/fakeyanss/jt808-server-go/internal/internalapi"
 )
 
 const (
@@ -55,35 +55,6 @@ type HTTPSinkStats struct {
 	// 出口按 phone 哈希分片、分片内单 goroutine 顺序消费，因此不再存在
 	// 能代表整体拓扑的单一队列深度。
 	ShardQueues []int
-}
-
-// HTTPEnvelope 是上行出口的 JSON 信封，字段与设计文档第 4 节一致。
-type HTTPEnvelope struct {
-	EventID             string                   `json:"eventId"`
-	Event               string                   `json:"event,omitempty"`
-	Reason              string                   `json:"reason,omitempty"`
-	Phone               string                   `json:"phone"`
-	MsgID               uint16                   `json:"msgId"`
-	RawMsgID            uint16                   `json:"rawMsgId"`
-	Serial              uint16                   `json:"serial"`
-	OccurredAtMS        int64                    `json:"occurredAtMs"`
-	GatewayID           string                   `json:"gatewayId"`
-	InstanceID          string                   `json:"instanceId,omitempty"`
-	SessionID           string                   `json:"sessionId"`
-	Generation          uint64                   `json:"generation,omitempty"`
-	Transport           string                   `json:"transport"`
-	Reliability         string                   `json:"reliability"`
-	ProtocolVersion     string                   `json:"protocolVersion,omitempty"`
-	HeaderAttr          uint16                   `json:"headerAttr,omitempty"`
-	FragmentReassembled bool                     `json:"fragmentReassembled"`
-	FragmentTotal       uint16                   `json:"fragmentTotal,omitempty"`
-	ReplyMsgID          uint16                   `json:"replyMsgId,omitempty"`
-	ReplyResult         uint8                    `json:"replyResult,omitempty"`
-	BodyBase64          string                   `json:"bodyBase64,omitempty"`
-	Payload             json.RawMessage          `json:"payload,omitempty"`
-	PayloadBase64       string                   `json:"payloadBase64,omitempty"`
-	Meta                map[string]any           `json:"meta,omitempty"`
-	Reply               *contracts.TerminalReply `json:"reply,omitempty"`
 }
 
 // HTTPSink 把上行事件通过 HTTP hook 投递给管控。
@@ -128,7 +99,7 @@ type HTTPSink struct {
 // sinkJob 是一次分片内投递任务。
 // result 非空表示 confirm-before-ack：worker 完成后把结果写回，调用方等待。
 type sinkJob struct {
-	envelope HTTPEnvelope
+	envelope internalapi.UplinkEnvelope
 	// attempts 是这条事件本次投递的次数上限（含首次）。
 	attempts int
 	result   chan sinkResult
@@ -147,7 +118,7 @@ const (
 )
 
 type cachedRegistration struct {
-	envelope  HTTPEnvelope
+	envelope  internalapi.UplinkEnvelope
 	expiresAt time.Time
 }
 
@@ -261,7 +232,7 @@ func (s *HTTPSink) Deliver(ctx context.Context, event contracts.UplinkEvent) (co
 	if s == nil {
 		return contracts.UplinkResult{}, fmt.Errorf("uplink http sink is not configured")
 	}
-	envelope, err := BuildHTTPEnvelope(event)
+	envelope, err := internalapi.BuildUplinkEnvelope(event)
 	if err != nil {
 		if event.Reliability == contracts.ReliabilityConfirmBeforeAck ||
 			event.Reliability == contracts.ReliabilityAtLeastOnce {
@@ -292,7 +263,7 @@ func (s *HTTPSink) shardFor(phone string) chan sinkJob {
 	return s.shards[int(hash.FNV32(phone)%uint32(len(s.shards)))]
 }
 
-func (s *HTTPSink) enqueue(envelope HTTPEnvelope, attempts int) (contracts.UplinkResult, error) {
+func (s *HTTPSink) enqueue(envelope internalapi.UplinkEnvelope, attempts int) (contracts.UplinkResult, error) {
 	jobs := s.shardFor(envelope.Phone)
 	if s.closed.Load() {
 		s.dropped.Add(1)
@@ -321,7 +292,7 @@ func (s *HTTPSink) enqueue(envelope HTTPEnvelope, attempts int) (contracts.Uplin
 	}
 }
 
-func (s *HTTPSink) deliverSync(ctx context.Context, envelope HTTPEnvelope, attempts int) (contracts.UplinkResult, error) {
+func (s *HTTPSink) deliverSync(ctx context.Context, envelope internalapi.UplinkEnvelope, attempts int) (contracts.UplinkResult, error) {
 	if s.closed.Load() {
 		s.rejected.Add(1)
 		return contracts.UplinkResult{Reason: "sink closed"}, fmt.Errorf("uplink http sink closed")
@@ -375,7 +346,7 @@ func (s *HTTPSink) deliverSync(ctx context.Context, envelope HTTPEnvelope, attem
 //   - 每个入站事件最多重投一次注册事件；
 //   - 重投后仍 409 则熔断 30s，期间同手机号事件直接丢弃并计数；
 //   - 丢弃返回错误，网关不应答终端，计入终端自身的重传窗口，不在网关内部循环。
-func (s *HTTPSink) handleUnknownDevice(ctx context.Context, envelope HTTPEnvelope, attempts int, cause error) (contracts.UplinkResult, error) {
+func (s *HTTPSink) handleUnknownDevice(ctx context.Context, envelope internalapi.UplinkEnvelope, attempts int, cause error) (contracts.UplinkResult, error) {
 	if s.unknownRecently(envelope.Phone) {
 		s.dropUnknown(envelope, "device remains unknown within cooldown window")
 		return contracts.UplinkResult{Reason: "unknown_device"}, fmt.Errorf("uplink http sink: unknown device (cooldown): %w", cause)
@@ -398,7 +369,7 @@ func (s *HTTPSink) handleUnknownDevice(ctx context.Context, envelope HTTPEnvelop
 	return contracts.UplinkResult{Reason: "unknown_device"}, fmt.Errorf("uplink http sink: unknown device: %w", cause)
 }
 
-func (s *HTTPSink) dropUnknown(envelope HTTPEnvelope, reason string) {
+func (s *HTTPSink) dropUnknown(envelope internalapi.UplinkEnvelope, reason string) {
 	s.unknown.Add(1)
 	log.Error().
 		Str("event_id", envelope.EventID).
@@ -410,7 +381,7 @@ func (s *HTTPSink) dropUnknown(envelope HTTPEnvelope, reason string) {
 	}
 }
 
-func (s *HTTPSink) rememberRegistration(envelope HTTPEnvelope) {
+func (s *HTTPSink) rememberRegistration(envelope internalapi.UplinkEnvelope) {
 	s.regMu.Lock()
 	defer s.regMu.Unlock()
 	now := time.Now()
@@ -424,13 +395,13 @@ func (s *HTTPSink) rememberRegistration(envelope HTTPEnvelope) {
 	s.registrations[envelope.Phone] = cachedRegistration{envelope: envelope, expiresAt: now.Add(registrationEventTTL)}
 }
 
-func (s *HTTPSink) registration(phone string) (HTTPEnvelope, bool) {
+func (s *HTTPSink) registration(phone string) (internalapi.UplinkEnvelope, bool) {
 	s.regMu.Lock()
 	defer s.regMu.Unlock()
 	entry, ok := s.registrations[phone]
 	if !ok || time.Now().After(entry.expiresAt) {
 		delete(s.registrations, phone)
-		return HTTPEnvelope{}, false
+		return internalapi.UplinkEnvelope{}, false
 	}
 	return entry.envelope, true
 }
@@ -491,7 +462,7 @@ func (s *HTTPSink) runJob(job sinkJob) {
 	job.result <- sinkResult{result: result, err: err}
 }
 
-func (s *HTTPSink) deliverConfirm(ctx context.Context, envelope HTTPEnvelope, attempts int) (contracts.UplinkResult, error) {
+func (s *HTTPSink) deliverConfirm(ctx context.Context, envelope internalapi.UplinkEnvelope, attempts int) (contracts.UplinkResult, error) {
 	status, resp, err := s.postWithRetryStatus(ctx, envelope, attempts)
 	if err == nil {
 		return contracts.UplinkResult{
@@ -506,7 +477,7 @@ func (s *HTTPSink) deliverConfirm(ctx context.Context, envelope HTTPEnvelope, at
 	return contracts.UplinkResult{Reason: err.Error()}, err
 }
 
-func (s *HTTPSink) postWithRetry(ctx context.Context, envelope HTTPEnvelope, attempts int) (controlResponse, error) {
+func (s *HTTPSink) postWithRetry(ctx context.Context, envelope internalapi.UplinkEnvelope, attempts int) (controlResponse, error) {
 	_, resp, err := s.postWithRetryStatus(ctx, envelope, attempts)
 	return resp, err
 }
@@ -520,7 +491,7 @@ type controlResponse struct {
 	Fenced     bool   `json:"fenced"`
 }
 
-func (s *HTTPSink) postWithRetryStatus(ctx context.Context, envelope HTTPEnvelope, attempts int) (int, controlResponse, error) {
+func (s *HTTPSink) postWithRetryStatus(ctx context.Context, envelope internalapi.UplinkEnvelope, attempts int) (int, controlResponse, error) {
 	body, err := json.Marshal(envelope)
 	if err != nil {
 		s.failed.Add(1)
@@ -596,7 +567,7 @@ func (s *HTTPSink) post(ctx context.Context, body []byte, eventID string) (int, 
 }
 
 // notifyFenced 处理 best-effort 响应里的 fenced：记录并关闭本地会话。
-func (s *HTTPSink) notifyFenced(envelope HTTPEnvelope) {
+func (s *HTTPSink) notifyFenced(envelope internalapi.UplinkEnvelope) {
 	log.Warn().
 		Str("event_id", envelope.EventID).
 		Str("phone", envelope.Phone).
@@ -608,7 +579,7 @@ func (s *HTTPSink) notifyFenced(envelope HTTPEnvelope) {
 	}
 }
 
-func (s *HTTPSink) recordFailure(envelope HTTPEnvelope, err error, elapsed time.Duration) {
+func (s *HTTPSink) recordFailure(envelope internalapi.UplinkEnvelope, err error, elapsed time.Duration) {
 	if err != nil && (isTimeout(err) || errIsDeadline(err)) {
 		s.timeouts.Add(1)
 		log.Warn().Err(err).Str("event_id", envelope.EventID).Dur("elapsed", elapsed).Msg("uplink http sink timed out")
@@ -626,48 +597,4 @@ func isTimeout(err error) bool {
 
 func errIsDeadline(err error) bool {
 	return errors.Is(err, context.DeadlineExceeded)
-}
-
-// BuildHTTPEnvelope 把契约事件转换为线上 JSON 信封。
-func BuildHTTPEnvelope(event contracts.UplinkEvent) (HTTPEnvelope, error) {
-	envelope := HTTPEnvelope{
-		EventID:             event.EventID,
-		Event:               event.Event,
-		Reason:              event.Reason,
-		Phone:               event.Phone,
-		MsgID:               event.MsgID,
-		RawMsgID:            event.RawMsgID,
-		Serial:              event.Serial,
-		GatewayID:           event.GatewayID,
-		InstanceID:          event.InstanceID,
-		SessionID:           event.SessionID,
-		Generation:          event.Generation,
-		Transport:           event.Transport,
-		Reliability:         string(event.Reliability),
-		ProtocolVersion:     event.ProtocolVersion,
-		HeaderAttr:          event.HeaderAttr,
-		FragmentReassembled: event.FragmentReassembled,
-		FragmentTotal:       event.FragmentTotal,
-		ReplyMsgID:          event.ReplyMsgID,
-		ReplyResult:         event.ReplyResult,
-		Meta:                event.Meta,
-		Reply:               event.Reply,
-	}
-	if !event.OccurredAt.IsZero() {
-		envelope.OccurredAtMS = event.OccurredAt.UnixMilli()
-	}
-	if len(event.Body) > 0 {
-		envelope.BodyBase64 = base64.StdEncoding.EncodeToString(event.Body)
-	}
-	if event.Payload != nil {
-		payload, err := json.Marshal(event.Payload)
-		if err != nil {
-			return HTTPEnvelope{}, fmt.Errorf("marshal uplink payload: %w", err)
-		}
-		envelope.Payload = payload
-	}
-	if len(event.PayloadRaw) > 0 {
-		envelope.PayloadBase64 = base64.StdEncoding.EncodeToString(event.PayloadRaw)
-	}
-	return envelope, nil
 }

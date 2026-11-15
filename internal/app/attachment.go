@@ -15,13 +15,14 @@ import (
 	"github.com/fakeyanss/jt808-server-go/internal/attachmentserver"
 	"github.com/fakeyanss/jt808-server-go/internal/contracts"
 	"github.com/fakeyanss/jt808-server-go/internal/control"
+	"github.com/fakeyanss/jt808-server-go/internal/internalapi"
 	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
 	"github.com/fakeyanss/jt808-server-go/pkg/routines"
 )
 
 // attachmentControlBase 从进度上报地址反推 control 基址，复用同一 token。
 func attachmentControlBase(progressURL string) string {
-	return strings.TrimSuffix(strings.TrimSpace(progressURL), "/internal/v1/attachment/progress")
+	return strings.TrimSuffix(strings.TrimSpace(progressURL), internalapi.PathAttachmentProgress)
 }
 
 // advertiseHost 选择节点对 control 通告的主机名。

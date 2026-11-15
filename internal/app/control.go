@@ -12,10 +12,10 @@ import (
 	"github.com/fakeyanss/jt808-server-go/internal/config"
 	"github.com/fakeyanss/jt808-server-go/internal/contracts"
 	"github.com/fakeyanss/jt808-server-go/internal/control"
+	"github.com/fakeyanss/jt808-server-go/internal/controlhttp"
 	"github.com/fakeyanss/jt808-server-go/internal/coordination"
 	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
 	"github.com/fakeyanss/jt808-server-go/internal/storage"
-	"github.com/fakeyanss/jt808-server-go/internal/uplink"
 	"github.com/fakeyanss/jt808-server-go/pkg/routines"
 )
 
@@ -40,7 +40,7 @@ func (d *deps) setupControl() {
 		leaseRunner = coordination.NewRunner(storeSet.Coordination, coordination.DefaultTTL, d.clock, clusterOptions.LeaseTolerance)
 	}
 
-	var uplinkServer *uplink.Server
+	var uplinkServer *controlhttp.Server
 	var controlBlob contracts.BlobStore
 	var businessExecutor *control.BusinessExecutor
 	var ftpManager *control.FTPTaskManager
@@ -88,7 +88,7 @@ func (d *deps) setupControl() {
 			controlHooks = control.NewAutoUploadTrigger(hooks, remoteAttachment, controlDownlink, storeSet.Coordination, 30*time.Minute, d.clock)
 			log.Info().Msg("Automatic 0x9208 attachment upload trigger enabled in control via remote attachment nodes")
 		}
-		srv, srvErr := uplink.NewServer(uplink.ServerOptions{
+		srv, srvErr := controlhttp.NewServer(controlhttp.ServerOptions{
 			Token:               clusterOptions.Control.Token,
 			DedupTTL:            clusterOptions.Uplink.DedupTTL,
 			DedupMaxEntries:     clusterOptions.Uplink.DedupMaxEntries,
