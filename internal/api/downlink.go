@@ -2,6 +2,9 @@ package api
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"net/http"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -9,6 +12,7 @@ import (
 
 	"github.com/fakeyanss/jt808-server-go/internal/contracts"
 	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
+	"github.com/fakeyanss/jt808-server-go/internal/repository"
 )
 
 // downlinkExemptions 记录不接 outbox 的下行入口及豁免理由。
@@ -69,4 +73,35 @@ func directSend(c *gin.Context, sender contracts.DownlinkSender, msg model.JT808
 			Str("reason", receipt.Reason).
 			Msg("Exempt downlink was not delivered")
 	}
+}
+
+func (h *handler) getCommands(c *gin.Context) {
+	if !h.outboxEnabled {
+		c.JSON(http.StatusNotFound, gin.H{"err": "command outbox is disabled"})
+		return
+	}
+	command, err := h.downlink.Query(c.Request.Context(), c.Param("commandId"))
+	if errors.Is(err, repository.ErrCommandNotFound) {
+		c.JSON(http.StatusNotFound, gin.H{"err": "command not found"})
+		return
+	}
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"err": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"commandId":     command.ID,
+		"phone":         command.Phone,
+		"messageId":     fmt.Sprintf("0x%04X", command.MsgID),
+		"serial":        command.Serial,
+		"status":        command.Status,
+		"attempts":      command.Attempts,
+		"lastError":     command.LastError,
+		"createdAt":     command.CreatedAt,
+		"updatedAt":     command.UpdatedAt,
+		"lastAttemptAt": command.LastAttemptAt,
+		"nextAttemptAt": command.NextAttemptAt,
+		"expiresAt":     command.ExpiresAt,
+	})
+
 }
