@@ -72,6 +72,10 @@ jt808-server-go 是一个用 Go 编写的车载终端接入服务，面向自建
 两种形态共享同一套协议内核：Standalone 把全部角色放在一个进程里；Cluster 拆成四个角色，元数据面集中到 control，数据面只持有连接、媒体流与附件暂存，不连业务库。
 
 ```mermaid
+---
+config:
+  theme: redux-color
+---
 flowchart TB
     TERM["车载终端<br/>JT/T 808 · 苏标 · JT/T 1078"]
 
@@ -85,12 +89,12 @@ flowchart TB
     subgraph CL["Cluster：按角色拆分"]
         direction TB
         subgraph DATA["数据面：不连业务库"]
-            GW["jt-signal<br/>808 接入 / 编解码 / 分包 / 会话"]
-            MED["jt-media<br/>1078 RTP / 帧环 / FLV / 录像切片"]
-            ATT["jt-attachment<br/>苏标附件 / 1078 FTP / 暂存"]
+            GW["jt-signal<br/>808 接入 / 指令编解码 / 分包 / 会话"]@{ shape: procs }
+            MED["jt-media<br/>1078 RTP / 帧环 / FLV / 录像切片"]@{ shape: procs }
+            ATT["jt-attachment<br/>苏标附件 / 1078 FTP / 转存"]@{ shape: procs }
         end
         subgraph META["元数据面：control 独占"]
-            CTL["jt-control<br/>业务 API / outbox / 会话目录 / 节点调度"]
+            CTL["jt-control<br/>业务 API / outbox / 会话目录 / 节点调度"]@{ shape: procs }
             DB[("MySQL<br/>档案 / 历史 / 报警 / 会话目录 / outbox / 节点注册")]
             CTL --> DB
         end
