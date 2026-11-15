@@ -15,6 +15,8 @@ import (
 
 	"github.com/fakeyanss/jt808-server-go/internal/config"
 	"github.com/fakeyanss/jt808-server-go/internal/repository/database"
+	// 迁移工具必须注册 sqlite/mysql 后端才能执行 DDL。
+	_ "github.com/fakeyanss/jt808-server-go/internal/repository/database/sqlstore"
 	"github.com/fakeyanss/jt808-server-go/pkg/logger"
 )
 

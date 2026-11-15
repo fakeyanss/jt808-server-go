@@ -26,6 +26,7 @@ func startSimulatorServer(t *testing.T) (*TCPServer, *client.TCPClient, *model.D
 func startSimulatorServerWith(t *testing.T, configure func(*TCPServer)) (*TCPServer, *client.TCPClient, *model.Device) {
 	t.Helper()
 	server := NewTCPServer()
+	server.SetDeps(protocol.ProcessorDeps{Repos: database.Default().Repositories})
 	if configure != nil {
 		configure(server)
 	}
@@ -34,6 +35,7 @@ func startSimulatorServerWith(t *testing.T, configure func(*TCPServer)) (*TCPSer
 	t.Cleanup(server.Stop)
 
 	cli := client.NewTCPClient()
+	cli.SetDeps(protocol.ProcessorDeps{Repos: database.Default().Repositories})
 	require.NoError(t, cli.Dial(server.listener.Addr().String()))
 	t.Cleanup(cli.Stop)
 	go cli.Start()

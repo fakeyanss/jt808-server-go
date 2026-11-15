@@ -169,7 +169,7 @@ func TestGatewaySkipsActionHooksWhenUplinkSinkEnabled(t *testing.T) {
 	clusterHooks := &hookRecorder{}
 	clusterSink := &fakeUplinkSink{}
 	cluster := NewJT808MsgProcessor(clusterHooks, WithProcessorDeps(ProcessorDeps{
-		Repos:           database.NewMemory(),
+		Repos:           newTestRepositories(),
 		UplinkSink:      clusterSink,
 		SkipActionHooks: true,
 	}))
@@ -179,7 +179,7 @@ func TestGatewaySkipsActionHooksWhenUplinkSinkEnabled(t *testing.T) {
 
 	standaloneHooks := &hookRecorder{}
 	standalone := NewJT808MsgProcessor(standaloneHooks, WithProcessorDeps(ProcessorDeps{
-		Repos: database.NewMemory(),
+		Repos: newTestRepositories(),
 	}))
 	require.NoError(t, standalone.ApplyBusiness(ctx, 0x0100,
 		&model.ProcessData{
@@ -206,7 +206,7 @@ func TestControlRegisterHookUsesEventIDAndGatewayReply(t *testing.T) {
 	})
 
 	hooks := &hookRecorder{}
-	mp := NewJT808MsgProcessor(hooks, WithProcessorDeps(ProcessorDeps{Repos: stores}))
+	mp := NewJT808MsgProcessor(hooks, WithProcessorDeps(ProcessorDeps{Repos: stores.Repositories}))
 	require.NoError(t, mp.ApplyControlBusiness(ctx, 0x0100, data))
 
 	require.Len(t, hooks.registers, 1)
@@ -235,7 +235,7 @@ func TestControlAuthHookUsesEventIDAndGatewayReply(t *testing.T) {
 	})
 
 	hooks := &hookRecorder{}
-	mp := NewJT808MsgProcessor(hooks, WithProcessorDeps(ProcessorDeps{Repos: stores}))
+	mp := NewJT808MsgProcessor(hooks, WithProcessorDeps(ProcessorDeps{Repos: stores.Repositories}))
 	require.NoError(t, mp.ApplyControlBusiness(eventCtx, 0x0102, data))
 
 	require.Len(t, hooks.auths, 1)

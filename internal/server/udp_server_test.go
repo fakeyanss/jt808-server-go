@@ -22,11 +22,13 @@ import (
 
 func TestTCPServerRetransmitsRequestedDownlinkFragments(t *testing.T) {
 	server := NewTCPServer()
+	server.SetDeps(protocol.ProcessorDeps{Repos: database.Default().Repositories})
 	require.NoError(t, server.Listen("127.0.0.1:0"))
 	go server.Start()
 	t.Cleanup(server.Stop)
 
 	cli := client.NewTCPClient()
+	cli.SetDeps(protocol.ProcessorDeps{Repos: database.Default().Repositories})
 	require.NoError(t, cli.Dial(server.listener.Addr().String()))
 	t.Cleanup(cli.Stop)
 	const phone = "188765432109"
@@ -83,11 +85,13 @@ func TestUDPSessionConnKeepsDatagramBoundaries(t *testing.T) {
 
 func TestUDPServerProcessesJT808Registration(t *testing.T) {
 	server := NewUDPServer()
+	server.SetDeps(protocol.ProcessorDeps{Repos: database.Default().Repositories})
 	require.NoError(t, server.Listen("127.0.0.1:0"))
 	go server.Start()
 	t.Cleanup(server.Stop)
 
 	cli := client.NewTCPClient()
+	cli.SetDeps(protocol.ProcessorDeps{Repos: database.Default().Repositories})
 	require.NoError(t, cli.DialTransport(server.listener.LocalAddr().String(), model.UDPProto))
 	t.Cleanup(cli.Stop)
 	go cli.Start()
@@ -129,11 +133,13 @@ func TestUDPServerProcessesJT808Registration(t *testing.T) {
 
 func TestTCPServerProcessesJT808Registration(t *testing.T) {
 	server := NewTCPServer()
+	server.SetDeps(protocol.ProcessorDeps{Repos: database.Default().Repositories})
 	require.NoError(t, server.Listen("127.0.0.1:0"))
 	go server.Start()
 	t.Cleanup(server.Stop)
 
 	cli := client.NewTCPClient()
+	cli.SetDeps(protocol.ProcessorDeps{Repos: database.Default().Repositories})
 	require.NoError(t, cli.DialTransport(server.listener.Addr().String(), model.TCPProto))
 	t.Cleanup(cli.Stop)
 	go cli.Start()
@@ -252,10 +258,12 @@ func TestTCPServerProcessesJT808Registration(t *testing.T) {
 
 func TestTCPClientSimulatorIndustryMessages(t *testing.T) {
 	server := NewTCPServer()
+	server.SetDeps(protocol.ProcessorDeps{Repos: database.Default().Repositories})
 	require.NoError(t, server.Listen("127.0.0.1:0"))
 	go server.Start()
 	t.Cleanup(server.Stop)
 	cli := client.NewTCPClient()
+	cli.SetDeps(protocol.ProcessorDeps{Repos: database.Default().Repositories})
 	require.NoError(t, cli.Dial(server.listener.Addr().String()))
 	t.Cleanup(cli.Stop)
 	go cli.Start()
@@ -398,10 +406,12 @@ mediaUploaded:
 
 func TestSimulatorMediaUploadCommands(t *testing.T) {
 	server := NewTCPServer()
+	server.SetDeps(protocol.ProcessorDeps{Repos: database.Default().Repositories})
 	require.NoError(t, server.Listen("127.0.0.1:0"))
 	go server.Start()
 	t.Cleanup(server.Stop)
 	cli := client.NewTCPClient()
+	cli.SetDeps(protocol.ProcessorDeps{Repos: database.Default().Repositories})
 	require.NoError(t, cli.Dial(server.listener.Addr().String()))
 	t.Cleanup(cli.Stop)
 	go cli.Start()
@@ -512,10 +522,12 @@ func buildGeoAlarmBody(timeBCD string) []byte {
 // 0x1205 resource lists backed by the media catalog.
 func TestSimulatorMediaResourceListQuery(t *testing.T) {
 	server := NewTCPServer()
+	server.SetDeps(protocol.ProcessorDeps{Repos: database.Default().Repositories})
 	require.NoError(t, server.Listen("127.0.0.1:0"))
 	go server.Start()
 	t.Cleanup(server.Stop)
 	cli := client.NewTCPClient()
+	cli.SetDeps(protocol.ProcessorDeps{Repos: database.Default().Repositories})
 	require.NoError(t, cli.Dial(server.listener.Addr().String()))
 	t.Cleanup(cli.Stop)
 	go cli.Start()
@@ -652,10 +664,12 @@ func TestSimulatorMediaResourceListQuery(t *testing.T) {
 // set/delete/append semantics, and 0x0301 event report repository.
 func TestSimulatorTextAndEventMessages(t *testing.T) {
 	server := NewTCPServer()
+	server.SetDeps(protocol.ProcessorDeps{Repos: database.Default().Repositories})
 	require.NoError(t, server.Listen("127.0.0.1:0"))
 	go server.Start()
 	t.Cleanup(server.Stop)
 	cli := client.NewTCPClient()
+	cli.SetDeps(protocol.ProcessorDeps{Repos: database.Default().Repositories})
 	require.NoError(t, cli.Dial(server.listener.Addr().String()))
 	t.Cleanup(cli.Stop)
 	go cli.Start()
@@ -755,10 +769,12 @@ func TestSimulatorTextAndEventMessages(t *testing.T) {
 // the 0x0500 response echoes them back to the platform.
 func TestSimulatorVehicleControl(t *testing.T) {
 	server := NewTCPServer()
+	server.SetDeps(protocol.ProcessorDeps{Repos: database.Default().Repositories})
 	require.NoError(t, server.Listen("127.0.0.1:0"))
 	go server.Start()
 	t.Cleanup(server.Stop)
 	cli := client.NewTCPClient()
+	cli.SetDeps(protocol.ProcessorDeps{Repos: database.Default().Repositories})
 	require.NoError(t, cli.Dial(server.listener.Addr().String()))
 	t.Cleanup(cli.Stop)
 	go cli.Start()
@@ -814,10 +830,12 @@ func TestSimulatorVehicleControl(t *testing.T) {
 // 0x8303/0x0303 info menu flow, and 0x8304 info service are decoded and cached.
 func TestSimulatorQuestionMenuInfoService(t *testing.T) {
 	server := NewTCPServer()
+	server.SetDeps(protocol.ProcessorDeps{Repos: database.Default().Repositories})
 	require.NoError(t, server.Listen("127.0.0.1:0"))
 	go server.Start()
 	t.Cleanup(server.Stop)
 	cli := client.NewTCPClient()
+	cli.SetDeps(protocol.ProcessorDeps{Repos: database.Default().Repositories})
 	require.NoError(t, cli.Dial(server.listener.Addr().String()))
 	t.Cleanup(cli.Stop)
 	go cli.Start()
@@ -955,10 +973,12 @@ func TestSimulatorQuestionMenuInfoService(t *testing.T) {
 // decoded and cached.
 func TestSimulatorPhonebookAndUpgrade(t *testing.T) {
 	server := NewTCPServer()
+	server.SetDeps(protocol.ProcessorDeps{Repos: database.Default().Repositories})
 	require.NoError(t, server.Listen("127.0.0.1:0"))
 	go server.Start()
 	t.Cleanup(server.Stop)
 	cli := client.NewTCPClient()
+	cli.SetDeps(protocol.ProcessorDeps{Repos: database.Default().Repositories})
 	require.NoError(t, cli.Dial(server.listener.Addr().String()))
 	t.Cleanup(cli.Stop)
 	go cli.Start()
@@ -1092,10 +1112,12 @@ func TestSimulatorPhonebookAndUpgrade(t *testing.T) {
 // cached (with zlib decompression for 0x0901).
 func TestSimulatorTransparentAndCompressed(t *testing.T) {
 	server := NewTCPServer()
+	server.SetDeps(protocol.ProcessorDeps{Repos: database.Default().Repositories})
 	require.NoError(t, server.Listen("127.0.0.1:0"))
 	go server.Start()
 	t.Cleanup(server.Stop)
 	cli := client.NewTCPClient()
+	cli.SetDeps(protocol.ProcessorDeps{Repos: database.Default().Repositories})
 	require.NoError(t, cli.Dial(server.listener.Addr().String()))
 	t.Cleanup(cli.Stop)
 	go cli.Start()
@@ -1185,10 +1207,12 @@ func TestSimulatorTransparentAndCompressed(t *testing.T) {
 // 0x0704 batch positioning uploads are decoded and cached.
 func TestSimulatorWaybillAndBatchLocation(t *testing.T) {
 	server := NewTCPServer()
+	server.SetDeps(protocol.ProcessorDeps{Repos: database.Default().Repositories})
 	require.NoError(t, server.Listen("127.0.0.1:0"))
 	go server.Start()
 	t.Cleanup(server.Stop)
 	cli := client.NewTCPClient()
+	cli.SetDeps(protocol.ProcessorDeps{Repos: database.Default().Repositories})
 	require.NoError(t, cli.Dial(server.listener.Addr().String()))
 	t.Cleanup(cli.Stop)
 	go cli.Start()
@@ -1260,10 +1284,12 @@ func TestSimulatorWaybillAndBatchLocation(t *testing.T) {
 // requests retransmission via 0x8800, and reassembles the media exactly once.
 func TestSimulatorMediaRetransmissionRecoversDroppedPacket(t *testing.T) {
 	server := NewTCPServer()
+	server.SetDeps(protocol.ProcessorDeps{Repos: database.Default().Repositories})
 	require.NoError(t, server.Listen("127.0.0.1:0"))
 	go server.Start()
 	t.Cleanup(server.Stop)
 	cli := client.NewTCPClient()
+	cli.SetDeps(protocol.ProcessorDeps{Repos: database.Default().Repositories})
 	require.NoError(t, cli.Dial(server.listener.Addr().String()))
 	t.Cleanup(cli.Stop)
 	go cli.Start()
@@ -1356,10 +1382,12 @@ func countMediaType(uploads []model.Msg0801, mediaType uint8) int {
 // commands and verifies the 0x0700 carries a typed response data block.
 func TestSimulatorRecorderCommandTypedResponses(t *testing.T) {
 	server := NewTCPServer()
+	server.SetDeps(protocol.ProcessorDeps{Repos: database.Default().Repositories})
 	require.NoError(t, server.Listen("127.0.0.1:0"))
 	go server.Start()
 	t.Cleanup(server.Stop)
 	cli := client.NewTCPClient()
+	cli.SetDeps(protocol.ProcessorDeps{Repos: database.Default().Repositories})
 	require.NoError(t, cli.Dial(server.listener.Addr().String()))
 	t.Cleanup(cli.Stop)
 	go cli.Start()
@@ -1470,10 +1498,12 @@ func TestSimulatorRecorderCommandTypedResponses(t *testing.T) {
 // so a still-online device proves the round-trip succeeded.
 func TestSimulatorRecorderParamSettingRoundTrip(t *testing.T) {
 	server := NewTCPServer()
+	server.SetDeps(protocol.ProcessorDeps{Repos: database.Default().Repositories})
 	require.NoError(t, server.Listen("127.0.0.1:0"))
 	go server.Start()
 	t.Cleanup(server.Stop)
 	cli := client.NewTCPClient()
+	cli.SetDeps(protocol.ProcessorDeps{Repos: database.Default().Repositories})
 	require.NoError(t, cli.Dial(server.listener.Addr().String()))
 	t.Cleanup(cli.Stop)
 	go cli.Start()
@@ -1534,12 +1564,14 @@ func TestClientFaultFramesDoNotPreventFollowingRegistration(t *testing.T) {
 				var addr string
 				if transport == model.TCPProto {
 					server := NewTCPServer()
+					server.SetDeps(protocol.ProcessorDeps{Repos: database.Default().Repositories})
 					require.NoError(t, server.Listen("127.0.0.1:0"))
 					addr = server.listener.Addr().String()
 					go server.Start()
 					t.Cleanup(server.Stop)
 				} else {
 					server := NewUDPServer()
+					server.SetDeps(protocol.ProcessorDeps{Repos: database.Default().Repositories})
 					require.NoError(t, server.Listen("127.0.0.1:0"))
 					addr = server.listener.LocalAddr().String()
 					go server.Start()
@@ -1547,6 +1579,7 @@ func TestClientFaultFramesDoNotPreventFollowingRegistration(t *testing.T) {
 				}
 
 				cli := client.NewTCPClient()
+				cli.SetDeps(protocol.ProcessorDeps{Repos: database.Default().Repositories})
 				require.NoError(t, cli.DialTransport(addr, transport))
 				t.Cleanup(cli.Stop)
 				go cli.Start()
@@ -1706,6 +1739,7 @@ func waitDeviceAbsent(t *testing.T, phone string) {
 
 func TestTCPServerHeartbeatRefreshesRuntimeComTime(t *testing.T) {
 	server := NewTCPServer()
+	server.SetDeps(protocol.ProcessorDeps{Repos: database.Default().Repositories})
 	require.NoError(t, server.Listen("127.0.0.1:0"))
 	go server.Start()
 	t.Cleanup(server.Stop)
@@ -1738,6 +1772,7 @@ func TestTCPServerHeartbeatRefreshesRuntimeComTime(t *testing.T) {
 
 func TestTCPServerHeartbeatFromUnknownDeviceClosesConn(t *testing.T) {
 	server := NewTCPServer()
+	server.SetDeps(protocol.ProcessorDeps{Repos: database.Default().Repositories})
 	require.NoError(t, server.Listen("127.0.0.1:0"))
 	go server.Start()
 	t.Cleanup(server.Stop)
@@ -1758,6 +1793,7 @@ func TestTCPServerHeartbeatFromUnknownDeviceClosesConn(t *testing.T) {
 
 func TestTCPServerLogoutEndsSession(t *testing.T) {
 	server := NewTCPServer()
+	server.SetDeps(protocol.ProcessorDeps{Repos: database.Default().Repositories})
 	require.NoError(t, server.Listen("127.0.0.1:0"))
 	go server.Start()
 	t.Cleanup(server.Stop)
@@ -1825,6 +1861,7 @@ func TestTCPServerUpdatesCommandOutboxOnAck(t *testing.T) {
 
 func TestTCPServerAnswersServerTimeQuery(t *testing.T) {
 	server := NewTCPServer()
+	server.SetDeps(protocol.ProcessorDeps{Repos: database.Default().Repositories})
 	require.NoError(t, server.Listen("127.0.0.1:0"))
 	go server.Start()
 	t.Cleanup(server.Stop)
@@ -1842,6 +1879,7 @@ func TestTCPServerAnswersServerTimeQuery(t *testing.T) {
 
 func TestTCPServerAnswersTerminalUplink8204(t *testing.T) {
 	server := NewTCPServer()
+	server.SetDeps(protocol.ProcessorDeps{Repos: database.Default().Repositories})
 	require.NoError(t, server.Listen("127.0.0.1:0"))
 	go server.Start()
 	t.Cleanup(server.Stop)
@@ -1858,6 +1896,7 @@ func TestTCPServerAnswersTerminalUplink8204(t *testing.T) {
 
 func TestTCPServerAnswersTerminalUplink8105(t *testing.T) {
 	server := NewTCPServer()
+	server.SetDeps(protocol.ProcessorDeps{Repos: database.Default().Repositories})
 	require.NoError(t, server.Listen("127.0.0.1:0"))
 	go server.Start()
 	t.Cleanup(server.Stop)
@@ -1879,6 +1918,7 @@ func TestTCPServerAnswersTerminalUplink8105(t *testing.T) {
 
 func TestTCPServerTerminalUplink8500Echoes0500(t *testing.T) {
 	server := NewTCPServer()
+	server.SetDeps(protocol.ProcessorDeps{Repos: database.Default().Repositories})
 	require.NoError(t, server.Listen("127.0.0.1:0"))
 	go server.Start()
 	t.Cleanup(server.Stop)
@@ -1895,6 +1935,7 @@ func TestTCPServerTerminalUplink8500Echoes0500(t *testing.T) {
 
 func TestTCPServerRejectsDuplicateRegistration(t *testing.T) {
 	server := NewTCPServer()
+	server.SetDeps(protocol.ProcessorDeps{Repos: database.Default().Repositories})
 	require.NoError(t, server.Listen("127.0.0.1:0"))
 	go server.Start()
 	t.Cleanup(server.Stop)
@@ -1949,6 +1990,7 @@ func TestTCPServerRejectsDuplicateRegistration(t *testing.T) {
 
 func TestTCPServerRejectsWrongAuthCode(t *testing.T) {
 	server := NewTCPServer()
+	server.SetDeps(protocol.ProcessorDeps{Repos: database.Default().Repositories})
 	require.NoError(t, server.Listen("127.0.0.1:0"))
 	go server.Start()
 	t.Cleanup(server.Stop)
@@ -1991,6 +2033,7 @@ func TestTCPServerRejectsWrongAuthCode(t *testing.T) {
 
 func TestTCPServerMergesTerminalParamsAndAnswers8104(t *testing.T) {
 	server := NewTCPServer()
+	server.SetDeps(protocol.ProcessorDeps{Repos: database.Default().Repositories})
 	require.NoError(t, server.Listen("127.0.0.1:0"))
 	go server.Start()
 	t.Cleanup(server.Stop)
@@ -2038,10 +2081,12 @@ func TestTCPServerMergesTerminalParamsAndAnswers8104(t *testing.T) {
 // the simulator answers with a typed 0xD6 position-test data block.
 func TestSimulatorRecorderPositionTestCommands(t *testing.T) {
 	server := NewTCPServer()
+	server.SetDeps(protocol.ProcessorDeps{Repos: database.Default().Repositories})
 	require.NoError(t, server.Listen("127.0.0.1:0"))
 	go server.Start()
 	t.Cleanup(server.Stop)
 	cli := client.NewTCPClient()
+	cli.SetDeps(protocol.ProcessorDeps{Repos: database.Default().Repositories})
 	require.NoError(t, cli.Dial(server.listener.Addr().String()))
 	t.Cleanup(cli.Stop)
 	go cli.Start()
@@ -2133,6 +2178,7 @@ func waitSessionClosed(t *testing.T, sessionID string) {
 
 func TestTCPServerReconnectTakesOverOldSession(t *testing.T) {
 	server := NewTCPServer()
+	server.SetDeps(protocol.ProcessorDeps{Repos: database.Default().Repositories})
 	require.NoError(t, server.Listen("127.0.0.1:0"))
 	go server.Start()
 	t.Cleanup(server.Stop)
@@ -2168,6 +2214,7 @@ func TestTCPServerReconnectTakesOverOldSession(t *testing.T) {
 
 func TestTCPServerRejectsImpersonationAndKeepsOldSession(t *testing.T) {
 	server := NewTCPServer()
+	server.SetDeps(protocol.ProcessorDeps{Repos: database.Default().Repositories})
 	require.NoError(t, server.Listen("127.0.0.1:0"))
 	go server.Start()
 	t.Cleanup(server.Stop)
@@ -2204,6 +2251,7 @@ func TestTCPServerRejectsImpersonationAndKeepsOldSession(t *testing.T) {
 
 func TestTCPServerConcurrentSamePhoneAuthConvergesToOneSession(t *testing.T) {
 	server := NewTCPServer()
+	server.SetDeps(protocol.ProcessorDeps{Repos: database.Default().Repositories})
 	require.NoError(t, server.Listen("127.0.0.1:0"))
 	go server.Start()
 	t.Cleanup(server.Stop)
@@ -2256,6 +2304,7 @@ func TestTCPServerConcurrentSamePhoneAuthConvergesToOneSession(t *testing.T) {
 
 func TestTCPServerDisconnectClearsPhoneIndex(t *testing.T) {
 	server := NewTCPServer()
+	server.SetDeps(protocol.ProcessorDeps{Repos: database.Default().Repositories})
 	require.NoError(t, server.Listen("127.0.0.1:0"))
 	go server.Start()
 	t.Cleanup(server.Stop)
@@ -2277,6 +2326,7 @@ func TestTCPServerDisconnectClearsPhoneIndex(t *testing.T) {
 
 func TestUDPServerReconnectTakesOverOldSession(t *testing.T) {
 	server := NewUDPServer()
+	server.SetDeps(protocol.ProcessorDeps{Repos: database.Default().Repositories})
 	require.NoError(t, server.Listen("127.0.0.1:0"))
 	go server.Start()
 	t.Cleanup(server.Stop)
@@ -2300,6 +2350,7 @@ func TestUDPServerReconnectTakesOverOldSession(t *testing.T) {
 // 两个连接并发注册同一手机号时，鉴权通过后必须收敛到唯一活会话。
 func TestTCPServerConcurrentSamePhoneRegistrationConverges(t *testing.T) {
 	server := NewTCPServer()
+	server.SetDeps(protocol.ProcessorDeps{Repos: database.Default().Repositories})
 	require.NoError(t, server.Listen("127.0.0.1:0"))
 	go server.Start()
 	t.Cleanup(server.Stop)

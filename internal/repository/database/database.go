@@ -1,12 +1,13 @@
 // Package database 负责持久化仓储的装配与初始化，不承载具体实现。
 //
 // 职责边界：
-//   - 聚合 repository 契约的内存实现，或按配置装配 sqlite/mysql 后端；
+//   - 聚合 repository 契约的内存实现，或通过已注册的 SQL 后端装配连接池；
 //   - 提供进程默认实例（Init/Default），供装配层显式下传；
 //   - 不保存运行时状态，运行时状态由 runtime.Stores 独立组装。
 //
-// 依赖方向：database → repository / repository/sqlite / repository/mysql；
-// SQL 实现位于 internal/repository 下，objectStore 位于 internal/storage。
+// SQL 驱动不在本包引入：需要 sqlite/mysql 的二进制显式导入
+// repository/database/sqlstore 完成注册，数据面二进制（gateway/media/attachment）
+// 因此不会链接任何数据库驱动。依赖方向：database → repository。
 package database
 
 import (
@@ -18,8 +19,6 @@ import (
 	"github.com/fakeyanss/jt808-server-go/internal/coordination"
 	"github.com/fakeyanss/jt808-server-go/internal/repository"
 	"github.com/fakeyanss/jt808-server-go/internal/repository/memory"
-	"github.com/fakeyanss/jt808-server-go/internal/repository/mysql"
-	"github.com/fakeyanss/jt808-server-go/internal/repository/sqlite"
 )
 
 // 支持的数据库后端类型；空值与 memory 等价，默认 memory 保证既有行为不变。
@@ -49,40 +48,12 @@ var (
 )
 
 // Repositories 聚合持久化仓储，作为业务组件的存储依赖入口。
+// 仓储字段由 repository.Repositories 提供，SQL 后端特有的能力（关闭、连通性检查、
+// 数据库时钟）与协调存储留在本类型上。
 type Repositories struct {
-	Devices        repository.DeviceRepository
-	Geo            repository.GeoRepository
-	Params         repository.DeviceParamsRepository
-	Properties     repository.TerminalPropertiesRepository
-	Alarms         repository.AlarmRepository
-	Regions        repository.RegionRepository
-	Industry       repository.IndustryRepository
-	Media          repository.MediaMetadataRepository
-	MediaFiles     repository.MediaFileRepository
-	MediaCaptures  repository.MediaCaptureRepository
-	MediaSearches  repository.MediaSearchRepository
-	UpgradeResults repository.UpgradeResultRepository
-	Commands       repository.CommandRepository
-	// AttachmentFiles 是附件接收元数据；集群下由附件节点写入、控制面读取。
-	AttachmentFiles repository.AttachmentFileRepository
-	// AttachmentFTPTasks 是 1078 FTP 上传任务与一次性账号，仅 control 使用。
-	AttachmentFTPTasks repository.AttachmentFTPTaskRepository
-	// AttachmentNodes 是附件节点注册表，control 据此推送 0x9207。
-	AttachmentNodes repository.AttachmentNodeRepository
-	// MediaNodes 是媒体节点注册表与负载，control 据此分配 0x9101/0x9201 端点。
-	MediaNodes repository.MediaNodeRepository
-	// RecordingSegments 是平台录像切片索引，由媒体节点写入、控制面查询与清理。
-	RecordingSegments repository.RecordingSegmentRepository
-	// Locations 为定位历史仓储；memory 后端保持既有热读环形缓冲，本字段为 nil。
-	Locations repository.LocationRepository
-	// Retention 为历史数据分批清理能力，仅 SQL 后端提供；memory 后端为 nil。
-	Retention repository.RetentionStore
+	repository.Repositories
 	// Coordination 提供任务租约与共享 TTL 去重；memory 后端为进程内实现。
 	Coordination coordination.Store
-	// GatewayNodes 是网关注册与健康状态，仅 E4.1 使用。
-	GatewayNodes repository.GatewayNodeRepository
-	// SessionDirectory 是 phone 归属索引，仅 E4.2 使用。
-	SessionDirectory repository.SessionDirectoryRepository
 
 	// Backend 记录实际启用的后端，供启动日志与运维排查使用。
 	Backend string
@@ -94,9 +65,9 @@ type Repositories struct {
 	dbTime func(ctx context.Context) (int64, error)
 }
 
-// sqlBackend 是两个 SQL 后端句柄的公共装配面。
+// SQLBackend 是两个 SQL 后端句柄的公共装配面。
 // sqlite.Backend 与 mysql.Backend 都嵌入 *sqlcore.Store，方法集一致。
-type sqlBackend interface {
+type SQLBackend interface {
 	Backend() string
 	Ping(ctx context.Context) error
 	Close() error
@@ -131,59 +102,55 @@ func NewMemory() *Repositories {
 }
 
 func newRepositories(backend string) *Repositories {
-	// 文件与拍摄应答共用同一实现，才能在同一次查询里判断 mediaId 是否已落盘。
-	mediaFiles := memory.NewMediaFileRepository()
 	return &Repositories{
-		Devices:            memory.NewDeviceRepository(),
-		Geo:                memory.NewGeoRepository(),
-		Params:             memory.NewDeviceParamsRepository(),
-		Properties:         memory.NewTerminalPropertiesRepository(),
-		Alarms:             memory.NewAlarmRepository(),
-		Regions:            memory.NewRegionRepository(),
-		Industry:           memory.NewIndustryRepository(),
-		Media:              memory.NewMediaMetadataRepository(),
-		MediaFiles:         mediaFiles,
-		MediaCaptures:      mediaFiles,
-		MediaSearches:      memory.NewMediaSearchRepository(),
-		UpgradeResults:     memory.NewUpgradeResultRepository(),
-		Commands:           memory.NewCommandRepository(),
-		AttachmentFiles:    memory.NewAttachmentFileRepository(),
-		AttachmentFTPTasks: memory.NewAttachmentFTPTaskRepository(),
-		AttachmentNodes:    memory.NewAttachmentNodeRepository(),
-		MediaNodes:         memory.NewMediaNodeRepository(),
-		RecordingSegments:  memory.NewRecordingSegmentRepository(),
-		Coordination:       coordination.NewMemoryStore(),
-		GatewayNodes:       memory.NewGatewayNodeRepository(),
-		SessionDirectory:   memory.NewSessionDirectoryRepository(),
-		Backend:            backend,
+		Repositories: memory.NewRepositories(),
+		Coordination: coordination.NewMemoryStore(),
+		Backend:      backend,
 	}
+}
+
+// BackendOpener 打开一个已注册的 SQL 后端。
+type BackendOpener func(cfg Config) (*Repositories, error)
+
+// BackendMigrator 执行一个已注册的后端迁移。
+type BackendMigrator func(cfg Config) (int, error)
+
+var registry = struct {
+	mu      sync.RWMutex
+	open    map[string]BackendOpener
+	migrate map[string]BackendMigrator
+}{
+	open:    map[string]BackendOpener{},
+	migrate: map[string]BackendMigrator{},
+}
+
+// RegisterBackend 注册一个 SQL 后端。只有需要该后端的二进制才导入对应实现包
+// （见 repository/database/sqlstore），未注册的后端在 Open/Migrate 时明确报错。
+func RegisterBackend(name string, opener BackendOpener, migrator BackendMigrator) {
+	registry.mu.Lock()
+	defer registry.mu.Unlock()
+	registry.open[name] = opener
+	registry.migrate[name] = migrator
 }
 
 // Open 按配置装配数据库仓储。
 func Open(cfg Config) (*Repositories, error) {
 	backend := normalizeBackend(cfg.Type)
-	switch backend {
-	case BackendMemory:
+	if backend == BackendMemory {
 		return newRepositories(BackendMemory), nil
-	case BackendSQLite:
-		handle, err := sqlite.Open(cfg.SQLitePath, cfg.SQLiteReadConns)
-		if err != nil {
-			return nil, err
-		}
-		return openSQL(handle, backend, cfg)
-	case BackendMySQL:
-		handle, err := mysql.Open(cfg.MySQLDSN)
-		if err != nil {
-			return nil, err
-		}
-		return openSQL(handle, backend, cfg)
-	default:
-		return nil, fmt.Errorf("unsupported database backend %q, expected memory|sqlite|mysql", cfg.Type)
 	}
+	registry.mu.RLock()
+	opener := registry.open[backend]
+	registry.mu.RUnlock()
+	if opener == nil {
+		return nil, fmt.Errorf("database backend %q is not linked into this binary; import repository/database/sqlstore to enable it", cfg.Type)
+	}
+	return opener(cfg)
 }
 
-// openSQL 把 SQL 后端句柄装配为统一 Repositories。
-func openSQL(handle sqlBackend, backend string, cfg Config) (*Repositories, error) {
+// NewSQLRepositories 把 SQL 后端句柄装配为统一 Repositories。
+// 由注册的后端实现（repository/database/sqlstore）调用。
+func NewSQLRepositories(backend string, cfg Config, handle SQLBackend) (*Repositories, error) {
 	industry, err := handle.IndustryRepository()
 	if err != nil {
 		_ = handle.Close()
@@ -227,16 +194,16 @@ func openSQL(handle sqlBackend, backend string, cfg Config) (*Repositories, erro
 // MySQL 场景也可由 DBA 按文件名顺序直接执行 internal/repository/mysql/migrations 下的 SQL。
 func Migrate(cfg Config) (int, error) {
 	backend := normalizeBackend(cfg.Type)
-	switch backend {
-	case BackendMemory:
+	if backend == BackendMemory {
 		return 0, fmt.Errorf("memory database has no schema to migrate")
-	case BackendSQLite:
-		return sqlite.Migrate(cfg.SQLitePath)
-	case BackendMySQL:
-		return mysql.Migrate(cfg.MySQLDSN)
-	default:
-		return 0, fmt.Errorf("unsupported database backend %q, expected memory|sqlite|mysql", cfg.Type)
 	}
+	registry.mu.RLock()
+	migrator := registry.migrate[backend]
+	registry.mu.RUnlock()
+	if migrator == nil {
+		return 0, fmt.Errorf("database backend %q is not linked into this binary; import repository/database/sqlstore to enable it", cfg.Type)
+	}
+	return migrator(cfg)
 }
 
 // normalizeBackend 归一化后端名称；空值与 memory 等价。

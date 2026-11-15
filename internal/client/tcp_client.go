@@ -17,10 +17,17 @@ import (
 
 type TCPClient struct {
 	Session *model.Session
+	deps    protocol.ProcessorDeps
 }
 
 func NewTCPClient() *TCPClient {
 	return &TCPClient{}
+}
+
+// SetDeps 注入终端侧处理器依赖（仓储与运行时状态）；未注入时协议层只做
+// 与本机无关的解码，需要档案的模拟器行为会缺少数据。
+func (cli *TCPClient) SetDeps(deps protocol.ProcessorDeps) {
+	cli.deps = deps
 }
 
 func (cli *TCPClient) Dial(addr string) error {
@@ -48,7 +55,7 @@ func (cli *TCPClient) DialTransport(addr string, transport model.TransportProtoc
 }
 
 func (cli *TCPClient) Start() {
-	pg := protocol.NewPipeline(cli.Session.Conn)
+	pg := protocol.NewPipeline(cli.Session.Conn, protocol.WithDeps(cli.deps))
 
 	for {
 		_ = cli.Session.Conn.SetReadDeadline(time.Now().Add(2 * time.Minute))
@@ -88,7 +95,7 @@ func (cli *TCPClient) Stop() {
 }
 
 func (cli *TCPClient) Send(msg model.JT808Msg) {
-	pg := protocol.NewPipeline(cli.Session.Conn)
+	pg := protocol.NewPipeline(cli.Session.Conn, protocol.WithDeps(cli.deps))
 
 	// 记录value ctx
 	ctx := context.WithValue(context.Background(), model.SessionCtxKey{}, cli.Session)
@@ -236,7 +243,7 @@ func (cli *TCPClient) SendWithError(msg model.JT808Msg) error {
 	if cli.Session == nil || msg == nil {
 		return errors.New("invalid message send arguments")
 	}
-	pg := protocol.NewPipeline(cli.Session.Conn)
+	pg := protocol.NewPipeline(cli.Session.Conn, protocol.WithDeps(cli.deps))
 	ctx := context.WithValue(context.Background(), model.SessionCtxKey{}, cli.Session)
 	ctx = context.WithValue(ctx, model.ProcessDataCtxKey{}, &model.ProcessData{Outgoing: msg})
 	return pg.ProcessConnWrite(ctx)

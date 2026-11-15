@@ -81,7 +81,7 @@ func runUplinkPipelineWithSink(
 	require.NoError(t, err)
 
 	pipeline := NewPipeline(serverEnd, WithDeps(ProcessorDeps{
-		Repos:      stores,
+		Repos:      stores.Repositories,
 		Runtime:    runtime.NewStores(),
 		Uplink:     &policy,
 		UplinkSink: sink,

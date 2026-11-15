@@ -252,7 +252,7 @@ func TestRegistrationAndAuthStateAreOrderIndependent(t *testing.T) {
 		devices := stores.Devices
 		executor := NewBusinessExecutor(BusinessOptions{
 			Devices:       devices,
-			ProcessorDeps: protocol.ProcessorDeps{Repos: stores},
+			ProcessorDeps: protocol.ProcessorDeps{Repos: stores.Repositories},
 		})
 		if authFirst {
 			_, err := executor.ConsumeEvent(ctx, auth())
@@ -296,7 +296,7 @@ func TestBusinessExecutorClaimsSessionGeneration(t *testing.T) {
 	executor := NewBusinessExecutor(BusinessOptions{
 		Devices:       stores.Devices,
 		Sessions:      stores.SessionDirectory,
-		ProcessorDeps: protocol.ProcessorDeps{Repos: stores},
+		ProcessorDeps: protocol.ProcessorDeps{Repos: stores.Repositories},
 	})
 	_, err := executor.ConsumeEvent(ctx, contracts.UplinkEvent{
 		EventID:         "evt-reg-gen",

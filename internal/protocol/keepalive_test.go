@@ -13,7 +13,7 @@ import (
 
 	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
 	"github.com/fakeyanss/jt808-server-go/internal/repository"
-	"github.com/fakeyanss/jt808-server-go/internal/repository/database"
+	"github.com/fakeyanss/jt808-server-go/internal/repository/memory"
 	"github.com/fakeyanss/jt808-server-go/internal/runtime"
 )
 
@@ -36,7 +36,7 @@ func hasKeepaliveJob(t *testing.T, timer *KeepaliveTimer, phone string) bool {
 
 // cacheKeepaliveTestDevice stores a device backed by net.Pipe ends and cleans
 // both ends plus all caches when the test finishes.
-func cacheKeepaliveTestDevice(t *testing.T, phone string, status model.DeviceStatus, lastCom time.Time) net.Conn {
+func cacheKeepaliveTestDevice(t *testing.T, stores repository.Repositories, phone string, status model.DeviceStatus, lastCom time.Time) net.Conn {
 	t.Helper()
 	ctx := context.Background()
 	devEnd, peerEnd := net.Pipe()
@@ -50,28 +50,33 @@ func cacheKeepaliveTestDevice(t *testing.T, phone string, status model.DeviceSta
 		Status:         status,
 		VersionDesc:    model.Version2013,
 	}
-	require.NoError(t, database.Default().Devices.Upsert(ctx, d))
+	require.NoError(t, stores.Devices.Upsert(ctx, d))
 	t.Cleanup(func() {
-		_ = database.Default().Devices.DeleteByPhone(ctx, phone)
-		_ = database.Default().Geo.Delete(ctx, phone)
+		_ = stores.Devices.DeleteByPhone(ctx, phone)
+		_ = stores.Geo.Delete(ctx, phone)
 		_ = devEnd.Close()
 		_ = peerEnd.Close()
 	})
 	return peerEnd
 }
 
-func TestKeepaliveTimerRegisterMissingDeviceIsNoop(t *testing.T) {
+func newKeepaliveJob(stores repository.Repositories, rt *runtime.Stores, phone string) *CheckDeviceJob {
+	return &CheckDeviceJob{phone: phone, repos: stores, runtime: rt}
+}
+
+func TestKeepaliveTimerRegisterZeroKeepaliveIsNoop(t *testing.T) {
 	timer := newIdleKeepaliveTimer()
-	timer.Register("188765444999") // never cached
+	timer.Register("188765444999", 0, memory.NewRepositories(), runtime.NewStores())
 	require.False(t, hasKeepaliveJob(t, timer, "188765444999"))
 }
 
 func TestKeepaliveTimerRegisterAndCancelJob(t *testing.T) {
 	const phone = "188765444001"
-	cacheKeepaliveTestDevice(t, phone, model.DeviceStatusOnline, time.Now())
+	stores := memory.NewRepositories()
+	cacheKeepaliveTestDevice(t, stores, phone, model.DeviceStatusOnline, time.Now())
 	timer := newIdleKeepaliveTimer()
 
-	timer.Register(phone)
+	timer.Register(phone, time.Second, stores, runtime.NewStores())
 	require.True(t, hasKeepaliveJob(t, timer, phone))
 
 	timer.Cancel(phone)
@@ -80,13 +85,15 @@ func TestKeepaliveTimerRegisterAndCancelJob(t *testing.T) {
 
 func TestCheckDeviceKeepaliveTurnsExpiredOnlineDeviceOffline(t *testing.T) {
 	const phone = "188765444002"
-	peer := cacheKeepaliveTestDevice(t, phone, model.DeviceStatusOnline, time.Now().Add(-2*time.Second))
+	stores := memory.NewRepositories()
+	rt := runtime.NewStores()
+	peer := cacheKeepaliveTestDevice(t, stores, phone, model.DeviceStatusOnline, time.Now().Add(-2*time.Second))
 	timer := newIdleKeepaliveTimer()
-	timer.Register(phone)
+	timer.Register(phone, time.Second, stores, rt)
 
-	checkDeviceKeepalive(timer, phone)
+	checkDeviceKeepalive(timer, newKeepaliveJob(stores, rt, phone))
 
-	d, err := database.Default().Devices.GetByPhone(context.Background(), phone)
+	d, err := stores.Devices.GetByPhone(context.Background(), phone)
 	require.NoError(t, err)
 	require.Equal(t, model.DeviceStatusOffline, d.Status)
 	require.True(t, hasKeepaliveJob(t, timer, phone), "offline devices keep the cleanup job")
@@ -101,16 +108,18 @@ func TestCheckDeviceKeepaliveTurnsExpiredOnlineDeviceOffline(t *testing.T) {
 func TestCheckDeviceKeepaliveClearsStaleOfflineDevice(t *testing.T) {
 	const phone = "188765444003"
 	ctx := context.Background()
-	peer := cacheKeepaliveTestDevice(t, phone, model.DeviceStatusOffline, time.Now().Add(-2*time.Second))
-	require.NoError(t, database.Default().Geo.Append(ctx, &model.DeviceGeo{Phone: phone}))
+	stores := memory.NewRepositories()
+	rt := runtime.NewStores()
+	peer := cacheKeepaliveTestDevice(t, stores, phone, model.DeviceStatusOffline, time.Now().Add(-2*time.Second))
+	require.NoError(t, stores.Geo.Append(ctx, &model.DeviceGeo{Phone: phone}))
 	timer := newIdleKeepaliveTimer()
-	timer.Register(phone)
+	timer.Register(phone, time.Second, stores, rt)
 
-	checkDeviceKeepalive(timer, phone)
+	checkDeviceKeepalive(timer, newKeepaliveJob(stores, rt, phone))
 
-	_, err := database.Default().Devices.GetByPhone(ctx, phone)
+	_, err := stores.Devices.GetByPhone(ctx, phone)
 	require.ErrorIs(t, err, repository.ErrDeviceNotFound)
-	_, err = database.Default().Geo.Latest(ctx, phone)
+	_, err = stores.Geo.Latest(ctx, phone)
 	require.ErrorIs(t, err, repository.ErrGisNotFound)
 	require.False(t, hasKeepaliveJob(t, timer, phone))
 
@@ -122,13 +131,15 @@ func TestCheckDeviceKeepaliveClearsStaleOfflineDevice(t *testing.T) {
 
 func TestCheckDeviceKeepaliveFreshDeviceNoop(t *testing.T) {
 	const phone = "188765444004"
-	cacheKeepaliveTestDevice(t, phone, model.DeviceStatusOnline, time.Now())
+	stores := memory.NewRepositories()
+	rt := runtime.NewStores()
+	cacheKeepaliveTestDevice(t, stores, phone, model.DeviceStatusOnline, time.Now())
 	timer := newIdleKeepaliveTimer()
-	timer.Register(phone)
+	timer.Register(phone, time.Second, stores, rt)
 
-	checkDeviceKeepalive(timer, phone)
+	checkDeviceKeepalive(timer, newKeepaliveJob(stores, rt, phone))
 
-	d, err := database.Default().Devices.GetByPhone(context.Background(), phone)
+	d, err := stores.Devices.GetByPhone(context.Background(), phone)
 	require.NoError(t, err)
 	require.Equal(t, model.DeviceStatusOnline, d.Status)
 	require.True(t, hasKeepaliveJob(t, timer, phone))
@@ -138,16 +149,17 @@ func TestCheckDeviceKeepaliveFreshDeviceNoop(t *testing.T) {
 func TestCheckDeviceKeepaliveUsesInProcessHeartbeat(t *testing.T) {
 	const phone = "188765444005"
 	ctx := context.Background()
+	stores := memory.NewRepositories()
+	rt := runtime.NewStores()
 	// 库内最后交互时间已过期，但进程内刚收到心跳。
-	cacheKeepaliveTestDevice(t, phone, model.DeviceStatusOnline, time.Now().Add(-2*time.Second))
-	runtime.Default().Heartbeat.Touch(ctx, phone, time.Now())
-	t.Cleanup(func() { runtime.Default().Heartbeat.Remove(ctx, phone) })
+	cacheKeepaliveTestDevice(t, stores, phone, model.DeviceStatusOnline, time.Now().Add(-2*time.Second))
+	rt.Heartbeat.Touch(ctx, phone, time.Now())
 
 	timer := newIdleKeepaliveTimer()
-	timer.Register(phone)
-	checkDeviceKeepalive(timer, phone)
+	timer.Register(phone, time.Second, stores, rt)
+	checkDeviceKeepalive(timer, newKeepaliveJob(stores, rt, phone))
 
-	d, err := database.Default().Devices.GetByPhone(ctx, phone)
+	d, err := stores.Devices.GetByPhone(ctx, phone)
 	require.NoError(t, err)
 	require.Equal(t, model.DeviceStatusOnline, d.Status)
 }
@@ -158,6 +170,6 @@ func TestCheckDeviceKeepaliveMissingDeviceIsSafe(t *testing.T) {
 	// Uses the running singleton: the cache miss branch cancels the job
 	// through its channel, which must not block or panic.
 	require.NotPanics(t, func() {
-		checkDeviceKeepalive(NewKeepaliveTimer(), "188765444998")
+		checkDeviceKeepalive(NewKeepaliveTimer(), newKeepaliveJob(memory.NewRepositories(), runtime.NewStores(), "188765444998"))
 	})
 }

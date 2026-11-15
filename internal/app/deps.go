@@ -187,11 +187,16 @@ func buildDeps(spec Spec, cfg *config.Config, s settings) *deps {
 		Str("alarm", string(uplinkPolicy.Alarm)).
 		Msg("Uplink reliability configured")
 
-	processorDeps := protocol.ProcessorDeps{Repos: storeSet, Runtime: runtime.Default(), Uplink: &uplinkPolicy}
-	if processorDeps.Repos == nil {
+	// 协议层只接收仓储接口集合：control 用真实后端，数据面角色用内存实现，
+	// 避免把数据库驱动链接进 gateway/media/attachment。
+	var protocolRepos repository.Repositories
+	if storeSet != nil {
+		protocolRepos = storeSet.Repositories
+	} else {
 		// 数据面角色不连库：用进程内仓储占位，协议层的设备档案查询改走 AuthProvider。
-		processorDeps.Repos = database.NewMemory()
+		protocolRepos = memory.NewRepositories()
 	}
+	processorDeps := protocol.ProcessorDeps{Repos: protocolRepos, Runtime: runtime.Default(), Uplink: &uplinkPolicy}
 
 	// 指标在出口之前创建：409 丢弃、超限丢弃等事件需要在网关侧计数。
 	metrics := observability.NewMetrics()
