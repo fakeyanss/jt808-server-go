@@ -23,6 +23,11 @@ server:
     http:
       url: ""
       timeoutMs: 2000
+    # 只派发列出的事件类型；留空或整段缺省时全量派发（默认行为）。
+    # 合法取值：register、auth、location、alarm、disconnect、waybill、driverIdentity、
+    # canBus、tachograph、eventReport、vehicleControlAck、terminalUpgradeResult、
+    # mediaEvent、mediaUpload、fileUploadComplete、attachmentInfo。非法值启动即失败。
+    events: []
   port:
     tcpPort: "8080"
     udpPort: "8081"
@@ -207,6 +212,14 @@ uplink:
     workers: 4
     # 单条事件投递次数上限（含首次）；默认不重试，允许 1..3。
     maxAttempts: 1
+    # 按上行分类覆盖 maxAttempts；未配置的分类（含整段缺省）回落到 maxAttempts。
+    # 分类口径与 uplink.reliability 一致，另加 sessionClosed（会话结束事件）。
+    # maxAttemptsByClass:
+    #   default: 1
+    #   location: 1
+    #   batchLocation: 3
+    #   alarm: 3
+    #   sessionClosed: 3
     # 事件信封中的网关标识；缺省为 主机名-进程号。
     gatewayId: ""
   reliability:

@@ -14,6 +14,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/fakeyanss/jt808-server-go/internal/contracts"
+	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
 )
 
 func testEvent(reliability contracts.Reliability) contracts.UplinkEvent {
@@ -334,6 +335,78 @@ func TestHTTPSinkAtLeastOnceRetriesUntilDelivered(t *testing.T) {
 	require.True(t, result.Accepted)
 	require.Equal(t, int64(2), attempts.Load())
 	require.Equal(t, int64(1), sink.Stats().Delivered)
+}
+
+// 分类覆盖优先于全局次数；未覆盖的分类回落到全局 maxAttempts。
+func TestHTTPSinkPerClassAttempts(t *testing.T) {
+	tests := []struct {
+		name      string
+		global    int
+		overrides AttemptOverrides
+		event     contracts.UplinkEvent
+		wantTries int64
+		wantErr   bool
+	}{
+		{
+			name:      "session closed override retries",
+			global:    1,
+			overrides: AttemptOverrides{SessionClosed: 3},
+			event: contracts.UplinkEvent{
+				EventID: "sess-1", Event: "session.closed", Phone: "13800000001",
+				SessionID: "sess-1", Generation: 2, Reliability: contracts.ReliabilityAtLeastOnce,
+			},
+			wantTries: 2,
+		},
+		{
+			name:      "location override disables retry",
+			global:    3,
+			overrides: AttemptOverrides{Location: 1},
+			event: contracts.UplinkEvent{
+				EventID: "loc-1", Phone: "13800000002", MsgID: 0x0200,
+				Reliability: contracts.ReliabilityAtLeastOnce, Payload: &model.Msg0200{},
+			},
+			wantTries: 1,
+			wantErr:   true,
+		},
+		{
+			name:      "unconfigured class falls back to global",
+			global:    2,
+			overrides: AttemptOverrides{Alarm: 3},
+			event: contracts.UplinkEvent{
+				EventID: "reg-1", Phone: "13800000003", MsgID: 0x0100,
+				Reliability: contracts.ReliabilityAtLeastOnce,
+			},
+			wantTries: 2,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var tries atomic.Int64
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if tries.Add(1) == 1 {
+					w.WriteHeader(http.StatusServiceUnavailable)
+					return
+				}
+				w.WriteHeader(http.StatusOK)
+			}))
+			defer server.Close()
+
+			sink := newTestSink(t, server.URL, func(o *HTTPSinkOptions) {
+				o.MaxAttempts = tc.global
+				o.Attempts = tc.overrides
+			})
+			runTestSink(t, sink)
+
+			_, err := sink.Deliver(context.Background(), tc.event)
+			if tc.wantErr {
+				require.Error(t, err)
+			} else {
+				require.NoError(t, err)
+			}
+			require.Equal(t, tc.wantTries, tries.Load())
+		})
+	}
 }
 
 func TestHTTPSinkBestEffortFailureStillAccepted(t *testing.T) {

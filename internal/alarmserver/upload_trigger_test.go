@@ -85,6 +85,27 @@ func TestUploadTriggerSkipsWhenAlarmIDUnavailable(t *testing.T) {
 	require.Empty(t, *sent)
 }
 
+// 事件范围只过滤对外回调：自动上传触发仍应看到未订阅的报警并下发 0x9208。
+func TestUploadTriggerRunsBeforeEventScopeFilter(t *testing.T) {
+	next := &recordingHooks{}
+	scoped, err := actionpkg.NewFilter(next, []string{"waybill"})
+	require.NoError(t, err)
+
+	var sent []*model.Msg9208
+	trigger := NewUploadTrigger(scoped, UploadTriggerOptions{IP: "10.0.0.8", TCPPort: 7611},
+		func(_ string, msg *model.Msg9208) error {
+			sent = append(sent, msg)
+			return nil
+		})
+
+	trigger.OnAlarm(context.Background(), actionpkg.AlarmEvent{
+		Phone: "13800138000", AlarmSign: 0x01, AlarmID: testUploadAlarmID(),
+	})
+
+	require.Len(t, sent, 1, "内部触发不受对外订阅范围影响")
+	require.Empty(t, next.alarms, "未订阅的报警不得转发给对外回调")
+}
+
 func TestUploadTriggerSendsOncePerAlarm(t *testing.T) {
 	trigger, _, sent := newTestUploadTrigger(t, nil, time.Minute)
 	alarmID := testUploadAlarmID()
