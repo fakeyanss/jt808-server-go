@@ -282,12 +282,16 @@ func TestSessionDirectoryOnRealMySQL(t *testing.T) {
 	require.NoError(t, err)
 	require.False(t, valid)
 
-	require.NoError(t, dir.Release(ctx, phone, ownerA, 1))
+	released, err := dir.Release(ctx, phone, ownerA, 1)
+	require.NoError(t, err)
+	require.False(t, released)
 	record, err = dir.Get(ctx, phone)
 	require.NoError(t, err)
 	require.NotNil(t, record)
 
-	require.NoError(t, dir.Release(ctx, phone, ownerB, 2))
+	released, err = dir.Release(ctx, phone, ownerB, 2)
+	require.NoError(t, err)
+	require.True(t, released)
 	record, err = dir.Get(ctx, phone)
 	require.NoError(t, err)
 	require.Nil(t, record)

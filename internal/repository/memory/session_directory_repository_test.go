@@ -36,12 +36,16 @@ func TestSessionDirectoryRepositoryLifecycle(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, ok)
 
-	require.NoError(t, dir.Release(ctx, "13800000001", owner, 1))
+	released, err := dir.Release(ctx, "13800000001", owner, 1)
+	require.NoError(t, err)
+	require.False(t, released)
 	record, err := dir.Get(ctx, "13800000001")
 	require.NoError(t, err)
 	require.NotNil(t, record)
 
-	require.NoError(t, dir.Release(ctx, "13800000001", next, 2))
+	released, err = dir.Release(ctx, "13800000001", next, 2)
+	require.NoError(t, err)
+	require.True(t, released)
 	record, err = dir.Get(ctx, "13800000001")
 	require.NoError(t, err)
 	require.Nil(t, record)

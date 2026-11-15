@@ -95,13 +95,14 @@ func (d *deps) setupControl() {
 			MaxRequestBytes:     clusterOptions.Uplink.MaxRequestBytes,
 			MaxDecodedBodyBytes: clusterOptions.Uplink.MaxDecodedBodyBytes,
 			Clock:               d.clock,
-			// 网关在会话关闭时上报 release，控制面据此派发与网关一致的 OnDisconnect。
-			OnSessionReleased: func(ctx context.Context, phone, sessionID, transport string) {
+			// 会话结束事件由网关通过 uplink 投递，释放成功后派发与网关一致的 OnDisconnect。
+			OnSessionClosed: func(ctx context.Context, phone, sessionID, transport, reason string) {
 				controlHooks.OnDisconnect(ctx, action.DisconnectEvent{
 					EventID:   sessionID,
 					Phone:     phone,
 					SessionID: sessionID,
 					Transport: transport,
+					Reason:    reason,
 				})
 			},
 		})

@@ -67,8 +67,8 @@ type ServerOptions struct {
 	MaxDecodedBodyBytes int64
 	// Clock 是进程内唯一时钟源；为空时使用系统时钟。
 	Clock clockpkg.Clock
-	// OnSessionReleased 在会话释放成功后回调；control 用它派发 OnDisconnect。
-	OnSessionReleased func(ctx context.Context, phone, sessionID, transport string)
+	// OnSessionClosed 在会话释放实际删除归属后回调；control 用它派发 OnDisconnect。
+	OnSessionClosed func(ctx context.Context, phone, sessionID, transport, reason string)
 }
 
 // Server 是管控侧上行 HTTP 入口。
@@ -254,9 +254,6 @@ func (s *Server) Handler() http.Handler {
 		mux.HandleFunc(gatewaynode.PathHeartbeat, s.handleGatewayHeartbeat)
 		mux.HandleFunc(gatewaynode.PathDeregister, s.handleGatewayDeregister)
 	}
-	if s.sessions != nil {
-		mux.HandleFunc(gatewaynode.PathRelease, s.handleSessionRelease)
-	}
 	if s.segments != nil {
 		mux.HandleFunc(PathMediaSegment, s.handleMediaSegment)
 	}
@@ -360,6 +357,40 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 	duplicate := envelope.MsgID != 0x0102 && s.dedup.Seen(envelope.EventID, now)
 	if duplicate {
 		writeJSON(w, http.StatusOK, map[string]any{"outcome": "duplicate"})
+		return
+	}
+
+	// 会话结束走独立事件类型：eventId=sessionId，按 sessionId 幂等。
+	if envelope.Event == "session.closed" {
+		if envelope.Phone == "" || envelope.SessionID == "" || envelope.Generation == 0 {
+			writeError(w, http.StatusBadRequest, "invalid_request",
+				"phone, sessionId and generation are required")
+			return
+		}
+		if s.sessions == nil {
+			writeError(w, http.StatusServiceUnavailable, "no_consumer", "session directory is not configured")
+			return
+		}
+		owner := repository.SessionOwner{
+			GatewayID:  envelope.GatewayID,
+			InstanceID: envelope.InstanceID,
+			SessionID:  envelope.SessionID,
+		}
+		released, err := s.sessions.Release(r.Context(), envelope.Phone, owner, envelope.Generation)
+		if err != nil {
+			log.Error().Err(err).Str("event_id", envelope.EventID).Msg("Session close release failed")
+			writeError(w, http.StatusServiceUnavailable, "release_failed", err.Error())
+			return
+		}
+		if released && s.opts.OnSessionClosed != nil {
+			s.opts.OnSessionClosed(r.Context(), envelope.Phone, envelope.SessionID, envelope.Transport, envelope.Reason)
+		}
+		s.dedup.Add(envelope.EventID, now)
+		outcome := "closed"
+		if !released {
+			outcome = "already_closed"
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"outcome": outcome})
 		return
 	}
 
@@ -496,42 +527,6 @@ func (s *Server) fencedByDirectory(ctx context.Context, envelope HTTPEnvelope) (
 	return !valid, nil
 }
 
-func (s *Server) handleSessionRelease(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "use POST")
-		return
-	}
-	if !s.authorized(r) {
-		writeError(w, http.StatusUnauthorized, "unauthorized", "invalid or missing bearer token")
-		return
-	}
-	var req gatewaynode.ReleaseRequest
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_json", err.Error())
-		return
-	}
-	if strings.TrimSpace(req.GatewayID) == "" || strings.TrimSpace(req.InstanceID) == "" ||
-		strings.TrimSpace(req.Phone) == "" || strings.TrimSpace(req.SessionID) == "" || req.Generation == 0 {
-		writeError(w, http.StatusBadRequest, "invalid_request",
-			"gatewayId, instanceId, phone, sessionId and generation are required")
-		return
-	}
-	owner := repository.SessionOwner{
-		GatewayID:  req.GatewayID,
-		InstanceID: req.InstanceID,
-		SessionID:  req.SessionID,
-	}
-	if err := s.sessions.Release(r.Context(), req.Phone, owner, req.Generation); err != nil {
-		log.Error().Err(err).Str("phone", req.Phone).Msg("Session release failed")
-		writeError(w, http.StatusInternalServerError, "release_failed", "failed to release session")
-		return
-	}
-	if s.opts.OnSessionReleased != nil {
-		s.opts.OnSessionReleased(r.Context(), req.Phone, req.SessionID, req.Transport)
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"status": "released"})
-}
-
 func (s *Server) handleDeviceLookup(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "use POST")
@@ -586,6 +581,8 @@ func (s *Server) authorized(r *http.Request) bool {
 func envelopeToEvent(envelope HTTPEnvelope) (contracts.UplinkEvent, error) {
 	event := contracts.UplinkEvent{
 		EventID:             envelope.EventID,
+		Event:               envelope.Event,
+		Reason:              envelope.Reason,
 		Phone:               envelope.Phone,
 		MsgID:               envelope.MsgID,
 		RawMsgID:            envelope.RawMsgID,

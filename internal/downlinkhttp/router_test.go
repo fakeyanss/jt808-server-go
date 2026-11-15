@@ -27,8 +27,8 @@ func (s *stubSessionDirectory) Claim(context.Context, string, repository.Session
 	return 0, nil
 }
 
-func (s *stubSessionDirectory) Release(context.Context, string, repository.SessionOwner, uint64) error {
-	return nil
+func (s *stubSessionDirectory) Release(context.Context, string, repository.SessionOwner, uint64) (bool, error) {
+	return false, nil
 }
 
 func (s *stubSessionDirectory) DeleteByGateway(context.Context, string, string) error {

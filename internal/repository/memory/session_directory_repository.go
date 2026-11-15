@@ -43,15 +43,15 @@ func (r *SessionDirectoryRepository) Claim(_ context.Context, phone string, owne
 	return record.Generation, nil
 }
 
-func (r *SessionDirectoryRepository) Release(_ context.Context, phone string, owner repository.SessionOwner, generation uint64) error {
+func (r *SessionDirectoryRepository) Release(_ context.Context, phone string, owner repository.SessionOwner, generation uint64) (bool, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	record, ok := r.records[phone]
 	if !ok || record.SessionOwner != owner || record.Generation != generation {
-		return nil
+		return false, nil
 	}
 	delete(r.records, phone)
-	return nil
+	return true, nil
 }
 
 func (r *SessionDirectoryRepository) DeleteByGateway(_ context.Context, gatewayID, instanceID string) error {
