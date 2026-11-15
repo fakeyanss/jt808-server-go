@@ -2639,6 +2639,32 @@ func rejectLegacyKeys(v *viper.Viper) error {
 	return nil
 }
 
+// attemptClassKeys 是 uplink.http.maxAttemptsByClass 允许的键（小写形式）。
+// viper 会把配置键统一小写，这里按小写比对，不做 snake_case 归一化。
+var attemptClassKeys = map[string]struct{}{
+	"default":       {},
+	"location":      {},
+	"batchlocation": {},
+	"alarm":         {},
+	"sessionclosed": {},
+}
+
+// rejectUnknownAttemptClassKeys 拒绝 uplink.http.maxAttemptsByClass 下的未知键。
+//
+// viper 默认忽略未知字段：键名拼错（如 batch_location、session_closed）会被静默丢弃并
+// 回落到默认值，因此该段必须显式校验。校验只作用于这一段，不影响其它配置。
+func rejectUnknownAttemptClassKeys(v *viper.Viper) error {
+	section := v.GetStringMap("uplink.http.maxAttemptsByClass")
+	for key := range section {
+		if _, ok := attemptClassKeys[strings.ToLower(key)]; !ok {
+			return fmt.Errorf(
+				`unknown key %q under uplink.http.maxAttemptsByClass; valid keys: default, location, batchLocation, alarm, sessionClosed`,
+				key)
+		}
+	}
+	return nil
+}
+
 func Load(confFilePath string) *Config {
 	configOnce.Do(func() {
 		config = &Config{}
@@ -2668,6 +2694,9 @@ func Load(confFilePath string) *Config {
 		// 旧的 storage 段已整体改名为 database；必须显式报错，
 		// 不能让未知字段被静默忽略后继续用默认后端启动。
 		if err := rejectLegacyKeys(viper.GetViper()); err != nil {
+			panic(err)
+		}
+		if err := rejectUnknownAttemptClassKeys(viper.GetViper()); err != nil {
 			panic(err)
 		}
 
