@@ -36,6 +36,43 @@ func TestRejectLegacyStorageSection(t *testing.T) {
 	require.Contains(t, err.Error(), `"cluster.storage"`)
 }
 
+// maxAttemptsByClass 下的未知键必须启动失败，键名拼错不能被静默忽略。
+func TestRejectUnknownAttemptClassKeys(t *testing.T) {
+	load := func(t *testing.T, raw string) *viper.Viper {
+		t.Helper()
+		v := viper.New()
+		v.SetConfigType("yaml")
+		require.NoError(t, v.ReadConfig(strings.NewReader(raw)))
+		return v
+	}
+
+	valid := load(t, "uplink:\n  http:\n    maxAttemptsByClass:\n"+
+		"      default: 1\n      location: 1\n      batchLocation: 2\n      alarm: 2\n      sessionClosed: 2\n")
+	require.NoError(t, rejectUnknownAttemptClassKeys(valid))
+
+	// 未配置这一段时不校验，保持原有默认行为。
+	absent := load(t, "uplink:\n  http:\n    maxAttempts: 1\n")
+	require.NoError(t, rejectUnknownAttemptClassKeys(absent))
+
+	// 下划线写法不是合法键，不做归一化。
+	snake := load(t, "uplink:\n  http:\n    maxAttemptsByClass:\n      session_closed: 3\n")
+	err := rejectUnknownAttemptClassKeys(snake)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), `"session_closed"`)
+	require.Contains(t, err.Error(), "sessionClosed")
+
+	unknown := load(t, "uplink:\n  http:\n    maxAttemptsByClass:\n      batch_location: 2\n")
+	err = rejectUnknownAttemptClassKeys(unknown)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), `"batch_location"`)
+	require.Contains(t, err.Error(), "default, location, batchLocation, alarm, sessionClosed")
+
+	// 内嵌默认配置必须通过校验。
+	raw, err := serverconfigs.FS.ReadFile(defaultServConfFile)
+	require.NoError(t, err)
+	require.NoError(t, rejectUnknownAttemptClassKeys(load(t, string(raw))))
+}
+
 func TestLoad(t *testing.T) {
 	type args struct {
 		confFilePath string
