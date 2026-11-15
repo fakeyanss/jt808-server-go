@@ -43,11 +43,12 @@ var codecOnce sync.Once
 
 func NewJT808PacketCodec(stores ...*runtime.State) *JT808PacketCodec {
 	codecOnce.Do(func() {
-		jt808PacketCodec = &JT808PacketCodec{}
+		codec := &JT808PacketCodec{}
+		if len(stores) > 0 && stores[0] != nil {
+			codec.stores = stores[0]
+		}
+		jt808PacketCodec = codec
 	})
-	if len(stores) > 0 && stores[0] != nil {
-		jt808PacketCodec.stores = stores[0]
-	}
 	return jt808PacketCodec
 }
 
