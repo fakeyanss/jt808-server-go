@@ -12,6 +12,7 @@ import (
 	"github.com/rs/zerolog/log"
 
 	codechex "github.com/fakeyanss/jt808-server-go/internal/codec/hex"
+	"github.com/fakeyanss/jt808-server-go/internal/domain"
 	"github.com/fakeyanss/jt808-server-go/internal/protocol"
 	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
 	"github.com/fakeyanss/jt808-server-go/internal/repository"
@@ -42,7 +43,7 @@ func (p *Processor) processMsg0200(ctx context.Context, data *model.ProcessData)
 	latestGeo, latestErr := p.repos.Geo.Latest(ctx, device.Phone)
 	staleLocation := latestErr == nil && latestGeo != nil && dg.Time.Before(latestGeo.Time)
 	if !staleLocation && dg.Geo.ACCStatus == 0 { // ACC关闭，设备休眠
-		device.Status = model.DeviceStatusSleeping
+		device.Status = domain.DeviceStatusSleeping
 		device.LastestComTime = time.Now()
 		_ = devices.Upsert(ctx, device)
 	}

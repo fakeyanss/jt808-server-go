@@ -6,7 +6,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
+	"github.com/fakeyanss/jt808-server-go/internal/domain"
 	"github.com/fakeyanss/jt808-server-go/internal/repository"
 	"github.com/stretchr/testify/require"
 )
@@ -38,10 +38,10 @@ func TestDeviceRepositoryConcurrentUpsertAndRead(t *testing.T) {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			_ = repo.Upsert(ctx, &model.Device{
+			_ = repo.Upsert(ctx, &domain.Device{
 				Phone:  fmt.Sprintf("188%08d", i),
 				Plate:  fmt.Sprintf("P%08d", i),
-				Status: model.DeviceStatusOffline,
+				Status: domain.DeviceStatusOffline,
 			})
 		}(i)
 	}
@@ -68,16 +68,16 @@ func TestDeviceRepositoryConcurrentUpsertAndRead(t *testing.T) {
 func TestDeviceRepositoryReturnsSnapshots(t *testing.T) {
 	repo := NewDeviceRepository()
 	ctx := context.Background()
-	device := &model.Device{Phone: "188765400001", Plate: "REPO-SNAPSHOT", Status: model.DeviceStatusOffline}
+	device := &domain.Device{Phone: "188765400001", Plate: "REPO-SNAPSHOT", Status: domain.DeviceStatusOffline}
 	require.NoError(t, repo.Upsert(ctx, device))
 
-	device.Status = model.DeviceStatusOnline
+	device.Status = domain.DeviceStatusOnline
 	got, err := repo.GetByPhone(ctx, device.Phone)
 	require.NoError(t, err)
-	require.Equal(t, model.DeviceStatusOffline, got.Status)
+	require.Equal(t, domain.DeviceStatusOffline, got.Status)
 
-	got.Status = model.DeviceStatusSleeping
+	got.Status = domain.DeviceStatusSleeping
 	byPlate, err := repo.GetByPlate(ctx, device.Plate)
 	require.NoError(t, err)
-	require.Equal(t, model.DeviceStatusOffline, byPlate.Status)
+	require.Equal(t, domain.DeviceStatusOffline, byPlate.Status)
 }

@@ -13,6 +13,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/fakeyanss/jt808-server-go/internal/domain"
 	"github.com/fakeyanss/jt808-server-go/internal/protocol"
 	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
 )
@@ -43,7 +44,7 @@ func buildDataFrame(fileName string, offset uint32, data []byte) []byte {
 }
 
 func newAlarmHeader(msgID uint16, serial uint16) *model.MsgHeader {
-	return model.GenMsgHeader(&model.Device{
+	return model.GenMsgHeader(&domain.Device{
 		Phone:       "013800000001",
 		VersionDesc: model.Version2013,
 	}, msgID, serial)

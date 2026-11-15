@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/fakeyanss/jt808-server-go/internal/codec/hex"
+	"github.com/fakeyanss/jt808-server-go/internal/domain"
 	"github.com/fakeyanss/jt808-server-go/internal/mediaupload"
 	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
 	"github.com/fakeyanss/jt808-server-go/internal/repository"
@@ -37,7 +38,7 @@ func newMediaAPITestServer(t *testing.T) (*gin.Engine, repository.MediaFileRepos
 
 	const phone = "188765432113"
 	devices := memory.NewDeviceRepository()
-	require.NoError(t, devices.Upsert(context.Background(), &model.Device{Phone: phone, Plate: "京A12345"}))
+	require.NoError(t, devices.Upsert(context.Background(), &domain.Device{Phone: phone, Plate: "京A12345"}))
 
 	files := memory.NewMediaFileRepository()
 	store, err := mediaupload.NewStore(t.TempDir())

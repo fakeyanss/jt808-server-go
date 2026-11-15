@@ -9,7 +9,7 @@ import (
 	"github.com/pkg/errors"
 	"github.com/rs/zerolog/log"
 
-	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
+	"github.com/fakeyanss/jt808-server-go/internal/domain"
 	"github.com/fakeyanss/jt808-server-go/internal/repository"
 	"github.com/fakeyanss/jt808-server-go/internal/runtime"
 )
@@ -89,7 +89,7 @@ func checkDeviceKeepalive(t *KeepaliveTimer, j *CheckDeviceJob) {
 	}
 	if d.ShouleTurnOffline() {
 		// 保活失效
-		d.Status = model.DeviceStatusOffline
+		d.Status = domain.DeviceStatusOffline
 		_ = stores.Devices.Upsert(ctx, d)
 		j.runtime.Heartbeat.Remove(ctx, devicePhone)
 		log.Debug().Str("device", devicePhone).Msg("Turn offline for device keepalive expired")

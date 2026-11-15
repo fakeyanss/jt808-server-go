@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/fakeyanss/jt808-server-go/internal/contracts"
+	"github.com/fakeyanss/jt808-server-go/internal/domain"
 	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
 	"github.com/fakeyanss/jt808-server-go/internal/repository/database"
 	"github.com/fakeyanss/jt808-server-go/internal/uplink"
@@ -49,7 +50,7 @@ func (f *fakeUplinkSink) last(t *testing.T) contracts.UplinkEvent {
 func newUplinkTestStores(t *testing.T) *database.Repositories {
 	t.Helper()
 	stores := database.NewMemory()
-	require.NoError(t, stores.Devices.Upsert(context.Background(), &model.Device{
+	require.NoError(t, stores.Devices.Upsert(context.Background(), &domain.Device{
 		Phone: "188765499021", Keepalive: time.Minute,
 	}))
 	return stores

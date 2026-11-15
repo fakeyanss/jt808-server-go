@@ -13,7 +13,7 @@ import (
 	"time"
 
 	"github.com/fakeyanss/jt808-server-go/internal/clock"
-	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
+	"github.com/fakeyanss/jt808-server-go/internal/domain"
 	"github.com/fakeyanss/jt808-server-go/internal/repository"
 )
 
@@ -122,7 +122,7 @@ func (s *Store) DeviceParamsRepository() repository.DeviceParamsRepository {
 func (s *Store) TerminalPropertiesRepository() repository.TerminalPropertiesRepository {
 	return &terminalPropertiesRepository{
 		store:  s,
-		latest: make(map[string]*model.TerminalProperties),
+		latest: make(map[string]*domain.TerminalProperties),
 	}
 }
 

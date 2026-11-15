@@ -4,13 +4,14 @@ import (
 	"github.com/rs/zerolog/log"
 
 	"github.com/fakeyanss/jt808-server-go/internal/codec/hex"
+	"github.com/fakeyanss/jt808-server-go/internal/domain"
 )
 
 // 设置终端参数
 type Msg8103 struct {
-	Header     *MsgHeader    `json:"header"`
-	ParamCnt   uint8         `json:"paramCnt"`   // 参数个数
-	Parameters *DeviceParams `json:"parameters"` // 参数项列表
+	Header     *MsgHeader           `json:"header"`
+	ParamCnt   uint8                `json:"paramCnt"`   // 参数个数
+	Parameters *domain.DeviceParams `json:"parameters"` // 参数项列表
 }
 
 // client接收到消息，解析为结构体
@@ -18,7 +19,7 @@ func (m *Msg8103) Decode(packet *PacketData) error {
 	m.Header = packet.Header
 	pkt, idx := packet.Body, 0
 	m.ParamCnt = hex.ReadByte(pkt, &idx)
-	m.Parameters = &DeviceParams{}
+	m.Parameters = &domain.DeviceParams{}
 	err := m.Parameters.Decode(m.Header.PhoneNumber, m.ParamCnt, pkt[idx:])
 	if err != nil {
 		log.Error().Err(err).Str("device", m.Header.PhoneNumber).Msg("Fail to decode device params")

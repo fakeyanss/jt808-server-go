@@ -8,6 +8,7 @@ import (
 	"github.com/pkg/errors"
 	"github.com/rs/zerolog/log"
 
+	"github.com/fakeyanss/jt808-server-go/internal/domain"
 	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
 	"github.com/fakeyanss/jt808-server-go/internal/repository"
 )
@@ -191,6 +192,6 @@ func (mp *JT808MsgProcessor) processAuthProtocol(ctx context.Context, data *mode
 
 // RegisterAuthCode 计算注册鉴权码；standalone、网关半边与管控半边共用同一算法。
 func RegisterAuthCode(in *model.Msg0100) string {
-	device := &model.Device{ID: in.DeviceID, Plate: in.PlateNumber, Phone: in.Header.PhoneNumber}
+	device := &domain.Device{ID: in.DeviceID, Plate: in.PlateNumber, Phone: in.Header.PhoneNumber}
 	return genAuthCode(device)
 }

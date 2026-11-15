@@ -4,26 +4,26 @@ import (
 	"context"
 	"sync"
 
-	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
+	"github.com/fakeyanss/jt808-server-go/internal/domain"
 	"github.com/fakeyanss/jt808-server-go/internal/repository"
 )
 
 // memoryDeviceParamsRepository 是 DeviceParamsRepository 的内存实现。
 type memoryDeviceParamsRepository struct {
-	cacheByPhone map[string]*model.DeviceParams
+	cacheByPhone map[string]*domain.DeviceParams
 	mutex        *sync.Mutex
 }
 
 // newMemoryDeviceParamsRepository 创建独立的内存参数仓储。
 func newMemoryDeviceParamsRepository() *memoryDeviceParamsRepository {
 	return &memoryDeviceParamsRepository{
-		cacheByPhone: make(map[string]*model.DeviceParams),
+		cacheByPhone: make(map[string]*domain.DeviceParams),
 		mutex:        &sync.Mutex{},
 	}
 }
 
 // Get 按手机号查询终端参数。
-func (cache *memoryDeviceParamsRepository) Get(_ context.Context, phone string) (*model.DeviceParams, error) {
+func (cache *memoryDeviceParamsRepository) Get(_ context.Context, phone string) (*domain.DeviceParams, error) {
 	cache.mutex.Lock()
 	defer cache.mutex.Unlock()
 	if d, ok := cache.cacheByPhone[phone]; ok {
@@ -33,7 +33,7 @@ func (cache *memoryDeviceParamsRepository) Get(_ context.Context, phone string) 
 }
 
 // Replace 覆盖写入终端参数。
-func (cache *memoryDeviceParamsRepository) Replace(_ context.Context, d *model.DeviceParams) error {
+func (cache *memoryDeviceParamsRepository) Replace(_ context.Context, d *domain.DeviceParams) error {
 	cache.mutex.Lock()
 	defer cache.mutex.Unlock()
 	cache.cacheByPhone[d.DevicePhone] = d

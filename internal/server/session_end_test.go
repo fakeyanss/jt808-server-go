@@ -12,6 +12,7 @@ import (
 
 	"github.com/fakeyanss/jt808-server-go/internal/action"
 	"github.com/fakeyanss/jt808-server-go/internal/contracts"
+	"github.com/fakeyanss/jt808-server-go/internal/domain"
 	"github.com/fakeyanss/jt808-server-go/internal/protocol"
 	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
 	"github.com/fakeyanss/jt808-server-go/internal/repository"
@@ -126,11 +127,11 @@ func TestEndSessionRespectsSkipActionHooks(t *testing.T) {
 
 type sessionClosedAuthProvider struct{}
 
-func (sessionClosedAuthProvider) Device(_ context.Context, phone string) (*model.Device, error) {
+func (sessionClosedAuthProvider) Device(_ context.Context, phone string) (*domain.Device, error) {
 	if phone != "13800000009" {
 		return nil, repository.ErrDeviceNotFound
 	}
-	return &model.Device{Phone: phone}, nil
+	return &domain.Device{Phone: phone}, nil
 }
 
 func (sessionClosedAuthProvider) AuthCode(context.Context, string) (string, error) {

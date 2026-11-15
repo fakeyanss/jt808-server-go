@@ -16,6 +16,7 @@ import (
 
 	"github.com/fakeyanss/jt808-server-go/internal/contracts"
 	"github.com/fakeyanss/jt808-server-go/internal/contracts/media"
+	"github.com/fakeyanss/jt808-server-go/internal/domain"
 	playbacklib "github.com/fakeyanss/jt808-server-go/internal/media/playback"
 	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
 	"github.com/fakeyanss/jt808-server-go/internal/repository"
@@ -150,7 +151,7 @@ func (e *playbackTestEnv) deletePlayback(t *testing.T, sessionID string) map[str
 
 func (e *playbackTestEnv) addDevice(t *testing.T, phone string) {
 	t.Helper()
-	require.NoError(t, e.devices.Upsert(context.Background(), &model.Device{
+	require.NoError(t, e.devices.Upsert(context.Background(), &domain.Device{
 		Phone:     phone,
 		Plate:     "测A00001",
 		Keepalive: time.Minute,

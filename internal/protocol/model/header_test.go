@@ -7,6 +7,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/fakeyanss/jt808-server-go/internal/codec/hex"
+	"github.com/fakeyanss/jt808-server-go/internal/domain"
 )
 
 func TestMsgHeader_Decode(t *testing.T) {
@@ -63,7 +64,7 @@ func TestMsgHeader_Encode(t *testing.T) {
 }
 
 func TestGenMsgHeaderPreserves2019VersionForOutgoingMessages(t *testing.T) {
-	device := &Device{Phone: "00000000013012345678", VersionDesc: Version2019, ProtocolVersion: 1}
+	device := &domain.Device{Phone: "00000000013012345678", VersionDesc: Version2019, ProtocolVersion: 1}
 	header := GenMsgHeader(device, 0x8104, 7)
 	encoded, err := header.Encode()
 	require.NoError(t, err)

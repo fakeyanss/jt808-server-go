@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
+	"github.com/fakeyanss/jt808-server-go/internal/domain"
 	"github.com/fakeyanss/jt808-server-go/internal/repository"
 )
 
@@ -19,14 +19,14 @@ type terminalPropertiesRepository struct {
 	store *Store
 
 	mu     sync.RWMutex
-	latest map[string]*model.TerminalProperties
+	latest map[string]*domain.TerminalProperties
 }
 
 const propertiesColumns = `phone, terminal_type, manufacturer_id, terminal_model, terminal_id, iccid,
 	hardware_version, firmware_version, gnss_properties, communication_properties, extra_json, updated_at`
 
 // Get 先读进程内最新值，未命中再回源库并回填。
-func (r *terminalPropertiesRepository) Get(ctx context.Context, phone string) (*model.TerminalProperties, error) {
+func (r *terminalPropertiesRepository) Get(ctx context.Context, phone string) (*domain.TerminalProperties, error) {
 	ctx, cancel := readContext(ctx)
 	defer cancel()
 	r.mu.RLock()
@@ -37,7 +37,7 @@ func (r *terminalPropertiesRepository) Get(ctx context.Context, phone string) (*
 	}
 
 	var (
-		properties   model.TerminalProperties
+		properties   domain.TerminalProperties
 		extraJSON    []byte
 		terminalType int64
 		gnss         int16
@@ -72,7 +72,7 @@ func (r *terminalPropertiesRepository) Get(ctx context.Context, phone string) (*
 }
 
 // Replace 覆盖写入属性档案：先落库，成功后更新进程内最新值。
-func (r *terminalPropertiesRepository) Replace(ctx context.Context, properties *model.TerminalProperties) error {
+func (r *terminalPropertiesRepository) Replace(ctx context.Context, properties *domain.TerminalProperties) error {
 	extraJSON, err := encodeExtra(properties)
 	if err != nil {
 		return err
@@ -105,7 +105,7 @@ func (r *terminalPropertiesRepository) Delete(ctx context.Context, phone string)
 	return nil
 }
 
-func encodeExtra(properties *model.TerminalProperties) ([]byte, error) {
+func encodeExtra(properties *domain.TerminalProperties) ([]byte, error) {
 	if len(properties.Extra) == 0 {
 		return []byte("{}"), nil
 	}
@@ -116,7 +116,7 @@ func encodeExtra(properties *model.TerminalProperties) ([]byte, error) {
 	return payload, nil
 }
 
-func decodeExtra(payload []byte, phone string, properties *model.TerminalProperties) error {
+func decodeExtra(payload []byte, phone string, properties *domain.TerminalProperties) error {
 	if len(payload) == 0 {
 		return nil
 	}
@@ -129,7 +129,7 @@ func decodeExtra(payload []byte, phone string, properties *model.TerminalPropert
 	return nil
 }
 
-func cloneProperties(p *model.TerminalProperties) *model.TerminalProperties {
+func cloneProperties(p *domain.TerminalProperties) *domain.TerminalProperties {
 	if p == nil {
 		return nil
 	}

@@ -11,6 +11,7 @@ import (
 	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
 	"github.com/fakeyanss/jt808-server-go/internal/repository/database"
 	// 测试需要真实 SQLite 后端，显式注册驱动实现。
+	"github.com/fakeyanss/jt808-server-go/internal/domain"
 	_ "github.com/fakeyanss/jt808-server-go/internal/repository/database/sqlbackend"
 	"github.com/fakeyanss/jt808-server-go/internal/runtime"
 )
@@ -28,7 +29,7 @@ func TestLookupSessionByPhoneIgnoresPersistedSessionID(t *testing.T) {
 	t.Cleanup(func() { require.NoError(t, database.Close()) })
 
 	const phone = "18800001111"
-	require.NoError(t, stores.Devices.Upsert(ctx, &model.Device{
+	require.NoError(t, stores.Devices.Upsert(ctx, &domain.Device{
 		Phone:     phone,
 		Plate:     "测A12345",
 		Keepalive: time.Minute,

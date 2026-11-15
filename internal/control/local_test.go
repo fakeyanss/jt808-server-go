@@ -13,6 +13,7 @@ import (
 	"github.com/fakeyanss/jt808-server-go/internal/contracts"
 	"github.com/fakeyanss/jt808-server-go/internal/contracts/attachment"
 	"github.com/fakeyanss/jt808-server-go/internal/contracts/media"
+	"github.com/fakeyanss/jt808-server-go/internal/domain"
 	"github.com/fakeyanss/jt808-server-go/internal/mediaupload"
 	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
 	"github.com/fakeyanss/jt808-server-go/internal/repository"
@@ -39,7 +40,7 @@ func TestLocalAuthProviderReadsDevice(t *testing.T) {
 	ctx := context.Background()
 	const phone = "188765499001"
 	devices := database.Default().Devices
-	require.NoError(t, devices.Upsert(ctx, &model.Device{Phone: phone, AuthCode: "AUTH-1"}))
+	require.NoError(t, devices.Upsert(ctx, &domain.Device{Phone: phone, AuthCode: "AUTH-1"}))
 	t.Cleanup(func() { _ = devices.DeleteByPhone(ctx, phone) })
 
 	provider := NewLocalAuthProvider(devices)

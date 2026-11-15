@@ -8,6 +8,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/fakeyanss/jt808-server-go/internal/domain"
 	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
 )
 
@@ -23,7 +24,7 @@ func TestMySQLPersistence(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, store.DeviceRepository().DeleteByPhone(ctx, "188765420001"))
 
-	device := &model.Device{
+	device := &domain.Device{
 		ID:              "DEV-188765420001",
 		Plate:           "京A42001",
 		Phone:           "188765420001",
@@ -31,7 +32,7 @@ func TestMySQLPersistence(t *testing.T) {
 		TransProto:      model.TCPProto,
 		Keepalive:       time.Minute,
 		LastestComTime:  time.Now(),
-		Status:          model.DeviceStatusOnline,
+		Status:          domain.DeviceStatusOnline,
 		VersionDesc:     model.Version2019,
 		AuthCode:        "auth-001",
 		IMEI:            "IMEI-001",
@@ -43,7 +44,7 @@ func TestMySQLPersistence(t *testing.T) {
 	require.Empty(t, got.SessionID, "runtime fields must not be persisted")
 	require.True(t, got.LastestComTime.IsZero())
 
-	params := &model.DeviceParams{DevicePhone: device.Phone, ParamCnt: 1, Params: []*model.ParamData{
+	params := &domain.DeviceParams{DevicePhone: device.Phone, ParamCnt: 1, Params: []*domain.ParamData{
 		{ParamID: 0x0010, ParamLen: 4, ParamValue: "WXYZ"},
 	}}
 	require.NoError(t, store.DeviceParamsRepository().Replace(ctx, params))
@@ -60,7 +61,7 @@ func TestMySQLPersistence(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, device.Phone, got.Phone)
 	require.Empty(t, got.SessionID)
-	require.Equal(t, model.DeviceStatusOffline, got.Status)
+	require.Equal(t, domain.DeviceStatusOffline, got.Status)
 	require.True(t, got.LastestComTime.IsZero())
 }
 

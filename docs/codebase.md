@@ -11,7 +11,7 @@ cmd/*            进程入口：只声明角色与配置解析
 internal/app     组合根：唯一允许依赖全部包的装配层
 角色包           server、control、controlhttp、api、media、alarmserver、attachmentserver、ftpserver、
                  retention、observability、adminapi……
-领域包           protocol、business、uplink、downlinkhttp、runtime、internalapi
+领域包           protocol、business、uplink、downlinkhttp、runtime、internalapi、domain
 契约包           repository、contracts、contracts/media、contracts/attachment
 实现包           repository/memory、repository/sqlcore、repository/sqlite、repository/mysql、
                  storage、media/playback、mediaupload
@@ -22,6 +22,7 @@ internal/app     组合根：唯一允许依赖全部包的装配层
 
 - `internal/repository` 只放契约（接口、读写 DTO、哨兵错误、保留策略），不引入任何后端实现。
 - `internal/protocol` 只依赖 `repository` 的接口聚合，不依赖 `repository/database`、`sqlite`、`mysql`；协议内核不直接取全局单例。
+- `internal/domain` 不依赖 `protocol/model`；反向允许 `model` 在报文结构里内嵌领域实体，领域实体的报文适配构造器留在 `model`。
 - `database.Default()` 与 `runtime.Default()` 只保留为未装配依赖的测试与独立工具回退；生产代码一律由 `internal/app` 创建实例并通过 `ProcessorDeps`、`api.Run` 参数显式注入。
 - `internal/business` 只依赖 `repository` 契约，不直接写 SQL。
 - `internal/repository/database` 只做装配与聚合，不引入数据库驱动；驱动注册集中在 `database/sqlbackend`，仅 control、standalone、migrate 三个入口显式导入。
@@ -43,7 +44,8 @@ go list -deps ./cmd/jt-signal ./cmd/jt-media ./cmd/jt-attachment \
 | `cmd/` | 进程入口：`jt-server-standalone`、`jt-signal`、`jt-control`、`jt-media`、`jt-attachment`、`jt808-migrate`、`jt808-client` | 只声明角色、解析配置、调用 `internal/app` |
 | `internal/app/` | 组合根：按角色装配依赖、启动顺序、优雅关停 | 唯一允许依赖全部包的层；装配保持显式 |
 | `internal/protocol/` | 帧处理、编解码、版本判别、分包重组、MsgID 注册与网关半边 | 不持有连接、不直接写库、不承载管控业务落库 |
-| `internal/protocol/model/` | 808/1078 报文结构与设备、参数、属性等领域实体 | 只放数据结构与编解码，不放业务编排 |
+| `internal/protocol/model/` | 808/1078 报文结构、协议头、会话与传输模型 | 只放线与传输结构；设备/参数/属性等领域实体在 `internal/domain` |
+| `internal/domain/` | 跨协议与持久化共用的领域实体：设备、设备参数、终端属性、媒体查询 | 不依赖具体报文；与报文通过显式适配构造器衔接 |
 | `internal/business/` | 管控业务半边：注册/鉴权落库、定位报警、行业上报、多媒体与附件元数据 | 只依赖 `repository` 接口；由 control 调用或单机注入 |
 | `internal/server/` | TCP/UDP 接入、会话表、可靠重传、下行 `Send` | 通过 `protocol.ProcessorDeps` 注入依赖 |
 | `internal/control/` | 集群控制面、上行事件消费、outbox、媒体与附件调度、节点与会话目录、FTP 任务 | 唯一连业务库的角色 |

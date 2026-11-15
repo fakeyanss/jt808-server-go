@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/fakeyanss/jt808-server-go/internal/contracts"
+	"github.com/fakeyanss/jt808-server-go/internal/domain"
 	"github.com/fakeyanss/jt808-server-go/internal/observability"
 	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
 	"github.com/fakeyanss/jt808-server-go/internal/repository"
@@ -106,7 +107,7 @@ func newHarness(t *testing.T, options OutboxOptions) *harness {
 	devices := memory.NewDeviceRepository()
 	sender := &fakeSender{}
 	metrics := observability.NewMetrics()
-	require.NoError(t, devices.Upsert(ctx, &model.Device{
+	require.NoError(t, devices.Upsert(ctx, &domain.Device{
 		Phone:           testPhone,
 		SessionID:       testSessionID,
 		VersionDesc:     model.Version2013,
@@ -169,7 +170,7 @@ func TestOutboxSubmitCarriesPhoneFromHeader(t *testing.T) {
 	h := newHarness(t, defaultTestOptions())
 	result, err := h.service.Submit(context.Background(), contracts.DownlinkRequest{
 		Message: &model.MsgRawBody{
-			Header: model.GenMsgHeader(&model.Device{Phone: testPhone, VersionDesc: model.Version2013}, 0x9208, 0),
+			Header: model.GenMsgHeader(&domain.Device{Phone: testPhone, VersionDesc: model.Version2013}, 0x9208, 0),
 			Body:   []byte{0x01},
 		},
 	})
@@ -462,7 +463,7 @@ func TestSubmitPermanentErrorFailsImmediately(t *testing.T) {
 	result, err := h.service.Submit(ctx, contracts.DownlinkRequest{
 		Phone: testPhone,
 		Message: &model.MsgRawBody{
-			Header: model.GenMsgHeader(&model.Device{Phone: testPhone, VersionDesc: model.Version2013}, 0x8105, 0),
+			Header: model.GenMsgHeader(&domain.Device{Phone: testPhone, VersionDesc: model.Version2013}, 0x8105, 0),
 			Body:   []byte{0x02},
 		},
 	})

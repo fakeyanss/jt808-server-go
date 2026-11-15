@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/fakeyanss/jt808-server-go/internal/domain"
 	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
 	"github.com/fakeyanss/jt808-server-go/internal/repository"
 )
@@ -73,7 +74,7 @@ func (r *mediaRepository) ResourceList(ctx context.Context, phone string) (*mode
 		return nil, fmt.Errorf("get media resource list %s: %w", phone, err)
 	}
 
-	var items []model.DeviceMedia
+	var items []domain.DeviceMedia
 	if err := json.Unmarshal(itemsJSON, &items); err != nil {
 		return nil, fmt.Errorf("decode media resource list %s: %w", phone, err)
 	}

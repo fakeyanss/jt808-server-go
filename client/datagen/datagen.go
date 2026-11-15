@@ -13,6 +13,7 @@ import (
 
 	"github.com/fakeyanss/jt808-server-go/internal/codec/hex"
 	"github.com/fakeyanss/jt808-server-go/internal/config"
+	"github.com/fakeyanss/jt808-server-go/internal/domain"
 	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
 )
 
@@ -29,8 +30,8 @@ func atoi(input string) int64 {
 	return int64(output)
 }
 
-func GenDevice(deviceConf *config.DeviceConf) *model.Device {
-	device := &model.Device{
+func GenDevice(deviceConf *config.DeviceConf) *domain.Device {
+	device := &domain.Device{
 		ID:              matchTokenAndGen(deviceConf.IDReg),
 		Plate:           matchTokenAndGen(deviceConf.PlateReg),
 		Phone:           matchTokenAndGen(deviceConf.PhoneReg),
@@ -62,7 +63,7 @@ func fillDevicePhone(phone string, dstLen int) string {
 	return b.String()
 }
 
-func genMsgHeader(msgID uint16, device *model.Device) *model.MsgHeader {
+func genMsgHeader(msgID uint16, device *domain.Device) *model.MsgHeader {
 	msgHeader := &model.MsgHeader{
 		MsgID: msgID,
 		Attr: &model.MsgBodyAttr{
@@ -91,13 +92,13 @@ func genMsgHeader(msgID uint16, device *model.Device) *model.MsgHeader {
 	return msgHeader
 }
 
-func GenMsg0002(device *model.Device) *model.Msg0002 {
+func GenMsg0002(device *domain.Device) *model.Msg0002 {
 	return &model.Msg0002{
 		Header: genMsgHeader(model.MsgID0002, device),
 	}
 }
 
-func GenMsg0100(deviceConf *config.DeviceConf, device *model.Device) *model.Msg0100 {
+func GenMsg0100(deviceConf *config.DeviceConf, device *domain.Device) *model.Msg0100 {
 	return &model.Msg0100{
 		Header:         genMsgHeader(model.MsgID0100, device),
 		ProvinceID:     uint16(atoi(matchTokenAndGen(deviceConf.ProvinceIDReg))),
@@ -135,7 +136,7 @@ func genGeoMeta(conf *config.DeviceGeoConf) *model.GeoMeta {
 	}
 }
 
-func GenDeviceGeo(conf *config.DeviceGeoConf, device *model.Device) *model.DeviceGeo {
+func GenDeviceGeo(conf *config.DeviceGeoConf, device *domain.Device) *model.DeviceGeo {
 	deviceGeo := &model.DeviceGeo{
 		Phone: device.Phone,
 		Geo:   genGeoMeta(conf),
@@ -157,7 +158,7 @@ func init() {
 	rand.Seed(time.Now().UnixNano())
 }
 
-func GenMsg0200(conf *config.DeviceGeoConf, device *model.Device, deviceGeo *model.DeviceGeo) *model.Msg0200 {
+func GenMsg0200(conf *config.DeviceGeoConf, device *domain.Device, deviceGeo *model.DeviceGeo) *model.Msg0200 {
 	latitudeOffset := rand.Float64()*2 - 1  // [-1,1]
 	longitudeOffset := rand.Float64()*2 - 1 // [-1,1]
 	altitudeOffset := rand.Intn(11) - 5     // [-5,5]
@@ -191,67 +192,67 @@ func GenMsg0200(conf *config.DeviceGeoConf, device *model.Device, deviceGeo *mod
 	return m
 }
 
-func GenMsg0702(device *model.Device) *model.Msg0702 {
+func GenMsg0702(device *domain.Device) *model.Msg0702 {
 	return &model.Msg0702{Header: genMsgHeader(0x0702, device), State: 1, Time: hex.FormatTime(time.Now()), ReadResult: 0, Name: "模拟驾驶员", QualificationCode: "1234567890", IssuingAuthority: "模拟交通管理部门", ValidUntil: "20301231", IdentityNumber: "110101199001010011"}
 }
 
-func GenMsg0705(device *model.Device) *model.Msg0705 {
+func GenMsg0705(device *domain.Device) *model.Msg0705 {
 	now := time.Now()
 	return &model.Msg0705{Header: genMsgHeader(0x0705, device), FirstTime: now.Format("150405") + fmt.Sprintf("%04d", now.Nanosecond()/100000), Items: []model.CANDataItem{{CANID: 0x60000123, Data: [8]byte{0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08}}}}
 }
 
-func GenMsg0700(device *model.Device) *model.Msg0700 {
+func GenMsg0700(device *domain.Device) *model.Msg0700 {
 	return &model.Msg0700{Header: genMsgHeader(0x0700, device), AnswerSerial: 1, Command: 1, Data: []byte{0x01, 0x02, 0x03}}
 }
 
-func GenMsg0800(device *model.Device) *model.Msg0800 {
+func GenMsg0800(device *domain.Device) *model.Msg0800 {
 	return &model.Msg0800{Header: genMsgHeader(0x0800, device), MultiMediaID: uint32(time.Now().Unix()), MultiMediaType: 0, MultiMediaContainer: 0, EventID: 1, LogicChannelID: 1}
 }
 
-func GenMsg0801(device *model.Device) *model.Msg0801 {
+func GenMsg0801(device *domain.Device) *model.Msg0801 {
 	location := &model.Msg0200{Header: genMsgHeader(0x0200, device), Latitude: 31123456, Longitude: 121123456, Time: hex.FormatTime(time.Now())}
 	encoded, _ := location.Encode()
 	locationBody := append([]byte(nil), encoded[len(encoded)-int(location.Header.Attr.BodyLength):]...)
 	return &model.Msg0801{Header: genMsgHeader(0x0801, device), MultiMediaID: uint32(time.Now().Unix()), MultiMediaType: 0, MultiMediaContainer: 0, EventID: 1, LogicChannelID: 1, GeoAlarmBody: locationBody, FragmentData: []byte{0xff, 0xd8, 0xff, 0xd9}}
 }
 
-func GenMsg0003(device *model.Device) *model.Msg0003 {
+func GenMsg0003(device *domain.Device) *model.Msg0003 {
 	return &model.Msg0003{Header: genMsgHeader(0x0003, device)}
 }
 
-func GenMsg0004(device *model.Device) *model.Msg0004 {
+func GenMsg0004(device *domain.Device) *model.Msg0004 {
 	return &model.Msg0004{Header: genMsgHeader(0x0004, device)}
 }
 
 // GenMsg0102 builds a terminal authentication message. In the normal flow
 // the simulator generates it automatically from the 0x8100 reply; authCode is
 // exposed as a parameter so failure-path scenarios can send a wrong code.
-func GenMsg0102(device *model.Device, authCode string) *model.Msg0102 {
+func GenMsg0102(device *domain.Device, authCode string) *model.Msg0102 {
 	return &model.Msg0102{Header: genMsgHeader(0x0102, device), AuthCodeLen: uint8(len(authCode)), AuthCode: authCode, IMEI: device.IMEI, SoftwareVersion: device.SoftwareVersion}
 }
 
-func GenMsg0301(device *model.Device, eventID uint8) *model.Msg0301 {
+func GenMsg0301(device *domain.Device, eventID uint8) *model.Msg0301 {
 	return &model.Msg0301{Header: genMsgHeader(0x0301, device), EventID: eventID}
 }
 
-func GenMsg0302(device *model.Device, answerSerial uint16, answerID uint32) *model.Msg0302 {
+func GenMsg0302(device *domain.Device, answerSerial uint16, answerID uint32) *model.Msg0302 {
 	return &model.Msg0302{Header: genMsgHeader(0x0302, device), AnswerSerial: answerSerial, AnswerID: answerID}
 }
 
-func GenMsg0303(device *model.Device, action uint8, menuID uint32) *model.Msg0303 {
+func GenMsg0303(device *domain.Device, action uint8, menuID uint32) *model.Msg0303 {
 	return &model.Msg0303{Header: genMsgHeader(0x0303, device), Action: action, MenuID: menuID}
 }
 
-func GenMsg0108(device *model.Device, upgradeType, result uint8) *model.Msg0108 {
+func GenMsg0108(device *domain.Device, upgradeType, result uint8) *model.Msg0108 {
 	return &model.Msg0108{Header: genMsgHeader(0x0108, device), UpgradeType: upgradeType, Result: result}
 }
 
-func GenMsg0701(device *model.Device, content string) *model.Msg0701 {
+func GenMsg0701(device *domain.Device, content string) *model.Msg0701 {
 	return &model.Msg0701{Header: genMsgHeader(0x0701, device), Content: content}
 }
 
 // GenMsg0704 builds a normal batch-location upload with two 28-byte items.
-func GenMsg0704(device *model.Device) *model.Msg0704 {
+func GenMsg0704(device *domain.Device) *model.Msg0704 {
 	now := hex.FormatTime(time.Now())
 	buildBody := func(t string) []byte {
 		location := &model.Msg0200{Header: genMsgHeader(0x0200, device), Latitude: 31123456, Longitude: 121123456, Time: t}
@@ -266,12 +267,12 @@ func GenMsg0704(device *model.Device) *model.Msg0704 {
 	return &model.Msg0704{Header: genMsgHeader(0x0704, device), ItemCount: uint16(len(items)), DataType: 0, Items: items}
 }
 
-func GenMsg0900(device *model.Device, typ uint8, items []model.PeripheralItem) *model.Msg0900 {
+func GenMsg0900(device *domain.Device, typ uint8, items []model.PeripheralItem) *model.Msg0900 {
 	return &model.Msg0900{Header: genMsgHeader(0x0900, device), Type: typ, Items: items}
 }
 
 // GenMsg0901 zlib-compresses raw into a 0x0901 compressed report.
-func GenMsg0901(device *model.Device, raw []byte) *model.Msg0901 {
+func GenMsg0901(device *domain.Device, raw []byte) *model.Msg0901 {
 	var buf bytes.Buffer
 	zw := zlib.NewWriter(&buf)
 	_, _ = zw.Write(raw)

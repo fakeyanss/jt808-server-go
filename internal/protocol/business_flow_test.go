@@ -9,6 +9,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/fakeyanss/jt808-server-go/internal/business"
+	"github.com/fakeyanss/jt808-server-go/internal/domain"
 	"github.com/fakeyanss/jt808-server-go/internal/protocol"
 	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
 	"github.com/fakeyanss/jt808-server-go/internal/repository/database"
@@ -35,7 +36,7 @@ func locationReportBody(alarmSign uint32) []byte {
 // 位置上报写入定位缓存。
 func TestLocationReportWritesGeo(t *testing.T) {
 	const phone = "188765499002"
-	database.Default().Devices.Upsert(context.Background(), &model.Device{Phone: phone, Keepalive: time.Minute})
+	database.Default().Devices.Upsert(context.Background(), &domain.Device{Phone: phone, Keepalive: time.Minute})
 	t.Cleanup(func() {
 		database.Default().Devices.DeleteByPhone(context.Background(), phone)
 		database.Default().Geo.Delete(context.Background(), phone)
@@ -57,8 +58,8 @@ func TestLocationReportStaleAccOffDoesNotRegressStatus(t *testing.T) {
 	const phone = "188765499003"
 	ctx := context.Background()
 	devices := database.Default().Devices
-	require.NoError(t, devices.Upsert(ctx, &model.Device{
-		Phone: phone, Keepalive: time.Minute, Status: model.DeviceStatusOnline,
+	require.NoError(t, devices.Upsert(ctx, &domain.Device{
+		Phone: phone, Keepalive: time.Minute, Status: domain.DeviceStatusOnline,
 	}))
 	t.Cleanup(func() {
 		_ = devices.DeleteByPhone(ctx, phone)
@@ -81,11 +82,11 @@ func TestLocationReportStaleAccOffDoesNotRegressStatus(t *testing.T) {
 	send(0, [6]byte{0x26, 0x11, 0x01, 0x11, 0x00, 0x00})
 	device, err := devices.GetByPhone(ctx, phone)
 	require.NoError(t, err)
-	require.Equal(t, model.DeviceStatusOnline, device.Status)
+	require.Equal(t, domain.DeviceStatusOnline, device.Status)
 
 	// 更新的位置 13:00，ACC 关；允许推导休眠。
 	send(0, [6]byte{0x26, 0x11, 0x01, 0x13, 0x00, 0x00})
 	device, err = devices.GetByPhone(ctx, phone)
 	require.NoError(t, err)
-	require.Equal(t, model.DeviceStatusSleeping, device.Status)
+	require.Equal(t, domain.DeviceStatusSleeping, device.Status)
 }

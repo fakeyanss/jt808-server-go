@@ -6,6 +6,7 @@ import (
 
 	"github.com/pkg/errors"
 
+	"github.com/fakeyanss/jt808-server-go/internal/domain"
 	"github.com/fakeyanss/jt808-server-go/internal/protocol"
 	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
 	"github.com/fakeyanss/jt808-server-go/internal/repository"
@@ -36,12 +37,12 @@ func (p *Processor) processRegisterBusiness(ctx context.Context, data *model.Pro
 	}
 	device := existing
 	if device == nil {
-		device = &model.Device{
+		device = &domain.Device{
 			ID:              in.DeviceID,
 			Plate:           in.PlateNumber,
 			Phone:           in.Header.PhoneNumber,
 			Keepalive:       time.Minute,
-			Status:          model.DeviceStatusOffline,
+			Status:          domain.DeviceStatusOffline,
 			VersionDesc:     in.Header.Attr.VersionDesc,
 			ProtocolVersion: in.Header.ProtocolVersion,
 		}
@@ -84,7 +85,7 @@ func (p *Processor) processAuthBusiness(ctx context.Context, data *model.Process
 	if event.SessionID != "" {
 		device.SessionID = event.SessionID
 	}
-	device.Status = model.DeviceStatusOnline
+	device.Status = domain.DeviceStatusOnline
 	device.LastestComTime = time.Now()
 	device.IMEI = in.IMEI
 	device.SoftwareVersion = in.SoftwareVersion

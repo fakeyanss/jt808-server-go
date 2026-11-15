@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/fakeyanss/jt808-server-go/internal/domain"
 	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
 	"github.com/stretchr/testify/require"
 )
@@ -15,9 +16,9 @@ func TestMediaMetadataRepositoryMemoryRoundTrip(t *testing.T) {
 	repo := NewMediaMetadataRepository()
 
 	start := time.Date(2026, 11, 8, 9, 0, 0, 0, time.Local)
-	items := []model.DeviceMedia{
+	items := []domain.DeviceMedia{
 		{
-			DeviceMediaQuery: model.DeviceMediaQuery{
+			DeviceMediaQuery: domain.DeviceMediaQuery{
 				LogicChannelID: 1,
 				StartTime:      &start,
 				MediaType:      2,

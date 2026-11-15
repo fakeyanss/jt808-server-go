@@ -22,6 +22,7 @@ import (
 	"github.com/fakeyanss/jt808-server-go/internal/contracts"
 	"github.com/fakeyanss/jt808-server-go/internal/contracts/attachment"
 	"github.com/fakeyanss/jt808-server-go/internal/control"
+	"github.com/fakeyanss/jt808-server-go/internal/domain"
 	"github.com/fakeyanss/jt808-server-go/internal/httpguard"
 	"github.com/fakeyanss/jt808-server-go/internal/media/playback"
 	"github.com/fakeyanss/jt808-server-go/internal/mediaupload"
@@ -1153,7 +1154,7 @@ func Run(ctx context.Context, serv *server.TCPServer, cfg *config.Config, repos 
 
 	api.PUT("/device/:phone/params", func(c *gin.Context) {
 		phone := c.Param("phone")
-		params := model.DeviceParams{}
+		params := domain.DeviceParams{}
 		if err := c.ShouldBind(&params); err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
@@ -1594,7 +1595,7 @@ func Run(ctx context.Context, serv *server.TCPServer, cfg *config.Config, repos 
 }
 
 // decodeQueryResponse 用终端的协议版本重建报文头并解码查询应答体。
-func decodeQueryResponse(device *model.Device, msgID uint16, body []byte) (model.JT808Msg, error) {
+func decodeQueryResponse(device *domain.Device, msgID uint16, body []byte) (model.JT808Msg, error) {
 	header := model.GenMsgHeader(device, msgID, 0)
 	return protocol.DecodeMessageBody(msgID, header, body)
 }
@@ -1602,7 +1603,7 @@ func decodeQueryResponse(device *model.Device, msgID uint16, body []byte) (model
 // lookupSessionByPhone 按终端手机号在运行时会话注册表中定位当前活连接。
 // SQL 后端不再持久化运行时字段，Device.SessionID 读出来是零值；
 // 下行路由因此必须走手机号索引，不能依赖该字段。
-func lookupSessionByPhone(ctx context.Context, conn runtime.ConnectionRegistry, device *model.Device) (*model.Session, error) {
+func lookupSessionByPhone(ctx context.Context, conn runtime.ConnectionRegistry, device *domain.Device) (*model.Session, error) {
 	return conn.GetByPhone(ctx, device.Phone)
 }
 
@@ -1610,13 +1611,13 @@ func lookupSessionByPhone(ctx context.Context, conn runtime.ConnectionRegistry, 
 //
 // 这些分支只在 queryer 为空（standalone）时进入：HTTP 请求同步等待本进程
 // 收到的应答，必须有本地会话才能发送并注册等待方。
-func localQuerySession(ctx context.Context, conn runtime.ConnectionRegistry, device *model.Device) (*model.Session, error) {
+func localQuerySession(ctx context.Context, conn runtime.ConnectionRegistry, device *domain.Device) (*model.Session, error) {
 	return lookupSessionByPhone(ctx, conn, device)
 }
 
 // downlinkSession 在 outbox 启用时返回 nil：流水号与投递由管控侧完成，
 // control-only 没有本地会话也能下发；off 模式仍要求本地会话，保持原有 400 行为。
-func downlinkSession(ctx context.Context, conn runtime.ConnectionRegistry, device *model.Device, outboxEnabled bool) (*model.Session, error) {
+func downlinkSession(ctx context.Context, conn runtime.ConnectionRegistry, device *domain.Device, outboxEnabled bool) (*model.Session, error) {
 	if outboxEnabled {
 		return nil, nil
 	}

@@ -11,6 +11,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/fakeyanss/jt808-server-go/internal/domain"
 	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
 	"github.com/fakeyanss/jt808-server-go/internal/repository"
 )
@@ -32,8 +33,8 @@ func migrateSQLite(t *testing.T, path string) {
 	require.NoError(t, err)
 }
 
-func sampleDevice(phone string) *model.Device {
-	return &model.Device{
+func sampleDevice(phone string) *domain.Device {
+	return &domain.Device{
 		ID:              "DEV-" + phone,
 		Plate:           "京A" + phone[len(phone)-5:],
 		Phone:           phone,
@@ -41,7 +42,7 @@ func sampleDevice(phone string) *model.Device {
 		TransProto:      model.TCPProto,
 		Keepalive:       90 * time.Second,
 		LastestComTime:  time.UnixMilli(time.Now().UnixMilli()),
-		Status:          model.DeviceStatusOnline,
+		Status:          domain.DeviceStatusOnline,
 		VersionDesc:     model.Version2019,
 		ProtocolVersion: 1,
 		AuthCode:        "auth-" + phone,
@@ -60,10 +61,10 @@ func TestSQLitePersistsDeviceAndParamsAcrossReopen(t *testing.T) {
 	require.NoError(t, err)
 	device := sampleDevice("188765400001")
 	require.NoError(t, first.DeviceRepository().Upsert(ctx, device))
-	params := &model.DeviceParams{
+	params := &domain.DeviceParams{
 		DevicePhone: device.Phone,
 		ParamCnt:    2,
-		Params: []*model.ParamData{
+		Params: []*domain.ParamData{
 			{ParamID: 0x0001, ParamLen: 4, ParamValue: uint32(700)},
 			{ParamID: 0x0010, ParamLen: 8, ParamValue: "ABCDEFGH"},
 		},
@@ -74,7 +75,7 @@ func TestSQLitePersistsDeviceAndParamsAcrossReopen(t *testing.T) {
 	inProcess, err := first.DeviceRepository().GetByPhone(ctx, device.Phone)
 	require.NoError(t, err)
 	require.Empty(t, inProcess.SessionID)
-	require.Equal(t, model.DeviceStatusOffline, inProcess.Status)
+	require.Equal(t, domain.DeviceStatusOffline, inProcess.Status)
 	require.True(t, inProcess.LastestComTime.IsZero())
 
 	require.NoError(t, first.Close())
@@ -90,7 +91,7 @@ func TestSQLitePersistsDeviceAndParamsAcrossReopen(t *testing.T) {
 	// 重启（或任意进程）读到的运行时字段恒为零值：status 离线、session 为空、last_com_time 为 0。
 	require.Empty(t, got.SessionID)
 	require.Empty(t, got.TransProto)
-	require.Equal(t, model.DeviceStatusOffline, got.Status)
+	require.Equal(t, domain.DeviceStatusOffline, got.Status)
 	require.True(t, got.LastestComTime.IsZero())
 	require.Equal(t, device.Keepalive, got.Keepalive)
 	require.Equal(t, device.VersionDesc, got.VersionDesc)
@@ -120,7 +121,7 @@ func TestSQLiteIgnoresRuntimeFieldsOnWrite(t *testing.T) {
 	require.NoError(t, err)
 	require.Empty(t, got.SessionID)
 	require.Empty(t, got.TransProto)
-	require.Equal(t, model.DeviceStatusOffline, got.Status)
+	require.Equal(t, domain.DeviceStatusOffline, got.Status)
 	require.True(t, got.LastestComTime.IsZero())
 	require.Equal(t, device.Plate, got.Plate)
 	require.Equal(t, device.ID, got.ID)
@@ -139,7 +140,7 @@ func TestSQLiteRuntimeTTLNormalizesStaleRead(t *testing.T) {
 	got, err := store.DeviceRepository().GetByPhone(ctx, device.Phone)
 	require.NoError(t, err)
 	require.Empty(t, got.SessionID)
-	require.Equal(t, model.DeviceStatusOffline, got.Status)
+	require.Equal(t, domain.DeviceStatusOffline, got.Status)
 	require.True(t, got.LastestComTime.IsZero())
 	require.Empty(t, got.TransProto)
 }
@@ -152,7 +153,7 @@ func TestSQLitePersistsTerminalProperties(t *testing.T) {
 	migrateSQLite(t, dbPath)
 	first, err := Open(dbPath, 0)
 	require.NoError(t, err)
-	props := &model.TerminalProperties{
+	props := &domain.TerminalProperties{
 		Phone:                   "188765400005",
 		TerminalType:            0x1234,
 		ManufacturerID:          "ACME",

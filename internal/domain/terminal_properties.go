@@ -1,4 +1,4 @@
-package model
+package domain
 
 import "time"
 
@@ -20,21 +20,4 @@ type TerminalProperties struct {
 	// Extra 承载协议扩展的长尾属性，落库时序列化为 JSON 兜底列。
 	Extra     map[string]string `json:"extra,omitempty"`
 	UpdatedAt time.Time         `json:"updatedAt"`
-}
-
-// NewTerminalProperties 由 0x0107 应答构造属性档案。
-func NewTerminalProperties(in *Msg0107) *TerminalProperties {
-	return &TerminalProperties{
-		Phone:                   in.Header.PhoneNumber,
-		TerminalType:            in.TerminalType,
-		ManufacturerID:          in.ManufacturerID,
-		TerminalModel:           in.TerminalModel,
-		TerminalID:              in.TerminalID,
-		ICCID:                   in.ICCID,
-		HardwareVersion:         in.HardwareVersion,
-		FirmwareVersion:         in.FirmwareVersion,
-		GNSSProperties:          in.GNSSProperties,
-		CommunicationProperties: in.CommunicationProperties,
-		UpdatedAt:               time.Now(),
-	}
 }

@@ -1,17 +1,19 @@
 package model
 
 import (
+	"github.com/fakeyanss/jt808-server-go/internal/domain"
 	"net"
 	"sync"
 	"time"
 )
 
+// TransportProtocol 与协议常量由领域包定义，model 内保留别名以维持报文 API 不变。
 const (
-	TCPProto TransportProtocol = "TCP"
-	UDPProto TransportProtocol = "UDP"
+	TCPProto = domain.TCPProto
+	UDPProto = domain.UDPProto
 )
 
-type TransportProtocol string
+type TransportProtocol = domain.TransportProtocol
 
 type (
 	SessionCtxKey struct{} // 定义全局session context key
