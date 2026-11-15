@@ -17,7 +17,7 @@ import (
 
 	"github.com/rs/zerolog/log"
 
-	"github.com/fakeyanss/jt808-server-go/internal/contracts"
+	"github.com/fakeyanss/jt808-server-go/internal/contracts/attachment"
 	"github.com/fakeyanss/jt808-server-go/internal/storage"
 )
 
@@ -52,7 +52,7 @@ func (a *Assembler) registerBlobFile(info AttachmentInfo, date, dir string, entr
 	ctx, cancel := context.WithTimeout(context.Background(), blobOpTimeout)
 	defer cancel()
 
-	key := contracts.AttachmentProgressKey{
+	key := attachment.AttachmentProgressKey{
 		Source: store.Source, Phone: info.Phone, AlarmNo: info.AlarmNo, FileName: entry.FileName,
 	}
 	restored := false
@@ -89,7 +89,7 @@ func (a *Assembler) registerBlobFile(info AttachmentInfo, date, dir string, entr
 			return nil, ErrStagingCapacity
 		}
 		// 恢复后的进度同时回填 control：扫描重建的记录不影响下一次恢复。
-		st.reportLocked(contracts.AttachmentStatusReceiving)
+		st.reportLocked(attachment.AttachmentStatusReceiving)
 		return st, nil
 	}
 
@@ -110,21 +110,21 @@ func (a *Assembler) registerBlobFile(info AttachmentInfo, date, dir string, entr
 	st.mu.Lock()
 	_ = st.persistBlobMarkerLocked()
 	st.mu.Unlock()
-	st.reportLocked(contracts.AttachmentStatusReceiving)
+	st.reportLocked(attachment.AttachmentStatusReceiving)
 	log.Info().Str("phone", info.Phone).Str("file", entry.FileName).Int64("size", st.size).
 		Str("staging", st.partPath).Msg("Attachment file registered for object storage")
 	return st, nil
 }
 
 // loadProgress 向 control 查询恢复点；未配置上报通道时视为没有记录。
-func (a *Assembler) loadProgress(ctx context.Context, key contracts.AttachmentProgressKey) (*contracts.AttachmentProgress, error) {
+func (a *Assembler) loadProgress(ctx context.Context, key attachment.AttachmentProgressKey) (*attachment.AttachmentProgress, error) {
 	store := a.cfg.Storage
 	if store == nil || store.Progress == nil {
 		return nil, nil
 	}
 	progress, err := store.Progress.Load(ctx, key)
 	if err != nil {
-		if err == contracts.ErrAttachmentProgressNotFound {
+		if err == attachment.ErrAttachmentProgressNotFound {
 			return nil, nil
 		}
 		return nil, err
@@ -133,7 +133,7 @@ func (a *Assembler) loadProgress(ctx context.Context, key contracts.AttachmentPr
 }
 
 // applyProgress 采纳 control 返回的恢复点；总长不一致时不采纳，按新文件重收。
-func (st *fileState) applyProgress(progress *contracts.AttachmentProgress) bool {
+func (st *fileState) applyProgress(progress *attachment.AttachmentProgress) bool {
 	if progress == nil {
 		return false
 	}
@@ -153,7 +153,7 @@ func (st *fileState) applyProgress(progress *contracts.AttachmentProgress) bool 
 	st.ranges = mergeSegmentRanges(st.ranges, st.segments, st.size)
 	st.covered = coveredBytes(st.ranges)
 	st.flushCursor = contiguousPrefix(st.segments)
-	if progress.Status == contracts.AttachmentStatusCompleted || st.flushCursor >= st.size && st.size > 0 {
+	if progress.Status == attachment.AttachmentStatusCompleted || st.flushCursor >= st.size && st.size > 0 {
 		st.completed = true
 		st.completedAt = progress.CompletedAt
 		if st.completedAt.IsZero() {
@@ -164,7 +164,7 @@ func (st *fileState) applyProgress(progress *contracts.AttachmentProgress) bool 
 }
 
 // applyScannedSegments 采纳对象存储扫描结果。
-func (st *fileState) applyScannedSegments(segments []contracts.AttachmentProgressSegment, completed bool) {
+func (st *fileState) applyScannedSegments(segments []attachment.AttachmentProgressSegment, completed bool) {
 	st.segments = segments
 	st.ranges = mergeSegmentRanges(st.ranges, st.segments, st.size)
 	st.covered = coveredBytes(st.ranges)
@@ -178,12 +178,12 @@ func (st *fileState) applyScannedSegments(segments []contracts.AttachmentProgres
 // scanCommittedSegments 按对象 key 重建单个文件的切片列表。
 //
 // 只依赖 key 内的终端、报警号、文件名、偏移、大小与总长，不依赖任何上报内容。
-func (a *Assembler) scanCommittedSegments(ctx context.Context, key contracts.AttachmentProgressKey, size int64) ([]contracts.AttachmentProgressSegment, bool, error) {
+func (a *Assembler) scanCommittedSegments(ctx context.Context, key attachment.AttachmentProgressKey, size int64) ([]attachment.AttachmentProgressSegment, bool, error) {
 	store := a.cfg.Storage
 	if store == nil || store.Blob == nil {
 		return nil, false, nil
 	}
-	lister, ok := store.Blob.(contracts.BlobLister)
+	lister, ok := store.Blob.(storage.BlobLister)
 	if !ok {
 		return nil, false, nil
 	}
@@ -194,7 +194,7 @@ func (a *Assembler) scanCommittedSegments(ctx context.Context, key contracts.Att
 	if err != nil {
 		return nil, false, fmt.Errorf("list attachment segments: %w", err)
 	}
-	segments := make([]contracts.AttachmentProgressSegment, 0, len(objects))
+	segments := make([]attachment.AttachmentProgressSegment, 0, len(objects))
 	for _, object := range objects {
 		info, parseErr := storage.ParseAttachmentSegmentKey(object.Key)
 		if parseErr != nil {
@@ -208,12 +208,12 @@ func (a *Assembler) scanCommittedSegments(ctx context.Context, key contracts.Att
 		if info.TotalSize != size {
 			continue
 		}
-		segments = append(segments, contracts.AttachmentProgressSegment{
+		segments = append(segments, attachment.AttachmentProgressSegment{
 			Index:  info.Index,
 			Key:    info.ObjectKey,
 			Offset: info.Offset,
 			Size:   info.Size,
-			State:  string(contracts.BlobStatePending),
+			State:  string(storage.BlobStatePending),
 		})
 	}
 	sort.Slice(segments, func(i, j int) bool { return segments[i].Index < segments[j].Index })
@@ -309,7 +309,7 @@ func (st *fileState) flushReadyLocked() error {
 		index := len(st.segments)
 		key := storage.AttachmentSegmentObjectKey(
 			st.store.Source, st.phone, st.alarmNo, st.fileName, start, end-start, st.size, index)
-		info, err := st.store.Blob.Put(ctx, key, bytes.NewReader(payload), contracts.BlobOptions{
+		info, err := st.store.Blob.Put(ctx, key, bytes.NewReader(payload), storage.BlobOptions{
 			ContentType: "application/octet-stream",
 			MD5:         hex.EncodeToString(sum[:]),
 			Metadata: map[string]string{
@@ -322,13 +322,13 @@ func (st *fileState) flushReadyLocked() error {
 		if _, err := st.store.Blob.Promote(ctx, info); err != nil {
 			return fmt.Errorf("promote attachment segment %s: %w", key, err)
 		}
-		st.segments = append(st.segments, contracts.AttachmentProgressSegment{
+		st.segments = append(st.segments, attachment.AttachmentProgressSegment{
 			Index: index, Key: key, Offset: start, Size: end - start,
-			MD5: hex.EncodeToString(sum[:]), State: string(contracts.BlobStatePending),
+			MD5: hex.EncodeToString(sum[:]), State: string(storage.BlobStatePending),
 		})
 		st.flushCursor = end
 		st.owner.releaseStaging(end - start)
-		st.reportLocked(contracts.AttachmentStatusReceiving)
+		st.reportLocked(attachment.AttachmentStatusReceiving)
 		log.Debug().Str("phone", st.phone).Str("file", st.fileName).Str("key", key).
 			Int64("offset", start).Int64("size", end-start).Msg("Attachment segment staged to object store")
 	}
@@ -344,7 +344,7 @@ func (st *fileState) finalizeBlobLocked(ctx context.Context) error {
 		if err := st.store.Blob.MarkCommitted(ctx, st.segments[i].Key); err != nil {
 			return fmt.Errorf("mark attachment segment committed: %w", err)
 		}
-		st.segments[i].State = string(contracts.BlobStateCommitted)
+		st.segments[i].State = string(storage.BlobStateCommitted)
 	}
 	st.closeFileLocked()
 	_ = os.Remove(st.partPath)
@@ -353,7 +353,7 @@ func (st *fileState) finalizeBlobLocked(ctx context.Context) error {
 	st.completedAt = st.owner.nowTime()
 	st.markInactive()
 	st.meta = st.buildMeta()
-	st.reportLocked(contracts.AttachmentStatusCompleted)
+	st.reportLocked(attachment.AttachmentStatusCompleted)
 	st.owner.completed.Add(1)
 	log.Info().Str("phone", st.phone).Str("file", st.fileName).Int64("size", st.size).
 		Int("segments", len(st.segments)).Msg("Attachment file completed in object store")
@@ -369,9 +369,9 @@ func (st *fileState) reportLocked(status string) {
 }
 
 // snapshotLocked 生成一份不共享内部切片的进度快照。
-func (st *fileState) snapshotLocked(status string) contracts.AttachmentProgress {
+func (st *fileState) snapshotLocked(status string) attachment.AttachmentProgress {
 	ranges, _ := json.Marshal(st.ranges)
-	progress := contracts.AttachmentProgress{
+	progress := attachment.AttachmentProgress{
 		Source:        st.store.Source,
 		Phone:         st.phone,
 		TerminalID:    st.terminalID,
@@ -385,15 +385,15 @@ func (st *fileState) snapshotLocked(status string) contracts.AttachmentProgress 
 		StagingPath:   st.partPath,
 		StagingBase:   st.store.StagingDir,
 		Ranges:        ranges,
-		Segments:      append([]contracts.AttachmentProgressSegment(nil), st.segments...),
+		Segments:      append([]attachment.AttachmentProgressSegment(nil), st.segments...),
 		Status:        status,
 		CreatedAt:     st.createdAt,
 		UpdatedAt:     st.owner.nowTime(),
 	}
-	if status == contracts.AttachmentStatusCompleted {
+	if status == attachment.AttachmentStatusCompleted {
 		progress.CompletedAt = st.completedAt
 	}
-	if status != contracts.AttachmentStatusReceiving {
+	if status != attachment.AttachmentStatusReceiving {
 		// 暂存路径只对上报节点有效，终态后不再让 control 持有该引用。
 		progress.StagingPath = ""
 	}
@@ -428,7 +428,7 @@ func (st *fileState) failBlobLocked() {
 	if remaining > 0 {
 		st.owner.releaseStaging(remaining)
 	}
-	st.reportLocked(contracts.AttachmentStatusExpired)
+	st.reportLocked(attachment.AttachmentStatusExpired)
 }
 
 func (st *fileState) persistBlobMarkerLocked() error {
@@ -471,7 +471,7 @@ func decodeRanges(raw []byte) []byteRange {
 //
 // 重启后本地暂存可能丢失，但对象切片仍在；把它们并入覆盖集合，
 // 0x9212 才不会要求终端重传已经上传过的字节。
-func mergeSegmentRanges(ranges []byteRange, segments []contracts.AttachmentProgressSegment, size int64) []byteRange {
+func mergeSegmentRanges(ranges []byteRange, segments []attachment.AttachmentProgressSegment, size int64) []byteRange {
 	merged := append([]byteRange(nil), ranges...)
 	for _, segment := range segments {
 		if segment.Size <= 0 {
@@ -483,11 +483,11 @@ func mergeSegmentRanges(ranges []byteRange, segments []contracts.AttachmentProgr
 }
 
 // contiguousPrefix 返回按序切片覆盖到的连续字节前缀。
-func contiguousPrefix(segments []contracts.AttachmentProgressSegment) int64 {
+func contiguousPrefix(segments []attachment.AttachmentProgressSegment) int64 {
 	if len(segments) == 0 {
 		return 0
 	}
-	sorted := append([]contracts.AttachmentProgressSegment(nil), segments...)
+	sorted := append([]attachment.AttachmentProgressSegment(nil), segments...)
 	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Offset < sorted[j].Offset })
 	var cursor int64
 	for _, segment := range sorted {
@@ -501,11 +501,11 @@ func contiguousPrefix(segments []contracts.AttachmentProgressSegment) int64 {
 	return cursor
 }
 
-func toSegments(items []contracts.AttachmentProgressSegment) []contracts.AttachmentProgressSegment {
+func toSegments(items []attachment.AttachmentProgressSegment) []attachment.AttachmentProgressSegment {
 	if len(items) == 0 {
 		return nil
 	}
-	return append([]contracts.AttachmentProgressSegment(nil), items...)
+	return append([]attachment.AttachmentProgressSegment(nil), items...)
 }
 
 func blobStagingPath(root string, info AttachmentInfo, fileName string) string {

@@ -14,7 +14,6 @@ import (
 	"github.com/rs/zerolog/log"
 
 	"github.com/fakeyanss/jt808-server-go/internal/clock"
-	"github.com/fakeyanss/jt808-server-go/internal/contracts"
 	"github.com/fakeyanss/jt808-server-go/internal/media/playback"
 	"github.com/fakeyanss/jt808-server-go/internal/storage"
 )
@@ -91,7 +90,7 @@ type recorderConfig struct {
 	channel   uint8
 	stem      string
 	duration  time.Duration
-	blob      contracts.BlobStore
+	blob      storage.BlobStore
 	sink      SegmentSink
 	kind      StreamKind
 	clock     clock.Clock
@@ -299,7 +298,7 @@ func (r *recorder) uploadOnce(ctx context.Context, info *SegmentInfo) error {
 		return err
 	}
 	defer file.Close()
-	blobInfo, err := r.cfg.blob.Put(ctx, info.ObjectKey, file, contracts.BlobOptions{
+	blobInfo, err := r.cfg.blob.Put(ctx, info.ObjectKey, file, storage.BlobOptions{
 		ContentType: "video/mp2t",
 		Metadata: map[string]string{
 			"phone":   info.Phone,

@@ -34,8 +34,6 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
-
-	"github.com/fakeyanss/jt808-server-go/internal/contracts"
 )
 
 const (
@@ -75,7 +73,7 @@ type ObjectStoreConfig struct {
 	HTTPClient *http.Client
 }
 
-// ObjectStore 是 contracts.BlobStore 的 S3 兼容实现。
+// ObjectStore 是 BlobStore 的 S3 兼容实现。
 type ObjectStore struct {
 	cfg    ObjectStoreConfig
 	base   *url.URL
@@ -116,14 +114,14 @@ func NewObjectStore(cfg ObjectStoreConfig) (*ObjectStore, error) {
 }
 
 // Put 把内容写入暂存区并返回待提级对象。
-func (s *ObjectStore) Put(ctx context.Context, key string, r io.Reader, opts contracts.BlobOptions) (contracts.BlobInfo, error) {
+func (s *ObjectStore) Put(ctx context.Context, key string, r io.Reader, opts BlobOptions) (BlobInfo, error) {
 	clean, err := cleanKey(key)
 	if err != nil {
-		return contracts.BlobInfo{}, err
+		return BlobInfo{}, err
 	}
 	temp, err := os.CreateTemp("", "jt808-blob-*")
 	if err != nil {
-		return contracts.BlobInfo{}, err
+		return BlobInfo{}, err
 	}
 	tempPath := temp.Name()
 	defer os.Remove(tempPath)
@@ -132,10 +130,10 @@ func (s *ObjectStore) Put(ctx context.Context, key string, r io.Reader, opts con
 	size, err := io.Copy(io.MultiWriter(temp, hasher), r)
 	if err != nil {
 		_ = temp.Close()
-		return contracts.BlobInfo{}, err
+		return BlobInfo{}, err
 	}
 	if err := temp.Close(); err != nil {
-		return contracts.BlobInfo{}, err
+		return BlobInfo{}, err
 	}
 	txid := fmt.Sprintf("%d-%d", time.Now().UnixNano(), objectStoreTx.Add(1))
 	staging := objectStoreStagingPrefix + txid + "/" + clean
@@ -150,7 +148,7 @@ func (s *ObjectStore) Put(ctx context.Context, key string, r io.Reader, opts con
 	}
 	file, err := os.Open(tempPath)
 	if err != nil {
-		return contracts.BlobInfo{}, err
+		return BlobInfo{}, err
 	}
 	defer file.Close()
 
@@ -161,46 +159,46 @@ func (s *ObjectStore) Put(ctx context.Context, key string, r io.Reader, opts con
 		etag, err = s.putSingle(ctx, staging, file, size, headers)
 	}
 	if err != nil {
-		return contracts.BlobInfo{}, err
+		return BlobInfo{}, err
 	}
 	sum := hex.EncodeToString(hasher.Sum(nil))
-	info := contracts.BlobInfo{
+	info := BlobInfo{
 		Key:        clean,
 		StagingKey: staging,
 		Size:       size,
 		MD5:        sum,
 		ETag:       strings.Trim(etag, `"`),
-		State:      contracts.BlobStatePending,
+		State:      BlobStatePending,
 	}
 	// 标记先于任何提级动作落盘：宁可有标记无对象（空标记可安全删），
 	// 也不能出现无法列举的孤儿对象。
 	if err := s.writePendingMarker(ctx, info); err != nil {
 		_ = s.deleteObject(ctx, staging)
-		return contracts.BlobInfo{}, err
+		return BlobInfo{}, err
 	}
 	return info, nil
 }
 
 // Promote 用服务端复制把暂存对象提级到最终 key，并写入 pending 元数据。
-func (s *ObjectStore) Promote(ctx context.Context, info contracts.BlobInfo) (contracts.BlobInfo, error) {
+func (s *ObjectStore) Promote(ctx context.Context, info BlobInfo) (BlobInfo, error) {
 	key, err := cleanKey(info.Key)
 	if err != nil {
-		return contracts.BlobInfo{}, err
+		return BlobInfo{}, err
 	}
 	staging, err := cleanKey(info.StagingKey)
 	if err != nil {
-		return contracts.BlobInfo{}, err
+		return BlobInfo{}, err
 	}
 	// 再次写入标记（幂等）：Put 与 Promote 之间也可能崩溃，Promote 前
 	// 保证标记存在，顺序仍是“先标记、后 CopyObject”。
-	if err := s.writePendingMarker(ctx, contracts.BlobInfo{Key: key, StagingKey: staging}); err != nil {
-		return contracts.BlobInfo{}, err
+	if err := s.writePendingMarker(ctx, BlobInfo{Key: key, StagingKey: staging}); err != nil {
+		return BlobInfo{}, err
 	}
-	if err := s.copyObject(ctx, staging, key, contracts.BlobStatePending, info.ETag); err != nil {
-		return contracts.BlobInfo{}, err
+	if err := s.copyObject(ctx, staging, key, BlobStatePending, info.ETag); err != nil {
+		return BlobInfo{}, err
 	}
 	info.Key = key
-	info.State = contracts.BlobStatePending
+	info.State = BlobStatePending
 	return info, nil
 }
 
@@ -210,7 +208,7 @@ func (s *ObjectStore) MarkCommitted(ctx context.Context, key string) error {
 	if err != nil {
 		return err
 	}
-	if err := s.copyObject(ctx, clean, clean, contracts.BlobStateCommitted, ""); err != nil {
+	if err := s.copyObject(ctx, clean, clean, BlobStateCommitted, ""); err != nil {
 		return err
 	}
 	return s.deletePendingMarker(ctx, clean)
@@ -287,7 +285,7 @@ func (s *ObjectStore) markerKey(key string) string {
 }
 
 // writePendingMarker 写/覆盖 pending 标记。必须在 CopyObject 之前调用。
-func (s *ObjectStore) writePendingMarker(ctx context.Context, info contracts.BlobInfo) error {
+func (s *ObjectStore) writePendingMarker(ctx context.Context, info BlobInfo) error {
 	key, err := cleanKey(info.Key)
 	if err != nil {
 		return err
@@ -323,23 +321,23 @@ func (s *ObjectStore) deletePendingMarker(ctx context.Context, key string) error
 }
 
 // Stat 返回对象大小、ETag 与业务状态。
-func (s *ObjectStore) Stat(ctx context.Context, key string) (contracts.BlobInfo, error) {
+func (s *ObjectStore) Stat(ctx context.Context, key string) (BlobInfo, error) {
 	clean, err := cleanKey(key)
 	if err != nil {
-		return contracts.BlobInfo{}, err
+		return BlobInfo{}, err
 	}
 	head, err := s.head(ctx, clean)
 	if err != nil {
-		return contracts.BlobInfo{}, err
+		return BlobInfo{}, err
 	}
-	state := contracts.BlobStateCommitted
+	state := BlobStateCommitted
 	switch head.Header.Get("x-amz-meta-" + objectStoreStateMeta) {
-	case string(contracts.BlobStatePending):
-		state = contracts.BlobStatePending
-	case string(contracts.BlobStateMissing):
-		state = contracts.BlobStateMissing
+	case string(BlobStatePending):
+		state = BlobStatePending
+	case string(BlobStateMissing):
+		state = BlobStateMissing
 	}
-	return contracts.BlobInfo{
+	return BlobInfo{
 		Key:   clean,
 		Size:  head.Size,
 		ETag:  head.ETag,
@@ -431,7 +429,7 @@ func (s *ObjectStore) SweepPendingPrefix(ctx context.Context, sourcePrefix strin
 		}
 		// 标记删除失败可能让已提交对象留下标记：以对象状态兜底，
 		// 避免把 committed 的录像当作孤儿删除。
-		if stat, err := s.Stat(ctx, key); err == nil && stat.State == contracts.BlobStateCommitted {
+		if stat, err := s.Stat(ctx, key); err == nil && stat.State == BlobStateCommitted {
 			_ = s.deletePendingMarker(ctx, key)
 			continue
 		}
@@ -571,7 +569,7 @@ func (s *ObjectStore) putMultipart(ctx context.Context, key string, body io.Read
 	return completed.ETag, nil
 }
 
-func (s *ObjectStore) copyObject(ctx context.Context, source, target string, state contracts.BlobState, etag string) error {
+func (s *ObjectStore) copyObject(ctx context.Context, source, target string, state BlobState, etag string) error {
 	sourcePath := "/" + s.cfg.Bucket + "/" + s.objectKey(source)
 	headers := http.Header{}
 	headers.Set("x-amz-copy-source", awsEscapePath(sourcePath))
@@ -648,7 +646,7 @@ type listResult struct {
 }
 
 // ListObjects 列举指定前缀下的对象，供 control 重建切片索引。
-func (s *ObjectStore) ListObjects(ctx context.Context, prefix string) ([]contracts.BlobObject, error) {
+func (s *ObjectStore) ListObjects(ctx context.Context, prefix string) ([]BlobObject, error) {
 	clean := strings.Trim(strings.TrimSpace(prefix), "/")
 	if clean == "" {
 		return nil, errors.New("object list prefix is empty")
@@ -657,13 +655,13 @@ func (s *ObjectStore) ListObjects(ctx context.Context, prefix string) ([]contrac
 	if err != nil {
 		return nil, err
 	}
-	out := make([]contracts.BlobObject, 0, len(objects))
+	out := make([]BlobObject, 0, len(objects))
 	for _, object := range objects {
 		key := object.Key
 		if s.cfg.Prefix != "" {
 			key = strings.TrimPrefix(key, s.cfg.Prefix+"/")
 		}
-		out = append(out, contracts.BlobObject{
+		out = append(out, BlobObject{
 			Key:          key,
 			Size:         object.Size,
 			LastModified: object.Modified(),
@@ -929,4 +927,4 @@ func drainClose(resp *http.Response) {
 	_ = resp.Body.Close()
 }
 
-var _ contracts.BlobStore = (*ObjectStore)(nil)
+var _ BlobStore = (*ObjectStore)(nil)

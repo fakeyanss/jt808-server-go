@@ -11,7 +11,7 @@ import (
 	"github.com/rs/zerolog/log"
 
 	"github.com/fakeyanss/jt808-server-go/internal/clock"
-	"github.com/fakeyanss/jt808-server-go/internal/contracts"
+	"github.com/fakeyanss/jt808-server-go/internal/contracts/attachment"
 	"github.com/fakeyanss/jt808-server-go/internal/observability"
 	"github.com/fakeyanss/jt808-server-go/internal/repository"
 	"github.com/fakeyanss/jt808-server-go/internal/storage"
@@ -35,14 +35,14 @@ type AttachmentMaintenanceOptions struct {
 // 定位：对象存储是切片的事实来源，attachment_files 只是可重建的目录。
 type AttachmentMaintenance struct {
 	files   repository.AttachmentFileRepository
-	blob    contracts.BlobStore
+	blob    storage.BlobStore
 	clock   clock.Clock
 	opts    AttachmentMaintenanceOptions
 	metrics *observability.Metrics
 }
 
 // NewAttachmentMaintenance 构造维护器；files 或 blob 为空时返回 nil。
-func NewAttachmentMaintenance(files repository.AttachmentFileRepository, blob contracts.BlobStore,
+func NewAttachmentMaintenance(files repository.AttachmentFileRepository, blob storage.BlobStore,
 	opts AttachmentMaintenanceOptions, clk clock.Clock) *AttachmentMaintenance {
 	if files == nil || blob == nil {
 		return nil
@@ -181,19 +181,19 @@ func (m *AttachmentMaintenance) Backfill(ctx context.Context) (int, error) {
 	if m == nil {
 		return 0, nil
 	}
-	lister, ok := m.blob.(contracts.BlobLister)
+	lister, ok := m.blob.(storage.BlobLister)
 	if !ok {
 		return 0, fmt.Errorf("blob backend %T does not support listing", m.blob)
 	}
 	type group struct {
-		segments      []contracts.AttachmentProgressSegment
+		segments      []attachment.AttachmentProgressSegment
 		total         int64
 		modified      time.Time
 		manifestFound bool
 		manifest      *storage.AttachmentDoneManifest
 	}
-	groups := make(map[contracts.AttachmentProgressKey]*group)
-	ensure := func(key contracts.AttachmentProgressKey) *group {
+	groups := make(map[attachment.AttachmentProgressKey]*group)
+	ensure := func(key attachment.AttachmentProgressKey) *group {
 		item, ok := groups[key]
 		if !ok {
 			item = &group{}
@@ -214,7 +214,7 @@ func (m *AttachmentMaintenance) Backfill(ctx context.Context) (int, error) {
 						Msg("Skip attachment manifest with invalid key metadata")
 					continue
 				}
-				key := contracts.AttachmentProgressKey{
+				key := attachment.AttachmentProgressKey{
 					Source: info.Source, Phone: info.Phone, AlarmNo: info.AlarmNo, FileName: info.FileName,
 				}
 				item := ensure(key)
@@ -240,13 +240,13 @@ func (m *AttachmentMaintenance) Backfill(ctx context.Context) (int, error) {
 					Msg("Skip attachment object with invalid key metadata")
 				continue
 			}
-			key := contracts.AttachmentProgressKey{
+			key := attachment.AttachmentProgressKey{
 				Source: info.Source, Phone: info.Phone, AlarmNo: info.AlarmNo, FileName: info.FileName,
 			}
 			item := ensure(key)
-			item.segments = append(item.segments, contracts.AttachmentProgressSegment{
+			item.segments = append(item.segments, attachment.AttachmentProgressSegment{
 				Index: info.Index, Key: info.ObjectKey, Offset: info.Offset, Size: info.Size,
-				State: string(contracts.BlobStateCommitted),
+				State: string(storage.BlobStateCommitted),
 			})
 			if info.TotalSize > item.total {
 				item.total = info.TotalSize
@@ -274,8 +274,8 @@ func (m *AttachmentMaintenance) Backfill(ctx context.Context) (int, error) {
 	return saved, nil
 }
 
-func (m *AttachmentMaintenance) backfillOne(ctx context.Context, key contracts.AttachmentProgressKey,
-	scanned []contracts.AttachmentProgressSegment, scannedTotal int64, modified time.Time,
+func (m *AttachmentMaintenance) backfillOne(ctx context.Context, key attachment.AttachmentProgressKey,
+	scanned []attachment.AttachmentProgressSegment, scannedTotal int64, modified time.Time,
 	manifestFound bool, manifest *storage.AttachmentDoneManifest) error {
 	existing, err := m.files.Get(ctx, repository.AttachmentFileKey{
 		Source: key.Source, Phone: key.Phone, AlarmNo: key.AlarmNo, FileName: key.FileName,
@@ -292,7 +292,7 @@ func (m *AttachmentMaintenance) backfillOne(ctx context.Context, key contracts.A
 		return err
 	}
 
-	byKey := make(map[string]contracts.AttachmentProgressSegment)
+	byKey := make(map[string]attachment.AttachmentProgressSegment)
 	total := scannedTotal
 	var createdAt time.Time
 	if existing != nil {
@@ -302,7 +302,7 @@ func (m *AttachmentMaintenance) backfillOne(ctx context.Context, key contracts.A
 		}
 		createdAt = existing.CreatedAt
 		for _, segment := range existing.Segments {
-			byKey[segment.Key] = contracts.AttachmentProgressSegment{
+			byKey[segment.Key] = attachment.AttachmentProgressSegment{
 				Index: segment.Index, Key: segment.Key, Offset: segment.Offset,
 				Size: segment.Size, MD5: segment.MD5, State: segment.State,
 			}
@@ -313,7 +313,7 @@ func (m *AttachmentMaintenance) backfillOne(ctx context.Context, key contracts.A
 			byKey[segment.Key] = segment
 		}
 	}
-	segments := make([]contracts.AttachmentProgressSegment, 0, len(byKey))
+	segments := make([]attachment.AttachmentProgressSegment, 0, len(byKey))
 	var received int64
 	for _, segment := range byKey {
 		segments = append(segments, segment)
@@ -390,11 +390,11 @@ func (m *AttachmentMaintenance) readManifest(ctx context.Context, key string) (*
 	return &manifest, nil
 }
 
-func contiguousPrefix(segments []contracts.AttachmentProgressSegment) int64 {
+func contiguousPrefix(segments []attachment.AttachmentProgressSegment) int64 {
 	if len(segments) == 0 {
 		return 0
 	}
-	sorted := append([]contracts.AttachmentProgressSegment(nil), segments...)
+	sorted := append([]attachment.AttachmentProgressSegment(nil), segments...)
 	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Offset < sorted[j].Offset })
 	var cursor int64
 	for _, segment := range sorted {

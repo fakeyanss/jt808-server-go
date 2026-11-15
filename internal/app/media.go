@@ -8,7 +8,6 @@ import (
 
 	"github.com/rs/zerolog/log"
 
-	"github.com/fakeyanss/jt808-server-go/internal/contracts"
 	"github.com/fakeyanss/jt808-server-go/internal/control"
 	"github.com/fakeyanss/jt808-server-go/internal/internalapi"
 	"github.com/fakeyanss/jt808-server-go/internal/media"
@@ -119,7 +118,7 @@ func (d *deps) startMedia() {
 	}
 
 	// 播放能力：同进程有媒体节点时直接本地调用，否则使用跨进程的媒体调度器。
-	var playbackLibrary contracts.PlaybackLibrary
+	var playbackLibrary playback.PlaybackLibrary
 	switch {
 	case mediaServ != nil:
 		playbackLibrary = mediaServ

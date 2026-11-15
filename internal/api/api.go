@@ -20,14 +20,17 @@ import (
 	protocolhex "github.com/fakeyanss/jt808-server-go/internal/codec/hex"
 	"github.com/fakeyanss/jt808-server-go/internal/config"
 	"github.com/fakeyanss/jt808-server-go/internal/contracts"
+	"github.com/fakeyanss/jt808-server-go/internal/contracts/attachment"
 	"github.com/fakeyanss/jt808-server-go/internal/control"
 	"github.com/fakeyanss/jt808-server-go/internal/httpguard"
+	"github.com/fakeyanss/jt808-server-go/internal/media/playback"
 	"github.com/fakeyanss/jt808-server-go/internal/mediaupload"
 	"github.com/fakeyanss/jt808-server-go/internal/protocol"
 	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
 	"github.com/fakeyanss/jt808-server-go/internal/repository"
 	"github.com/fakeyanss/jt808-server-go/internal/runtime"
 	"github.com/fakeyanss/jt808-server-go/internal/server"
+	"github.com/fakeyanss/jt808-server-go/internal/storage"
 )
 
 // Queryer 把查询类下行交给网关并等待终端应答体。
@@ -39,7 +42,7 @@ type Queryer interface {
 // Run 启动业务 API。downlink 为下行契约实现；sender 是豁免清单（查询/只读/幂等）
 // 的单发通道，二者在 control-only 下均可跨进程工作。未启用 outbox 时下行入口
 // 直接发送，不提供命令状态查询。
-func Run(ctx context.Context, serv *server.TCPServer, cfg *config.Config, repos repository.Repositories, apiOptions config.APIOptions, alarmServ *alarmserver.Server, attachments repository.AttachmentFileRepository, attachmentAllocator contracts.AttachmentAllocator, blob contracts.BlobStore, downlink contracts.Downlink, sender contracts.DownlinkSender, mediaUpload *mediaupload.Store, queryer Queryer, playback contracts.PlaybackLibrary, ftpTasks *control.FTPTaskManager, ftpPort uint16, ftpAdvertiseIP string) {
+func Run(ctx context.Context, serv *server.TCPServer, cfg *config.Config, repos repository.Repositories, apiOptions config.APIOptions, alarmServ *alarmserver.Server, attachments repository.AttachmentFileRepository, attachmentAllocator attachment.AttachmentAllocator, blob storage.BlobStore, downlink contracts.Downlink, sender contracts.DownlinkSender, mediaUpload *mediaupload.Store, queryer Queryer, playback playback.PlaybackLibrary, ftpTasks *control.FTPTaskManager, ftpPort uint16, ftpAdvertiseIP string) {
 	// web server structure
 	gin.SetMode(gin.ReleaseMode)
 	router := gin.Default()
@@ -1243,17 +1246,17 @@ func Run(ctx context.Context, serv *server.TCPServer, cfg *config.Config, repos 
 		} else {
 			if attachmentAllocator == nil {
 				c.JSON(http.StatusServiceUnavailable, gin.H{
-					"code": contracts.AttachmentCodeNoNodes,
+					"code": attachment.AttachmentCodeNoNodes,
 					"err":  "no attachment node is configured: set cluster.attachment.nodes or run role attachment",
 				})
 				return
 			}
-			lease, allocErr := attachmentAllocator.Allocate(c.Request.Context(), contracts.AttachmentLeaseRequest{
+			lease, allocErr := attachmentAllocator.Allocate(c.Request.Context(), attachment.AttachmentLeaseRequest{
 				Phone: phone, AlarmID: request.AlarmNo,
 			})
 			if allocErr != nil {
-				code := contracts.AttachmentCodeNodesUnavailable
-				var unavailable *contracts.AttachmentUnavailableError
+				code := attachment.AttachmentCodeNodesUnavailable
+				var unavailable *attachment.AttachmentUnavailableError
 				if errors.As(allocErr, &unavailable) {
 					code = unavailable.Code
 				}
@@ -1270,7 +1273,7 @@ func Run(ctx context.Context, serv *server.TCPServer, cfg *config.Config, repos 
 		}
 		if tcpPort == 0 && udpPort == 0 {
 			c.JSON(http.StatusServiceUnavailable, gin.H{
-				"code": contracts.AttachmentCodeNodesUnavailable,
+				"code": attachment.AttachmentCodeNodesUnavailable,
 				"err":  "attachment node has no tcp or udp listener",
 			})
 			return

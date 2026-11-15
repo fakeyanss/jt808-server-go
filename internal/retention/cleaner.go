@@ -17,9 +17,9 @@ import (
 	"github.com/rs/zerolog/log"
 
 	"github.com/fakeyanss/jt808-server-go/internal/clock"
-	"github.com/fakeyanss/jt808-server-go/internal/contracts"
 	"github.com/fakeyanss/jt808-server-go/internal/observability"
 	"github.com/fakeyanss/jt808-server-go/internal/repository"
+	"github.com/fakeyanss/jt808-server-go/internal/storage"
 )
 
 // defaultBatchPause 是批与批之间的让出时间，避免长时间连续写库。
@@ -89,7 +89,7 @@ type Cleaner struct {
 	store    repository.RetentionStore
 	media    MediaStore
 	segments repository.RecordingSegmentRepository
-	blob     contracts.BlobStore
+	blob     storage.BlobStore
 	cfg      Config
 	metrics  *observability.Metrics
 	now      func() time.Time
@@ -110,7 +110,7 @@ func NewCleaner(store repository.RetentionStore, media MediaStore, cfg Config, m
 }
 
 // SetSegmentStore 注入录像切片索引与对象存储后端；两者都为空时跳过切片清理。
-func (c *Cleaner) SetSegmentStore(segments repository.RecordingSegmentRepository, blob contracts.BlobStore) {
+func (c *Cleaner) SetSegmentStore(segments repository.RecordingSegmentRepository, blob storage.BlobStore) {
 	if c != nil {
 		c.segments = segments
 		c.blob = blob

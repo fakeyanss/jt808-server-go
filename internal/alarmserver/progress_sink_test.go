@@ -8,28 +8,28 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/fakeyanss/jt808-server-go/internal/contracts"
+	"github.com/fakeyanss/jt808-server-go/internal/contracts/attachment"
 )
 
 // fakeProgressSink 是测试用的 control 替身：内存保存最新快照，可模拟 control 不可达。
 type fakeProgressSink struct {
 	mu       sync.Mutex
-	items    map[contracts.AttachmentProgressKey]contracts.AttachmentProgress
+	items    map[attachment.AttachmentProgressKey]attachment.AttachmentProgress
 	disabled bool
 }
 
 func newFakeProgressSink() *fakeProgressSink {
-	return &fakeProgressSink{items: map[contracts.AttachmentProgressKey]contracts.AttachmentProgress{}}
+	return &fakeProgressSink{items: map[attachment.AttachmentProgressKey]attachment.AttachmentProgress{}}
 }
 
-func (s *fakeProgressSink) Save(_ context.Context, progress contracts.AttachmentProgress) error {
+func (s *fakeProgressSink) Save(_ context.Context, progress attachment.AttachmentProgress) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.items[progress.Key()] = progress
 	return nil
 }
 
-func (s *fakeProgressSink) Load(_ context.Context, key contracts.AttachmentProgressKey) (*contracts.AttachmentProgress, error) {
+func (s *fakeProgressSink) Load(_ context.Context, key attachment.AttachmentProgressKey) (*attachment.AttachmentProgress, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.disabled {
@@ -37,12 +37,12 @@ func (s *fakeProgressSink) Load(_ context.Context, key contracts.AttachmentProgr
 	}
 	progress, ok := s.items[key]
 	if !ok {
-		return nil, contracts.ErrAttachmentProgressNotFound
+		return nil, attachment.ErrAttachmentProgressNotFound
 	}
 	return &progress, nil
 }
 
-func (s *fakeProgressSink) get(key contracts.AttachmentProgressKey) (contracts.AttachmentProgress, bool) {
+func (s *fakeProgressSink) get(key attachment.AttachmentProgressKey) (attachment.AttachmentProgress, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	progress, ok := s.items[key]
@@ -50,9 +50,9 @@ func (s *fakeProgressSink) get(key contracts.AttachmentProgressKey) (contracts.A
 }
 
 // waitStatus 等待异步上报到达目标状态。
-func (s *fakeProgressSink) waitStatus(t *testing.T, key contracts.AttachmentProgressKey, status string) contracts.AttachmentProgress {
+func (s *fakeProgressSink) waitStatus(t *testing.T, key attachment.AttachmentProgressKey, status string) attachment.AttachmentProgress {
 	t.Helper()
-	var got contracts.AttachmentProgress
+	var got attachment.AttachmentProgress
 	require.Eventually(t, func() bool {
 		progress, ok := s.get(key)
 		if !ok || progress.Status != status {

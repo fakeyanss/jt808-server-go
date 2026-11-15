@@ -17,7 +17,7 @@ import (
 
 	"github.com/rs/zerolog/log"
 
-	"github.com/fakeyanss/jt808-server-go/internal/contracts"
+	"github.com/fakeyanss/jt808-server-go/internal/contracts/attachment"
 	"github.com/fakeyanss/jt808-server-go/internal/storage"
 )
 
@@ -45,7 +45,7 @@ type upload struct {
 
 	total    int64
 	flushed  int64
-	segments []contracts.AttachmentProgressSegment
+	segments []attachment.AttachmentProgressSegment
 
 	staged atomic.Int64
 
@@ -161,7 +161,7 @@ func (u *upload) adjustStaged(total int64) {
 
 // rebuild 列举同文件前缀，保留“从 0 开始的完整切片窗口”，删除其它残片。
 func (u *upload) rebuild(ctx context.Context) error {
-	lister, ok := u.srv.cfg.Blob.(contracts.BlobLister)
+	lister, ok := u.srv.cfg.Blob.(storage.BlobLister)
 	if !ok {
 		return nil
 	}
@@ -189,14 +189,14 @@ func (u *upload) rebuild(ctx context.Context) error {
 		}
 		byOffset[info.Offset] = true
 	}
-	var segments []contracts.AttachmentProgressSegment
+	var segments []attachment.AttachmentProgressSegment
 	for offset := int64(0); ; offset += u.segmentSize {
 		if !byOffset[offset] {
 			break
 		}
-		segments = append(segments, contracts.AttachmentProgressSegment{
+		segments = append(segments, attachment.AttachmentProgressSegment{
 			Index: int(offset / u.segmentSize), Key: u.segmentKey(offset, u.segmentSize),
-			Offset: offset, Size: u.segmentSize, State: string(contracts.BlobStateCommitted),
+			Offset: offset, Size: u.segmentSize, State: string(storage.BlobStateCommitted),
 		})
 		delete(byOffset, offset)
 	}
@@ -218,7 +218,7 @@ func (u *upload) rebuild(ctx context.Context) error {
 }
 
 func (u *upload) removeAllObjects(ctx context.Context) error {
-	lister, ok := u.srv.cfg.Blob.(contracts.BlobLister)
+	lister, ok := u.srv.cfg.Blob.(storage.BlobLister)
 	if !ok {
 		return nil
 	}
@@ -297,7 +297,7 @@ func (u *upload) flushSegment(ctx context.Context, offset, size int64) error {
 		return fmt.Errorf("read ftp staging: %w", err)
 	}
 	key := u.segmentKey(offset, size)
-	info, err := u.srv.cfg.Blob.Put(ctx, key, bytes.NewReader(payload), contracts.BlobOptions{
+	info, err := u.srv.cfg.Blob.Put(ctx, key, bytes.NewReader(payload), storage.BlobOptions{
 		ContentType: "application/octet-stream",
 		Metadata: map[string]string{
 			"phone": u.task.Phone, "serial": strconv.Itoa(int(u.task.Serial)),
@@ -310,12 +310,12 @@ func (u *upload) flushSegment(ctx context.Context, offset, size int64) error {
 	if _, err := u.srv.cfg.Blob.Promote(ctx, info); err != nil {
 		return fmt.Errorf("promote ftp segment %s: %w", key, err)
 	}
-	u.segments = append(u.segments, contracts.AttachmentProgressSegment{
+	u.segments = append(u.segments, attachment.AttachmentProgressSegment{
 		Index: int(offset / u.segmentSize), Key: key, Offset: offset, Size: size,
-		State: string(contracts.BlobStatePending),
+		State: string(storage.BlobStatePending),
 	})
 	u.flushed = offset + size
-	u.report(contracts.AttachmentStatusReceiving, 0)
+	u.report(attachment.AttachmentStatusReceiving, 0)
 	log.Debug().Str("phone", u.task.Phone).Uint16("serial", u.task.Serial).
 		Str("key", key).Int64("offset", offset).Msg("FTP segment staged to object store")
 	return nil
@@ -332,12 +332,12 @@ func (u *upload) finish(ctx context.Context) error {
 		if err := u.srv.cfg.Blob.MarkCommitted(ctx, u.segments[i].Key); err != nil {
 			return fmt.Errorf("mark ftp segment committed: %w", err)
 		}
-		u.segments[i].State = string(contracts.BlobStateCommitted)
+		u.segments[i].State = string(storage.BlobStateCommitted)
 	}
 	if err := u.writeManifest(ctx); err != nil {
 		return err
 	}
-	u.report(contracts.AttachmentStatusCompleted, u.total)
+	u.report(attachment.AttachmentStatusCompleted, u.total)
 	u.cleanupLocal()
 	log.Info().Str("phone", u.task.Phone).Uint16("serial", u.task.Serial).
 		Str("file", u.fileName).Int64("size", u.total).Int("segments", len(u.segments)).
@@ -362,7 +362,7 @@ func (u *upload) writeManifest(ctx context.Context) error {
 	}
 	key := u.doneKey()
 	info, err := u.srv.cfg.Blob.Put(ctx, key, bytes.NewReader(payload),
-		contracts.BlobOptions{ContentType: "application/json"})
+		storage.BlobOptions{ContentType: "application/json"})
 	if err != nil {
 		return fmt.Errorf("put ftp manifest %s: %w", key, err)
 	}
@@ -377,7 +377,7 @@ func (u *upload) writeManifest(ctx context.Context) error {
 
 // interrupt 在连接中断/暂停时保留暂存与已提交切片，上报当前水位。
 func (u *upload) interrupt() {
-	u.report(contracts.AttachmentStatusReceiving, u.total)
+	u.report(attachment.AttachmentStatusReceiving, u.total)
 	u.closeLocal()
 }
 
@@ -398,7 +398,7 @@ func (u *upload) abort(ctx context.Context) {
 		log.Warn().Err(err).Msg("Fail to delete cancelled ftp objects")
 	}
 	u.releaseStaged()
-	u.report(contracts.AttachmentStatusFailed, u.total)
+	u.report(attachment.AttachmentStatusFailed, u.total)
 }
 
 func (u *upload) cleanupLocal() {
@@ -429,7 +429,7 @@ func (u *upload) releaseStaged() {
 }
 
 func (u *upload) report(status string, totalSize int64) {
-	progress := contracts.AttachmentProgress{
+	progress := attachment.AttachmentProgress{
 		Source:        storage.SourceFTP1078,
 		Phone:         u.task.Phone,
 		AlarmNo:       strconv.Itoa(int(u.task.Serial)),
@@ -440,11 +440,11 @@ func (u *upload) report(status string, totalSize int64) {
 		Watermark:     u.flushed,
 		StagingPath:   u.staging,
 		StagingBase:   u.srv.cfg.Dir,
-		Segments:      append([]contracts.AttachmentProgressSegment(nil), u.segments...),
+		Segments:      append([]attachment.AttachmentProgressSegment(nil), u.segments...),
 		Status:        status,
 		UpdatedAt:     u.srv.now(),
 	}
-	if status != contracts.AttachmentStatusReceiving {
+	if status != attachment.AttachmentStatusReceiving {
 		progress.StagingPath = ""
 		progress.StagingBase = ""
 	}

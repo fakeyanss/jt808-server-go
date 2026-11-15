@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/fakeyanss/jt808-server-go/internal/contracts"
+	"github.com/fakeyanss/jt808-server-go/internal/contracts/attachment"
 )
 
 // HTTPProgressSink 是附件节点向 control 上报进度、查询恢复点的出站客户端。
@@ -44,7 +44,7 @@ func NewHTTPProgressSink(endpoint, token string, timeout time.Duration) (*HTTPPr
 }
 
 // Save 上报一份进度快照。
-func (s *HTTPProgressSink) Save(ctx context.Context, progress contracts.AttachmentProgress) error {
+func (s *HTTPProgressSink) Save(ctx context.Context, progress attachment.AttachmentProgress) error {
 	body, err := json.Marshal(progress)
 	if err != nil {
 		return fmt.Errorf("marshal attachment progress: %w", err)
@@ -67,7 +67,7 @@ func (s *HTTPProgressSink) Save(ctx context.Context, progress contracts.Attachme
 }
 
 // Load 查询恢复点；404 映射为 ErrAttachmentProgressNotFound。
-func (s *HTTPProgressSink) Load(ctx context.Context, key contracts.AttachmentProgressKey) (*contracts.AttachmentProgress, error) {
+func (s *HTTPProgressSink) Load(ctx context.Context, key attachment.AttachmentProgressKey) (*attachment.AttachmentProgress, error) {
 	parsed, err := url.Parse(s.endpoint)
 	if err != nil {
 		return nil, fmt.Errorf("parse attachment progress url: %w", err)
@@ -91,11 +91,11 @@ func (s *HTTPProgressSink) Load(ctx context.Context, key contracts.AttachmentPro
 	defer discardBody(response)
 	switch {
 	case response.StatusCode == http.StatusNotFound:
-		return nil, contracts.ErrAttachmentProgressNotFound
+		return nil, attachment.ErrAttachmentProgressNotFound
 	case response.StatusCode < 200 || response.StatusCode >= 300:
 		return nil, fmt.Errorf("attachment progress query rejected with status %d", response.StatusCode)
 	}
-	var progress contracts.AttachmentProgress
+	var progress attachment.AttachmentProgress
 	if err := json.NewDecoder(io.LimitReader(response.Body, 1<<20)).Decode(&progress); err != nil {
 		return nil, fmt.Errorf("decode attachment progress: %w", err)
 	}
@@ -113,4 +113,4 @@ func discardBody(response *http.Response) {
 	_ = response.Body.Close()
 }
 
-var _ contracts.AttachmentProgressSink = (*HTTPProgressSink)(nil)
+var _ attachment.AttachmentProgressSink = (*HTTPProgressSink)(nil)

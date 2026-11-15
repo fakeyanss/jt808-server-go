@@ -11,7 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/fakeyanss/jt808-server-go/internal/contracts"
+	mediacontract "github.com/fakeyanss/jt808-server-go/internal/contracts/media"
+	"github.com/fakeyanss/jt808-server-go/internal/media/playback"
 )
 
 type fakeMediaNode struct {
@@ -22,7 +23,7 @@ type fakeMediaNode struct {
 	createCalls int
 	deleteCalls int
 	nextID      int
-	coverage    contracts.RecordingCoverage
+	coverage    playback.RecordingCoverage
 }
 
 func (n *fakeMediaNode) handler() http.Handler {
@@ -98,11 +99,11 @@ func (n *fakeMediaNode) handler() http.Handler {
 
 func TestRemoteMediaReturnsUnavailableWithoutNodes(t *testing.T) {
 	media := NewRemoteMedia(RemoteMediaOptions{})
-	_, err := media.CreatePlaybackSession(context.Background(), contracts.PlaybackSessionRequest{
+	_, err := media.CreatePlaybackSession(context.Background(), playback.PlaybackSessionRequest{
 		Phone: "13800138000", Channel: 1, Kind: "live",
 	})
-	var unavailable *contracts.MediaUnavailableError
-	if !errors.As(err, &unavailable) || unavailable.Code != contracts.MediaCodeNoNodes {
+	var unavailable *mediacontract.MediaUnavailableError
+	if !errors.As(err, &unavailable) || unavailable.Code != mediacontract.MediaCodeNoNodes {
 		t.Fatalf("expected no_media_node_configured, got %v", err)
 	}
 	if err := media.Check(context.Background()); err == nil {
@@ -123,7 +124,7 @@ func TestRemoteMediaCreatesAndReleasesOnSameNode(t *testing.T) {
 		{Name: "b", URL: secondServer.URL},
 	}})
 	ctx := context.Background()
-	session, err := media.CreatePlaybackSession(ctx, contracts.PlaybackSessionRequest{
+	session, err := media.CreatePlaybackSession(ctx, playback.PlaybackSessionRequest{
 		Phone: "13800138000", Channel: 1, Kind: "live", TTL: time.Minute,
 	})
 	if err != nil {
@@ -135,7 +136,7 @@ func TestRemoteMediaCreatesAndReleasesOnSameNode(t *testing.T) {
 	}
 
 	// 同一 (phone, channel) 再申请必须复用已有分配，且不会再向任何节点发创建请求。
-	reused, err := media.CreatePlaybackSession(ctx, contracts.PlaybackSessionRequest{
+	reused, err := media.CreatePlaybackSession(ctx, playback.PlaybackSessionRequest{
 		Phone: "13800138000", Channel: 1, Kind: "live",
 	})
 	if err != nil {
@@ -179,7 +180,7 @@ func TestRemoteMediaRestoresStickinessFromNodeStatus(t *testing.T) {
 		{Name: "b", URL: secondServer.URL},
 	}})
 	// 管控本地没有映射时，节点返回 409；同类型会话应被复用而不是报冲突。
-	session, err := media.CreatePlaybackSession(context.Background(), contracts.PlaybackSessionRequest{
+	session, err := media.CreatePlaybackSession(context.Background(), playback.PlaybackSessionRequest{
 		Phone: "13800138000", Channel: 1, Kind: "live",
 	})
 	if err != nil {
@@ -198,15 +199,15 @@ func TestRemoteMediaRestoresStickinessFromNodeStatus(t *testing.T) {
 
 func TestRemoteMediaCoverageMergesNodes(t *testing.T) {
 	start := time.Date(2026, 11, 12, 0, 0, 0, 0, time.UTC)
-	first := &fakeMediaNode{nodeID: "media-a", available: 1, coverage: contracts.RecordingCoverage{
-		Segments: []contracts.RecordingSegmentInfo{{ID: "seg-1", Start: start, End: start.Add(time.Minute)}},
-		Available: []contracts.TimeRange{{
+	first := &fakeMediaNode{nodeID: "media-a", available: 1, coverage: playback.RecordingCoverage{
+		Segments: []playback.RecordingSegmentInfo{{ID: "seg-1", Start: start, End: start.Add(time.Minute)}},
+		Available: []playback.TimeRange{{
 			Start: start, End: start.Add(time.Minute),
 		}},
 	}}
-	second := &fakeMediaNode{nodeID: "media-b", available: 1, coverage: contracts.RecordingCoverage{
-		Segments: []contracts.RecordingSegmentInfo{{ID: "seg-2", Start: start.Add(time.Minute), End: start.Add(2 * time.Minute)}},
-		Available: []contracts.TimeRange{{
+	second := &fakeMediaNode{nodeID: "media-b", available: 1, coverage: playback.RecordingCoverage{
+		Segments: []playback.RecordingSegmentInfo{{ID: "seg-2", Start: start.Add(time.Minute), End: start.Add(2 * time.Minute)}},
+		Available: []playback.TimeRange{{
 			Start: start.Add(time.Minute), End: start.Add(2 * time.Minute),
 		}},
 	}}

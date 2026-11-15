@@ -10,22 +10,21 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/fakeyanss/jt808-server-go/internal/contracts"
 	"github.com/fakeyanss/jt808-server-go/internal/observability"
 	"github.com/fakeyanss/jt808-server-go/internal/repository"
 	"github.com/fakeyanss/jt808-server-go/internal/repository/memory"
 	"github.com/fakeyanss/jt808-server-go/internal/storage"
 )
 
-func promoteObject(t *testing.T, volume contracts.BlobStore, key string, payload []byte) {
+func promoteObject(t *testing.T, volume storage.BlobStore, key string, payload []byte) {
 	t.Helper()
-	info, err := volume.Put(context.Background(), key, bytes.NewReader(payload), contracts.BlobOptions{})
+	info, err := volume.Put(context.Background(), key, bytes.NewReader(payload), storage.BlobOptions{})
 	require.NoError(t, err)
 	_, err = volume.Promote(context.Background(), info)
 	require.NoError(t, err)
 }
 
-func writeFTPManifest(t *testing.T, volume contracts.BlobStore, phone, serial, file string, manifest storage.AttachmentDoneManifest) string {
+func writeFTPManifest(t *testing.T, volume storage.BlobStore, phone, serial, file string, manifest storage.AttachmentDoneManifest) string {
 	t.Helper()
 	payload, err := json.Marshal(manifest)
 	require.NoError(t, err)

@@ -10,12 +10,12 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/fakeyanss/jt808-server-go/internal/contracts"
+	"github.com/fakeyanss/jt808-server-go/internal/contracts/attachment"
 	"github.com/fakeyanss/jt808-server-go/internal/storage"
 )
 
-func newBlobTestAssembler(t *testing.T, root string, volume contracts.BlobStore,
-	sink contracts.AttachmentProgressSink, segmentSize, stagingMax int64) *Assembler {
+func newBlobTestAssembler(t *testing.T, root string, volume storage.BlobStore,
+	sink attachment.AttachmentProgressSink, segmentSize, stagingMax int64) *Assembler {
 	t.Helper()
 	assembler := NewAssembler(Config{
 		Dir:            filepath.Join(root, "alarms"),
@@ -53,9 +53,9 @@ func TestBlobModeStagesSegmentsAndReportsProgress(t *testing.T) {
 	state, err := assembler.RegisterFile(info, "clip.bin", 1, 8)
 	require.NoError(t, err)
 
-	key := contracts.AttachmentProgressKey{Source: storage.SourceSubia, Phone: info.Phone, AlarmNo: info.AlarmNo, FileName: "clip.bin"}
+	key := attachment.AttachmentProgressKey{Source: storage.SourceSubia, Phone: info.Phone, AlarmNo: info.AlarmNo, FileName: "clip.bin"}
 	require.NoError(t, state.writeAt(0, []byte("abcd")))
-	progress := sink.waitStatus(t, key, contracts.AttachmentStatusReceiving)
+	progress := sink.waitStatus(t, key, attachment.AttachmentStatusReceiving)
 	require.EqualValues(t, 4, progress.Watermark)
 	require.Len(t, progress.Segments, 1)
 	require.Equal(t,
@@ -63,18 +63,18 @@ func TestBlobModeStagesSegmentsAndReportsProgress(t *testing.T) {
 		progress.Segments[0].Key)
 	info0, err := volume.Stat(context.Background(), progress.Segments[0].Key)
 	require.NoError(t, err)
-	require.Equal(t, contracts.BlobStatePending, info0.State)
+	require.Equal(t, storage.BlobStatePending, info0.State)
 	require.Equal(t, 1, assembler.ActiveReceiving())
 
 	// 第二个切片补齐后文件完成：所有对象转 committed，暂存文件删除。
 	require.NoError(t, state.writeAt(4, []byte("efgh")))
-	progress = sink.waitStatus(t, key, contracts.AttachmentStatusCompleted)
+	progress = sink.waitStatus(t, key, attachment.AttachmentStatusCompleted)
 	require.Len(t, progress.Segments, 2)
 	require.EqualValues(t, 8, progress.Watermark)
 	for _, segment := range progress.Segments {
 		stored, statErr := volume.Stat(context.Background(), segment.Key)
 		require.NoError(t, statErr)
-		require.Equal(t, contracts.BlobStateCommitted, stored.State)
+		require.Equal(t, storage.BlobStateCommitted, stored.State)
 	}
 	_, statErr := os.Stat(state.partPath)
 	require.True(t, os.IsNotExist(statErr))
@@ -91,7 +91,7 @@ func TestBlobModeRestoresFromObjectKeysWhenControlIsDown(t *testing.T) {
 
 	// 预先在对象存储里放入第一片，模拟上一进程已提交的切片。
 	key0 := storage.AttachmentSegmentObjectKey(storage.SourceSubia, "13800138000", "A1", "clip.bin", 0, 4, 8, 0)
-	info0, err := volume.Put(context.Background(), key0, bytes.NewReader([]byte("abcd")), contracts.BlobOptions{})
+	info0, err := volume.Put(context.Background(), key0, bytes.NewReader([]byte("abcd")), storage.BlobOptions{})
 	require.NoError(t, err)
 	_, err = volume.Promote(context.Background(), info0)
 	require.NoError(t, err)
@@ -173,8 +173,8 @@ func TestBlobModeCleanupStaleReportsExpired(t *testing.T) {
 	require.FileExists(t, state.partPath)
 
 	require.Equal(t, 1, assembler.CleanupStale(time.Now().Add(2*time.Hour), time.Hour))
-	key := contracts.AttachmentProgressKey{Source: storage.SourceSubia, Phone: info.Phone, AlarmNo: info.AlarmNo, FileName: "clip.bin"}
-	progress := sink.waitStatus(t, key, contracts.AttachmentStatusExpired)
+	key := attachment.AttachmentProgressKey{Source: storage.SourceSubia, Phone: info.Phone, AlarmNo: info.AlarmNo, FileName: "clip.bin"}
+	progress := sink.waitStatus(t, key, attachment.AttachmentStatusExpired)
 	require.Empty(t, progress.StagingPath)
 	_, statErr := os.Stat(state.partPath)
 	require.True(t, os.IsNotExist(statErr))

@@ -15,9 +15,9 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"github.com/fakeyanss/jt808-server-go/internal/codec/hex"
-	"github.com/fakeyanss/jt808-server-go/internal/contracts"
 	"github.com/fakeyanss/jt808-server-go/internal/mediaupload"
 	"github.com/fakeyanss/jt808-server-go/internal/repository"
+	"github.com/fakeyanss/jt808-server-go/internal/storage"
 )
 
 // 媒体文件查询的默认与最大条数，避免单次请求拖垮进程。
@@ -34,7 +34,7 @@ const mediaTimeLayout = "2006-01-02 15:04:05"
 // 鉴权沿用业务 API 的 token 中间件；这里只做参数校验与仓储/文件读取。
 // 注意：0x0801 位置体只有报警标志位、没有报警流水号，
 // 列表的 alarmOnly 只能按报警类别过滤，无法按某一条报警精确关联。
-func registerMediaRoutes(api *gin.RouterGroup, devices repository.DeviceRepository, files repository.MediaFileRepository, captures repository.MediaCaptureRepository, searches repository.MediaSearchRepository, uploads *mediaupload.Store, blob contracts.BlobStore) {
+func registerMediaRoutes(api *gin.RouterGroup, devices repository.DeviceRepository, files repository.MediaFileRepository, captures repository.MediaCaptureRepository, searches repository.MediaSearchRepository, uploads *mediaupload.Store, blob storage.BlobStore) {
 	group := api.Group("/device/:phone/media")
 	group.GET("/files", func(c *gin.Context) {
 		phone, ok := requireMediaDevice(c, devices)

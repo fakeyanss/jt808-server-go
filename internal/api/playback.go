@@ -13,6 +13,8 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"github.com/fakeyanss/jt808-server-go/internal/contracts"
+	"github.com/fakeyanss/jt808-server-go/internal/contracts/media"
+	playbacklib "github.com/fakeyanss/jt808-server-go/internal/media/playback"
 	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
 	"github.com/fakeyanss/jt808-server-go/internal/repository"
 	"github.com/fakeyanss/jt808-server-go/internal/runtime"
@@ -45,7 +47,7 @@ type createPlaybackRequest struct {
 //
 // 终端回放（0x9201）与平台录像回放是两件事：前者让终端推 1078 流，
 // 后者按 recording_segments 索引 + Range 直接读对象存储，不经过 0x9201。
-func registerPlaybackRoutes(api *gin.RouterGroup, devices repository.DeviceRepository, conn runtime.ConnectionRegistry, downlink contracts.Downlink, playback contracts.PlaybackLibrary) {
+func registerPlaybackRoutes(api *gin.RouterGroup, devices repository.DeviceRepository, conn runtime.ConnectionRegistry, downlink contracts.Downlink, playback playbacklib.PlaybackLibrary) {
 	outboxEnabled := downlink != nil && downlink.Enabled()
 
 	api.POST("/device/:phone/playback", func(c *gin.Context) {
@@ -109,14 +111,14 @@ func registerPlaybackRoutes(api *gin.RouterGroup, devices repository.DeviceRepos
 			c.JSON(http.StatusBadRequest, gin.H{"err": err.Error()})
 			return
 		}
-		created, err := playback.CreatePlaybackSession(c.Request.Context(), contracts.PlaybackSessionRequest{
+		created, err := playback.CreatePlaybackSession(c.Request.Context(), playbacklib.PlaybackSessionRequest{
 			Phone:   phone,
 			Channel: request.Channel,
 			Kind:    kind,
 			TTL:     ttl,
 		})
 		if err != nil {
-			var conflict *contracts.PlaybackSessionConflictError
+			var conflict *playbacklib.PlaybackSessionConflictError
 			if errors.As(err, &conflict) {
 				c.JSON(http.StatusConflict, gin.H{
 					"code":    conflict.Code(),
@@ -289,11 +291,11 @@ func registerPlaybackRoutes(api *gin.RouterGroup, devices repository.DeviceRepos
 		}
 		reader, size, err := playback.OpenRecordingSegment(c.Request.Context(), c.Param("phone"), c.Param("segmentId"), offset, length)
 		if err != nil {
-			if errors.Is(err, contracts.ErrRecordingNotFound) {
+			if errors.Is(err, playbacklib.ErrRecordingNotFound) {
 				c.JSON(http.StatusNotFound, gin.H{"err": "recording segment not found"})
 				return
 			}
-			if errors.Is(err, contracts.ErrRangeNotSatisfiable) {
+			if errors.Is(err, playbacklib.ErrRangeNotSatisfiable) {
 				c.JSON(http.StatusRequestedRangeNotSatisfiable, gin.H{"err": err.Error()})
 				return
 			}
@@ -354,7 +356,7 @@ func sendPlaybackStop(
 	conn runtime.ConnectionRegistry,
 	downlink contracts.Downlink,
 	outboxEnabled bool,
-	session contracts.PlaybackSession,
+	session playbacklib.PlaybackSession,
 ) playbackStopOutcome {
 	messageID := "0x9102"
 	terminalPlayback := session.Kind == playbackKindTerminal
@@ -440,7 +442,7 @@ func parseByteRange(header string) (offset, length int64, ok bool, err error) {
 // writeMediaUnavailable 把媒体调度失败映射为稳定的 503 + code + message。
 // 返回 false 表示不是媒体不可用错误，由调用方按原有语义处理。
 func writeMediaUnavailable(c *gin.Context, err error) bool {
-	var unavailable *contracts.MediaUnavailableError
+	var unavailable *media.MediaUnavailableError
 	if !errors.As(err, &unavailable) {
 		return false
 	}
@@ -451,7 +453,7 @@ func writeMediaUnavailable(c *gin.Context, err error) bool {
 	return true
 }
 
-func toEndpointJSON(endpoints []contracts.PlaybackEndpoint) []gin.H {
+func toEndpointJSON(endpoints []playbacklib.PlaybackEndpoint) []gin.H {
 	out := make([]gin.H, 0, len(endpoints))
 	for _, endpoint := range endpoints {
 		out = append(out, gin.H{"protocol": endpoint.Protocol, "url": endpoint.URL})

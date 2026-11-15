@@ -4,7 +4,7 @@ import (
 	"context"
 
 	"github.com/fakeyanss/jt808-server-go/internal/api"
-	"github.com/fakeyanss/jt808-server-go/internal/contracts"
+	"github.com/fakeyanss/jt808-server-go/internal/contracts/attachment"
 	"github.com/fakeyanss/jt808-server-go/internal/control"
 	"github.com/fakeyanss/jt808-server-go/internal/repository"
 	"github.com/fakeyanss/jt808-server-go/pkg/routines"
@@ -43,7 +43,7 @@ func (d *deps) startBusinessAPI() {
 			if !standalone && storeSet != nil {
 				attachments = storeSet.AttachmentFiles
 			}
-			var allocator contracts.AttachmentAllocator
+			var allocator attachment.AttachmentAllocator
 			if remoteAttachment != nil {
 				allocator = remoteAttachment
 			}

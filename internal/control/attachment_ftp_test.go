@@ -7,7 +7,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/fakeyanss/jt808-server-go/internal/contracts"
+	"github.com/fakeyanss/jt808-server-go/internal/contracts/attachment"
 	"github.com/fakeyanss/jt808-server-go/internal/repository"
 	"github.com/fakeyanss/jt808-server-go/internal/repository/memory"
 )
@@ -33,7 +33,7 @@ func TestFTPTaskOneTimeCredential(t *testing.T) {
 	require.NotContains(t, task.SecretHash, password)
 
 	_, err = manager.Authenticate(ctx, "node-1", task.Username, "wrong")
-	require.ErrorIs(t, err, contracts.ErrFTPLoginRejected)
+	require.ErrorIs(t, err, attachment.ErrFTPLoginRejected)
 
 	authed, err := manager.Authenticate(ctx, "node-1", task.Username, password)
 	require.NoError(t, err)
@@ -42,7 +42,7 @@ func TestFTPTaskOneTimeCredential(t *testing.T) {
 
 	manager.CompleteFromNotice(ctx, "13800138000", 12, 0)
 	_, err = manager.Authenticate(ctx, "node-1", task.Username, password)
-	require.ErrorIs(t, err, contracts.ErrFTPLoginRejected)
+	require.ErrorIs(t, err, attachment.ErrFTPLoginRejected)
 
 	done, err := manager.Task(ctx, "13800138000", 12)
 	require.NoError(t, err)
@@ -76,7 +76,7 @@ func TestFTPControlSequenceAndCancel(t *testing.T) {
 	require.False(t, cancelled.RevokedAt.IsZero())
 
 	_, err = manager.Authenticate(ctx, "node-1", task.Username, password)
-	require.ErrorIs(t, err, contracts.ErrFTPLoginRejected)
+	require.ErrorIs(t, err, attachment.ErrFTPLoginRejected)
 }
 
 func TestFTPTaskExpiryRevokesCredentials(t *testing.T) {
@@ -93,7 +93,7 @@ func TestFTPTaskExpiryRevokesCredentials(t *testing.T) {
 	require.Equal(t, 1, expired)
 
 	_, err = manager.Authenticate(ctx, "node-1", task.Username, password)
-	require.ErrorIs(t, err, contracts.ErrFTPLoginRejected)
+	require.ErrorIs(t, err, attachment.ErrFTPLoginRejected)
 }
 
 func TestAttachmentNodeRegistrationFencing(t *testing.T) {

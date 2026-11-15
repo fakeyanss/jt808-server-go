@@ -14,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/fakeyanss/jt808-server-go/internal/contracts"
+	"github.com/fakeyanss/jt808-server-go/internal/contracts/attachment"
 	"github.com/fakeyanss/jt808-server-go/internal/storage"
 )
 
@@ -31,23 +31,23 @@ func newFakeBlob() *fakeBlob {
 	}
 }
 
-func (b *fakeBlob) Put(_ context.Context, key string, r io.Reader, _ contracts.BlobOptions) (contracts.BlobInfo, error) {
+func (b *fakeBlob) Put(_ context.Context, key string, r io.Reader, _ storage.BlobOptions) (storage.BlobInfo, error) {
 	data, err := io.ReadAll(r)
 	if err != nil {
-		return contracts.BlobInfo{}, err
+		return storage.BlobInfo{}, err
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.staging[key] = data
-	return contracts.BlobInfo{Key: key, StagingKey: key, Size: int64(len(data))}, nil
+	return storage.BlobInfo{Key: key, StagingKey: key, Size: int64(len(data))}, nil
 }
 
-func (b *fakeBlob) Promote(_ context.Context, info contracts.BlobInfo) (contracts.BlobInfo, error) {
+func (b *fakeBlob) Promote(_ context.Context, info storage.BlobInfo) (storage.BlobInfo, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	data, ok := b.staging[info.Key]
 	if !ok {
-		return contracts.BlobInfo{}, fmt.Errorf("staging object %s not found", info.Key)
+		return storage.BlobInfo{}, fmt.Errorf("staging object %s not found", info.Key)
 	}
 	b.objects[info.Key] = data
 	delete(b.staging, info.Key)
@@ -83,23 +83,23 @@ func (b *fakeBlob) Delete(_ context.Context, key string) error {
 	return nil
 }
 
-func (b *fakeBlob) Stat(_ context.Context, key string) (contracts.BlobInfo, error) {
+func (b *fakeBlob) Stat(_ context.Context, key string) (storage.BlobInfo, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	data, ok := b.objects[key]
 	if !ok {
-		return contracts.BlobInfo{}, fmt.Errorf("object %s not found", key)
+		return storage.BlobInfo{}, fmt.Errorf("object %s not found", key)
 	}
-	return contracts.BlobInfo{Key: key, Size: int64(len(data))}, nil
+	return storage.BlobInfo{Key: key, Size: int64(len(data))}, nil
 }
 
-func (b *fakeBlob) ListObjects(_ context.Context, prefix string) ([]contracts.BlobObject, error) {
+func (b *fakeBlob) ListObjects(_ context.Context, prefix string) ([]storage.BlobObject, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	out := make([]contracts.BlobObject, 0)
+	out := make([]storage.BlobObject, 0)
 	for key, data := range b.objects {
 		if strings.HasPrefix(key, prefix) {
-			out = append(out, contracts.BlobObject{Key: key, Size: int64(len(data)), LastModified: time.Now()})
+			out = append(out, storage.BlobObject{Key: key, Size: int64(len(data)), LastModified: time.Now()})
 		}
 	}
 	return out, nil
@@ -107,7 +107,7 @@ func (b *fakeBlob) ListObjects(_ context.Context, prefix string) ([]contracts.Bl
 
 type fakeControl struct {
 	mu       sync.Mutex
-	progress []contracts.AttachmentProgress
+	progress []attachment.AttachmentProgress
 	reject   bool
 	down     bool
 }
@@ -124,18 +124,18 @@ func (c *fakeControl) Login(_ context.Context, _, _, _ string) (LoginResult, err
 	return LoginResult{Phone: "13800138000", Serial: 7, UploadPath: "/"}, nil
 }
 
-func (c *fakeControl) Report(_ context.Context, progress contracts.AttachmentProgress) error {
+func (c *fakeControl) Report(_ context.Context, progress attachment.AttachmentProgress) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.progress = append(c.progress, progress)
 	return nil
 }
 
-func (c *fakeControl) lastProgress() (contracts.AttachmentProgress, bool) {
+func (c *fakeControl) lastProgress() (attachment.AttachmentProgress, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if len(c.progress) == 0 {
-		return contracts.AttachmentProgress{}, false
+		return attachment.AttachmentProgress{}, false
 	}
 	return c.progress[len(c.progress)-1], true
 }
@@ -303,7 +303,7 @@ func TestFTPUploadWritesSegmentsAndManifest(t *testing.T) {
 
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		if progress, ok := control.lastProgress(); ok && progress.Status == contracts.AttachmentStatusCompleted {
+		if progress, ok := control.lastProgress(); ok && progress.Status == attachment.AttachmentStatusCompleted {
 			return
 		}
 		time.Sleep(10 * time.Millisecond)

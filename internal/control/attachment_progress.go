@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/fakeyanss/jt808-server-go/internal/clock"
-	"github.com/fakeyanss/jt808-server-go/internal/contracts"
+	"github.com/fakeyanss/jt808-server-go/internal/contracts/attachment"
 	"github.com/fakeyanss/jt808-server-go/internal/repository"
 )
 
@@ -32,7 +32,7 @@ func NewAttachmentProgressStore(files repository.AttachmentFileRepository, clk c
 }
 
 // Save 幂等保存一份进度快照。
-func (s *AttachmentProgressStore) Save(ctx context.Context, progress contracts.AttachmentProgress) error {
+func (s *AttachmentProgressStore) Save(ctx context.Context, progress attachment.AttachmentProgress) error {
 	if s == nil || s.files == nil {
 		return fmt.Errorf("attachment progress store is not configured")
 	}
@@ -45,7 +45,7 @@ func (s *AttachmentProgressStore) Save(ctx context.Context, progress contracts.A
 }
 
 // Load 返回恢复点；没有记录时返回 ErrAttachmentProgressNotFound。
-func (s *AttachmentProgressStore) Load(ctx context.Context, key contracts.AttachmentProgressKey) (*contracts.AttachmentProgress, error) {
+func (s *AttachmentProgressStore) Load(ctx context.Context, key attachment.AttachmentProgressKey) (*attachment.AttachmentProgress, error) {
 	if s == nil || s.files == nil {
 		return nil, fmt.Errorf("attachment progress store is not configured")
 	}
@@ -55,7 +55,7 @@ func (s *AttachmentProgressStore) Load(ctx context.Context, key contracts.Attach
 	})
 	if err != nil {
 		if err == repository.ErrAttachmentFileNotFound {
-			return nil, contracts.ErrAttachmentProgressNotFound
+			return nil, attachment.ErrAttachmentProgressNotFound
 		}
 		return nil, err
 	}
@@ -85,7 +85,7 @@ func normalizeAttachmentStatus(status string) string {
 	}
 }
 
-func attachmentRecordFromProgress(progress contracts.AttachmentProgress, now time.Time) (*repository.AttachmentFile, error) {
+func attachmentRecordFromProgress(progress attachment.AttachmentProgress, now time.Time) (*repository.AttachmentFile, error) {
 	phone := strings.TrimSpace(progress.Phone)
 	fileName := strings.TrimSpace(progress.FileName)
 	if phone == "" || fileName == "" {
@@ -138,15 +138,15 @@ func attachmentRecordFromProgress(progress contracts.AttachmentProgress, now tim
 	return record, nil
 }
 
-func attachmentProgressFromRecord(record *repository.AttachmentFile) contracts.AttachmentProgress {
-	segments := make([]contracts.AttachmentProgressSegment, 0, len(record.Segments))
+func attachmentProgressFromRecord(record *repository.AttachmentFile) attachment.AttachmentProgress {
+	segments := make([]attachment.AttachmentProgressSegment, 0, len(record.Segments))
 	for _, segment := range record.Segments {
-		segments = append(segments, contracts.AttachmentProgressSegment{
+		segments = append(segments, attachment.AttachmentProgressSegment{
 			Index: segment.Index, Key: segment.Key, Offset: segment.Offset,
 			Size: segment.Size, MD5: segment.MD5, State: segment.State,
 		})
 	}
-	return contracts.AttachmentProgress{
+	return attachment.AttachmentProgress{
 		Source:        record.Source,
 		Phone:         record.Phone,
 		TerminalID:    record.TerminalID,
@@ -169,4 +169,4 @@ func attachmentProgressFromRecord(record *repository.AttachmentFile) contracts.A
 	}
 }
 
-var _ contracts.AttachmentProgressSink = (*AttachmentProgressStore)(nil)
+var _ attachment.AttachmentProgressSink = (*AttachmentProgressStore)(nil)

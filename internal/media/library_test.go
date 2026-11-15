@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/fakeyanss/jt808-server-go/internal/contracts"
+	"github.com/fakeyanss/jt808-server-go/internal/media/playback"
 )
 
 func TestRecordingCoverageMergesAndReportsMissing(t *testing.T) {
@@ -111,7 +111,7 @@ func TestOpenRecordingSegmentReadsRangeFromLocalFile(t *testing.T) {
 	}
 
 	// 超出末尾的 offset 直接报错；请求长度越界则截到文件尾。
-	if _, _, err := server.OpenRecordingSegment(context.Background(), info.Phone, segmentID(info), 101, 10); !errors.Is(err, contracts.ErrRangeNotSatisfiable) {
+	if _, _, err := server.OpenRecordingSegment(context.Background(), info.Phone, segmentID(info), 101, 10); !errors.Is(err, playback.ErrRangeNotSatisfiable) {
 		t.Fatalf("offset past end error = %v", err)
 	}
 	reader, _, err = server.OpenRecordingSegment(context.Background(), info.Phone, segmentID(info), 90, 100)
@@ -123,7 +123,7 @@ func TestOpenRecordingSegmentReadsRangeFromLocalFile(t *testing.T) {
 		t.Fatalf("clamped range = %d bytes, want 10", len(data))
 	}
 
-	if _, _, err := server.OpenRecordingSegment(context.Background(), info.Phone, "missing", 0, 1); !errors.Is(err, contracts.ErrRecordingNotFound) {
+	if _, _, err := server.OpenRecordingSegment(context.Background(), info.Phone, "missing", 0, 1); !errors.Is(err, playback.ErrRecordingNotFound) {
 		t.Fatalf("missing segment error = %v", err)
 	}
 }

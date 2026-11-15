@@ -19,7 +19,8 @@ import (
 	"github.com/rs/zerolog/log"
 
 	clockpkg "github.com/fakeyanss/jt808-server-go/internal/clock"
-	"github.com/fakeyanss/jt808-server-go/internal/contracts"
+	"github.com/fakeyanss/jt808-server-go/internal/contracts/media"
+	"github.com/fakeyanss/jt808-server-go/internal/media/playback"
 	"github.com/fakeyanss/jt808-server-go/internal/observability"
 	"github.com/fakeyanss/jt808-server-go/internal/repository"
 )
@@ -54,12 +55,12 @@ type RemoteMediaOptions struct {
 
 // RemoteMedia 是跨进程的媒体调度器：
 //
-//   - 实现 contracts.MediaAllocator：Allocate 在媒体节点上创建播放会话；
-//   - 实现 contracts.PlaybackLibrary：播放、释放、录像覆盖与切片读取；
+//   - 实现 media.MediaAllocator：Allocate 在媒体节点上创建播放会话；
+//   - 实现 playback.PlaybackLibrary：播放、释放、录像覆盖与切片读取；
 //   - 有注册节点时以注册表为准：从“未过期、在线、容量未满”的节点中
 //     挑负载最低者；注册表为空才退回静态 cluster.media.nodes；
 //   - 同一 (phone, channel) 在会话生命周期内复用同一分配，不重复开流；
-//   - 没有任何可用节点时返回 contracts.MediaUnavailableError，绝不静默降级。
+//   - 没有任何可用节点时返回 media.MediaUnavailableError，绝不静默降级。
 type RemoteMedia struct {
 	nodes   []MediaNode
 	repo    repository.MediaNodeRepository
@@ -110,7 +111,7 @@ type sessionBinding struct {
 	instanceID string
 	// reserved 表示该会话在注册表里占用了一个端点，释放时要归还。
 	reserved bool
-	session  contracts.PlaybackSession
+	session  playback.PlaybackSession
 	stickyID string
 }
 
@@ -253,22 +254,22 @@ func (r *RemoteMedia) ActiveStreams(ctx context.Context) int {
 	return total
 }
 
-// Allocate 实现 contracts.MediaAllocator：在选中的媒体节点上创建播放会话。
-func (r *RemoteMedia) Allocate(ctx context.Context, request contracts.MediaLeaseRequest) (contracts.MediaLease, error) {
+// Allocate 实现 media.MediaAllocator：在选中的媒体节点上创建播放会话。
+func (r *RemoteMedia) Allocate(ctx context.Context, request media.MediaLeaseRequest) (media.MediaLease, error) {
 	kind := strings.TrimSpace(request.Source)
 	if kind == "" {
 		kind = "live"
 	}
-	session, err := r.CreatePlaybackSession(ctx, contracts.PlaybackSessionRequest{
+	session, err := r.CreatePlaybackSession(ctx, playback.PlaybackSessionRequest{
 		Phone:   request.Phone,
 		Channel: request.Channel,
 		Kind:    kind,
 		TTL:     request.TTL,
 	})
 	if err != nil {
-		return contracts.MediaLease{}, err
+		return media.MediaLease{}, err
 	}
-	return contracts.MediaLease{
+	return media.MediaLease{
 		LeaseID:   session.ID,
 		Phone:     session.Phone,
 		Channel:   session.Channel,
@@ -277,7 +278,7 @@ func (r *RemoteMedia) Allocate(ctx context.Context, request contracts.MediaLease
 	}, nil
 }
 
-// Release 实现 contracts.MediaAllocator。
+// Release 实现 media.MediaAllocator。
 func (r *RemoteMedia) Release(ctx context.Context, leaseID string) error {
 	return r.ReleasePlaybackSession(ctx, leaseID)
 }
@@ -287,16 +288,16 @@ func (r *RemoteMedia) Release(ctx context.Context, leaseID string) error {
 // 0x9101（实时）与 0x9201（终端回放）都走这里：先看同一 (phone, channel)
 // 是否已有同类型分配，有则直接复用；否则按负载从低到高尝试候选节点，
 // 注册表节点先原子占位再建会话，失败立刻归还。
-func (r *RemoteMedia) CreatePlaybackSession(ctx context.Context, request contracts.PlaybackSessionRequest) (contracts.PlaybackSession, error) {
+func (r *RemoteMedia) CreatePlaybackSession(ctx context.Context, request playback.PlaybackSessionRequest) (playback.PlaybackSession, error) {
 	if r == nil {
-		return contracts.PlaybackSession{}, &contracts.MediaUnavailableError{
-			Code:   contracts.MediaCodeNoNodes,
+		return playback.PlaybackSession{}, &media.MediaUnavailableError{
+			Code:   media.MediaCodeNoNodes,
 			Reason: "media allocator is not configured",
 		}
 	}
 	if r.repo == nil && len(r.nodes) == 0 {
-		return contracts.PlaybackSession{}, &contracts.MediaUnavailableError{
-			Code:   contracts.MediaCodeNoNodes,
+		return playback.PlaybackSession{}, &media.MediaUnavailableError{
+			Code:   media.MediaCodeNoNodes,
 			Reason: "cluster.media.nodes is empty",
 		}
 	}
@@ -314,7 +315,7 @@ func (r *RemoteMedia) CreatePlaybackSession(ctx context.Context, request contrac
 			existing.Reused = true
 			return existing, nil
 		}
-		return contracts.PlaybackSession{}, &contracts.PlaybackSessionConflictError{Existing: existing}
+		return playback.PlaybackSession{}, &playback.PlaybackSessionConflictError{Existing: existing}
 	}
 
 	// 管控重启后本地映射为空：向节点查一次，避免同一通道重复开流。
@@ -328,7 +329,7 @@ func (r *RemoteMedia) CreatePlaybackSession(ctx context.Context, request contrac
 			existing.Reused = true
 			return existing, nil
 		}
-		return contracts.PlaybackSession{}, &contracts.PlaybackSessionConflictError{Existing: existing}
+		return playback.PlaybackSession{}, &playback.PlaybackSessionConflictError{Existing: existing}
 	}
 
 	candidates, failures := r.selectCandidates(ctx)
@@ -340,8 +341,8 @@ func (r *RemoteMedia) CreatePlaybackSession(ctx context.Context, request contrac
 		if len(failures) > 0 {
 			reason += ": " + strings.Join(failures, "; ")
 		}
-		return contracts.PlaybackSession{}, &contracts.MediaUnavailableError{
-			Code:   contracts.MediaCodeNodesUnavailable,
+		return playback.PlaybackSession{}, &media.MediaUnavailableError{
+			Code:   media.MediaCodeNodesUnavailable,
 			Reason: reason,
 		}
 	}
@@ -387,7 +388,7 @@ func (r *RemoteMedia) CreatePlaybackSession(ctx context.Context, request contrac
 				Msg("Playback session created on remote media node")
 			return session, nil
 		}
-		var conflict *contracts.PlaybackSessionConflictError
+		var conflict *playback.PlaybackSessionConflictError
 		if errors.As(err, &conflict) {
 			if reserved {
 				r.releaseReservation(ctx, target)
@@ -404,7 +405,7 @@ func (r *RemoteMedia) CreatePlaybackSession(ctx context.Context, request contrac
 				existing.Reused = true
 				return existing, nil
 			}
-			return contracts.PlaybackSession{}, conflict
+			return playback.PlaybackSession{}, conflict
 		}
 		if reserved {
 			r.releaseReservation(ctx, target)
@@ -415,8 +416,8 @@ func (r *RemoteMedia) CreatePlaybackSession(ctx context.Context, request contrac
 	if r.metrics != nil {
 		r.metrics.IncMediaAllocationFailed()
 	}
-	return contracts.PlaybackSession{}, &contracts.MediaUnavailableError{
-		Code:   contracts.MediaCodeNodesUnavailable,
+	return playback.PlaybackSession{}, &media.MediaUnavailableError{
+		Code:   media.MediaCodeNodesUnavailable,
 		Reason: "all media node attempts failed: " + strings.Join(failures, "; "),
 	}
 }
@@ -433,8 +434,8 @@ func (r *RemoteMedia) ReleasePlaybackSession(ctx context.Context, sessionID stri
 
 	targets := r.targets(ctx)
 	if len(targets) == 0 && !hasBinding {
-		return &contracts.MediaUnavailableError{
-			Code:   contracts.MediaCodeNoNodes,
+		return &media.MediaUnavailableError{
+			Code:   media.MediaCodeNoNodes,
 			Reason: "no media node is configured",
 		}
 	}
@@ -495,9 +496,9 @@ func (r *RemoteMedia) ReleasePlaybackSession(ctx context.Context, sessionID stri
 }
 
 // PlaybackSession 返回会话快照；本地没有映射时向节点查询一次。
-func (r *RemoteMedia) PlaybackSession(ctx context.Context, sessionID string) (contracts.PlaybackSession, bool) {
+func (r *RemoteMedia) PlaybackSession(ctx context.Context, sessionID string) (playback.PlaybackSession, bool) {
 	if r == nil {
-		return contracts.PlaybackSession{}, false
+		return playback.PlaybackSession{}, false
 	}
 	if binding, ok := r.lookup(sessionID); ok {
 		return binding.session, true
@@ -516,28 +517,28 @@ func (r *RemoteMedia) PlaybackSession(ctx context.Context, sessionID string) (co
 			return mapped, true
 		}
 	}
-	return contracts.PlaybackSession{}, false
+	return playback.PlaybackSession{}, false
 }
 
 // RecordingCoverage 汇总所有可用节点的录像覆盖；节点间区间取并集。
-func (r *RemoteMedia) RecordingCoverage(ctx context.Context, phone string, channel uint8, start, end time.Time) (contracts.RecordingCoverage, error) {
+func (r *RemoteMedia) RecordingCoverage(ctx context.Context, phone string, channel uint8, start, end time.Time) (playback.RecordingCoverage, error) {
 	if r == nil {
-		return contracts.RecordingCoverage{}, &contracts.MediaUnavailableError{
-			Code:   contracts.MediaCodeNoNodes,
+		return playback.RecordingCoverage{}, &media.MediaUnavailableError{
+			Code:   media.MediaCodeNoNodes,
 			Reason: "media allocator is not configured",
 		}
 	}
 	targets := r.targets(ctx)
 	if len(targets) == 0 {
-		return contracts.RecordingCoverage{}, &contracts.MediaUnavailableError{
-			Code:   contracts.MediaCodeNoNodes,
+		return playback.RecordingCoverage{}, &media.MediaUnavailableError{
+			Code:   media.MediaCodeNoNodes,
 			Reason: "no media node is available",
 		}
 	}
-	var merged contracts.RecordingCoverage
-	merged.Requested = contracts.TimeRange{Start: start, End: end}
+	var merged playback.RecordingCoverage
+	merged.Requested = playback.TimeRange{Start: start, End: end}
 	seenSegments := map[string]bool{}
-	var available []contracts.TimeRange
+	var available []playback.TimeRange
 	var failures []string
 	reachable := 0
 	for _, target := range targets {
@@ -557,7 +558,7 @@ func (r *RemoteMedia) RecordingCoverage(ctx context.Context, phone string, chann
 		available = append(available, coverage.Available...)
 	}
 	if reachable == 0 {
-		return contracts.RecordingCoverage{}, fmt.Errorf("no media node returned recording coverage: %s", strings.Join(failures, "; "))
+		return playback.RecordingCoverage{}, fmt.Errorf("no media node returned recording coverage: %s", strings.Join(failures, "; "))
 	}
 	sort.Slice(merged.Segments, func(i, j int) bool {
 		return merged.Segments[i].Start.Before(merged.Segments[j].Start)
@@ -566,14 +567,14 @@ func (r *RemoteMedia) RecordingCoverage(ctx context.Context, phone string, chann
 	cursor := start
 	for _, span := range merged.Available {
 		if cursor.Before(span.Start) {
-			merged.Missing = append(merged.Missing, contracts.TimeRange{Start: cursor, End: span.Start})
+			merged.Missing = append(merged.Missing, playback.TimeRange{Start: cursor, End: span.Start})
 		}
 		if span.End.After(cursor) {
 			cursor = span.End
 		}
 	}
 	if cursor.Before(end) {
-		merged.Missing = append(merged.Missing, contracts.TimeRange{Start: cursor, End: end})
+		merged.Missing = append(merged.Missing, playback.TimeRange{Start: cursor, End: end})
 	}
 	merged.Playable = len(merged.Missing) == 0
 	return merged, nil
@@ -582,15 +583,15 @@ func (r *RemoteMedia) RecordingCoverage(ctx context.Context, phone string, chann
 // OpenRecordingSegment 在持有该切片的媒体节点上打开录像内容。
 func (r *RemoteMedia) OpenRecordingSegment(ctx context.Context, phone, segmentID string, offset, length int64) (io.ReadCloser, int64, error) {
 	if r == nil {
-		return nil, 0, &contracts.MediaUnavailableError{
-			Code:   contracts.MediaCodeNoNodes,
+		return nil, 0, &media.MediaUnavailableError{
+			Code:   media.MediaCodeNoNodes,
 			Reason: "media allocator is not configured",
 		}
 	}
 	targets := r.targets(ctx)
 	if len(targets) == 0 {
-		return nil, 0, &contracts.MediaUnavailableError{
-			Code:   contracts.MediaCodeNoNodes,
+		return nil, 0, &media.MediaUnavailableError{
+			Code:   media.MediaCodeNoNodes,
 			Reason: "no media node is available",
 		}
 	}
@@ -605,7 +606,7 @@ func (r *RemoteMedia) OpenRecordingSegment(ctx context.Context, phone, segmentID
 		case http.StatusOK:
 			return reader, size, nil
 		case http.StatusRequestedRangeNotSatisfiable:
-			return nil, 0, contracts.ErrRangeNotSatisfiable
+			return nil, 0, playback.ErrRangeNotSatisfiable
 		case http.StatusNotFound:
 			continue
 		default:
@@ -614,7 +615,7 @@ func (r *RemoteMedia) OpenRecordingSegment(ctx context.Context, phone, segmentID
 		}
 	}
 	if len(failures) == 0 {
-		return nil, 0, contracts.ErrRecordingNotFound
+		return nil, 0, playback.ErrRecordingNotFound
 	}
 	return nil, 0, fmt.Errorf("fail to open recording segment %s: %s", segmentID, strings.Join(failures, "; "))
 }
@@ -778,7 +779,7 @@ func mediaChannelUtilization(target mediaTarget) float64 {
 	return float64(target.EndpointsUsed) / float64(target.EndpointCapacity)
 }
 
-func (r *RemoteMedia) createOnTarget(ctx context.Context, target mediaTarget, request contracts.PlaybackSessionRequest, ttl time.Duration) (contracts.PlaybackSession, error) {
+func (r *RemoteMedia) createOnTarget(ctx context.Context, target mediaTarget, request playback.PlaybackSessionRequest, ttl time.Duration) (playback.PlaybackSession, error) {
 	body := map[string]any{
 		"phone":      request.Phone,
 		"channel":    request.Channel,
@@ -788,18 +789,18 @@ func (r *RemoteMedia) createOnTarget(ctx context.Context, target mediaTarget, re
 	var info remoteSessionInfo
 	status, raw, err := r.doJSON(ctx, http.MethodPost, target.URL+"/internal/media/sessions", body)
 	if err != nil {
-		return contracts.PlaybackSession{}, err
+		return playback.PlaybackSession{}, err
 	}
 	switch status {
 	case http.StatusCreated, http.StatusOK:
 		if err := json.Unmarshal(raw, &info); err != nil {
-			return contracts.PlaybackSession{}, fmt.Errorf("decode media session: %w", err)
+			return playback.PlaybackSession{}, fmt.Errorf("decode media session: %w", err)
 		}
 		return info.toContract(), nil
 	case http.StatusConflict:
 		var conflict remoteErrorBody
 		_ = json.Unmarshal(raw, &conflict)
-		existing := contracts.PlaybackSession{
+		existing := playback.PlaybackSession{
 			Phone:   request.Phone,
 			Channel: request.Channel,
 			Kind:    request.Kind,
@@ -810,14 +811,14 @@ func (r *RemoteMedia) createOnTarget(ctx context.Context, target mediaTarget, re
 			existing.ExpiresAt = conflict.Existing.ExpiresAt
 			existing.FLVPath = conflict.Existing.FLVPath
 		}
-		return contracts.PlaybackSession{}, &contracts.PlaybackSessionConflictError{Existing: existing}
+		return playback.PlaybackSession{}, &playback.PlaybackSessionConflictError{Existing: existing}
 	default:
 		var failure remoteErrorBody
 		_ = json.Unmarshal(raw, &failure)
 		if failure.Message == "" {
 			failure.Message = string(raw)
 		}
-		return contracts.PlaybackSession{}, fmt.Errorf("media node returned %d: %s", status, failure.Message)
+		return playback.PlaybackSession{}, fmt.Errorf("media node returned %d: %s", status, failure.Message)
 	}
 }
 
@@ -836,7 +837,7 @@ func (r *RemoteMedia) releaseReservation(ctx context.Context, target mediaTarget
 	}
 }
 
-func (r *RemoteMedia) fetchCoverage(ctx context.Context, target mediaTarget, phone string, channel uint8, start, end time.Time) (contracts.RecordingCoverage, error) {
+func (r *RemoteMedia) fetchCoverage(ctx context.Context, target mediaTarget, phone string, channel uint8, start, end time.Time) (playback.RecordingCoverage, error) {
 	query := url.Values{}
 	query.Set("phone", phone)
 	query.Set("channel", strconv.Itoa(int(channel)))
@@ -844,14 +845,14 @@ func (r *RemoteMedia) fetchCoverage(ctx context.Context, target mediaTarget, pho
 	query.Set("end", end.Format(time.RFC3339Nano))
 	status, raw, err := r.doJSON(ctx, http.MethodGet, target.URL+"/internal/media/recordings/coverage?"+query.Encode(), nil)
 	if err != nil {
-		return contracts.RecordingCoverage{}, err
+		return playback.RecordingCoverage{}, err
 	}
 	if status != http.StatusOK {
-		return contracts.RecordingCoverage{}, fmt.Errorf("media node returned %d: %s", status, strings.TrimSpace(string(raw)))
+		return playback.RecordingCoverage{}, fmt.Errorf("media node returned %d: %s", status, strings.TrimSpace(string(raw)))
 	}
-	var coverage contracts.RecordingCoverage
+	var coverage playback.RecordingCoverage
 	if err := json.Unmarshal(raw, &coverage); err != nil {
-		return contracts.RecordingCoverage{}, fmt.Errorf("decode recording coverage: %w", err)
+		return playback.RecordingCoverage{}, fmt.Errorf("decode recording coverage: %w", err)
 	}
 	return coverage, nil
 }
@@ -897,8 +898,8 @@ type mediaStatus struct {
 	Available     int                 `json:"available"`
 }
 
-func (s mediaStatus) sessionsView() []contracts.PlaybackSession {
-	out := make([]contracts.PlaybackSession, 0, len(s.Sessions))
+func (s mediaStatus) sessionsView() []playback.PlaybackSession {
+	out := make([]playback.PlaybackSession, 0, len(s.Sessions))
 	for _, session := range s.Sessions {
 		out = append(out, session.toContract())
 	}
@@ -926,12 +927,12 @@ func (r *RemoteMedia) fetchStatuses(ctx context.Context) []nodeStatus {
 // 只在本地没有映射时调用：管控重启或另一副本已建流时，节点状态是唯一的
 // 复用依据，避免同一逻辑通道开出第二条流。节点查询并发执行，
 // 每个请求各自带 3 秒超时，总延迟不随节点数线性累加。
-func (r *RemoteMedia) findExistingSession(ctx context.Context, targets []mediaTarget, phone string, channel uint8) (contracts.PlaybackSession, mediaTarget, bool) {
+func (r *RemoteMedia) findExistingSession(ctx context.Context, targets []mediaTarget, phone string, channel uint8) (playback.PlaybackSession, mediaTarget, bool) {
 	if len(targets) == 0 {
-		return contracts.PlaybackSession{}, mediaTarget{}, false
+		return playback.PlaybackSession{}, mediaTarget{}, false
 	}
 	type lookupResult struct {
-		session contracts.PlaybackSession
+		session playback.PlaybackSession
 		target  mediaTarget
 		ok      bool
 	}
@@ -1064,7 +1065,7 @@ func (r *RemoteMedia) doJSON(ctx context.Context, method, endpoint string, body 
 	return response.StatusCode, raw, nil
 }
 
-func (r *RemoteMedia) remember(key string, target mediaTarget, session contracts.PlaybackSession, reserved bool) {
+func (r *RemoteMedia) remember(key string, target mediaTarget, session playback.PlaybackSession, reserved bool) {
 	if r == nil || session.ID == "" {
 		return
 	}
@@ -1081,21 +1082,21 @@ func (r *RemoteMedia) remember(key string, target mediaTarget, session contracts
 }
 
 // liveBinding 返回同一 (phone, channel) 仍有效的本地会话。
-func (r *RemoteMedia) liveBinding(key string) (contracts.PlaybackSession, bool) {
+func (r *RemoteMedia) liveBinding(key string) (playback.PlaybackSession, bool) {
 	r.mu.Lock()
 	sticky, ok := r.sticky[key]
 	r.mu.Unlock()
 	if !ok {
-		return contracts.PlaybackSession{}, false
+		return playback.PlaybackSession{}, false
 	}
 	if !sticky.expiresAt.IsZero() && r.now().After(sticky.expiresAt) {
 		r.dropSticky(key)
-		return contracts.PlaybackSession{}, false
+		return playback.PlaybackSession{}, false
 	}
 	binding, ok := r.lookup(sticky.sessionID)
 	if !ok {
 		r.dropSticky(key)
-		return contracts.PlaybackSession{}, false
+		return playback.PlaybackSession{}, false
 	}
 	return binding.session, true
 }
@@ -1186,14 +1187,14 @@ func allocationShard(key string, shards int) int {
 	return int(hash % uint32(shards))
 }
 
-func mergeRanges(ranges []contracts.TimeRange) []contracts.TimeRange {
+func mergeRanges(ranges []playback.TimeRange) []playback.TimeRange {
 	if len(ranges) == 0 {
 		return nil
 	}
 	sort.Slice(ranges, func(i, j int) bool {
 		return ranges[i].Start.Before(ranges[j].Start)
 	})
-	out := []contracts.TimeRange{ranges[0]}
+	out := []playback.TimeRange{ranges[0]}
 	for _, current := range ranges[1:] {
 		last := &out[len(out)-1]
 		if !current.Start.After(last.End) {
@@ -1231,8 +1232,8 @@ type remoteSessionInfo struct {
 	Endpoints   []remoteEndpoint `json:"endpoints"`
 }
 
-func (s remoteSessionInfo) toContract() contracts.PlaybackSession {
-	out := contracts.PlaybackSession{
+func (s remoteSessionInfo) toContract() playback.PlaybackSession {
+	out := playback.PlaybackSession{
 		ID:          s.ID,
 		Phone:       s.Phone,
 		Channel:     s.Channel,
@@ -1241,14 +1242,14 @@ func (s remoteSessionInfo) toContract() contracts.PlaybackSession {
 		FLVPath:     s.FLVPath,
 		Output:      s.Output,
 		PlaybackURL: s.PlaybackURL,
-		Endpoint: contracts.MediaEndpoint{
+		Endpoint: media.MediaEndpoint{
 			IP:      s.ServerIP,
 			TCPPort: s.TCPPort,
 			UDPPort: s.UDPPort,
 		},
 	}
 	for _, endpoint := range s.Endpoints {
-		out.Endpoints = append(out.Endpoints, contracts.PlaybackEndpoint{
+		out.Endpoints = append(out.Endpoints, playback.PlaybackEndpoint{
 			Protocol: endpoint.Protocol,
 			URL:      endpoint.URL,
 		})

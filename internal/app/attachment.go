@@ -13,10 +13,11 @@ import (
 	"github.com/fakeyanss/jt808-server-go/internal/alarmserver"
 	"github.com/fakeyanss/jt808-server-go/internal/attachmentnode"
 	"github.com/fakeyanss/jt808-server-go/internal/attachmentserver"
-	"github.com/fakeyanss/jt808-server-go/internal/contracts"
+	"github.com/fakeyanss/jt808-server-go/internal/contracts/attachment"
 	"github.com/fakeyanss/jt808-server-go/internal/control"
 	"github.com/fakeyanss/jt808-server-go/internal/internalapi"
 	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
+	"github.com/fakeyanss/jt808-server-go/internal/storage"
 	"github.com/fakeyanss/jt808-server-go/pkg/routines"
 )
 
@@ -43,7 +44,7 @@ func advertiseHost(ftpAdvertiseIP, uploadIP string) string {
 var errAttachmentBlobRequired = errors.New("attachment role requires cluster.storage.backend=objectStore (accepted values: local|sharedVolume|objectStore; attachment role only supports objectStore) with a shared object store")
 
 // checkAttachmentBlob 校验附件角色是否具备共享对象存储依赖。
-func checkAttachmentBlob(blob contracts.BlobStore) error {
+func checkAttachmentBlob(blob storage.BlobStore) error {
 	if blob == nil {
 		return errAttachmentBlobRequired
 	}
@@ -54,7 +55,7 @@ func checkAttachmentBlob(blob contracts.BlobStore) error {
 //
 // 同进程有 control 时直接写库；独立部署时用出站 HTTP，禁止 control 反向连节点。
 // 都没配置时返回 nil：接收与对象写入照常进行，恢复改用对象存储扫描。
-func (d *deps) attachmentProgressSink() (contracts.AttachmentProgressSink, error) {
+func (d *deps) attachmentProgressSink() (attachment.AttachmentProgressSink, error) {
 	if d.hasControl && d.storeSet != nil {
 		if store := control.NewAttachmentProgressStore(d.storeSet.AttachmentFiles, d.clock); store != nil {
 			return store, nil

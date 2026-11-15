@@ -9,17 +9,18 @@ import (
 
 	actionpkg "github.com/fakeyanss/jt808-server-go/internal/action"
 	"github.com/fakeyanss/jt808-server-go/internal/contracts"
+	"github.com/fakeyanss/jt808-server-go/internal/contracts/attachment"
 	"github.com/fakeyanss/jt808-server-go/internal/coordination"
 	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
 )
 
 type fakeAttachmentAllocator struct {
-	requests []contracts.AttachmentLeaseRequest
-	lease    contracts.AttachmentLease
+	requests []attachment.AttachmentLeaseRequest
+	lease    attachment.AttachmentLease
 	err      error
 }
 
-func (f *fakeAttachmentAllocator) Allocate(_ context.Context, request contracts.AttachmentLeaseRequest) (contracts.AttachmentLease, error) {
+func (f *fakeAttachmentAllocator) Allocate(_ context.Context, request attachment.AttachmentLeaseRequest) (attachment.AttachmentLease, error) {
 	f.requests = append(f.requests, request)
 	return f.lease, f.err
 }
@@ -37,9 +38,9 @@ func (f *fakeDownlinkSender) Send(_ context.Context, request contracts.DownlinkR
 
 // 控制面识别到带报警标识号的报警后，应自动下发 0x9208 到选中的附件节点。
 func TestAutoUploadTriggerSends9208WithAllocatedEndpoint(t *testing.T) {
-	allocator := &fakeAttachmentAllocator{lease: contracts.AttachmentLease{
+	allocator := &fakeAttachmentAllocator{lease: attachment.AttachmentLease{
 		LeaseID:  "att-1",
-		Endpoint: contracts.AttachmentEndpoint{IP: "10.0.0.9", TCPPort: 7400, UDPPort: 7401},
+		Endpoint: attachment.AttachmentEndpoint{IP: "10.0.0.9", TCPPort: 7400, UDPPort: 7401},
 	}}
 	sender := &fakeDownlinkSender{}
 	trigger := NewAutoUploadTrigger(actionpkg.Noop{}, allocator, sender, nil, 0, nil)
@@ -63,8 +64,8 @@ func TestAutoUploadTriggerSends9208WithAllocatedEndpoint(t *testing.T) {
 
 // 没有可用节点时不能静默成功：不发送下行，等待人工或下一轮报警。
 func TestAutoUploadTriggerSkipsWhenNoNode(t *testing.T) {
-	allocator := &fakeAttachmentAllocator{err: &contracts.AttachmentUnavailableError{
-		Code: contracts.AttachmentCodeNodesUnavailable, Reason: "all nodes are full",
+	allocator := &fakeAttachmentAllocator{err: &attachment.AttachmentUnavailableError{
+		Code: attachment.AttachmentCodeNodesUnavailable, Reason: "all nodes are full",
 	}}
 	sender := &fakeDownlinkSender{}
 	trigger := NewAutoUploadTrigger(actionpkg.Noop{}, allocator, sender, nil, 0, nil)
@@ -78,9 +79,9 @@ func TestAutoUploadTriggerSkipsWhenNoNode(t *testing.T) {
 // 两个 control 副本共享同一去重存储时，同一报警只允许一个副本触发 0x9208。
 func TestAutoUploadTriggerDedupsAcrossReplicas(t *testing.T) {
 	store := coordination.NewMemoryStore()
-	allocator := &fakeAttachmentAllocator{lease: contracts.AttachmentLease{
+	allocator := &fakeAttachmentAllocator{lease: attachment.AttachmentLease{
 		LeaseID:  "att-1",
-		Endpoint: contracts.AttachmentEndpoint{IP: "10.0.0.9", TCPPort: 7400, UDPPort: 7401},
+		Endpoint: attachment.AttachmentEndpoint{IP: "10.0.0.9", TCPPort: 7400, UDPPort: 7401},
 	}}
 	sender := &fakeDownlinkSender{}
 	triggerA := NewAutoUploadTrigger(actionpkg.Noop{}, allocator, sender, store, 30*time.Minute, nil)

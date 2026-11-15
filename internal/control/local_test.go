@@ -11,6 +11,8 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/fakeyanss/jt808-server-go/internal/contracts"
+	"github.com/fakeyanss/jt808-server-go/internal/contracts/attachment"
+	"github.com/fakeyanss/jt808-server-go/internal/contracts/media"
 	"github.com/fakeyanss/jt808-server-go/internal/mediaupload"
 	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
 	"github.com/fakeyanss/jt808-server-go/internal/repository"
@@ -90,8 +92,8 @@ func TestLocalAttachmentReadsStatsAndRoot(t *testing.T) {
 }
 
 func TestStaticMediaAllocatorIsSticky(t *testing.T) {
-	allocator := NewStaticMediaAllocator(contracts.MediaEndpoint{IP: "10.0.0.1", TCPPort: 7300, UDPPort: 7301}, time.Minute)
-	request := contracts.MediaLeaseRequest{Phone: testPhone, Channel: 1, Source: "live"}
+	allocator := NewStaticMediaAllocator(media.MediaEndpoint{IP: "10.0.0.1", TCPPort: 7300, UDPPort: 7301}, time.Minute)
+	request := media.MediaLeaseRequest{Phone: testPhone, Channel: 1, Source: "live"}
 	first, err := allocator.Allocate(context.Background(), request)
 	require.NoError(t, err)
 	second, err := allocator.Allocate(context.Background(), request)
@@ -102,8 +104,8 @@ func TestStaticMediaAllocatorIsSticky(t *testing.T) {
 }
 
 func TestStaticAttachmentAllocatorIsSticky(t *testing.T) {
-	allocator := NewStaticAttachmentAllocator(contracts.AttachmentEndpoint{IP: "10.0.0.2", TCPPort: 7600, UDPPort: 7601}, time.Minute)
-	request := contracts.AttachmentLeaseRequest{Phone: testPhone, AlarmID: "alarm-1"}
+	allocator := NewStaticAttachmentAllocator(attachment.AttachmentEndpoint{IP: "10.0.0.2", TCPPort: 7600, UDPPort: 7601}, time.Minute)
+	request := attachment.AttachmentLeaseRequest{Phone: testPhone, AlarmID: "alarm-1"}
 	first, err := allocator.Allocate(context.Background(), request)
 	require.NoError(t, err)
 	second, err := allocator.Allocate(context.Background(), request)

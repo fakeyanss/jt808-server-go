@@ -24,6 +24,7 @@ import (
 	"github.com/fakeyanss/jt808-server-go/internal/gatewaynode"
 	"github.com/fakeyanss/jt808-server-go/internal/internalapi"
 	"github.com/fakeyanss/jt808-server-go/internal/media"
+	"github.com/fakeyanss/jt808-server-go/internal/media/playback"
 	"github.com/fakeyanss/jt808-server-go/internal/medianode"
 	"github.com/fakeyanss/jt808-server-go/internal/mediaupload"
 	"github.com/fakeyanss/jt808-server-go/internal/observability"
@@ -34,6 +35,7 @@ import (
 	"github.com/fakeyanss/jt808-server-go/internal/repository/memory"
 	"github.com/fakeyanss/jt808-server-go/internal/runtime"
 	"github.com/fakeyanss/jt808-server-go/internal/server"
+	"github.com/fakeyanss/jt808-server-go/internal/storage"
 	"github.com/fakeyanss/jt808-server-go/internal/uplink"
 )
 
@@ -97,7 +99,7 @@ type deps struct {
 	cancelMediaNodeReport context.CancelFunc
 	// cancelMediaReconcile 停止媒体端点占用的定期对账。
 	cancelMediaReconcile context.CancelFunc
-	controlBlob          contracts.BlobStore
+	controlBlob          storage.BlobStore
 	businessExecutor     *control.BusinessExecutor
 	cancelSweep          context.CancelFunc
 	cancelOutbox         context.CancelFunc
@@ -109,7 +111,7 @@ type deps struct {
 	alarmServ       *alarmserver.Server
 	attachmentServ  *attachmentserver.Server
 	mediaServ       *media.Server
-	playbackLibrary contracts.PlaybackLibrary
+	playbackLibrary playback.PlaybackLibrary
 
 	probes    *observability.Provider
 	adminServ *adminapi.Server
