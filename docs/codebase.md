@@ -213,3 +213,7 @@ Foo: NewFooRepository(),
   - Cluster：按 `configs/cluster/` 的样例启动相关角色，确认启动校验、探针与关键接口。
 - 集群内部 HTTP 契约、会话目录、节点注册与下行路由的语义以[docs/architecture.md](architecture.md) 为准；改契约时同步更新文档与配置示例。
 - 集群元数据面只允许 control 连数据库；gateway、media、attachment 不应新增数据库依赖（构建上也不会链接驱动，见第 1 节）。
+
+### 节点模型暂不合并
+
+gateway、media、attachment 继续保留各自的节点模型、表、仓储接口与内部注册/心跳路径。三者的调度语义不同：media 有端点池与容量占位，gateway 注册要清理旧实例的会话目录，attachment 的差异在 FTP 登录与任务链路。等出现第四类节点，或需要统一的 drain/状态查询能力时，再按 `role` 合并为统一节点表与接口；在此之前不为了减少 DTO 重复而承担迁移与混合版本兼容成本。
