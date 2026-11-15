@@ -4,7 +4,9 @@
 # SQLite 使用纯 Go 驱动（modernc.org/sqlite），可以关闭 cgo，产物可直接放进最小运行镜像。
 FROM golang:1.26.10-alpine AS build
 
-ARG GOPROXY=https://goproxy.cn,direct
+# Go 模块代理默认走官方源；国内网络构建时用
+# --build-arg GOPROXY=https://goproxy.cn,direct 覆盖，只影响本次构建，不写入运行镜像。
+ARG GOPROXY=https://proxy.golang.org,direct
 # buildx 会自动注入目标平台；本机 docker build 时为空，脚本回退到 go env。
 ARG TARGETOS
 ARG TARGETARCH
