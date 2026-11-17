@@ -8,6 +8,7 @@
 #   scripts/build.sh compile                     # 本机平台，全部目标 -> target/debug/
 #   scripts/build.sh image <outdir>              # 镜像内目标，输出到 outdir（Dockerfile 使用）
 #   scripts/build.sh image <outdir> <target>...  # 只构建指定目标（模拟终端镜像使用）
+#   scripts/build.sh binaries <outdir> [target...] # 本机平台，供冒烟与压测复用
 #   scripts/build.sh release <version>            # 6 个平台打包 -> target/dist/
 #   scripts/build.sh release <version> <os> <arch> # 单平台，供 CI matrix 使用
 #   scripts/build.sh clean
@@ -86,6 +87,13 @@ function image() {
 	build_targets "$outdir" "${TARGETOS:-$(go env GOOS)}" "${TARGETARCH:-$(go env GOARCH)}" image "$@"
 }
 
+# 供冒烟与压测构建本机二进制：不传目标时构建清单里的全部目标。
+function binaries() {
+	local outdir=${1:?usage: $0 binaries <outdir> [target...]}
+	shift
+	build_targets "$outdir" "$(go env GOOS)" "$(go env GOARCH)" all "$@"
+}
+
 function release() {
 	local version=${1:-}
 	if [ -z "$version" ]; then
@@ -152,6 +160,9 @@ compile)
 image)
 	image "${@:2}"
 	;;
+binaries)
+	binaries "${@:2}"
+	;;
 release)
 	release "${2:-}" "${3:-}" "${4:-}"
 	;;
@@ -161,7 +172,7 @@ clean)
 	;;
 *)
 	echo "UnknownArgs: ${1:-}" >&2
-	echo "usage: $0 {test|compile|image <outdir> [target...]|release <version> [<os> <arch>]|clean}" >&2
+	echo "usage: $0 {test|compile|image <outdir> [target...]|binaries <outdir> [target...]|release <version> [<os> <arch>]|clean}" >&2
 	exit 1
 	;;
 esac

@@ -204,7 +204,7 @@ start_client() { # name port
   local dir="$WORK/client-$name"
   mkdir -p "$dir"
   make_client_config "$name" "$port"
-  ( cd "$dir" && exec "$WORK/bin/client" -c "$WORK/client-$name.yaml" ) >"$dir/console.out" 2>&1 &
+  ( cd "$dir" && exec "$WORK/bin/jt808-client-go" -c "$WORK/client-$name.yaml" ) >"$dir/console.out" 2>&1 &
   local pid=$!
   echo "$pid" >"$dir/pid"
   CLIENT_PIDS="$CLIENT_PIDS $pid"
@@ -272,7 +272,7 @@ if [ "${JT808_SMOKE_SKIP_BUILD:-0}" != "1" ]; then
 fi
 
 echo "smoke-cluster: building client simulator"
-( cd "$ROOT" && go build -o "$WORK/bin/client" ./cmd/jt808-client ) || {
+bash "$ROOT/scripts/build.sh" binaries "$WORK/bin" jt808-client-go || {
   echo "smoke-cluster: client build failed" >&2
   exit 1
 }
