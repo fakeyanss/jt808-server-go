@@ -72,12 +72,12 @@ sed -E \
   "$ROOT/client/configs/default.yaml" >"$WORK/run/client.yaml"
 
 echo "loadtest: building server and client..."
-( cd "$ROOT" && go build -o "$WORK/bin/server" ./cmd/jt-server-standalone && go build -o "$WORK/bin/client" ./cmd/jt808-client ) || {
+bash "$ROOT/scripts/build.sh" binaries "$WORK/bin" jt-server-standalone jt808-client-go || {
   echo "loadtest: build failed" >&2
   exit 1
 }
 
-( cd "$WORK/run" && exec "$WORK/bin/server" -c "$WORK/run/server.yaml" ) >"$WORK/run/server.out" 2>&1 &
+( cd "$WORK/run" && exec "$WORK/bin/jt-server-standalone" -c "$WORK/run/server.yaml" ) >"$WORK/run/server.out" 2>&1 &
 SERVER_PID=$!
 for _ in $(seq 1 60); do
   if nc -z 127.0.0.1 "$TCP_PORT" >/dev/null 2>&1; then break; fi
@@ -86,7 +86,7 @@ for _ in $(seq 1 60); do
 done
 
 echo "loadtest: $CONCURRENCY terminals for ${DURATION}s against 127.0.0.1:$TCP_PORT"
-( cd "$WORK/run" && exec "$WORK/bin/client" -c "$WORK/run/client.yaml" ) >"$WORK/run/client.out" 2>&1 &
+( cd "$WORK/run" && exec "$WORK/bin/jt808-client-go" -c "$WORK/run/client.yaml" ) >"$WORK/run/client.out" 2>&1 &
 CLIENT_PID=$!
 
 sleep "$DURATION"

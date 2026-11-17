@@ -63,10 +63,10 @@ sed -E \
 sed -E "s|(remoteAddr: \"localhost:)[0-9]+|\\1$TCP_PORT|" \
   "$ROOT/client/configs/default.yaml" >"$WORK/client.yaml"
 
-SBIN="$WORK/bin/server"
-CBIN="$WORK/bin/client"
+SBIN="$WORK/bin/jt-server-standalone"
+CBIN="$WORK/bin/jt808-client-go"
 echo "smoke: building server and client..."
-( cd "$ROOT" && go build -o "$SBIN" ./cmd/jt-server-standalone && go build -o "$CBIN" ./cmd/jt808-client ) || {
+bash "$ROOT/scripts/build.sh" binaries "$WORK/bin" jt-server-standalone jt808-client-go || {
   echo "smoke: build failed" >&2
   exit 1
 }
