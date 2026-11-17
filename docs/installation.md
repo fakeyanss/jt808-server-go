@@ -364,7 +364,7 @@ docker run --rm --network jt808-cluster_default \
   -industry-reports -logout
 ```
 
-`my-client.yaml` 可直接从 `build/docker/client.yaml` 复制后修改；故障注入与分包开关同样透传，例如 `-fault-frame bad-checksum`、`-fragment-size 200 -reverse-fragments`。也可以用 `-c /path/in/container` 或 `JT808_CONFIG=/path` 指定其他挂载路径。
+`my-client.yaml` 可直接从 `build/image/client/client.yaml` 复制后修改；故障注入与分包开关同样透传，例如 `-fault-frame bad-checksum`、`-fragment-size 200 -reverse-fragments`。也可以用 `-c /path/in/container` 或 `JT808_CONFIG=/path` 指定其他挂载路径。
 
 #### 连接宿主机服务端
 

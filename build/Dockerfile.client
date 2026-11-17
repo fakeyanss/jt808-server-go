@@ -46,8 +46,8 @@ RUN apk add --no-cache ca-certificates tzdata && \
 WORKDIR /app
 
 COPY --from=build /out/ /usr/local/bin/
-COPY --chown=jt808:jt808 build/docker/client.yaml /etc/jt808/client.yaml
-COPY --chown=jt808:jt808 build/docker/client-entrypoint.sh /usr/local/bin/jt808-client-entrypoint
+COPY --chown=jt808:jt808 build/image/client/client.yaml /etc/jt808/client.yaml
+COPY --chown=jt808:jt808 build/image/client/entrypoint.sh /usr/local/bin/jt808-client-entrypoint
 RUN chmod 0755 /usr/local/bin/jt808-client-entrypoint
 
 # 配置外挂到 /etc/jt808/client.yaml；日志目录可挂载持久化。
