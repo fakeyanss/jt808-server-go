@@ -178,10 +178,10 @@ make release OS=linux ARCH=arm64
 
 ```sh
 # 单机运行（单进程承担全部角色）
-./target/debug/jt-server-standalone -c configs/default.yaml
+./target/debug/jt-server-standalone -c conf/default.yaml
 
 # 数据库迁移（SQLite/MySQL 首次部署或升级后）
-./target/debug/jt808-migrate -c configs/default.yaml
+./target/debug/jt808-migrate -c conf/default.yaml
 ```
 
 Docker 与 compose：
@@ -199,7 +199,7 @@ docker compose -f deploy/docker-compose.sqlite.yml up -d
 docker compose -f deploy/docker-compose.cluster.yml up -d
 ```
 
-镜像为多架构构建（`linux/amd64`、`linux/arm64`），默认以 standalone 角色启动；通过首个参数或 `JT808_ROLE` 可切换 `signal`、`control`、`media`、`attachment`、`migrate`。集群样例配置在 `configs/cluster/`，五个角色共用同一套共享存储与 MySQL。端口规划、启动顺序、迁移、备份恢复与故障排查见[安装部署](docs/installation.md)和[运维手册](docs/operations.md)。
+镜像为多架构构建（`linux/amd64`、`linux/arm64`），默认以 standalone 角色启动；通过首个参数或 `JT808_ROLE` 可切换 `signal`、`control`、`media`、`attachment`、`migrate`。集群样例配置在 `conf/cluster/`，五个角色共用同一套共享存储与 MySQL。端口规划、启动顺序、迁移、备份恢复与故障排查见[安装部署](docs/installation.md)和[运维手册](docs/operations.md)。
 
 ## 文档
 
