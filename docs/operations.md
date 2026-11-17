@@ -149,6 +149,7 @@ tar -czf /backup/jt808-files-$(date +%Y%m%d-%H%M).tgz ./data ./logs
 6. **FTP 端口**：放行控制端口 7500 与被动端口段 7501–7510；NAT 场景必须配置 `ftp1078.advertiseIp`。
 7. **对象存储清理**：`objectStore` 下按前缀使用桶生命周期；不要用本地孤儿扫描。
 8. **关停顺序**：服务收到 `SIGINT/SIGTERM` 后按业务 API → 终端接入与会话 → UDP → outbox 当前轮次 → 媒体/附件落盘 → 管理面 → 探针 → 存储的顺序优雅退出。编排系统预留至少 10 秒。
+9. **集群终端级冒烟**：`make smoke-cluster` 会构建镜像并拉起 compose 集群；镜像构建需要 Go 模块代理时用 `make smoke-cluster GOPROXY=https://goproxy.cn,direct`（也可设环境变量 `GOPROXY`，命令行优先；都不设时沿用 Dockerfile 默认代理）。
 
 ## 8. 压测基线
 
