@@ -1,6 +1,6 @@
 # 配置说明
 
-配置文件默认为 `configs/default.yaml`，完整注释见该文件与 `configs/cluster/*.yaml`。不带 `-c` 时使用编译进二进制的内嵌默认配置。
+配置文件默认为 `conf/default.yaml`，完整注释见该文件与 `conf/cluster/*.yaml`。不带 `-c` 时使用编译进二进制的内嵌默认配置。
 
 配置在启动时统一校验：端口越界、未知枚举、角色缺少必需项、目录或共享卷标记缺失等都会直接拒绝启动，不做运行期降级。
 
@@ -15,7 +15,7 @@
 | `server.port.tcpPort` | `8080` | 终端 TCP 接入；置空关闭 |
 | `server.port.udpPort` | `8081` | 终端 UDP 接入；置空关闭 |
 | `server.port.httpPort` | `8008` | 业务 HTTP API |
-| `server.banner.enable` / `bannerPath` | `true` / `configs/banner.txt` | 启动横幅 |
+| `server.banner.enable` / `bannerPath` | `true` / `conf/banner.txt` | 启动横幅 |
 | `server.action.http.url` | 空 | 生命周期 Hook 回调地址；空则不启用 |
 | `server.action.http.timeoutMs` | `2000` | Hook 回调超时 |
 | `server.action.events` | 空（全量） | 只派发列出的事件类型；非法事件名启动即失败 |
@@ -329,4 +329,4 @@ cluster:
     marker: ".jt808-shared-volume"
 ```
 
-更完整的四角色样例见 `configs/cluster/`；部署步骤见[安装与部署](installation.md#6-集群角色部署)。
+更完整的四角色样例见 `conf/cluster/`；部署步骤见[安装与部署](installation.md#6-集群角色部署)。

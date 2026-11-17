@@ -78,7 +78,7 @@ body:
       label: 复现步骤
       description: 尽量给出最小步骤、请求或可复用的模拟器命令
       placeholder: |
-        1. 使用 configs/default.yaml 启动服务
+        1. 使用 conf/default.yaml 启动服务
         2. 运行 jt808-client-go -fault-frame bad-escape
         3. 观察服务端日志与 /api/device
     validations:

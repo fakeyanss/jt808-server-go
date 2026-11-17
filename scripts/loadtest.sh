@@ -47,7 +47,7 @@ sed -E \
   -e 's|(alarmServer:.*)|&|' \
   -e 's|(port: )"7200"|\1""|' \
   -e 's|(udpPort: )"7201"|\1""|' \
-  "$ROOT/configs/default.yaml" >"$WORK/run/server.yaml"
+  "$ROOT/conf/default.yaml" >"$WORK/run/server.yaml"
 
 # admin 默认关闭；压测需要指标，这里打开并绑定本机端口。
 python3 - "$WORK/run/server.yaml" "$ADMIN_PORT" "$TOKEN" <<'PY'

@@ -37,7 +37,7 @@ release 产物形态：每个平台一个压缩包（linux/darwin 为 `tar.gz`�
 ./target/debug/jt-server-standalone
 
 # 或读取 YAML
-./target/debug/jt-server-standalone -c configs/default.yaml
+./target/debug/jt-server-standalone -c conf/default.yaml
 ```
 
 默认监听：
@@ -52,7 +52,7 @@ release 产物形态：每个平台一个压缩包（linux/darwin 为 `tar.gz`�
 | 管理面 | 未启用 | `admin.enable` + `admin.addr` |
 | 探针 | 未启用 | `probes.addr` |
 
-启动横幅由 `server.banner.bannerPath` 指定，默认 `configs/banner.txt`；`server.banner.enable: false` 可关闭。
+启动横幅由 `server.banner.bannerPath` 指定，默认 `conf/banner.txt`；`server.banner.enable: false` 可关闭。
 
 ### 3.1 验证接入链路
 
@@ -72,7 +72,7 @@ SQLite 与 MySQL 都**不会**在服务启动时自动执行 DDL。首次部署�
 
 ```sh
 # 在配置文件中设置 database.type 与连接参数
-./target/debug/jt808-migrate -c configs/default.yaml
+./target/debug/jt808-migrate -c conf/default.yaml
 ```
 
 迁移 SQL 分两套目录：
@@ -152,13 +152,13 @@ docker run --rm fakeyanss/jt808-server-go:latest signal -c /etc/jt808/signal.yam
 
 # 环境变量
 docker run --rm -e JT808_ROLE=signal \
-  -v "$PWD/configs/cluster/jt-signal.yaml:/etc/jt808/signal.yaml:ro" \
+  -v "$PWD/conf/cluster/jt-signal.yaml:/etc/jt808/signal.yaml:ro" \
   fakeyanss/jt808-server-go:latest
 ```
 
 支持的角色：`standalone`（默认）、`signal`（别名 `gateway`）、`control`、`media`、`attachment`、`migrate`。角色容器会自动读取 `/etc/jt808/<role>.yaml`；也可以显式传 `-c` 或设置 `JT808_CONFIG`。角色与配置中的 `server.mode`、`cluster.roles` 必须匹配，否则启动失败。
 
-集群角色不是开箱即用：需要共享 MySQL、共享存储（`sharedVolume` 或对象存储）以及一致的内部 token，详见[集群角色部署](#6-集群角色部署)与 `configs/cluster/` 下的样例配置。
+集群角色不是开箱即用：需要共享 MySQL、共享存储（`sharedVolume` 或对象存储）以及一致的内部 token，详见[集群角色部署](#6-集群角色部署)与 `conf/cluster/` 下的样例配置。
 
 | 角色 | 主要端口 | 探针示例 |
 |---|---|---|
@@ -172,7 +172,7 @@ docker run --rm -e JT808_ROLE=signal \
 ```sh
 docker run -e JT808_ROLE=media \
   -e JT808_PROBE_ADDR=127.0.0.1:9107 \
-  -v "$PWD/configs/cluster/jt-media.yaml:/etc/jt808/media.yaml:ro" \
+  -v "$PWD/conf/cluster/jt-media.yaml:/etc/jt808/media.yaml:ro" \
   fakeyanss/jt808-server-go:latest
 ```
 
@@ -386,11 +386,11 @@ Docker Desktop（macOS/Windows）默认解析 `host.docker.internal`；Linux 需
 
 | 二进制 | 固定角色 | 样例配置 | 探针示例端口 | 是否连业务库 |
 |---|---|---|---|---|
-| `jt-server-standalone` | `mode=standalone` | `configs/cluster/jt-server-standalone.yaml` | 9105 | 可选 |
-| `jt-signal` | `cluster.roles=[gateway]` | `configs/cluster/jt-signal.yaml` | 9106 | 否 |
-| `jt-media` | `cluster.roles=[media]` | `configs/cluster/jt-media.yaml` | 9107 | 否 |
-| `jt-control` | `cluster.roles=[control]` | `configs/cluster/jt-control.yaml` | 9108 | 是 |
-| `jt-attachment` | `cluster.roles=[attachment]` | `configs/cluster/jt-attachment.yaml` | 9109 | 否 |
+| `jt-server-standalone` | `mode=standalone` | `conf/cluster/jt-server-standalone.yaml` | 9105 | 可选 |
+| `jt-signal` | `cluster.roles=[gateway]` | `conf/cluster/jt-signal.yaml` | 9106 | 否 |
+| `jt-media` | `cluster.roles=[media]` | `conf/cluster/jt-media.yaml` | 9107 | 否 |
+| `jt-control` | `cluster.roles=[control]` | `conf/cluster/jt-control.yaml` | 9108 | 是 |
+| `jt-attachment` | `cluster.roles=[attachment]` | `conf/cluster/jt-attachment.yaml` | 9109 | 否 |
 
 配置中的角色与二进制不匹配时启动失败，错误信息会提示应使用的二进制。
 
@@ -408,17 +408,17 @@ Docker Desktop（macOS/Windows）默认解析 `host.docker.internal`；Linux 需
 
 ```sh
 # 1) 初始化共享库（使用 control 配置）
-./bin/jt808-migrate -c configs/cluster/jt-control.yaml
+./bin/jt808-migrate -c conf/cluster/jt-control.yaml
 
 # 2) 启动 control
-./bin/jt-control -c configs/cluster/jt-control.yaml
+./bin/jt-control -c conf/cluster/jt-control.yaml
 
 # 3) 启动媒体与附件节点
-./bin/jt-media      -c configs/cluster/jt-media.yaml
-./bin/jt-attachment -c configs/cluster/jt-attachment.yaml
+./bin/jt-media      -c conf/cluster/jt-media.yaml
+./bin/jt-attachment -c conf/cluster/jt-attachment.yaml
 
 # 4) 启动 808 网关
-./bin/jt-signal -c configs/cluster/jt-signal.yaml
+./bin/jt-signal -c conf/cluster/jt-signal.yaml
 ```
 
 网关可以在 control 之前启动，但设备鉴权会因查不到档案而拒绝；建议先 control，再数据面节点，最后网关。

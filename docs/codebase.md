@@ -76,7 +76,7 @@ go list -deps ./cmd/jt-signal ./cmd/jt-media ./cmd/jt-attachment \
 | `internal/coordination/` | 多副本租约与共享 TTL 去重 | 不参与协议处理 |
 | `internal/observability/`、`internal/httpguard/` | 指标、就绪探针；鉴权、限流、审计中间件 | 中间件与 handler 分离 |
 | `internal/action/` | 终端接入生命周期钩子、事件过滤、HTTP 回调出口 | 只依赖 `pkg/routines` |
-| `internal/config/` | 全量配置结构、解析与校验 | 字段与 `configs/default.yaml`、`docs/configuration.md` 同步 |
+| `internal/config/` | 全量配置结构、解析与校验 | 字段与 `conf/default.yaml`、`docs/configuration.md` 同步 |
 | `internal/codec/` | GBK、哈希、十六进制、行政区划查询 | 通用编解码工具 |
 | `internal/client/`、`client/` | 模拟终端 TCP 客户端 | 不引入服务端装配 |
 | `pkg/` | 可复用小工具：环形缓冲、日志装配、panic 恢复 | 只放与业务无关的通用代码 |
@@ -170,7 +170,7 @@ Foo: NewFooRepository(),
 2. 新建 `internal/repository/<backend>/`：实现 `Open`、`Migrate`、连接池与 `migrations/`，返回嵌入 `sqlcore.Store` 的 `Backend`。
 3. 在 `internal/repository/database/sqlbackend/` 注册 `open` 与 `migrate` 两个函数。
 4. 需要该后端的入口二进制显式 blank import `sqlbackend`；数据面二进制不要导入。
-5. 同步 `configs/default.yaml` 的后端枚举、`docs/configuration.md` 与 `docs/installation.md` 的部署说明，并补迁移语句。
+5. 同步 `conf/default.yaml` 的后端枚举、`docs/configuration.md` 与 `docs/installation.md` 的部署说明，并补迁移语句。
 6. 用 `go list -deps ./cmd/jt-signal | grep -E 'sqlite|mysql'` 确认数据面没有被带进驱动。
 
 ## 7. 新增业务模块（管控侧）
@@ -207,10 +207,10 @@ Foo: NewFooRepository(),
 
 ## 9. 集群模式开发
 
-- 五个角色二进制分别是 `jt-server-standalone`、`jt-signal`、`jt-media`、`jt-control`、`jt-attachment`，固定角色与样例配置见 `configs/cluster/`。
+- 五个角色二进制分别是 `jt-server-standalone`、`jt-signal`、`jt-media`、`jt-control`、`jt-attachment`，固定角色与样例配置见 `conf/cluster/`。
 - 集群改动至少验证两类形态：
   - Standalone：不配置 `cluster` 段时行为、端口与外部依赖不变；
-  - Cluster：按 `configs/cluster/` 的样例启动相关角色，确认启动校验、探针与关键接口。
+  - Cluster：按 `conf/cluster/` 的样例启动相关角色，确认启动校验、探针与关键接口。
 - 集群内部 HTTP 契约、会话目录、节点注册与下行路由的语义以[docs/architecture.md](architecture.md) 为准；改契约时同步更新文档与配置示例。
 - 集群元数据面只允许 control 连数据库；gateway、media、attachment 不应新增数据库依赖（构建上也不会链接驱动，见第 1 节）。
 
