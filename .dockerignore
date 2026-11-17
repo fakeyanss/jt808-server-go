@@ -7,5 +7,8 @@ deploy
 target
 logs
 data
+# 本地评审/临时产物，不进构建上下文
+2026-11-15
+.DS_Store
 *.log
 *.out
