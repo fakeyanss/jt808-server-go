@@ -39,11 +39,13 @@
 
 ```sh
 gofmt -l .                      # 应无输出
-go build ./...
-go vet ./...
-go test -race -count=1 ./...
-./scripts/check-coverage.sh     # 协议注册表与覆盖矩阵一致
+make vet                        # 静态检查
+make test                       # 单元测试（-race）
+make compile                    # 全部入口编译到 target/debug/
+make check-registry-doc         # 协议注册表与覆盖矩阵一致
 ```
+
+以上也可用 `make all` 一次执行测试、vet 与编译。
 
 涉及端到端链路时再执行：
 

@@ -152,10 +152,10 @@ tar -czf /backup/jt808-files-$(date +%Y%m%d-%H%M).tgz ./data ./logs
 
 ## 8. 压测基线
 
-脚本：`scripts/loadtest.sh`，构建真实 server 与模拟终端二进制。
+脚本：`make loadtest`（实现见 `scripts/loadtest.sh`），构建真实 server 与模拟终端二进制。
 
 ```sh
-bash scripts/loadtest.sh 60
+make loadtest LOAD_DURATION=60
 # 可用 LOAD_CONCURRENCY / LOAD_TCP_PORT / LOAD_HTTP_PORT / LOAD_ADMIN_PORT 调整
 ```
 

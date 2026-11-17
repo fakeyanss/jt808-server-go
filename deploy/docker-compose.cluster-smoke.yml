@@ -1,4 +1,4 @@
-# 集群终端级冒烟的 compose 覆盖文件，仅由 scripts/smoke-cluster.sh 使用。
+# 集群终端级冒烟的 compose 覆盖文件，仅由 make smoke-cluster（scripts/smoke-cluster.sh）使用。
 #
 # 在 deploy/docker-compose.cluster.yml 基础上：
 #   - 把 jt808 角色镜像替换成本地构建的冒烟镜像（不重新 tag latest）；
