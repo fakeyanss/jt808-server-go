@@ -19,7 +19,7 @@ import (
 	"github.com/spf13/viper"
 
 	clientconfigs "github.com/fakeyanss/jt808-server-go/client/configs"
-	serverconfigs "github.com/fakeyanss/jt808-server-go/configs"
+	serverconf "github.com/fakeyanss/jt808-server-go/conf"
 	"github.com/fakeyanss/jt808-server-go/pkg/logger"
 )
 
@@ -2674,7 +2674,7 @@ func Load(confFilePath string) *Config {
 		if confFilePath == DefaultServConfKey || confFilePath == DefaultCliConfKey {
 			var confContent []byte
 			if confFilePath == DefaultServConfKey {
-				confContent, err = serverconfigs.FS.ReadFile(defaultServConfFile)
+				confContent, err = serverconf.FS.ReadFile(defaultServConfFile)
 			} else {
 				confContent, err = clientconfigs.FS.ReadFile(defaultCliConfFile)
 			}

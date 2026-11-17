@@ -34,7 +34,7 @@ server:
     httpPort: "8008"
   banner:
     enable: true
-    bannerPath: "configs/banner.txt"
+    bannerPath: "conf/banner.txt"
 
 # 苏标主动安全附件服务器。port / udpPort 都为空或整段缺省时不启动，行为与旧版本一致。
 # 附件落盘目录结构为 <dir>/<手机号>/<YYYYMMDD>/<报警编号>/<文件名>。

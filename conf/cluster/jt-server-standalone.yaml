@@ -18,7 +18,7 @@ server:
     httpPort: "8008"
   banner:
     enable: false
-    bannerPath: "configs/banner.txt"
+    bannerPath: "conf/banner.txt"
 
 # 每个角色二进制都必须配置探针端口；/healthz 与 /readyz 由本进程直接提供。
 probes:
