@@ -27,7 +27,7 @@ go run ./tools/registrydoc -write   # 刷新自动生成段
 go run ./tools/registrydoc -check   # 校验手册与注册表一致，漂移时退出码 1
 ```
 
-或使用 `scripts/check-coverage.sh`。校验规则：注册表中的每个 MsgID 必须出现在
+或使用 `make check-registry-doc`（实现见 `scripts/registry-doc.sh`）。校验规则：注册表中的每个 MsgID 必须出现在
 手工状态表中；手工状态表中除“缺失”“保留/自定义”之外的 ID 必须存在于注册表；
 自动生成段必须与当前注册表一致。
 

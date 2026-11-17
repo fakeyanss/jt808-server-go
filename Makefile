@@ -9,7 +9,7 @@ $(info BUILD_COMMIT: $(BUILD_COMMIT))
 $(info ========================================)
 
 # 执行编译，可使用命令 make 或 make all 执行
-all: test compile
+all: test vet compile
 
 set-env:
 	go mod download -x || go mod download -x # 下载 Go 依赖
@@ -17,6 +17,27 @@ set-env:
 # test 阶段，进行单元测试，可单独执行命令: make test
 test: set-env
 	bash $(CURDIR)/scripts/build.sh test
+
+# vet 阶段，执行静态检查，可单独执行命令: make vet
+vet: set-env
+	go vet ./...
+
+# outbox 回归：CI 显式点名这几条用例，避免重构后「绿灯但没跑」
+# 可单独执行命令: make test-outbox
+test-outbox: set-env
+	@mkdir -p $(CURDIR)/target/test
+	set -eo pipefail; go test -race -count=1 -v \
+		./internal/control/ \
+		./internal/repository/ \
+		./internal/repository/memory/ \
+		./internal/repository/sqlite/ | tee $(CURDIR)/target/test/outbox-regression.log
+	grep -q -- '--- PASS: TestReplayAfterRestart' $(CURDIR)/target/test/outbox-regression.log
+	grep -q -- '--- PASS: TestCommandRepositoryMemoryPendingScanAndLease' $(CURDIR)/target/test/outbox-regression.log
+	grep -q -- '--- PASS: TestSQLiteCommandOutboxIdempotencyAndResult' $(CURDIR)/target/test/outbox-regression.log
+
+# 协议注册表与覆盖矩阵一致性校验，可单独执行命令: make check-registry-doc
+check-registry-doc: set-env
+	bash $(CURDIR)/scripts/registry-doc.sh
 
 # compile 阶段，把清单里全部二进制编译到 target/debug/，可单独执行命令: make compile
 compile: set-env
@@ -36,6 +57,15 @@ release: set-env
 # 可选: --keep-logs 保留日志，或 SMOKE_TCP_PORT/SMOKE_UDP_PORT/SMOKE_HTTP_PORT 覆盖端口
 smoke:
 	bash $(CURDIR)/scripts/smoke.sh
+
+# 集群终端级冒烟：真实 compose 集群 + 模拟终端，可单独执行: make smoke-cluster
+smoke-cluster:
+	bash $(CURDIR)/scripts/smoke-cluster.sh
+
+# 本地压测基线，可单独执行: make loadtest 或 make loadtest LOAD_DURATION=30
+LOAD_DURATION ?= 60
+loadtest:
+	bash $(CURDIR)/scripts/loadtest.sh $(LOAD_DURATION)
 
 # clean 阶段，清除过程中的输出， 可单独执行命令: make clean
 clean:
@@ -57,4 +87,4 @@ statline:
 	echo "TOTAL_CODE_LINE: $$total"
 
 # avoid filename conflict and speed up build
-.PHONY: all set-env test compile run run-client release smoke clean dockerbuild dockerbuild-client statline
+.PHONY: all set-env test vet test-outbox check-registry-doc compile run run-client release smoke smoke-cluster loadtest clean dockerbuild dockerbuild-client statline

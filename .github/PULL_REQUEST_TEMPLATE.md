@@ -23,10 +23,10 @@
 
 ```sh
 gofmt -l .
-go build ./...
-go vet ./...
-go test -race -count=1 ./...
-./scripts/check-coverage.sh
+make vet
+make test
+make compile
+make check-registry-doc
 ```
 
 - [ ] 上述命令全部通过

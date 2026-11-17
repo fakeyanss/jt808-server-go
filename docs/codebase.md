@@ -184,7 +184,7 @@ Foo: NewFooRepository(),
 
    ```sh
    go run ./tools/registrydoc -write
-   ./scripts/check-coverage.sh
+   make check-registry-doc
    ```
 
 ## 8. 新增协议消息
@@ -200,7 +200,7 @@ Foo: NewFooRepository(),
 
    ```sh
    go run ./tools/registrydoc -write
-   ./scripts/check-coverage.sh
+   make check-registry-doc
    ```
 
    自动生成段位于 `docs/protocol-coverage.md` 的 `BEGIN/END GENERATED REGISTRY` 标记之间，**不要手工编辑**。手工状态表需要按代码实际行为更新；状态定义见该文档。
@@ -220,7 +220,8 @@ gateway、media、attachment 继续保留各自的节点模型、表、仓储接
 
 ## 10. 构建入口与镜像
 
-- `scripts/build.sh` 是唯一构建入口，目标清单只有 `build/targets.tsv` 一份。`compile`、`release`、`image` 三种模式分别面向本机、发布包与镜像。
+- `make` 是构建与测试的唯一入口：`make test`、`make vet`、`make compile`、`make release`、`make dockerbuild`、`make smoke`、`make smoke-cluster`、`make loadtest`、`make check-registry-doc`。脚本是实现细节，不直接对外。
+- 目标清单只有 `build/targets.tsv` 一份；`scripts/build.sh` 的 `compile`、`release`、`image` 三种模式分别面向本机、发布包与镜像。
 - `image <outdir> [target...]` 不传目标时按清单第 3 列筛选服务端镜像目标；传目标名时只构建这些目标，供模拟终端镜像复用同一份清单。`build/Dockerfile` 调用前者，`build/Dockerfile.client` 显式点名 `jt808-client-go`。
 - `make dockerbuild` 构建服务端镜像 `fakeyanss/jt808-server-go`；`make dockerbuild-client` 构建模拟终端镜像 `fakeyanss/jt808-client-go`。镜像内配置与用法见[安装部署](installation.md#58-模拟终端镜像)。
 - 模拟终端镜像只用于测试环境，不进入 release 产物与发布流水线；新增镜像相关目标时不要绕过 `targets.tsv` 另起二进制清单。

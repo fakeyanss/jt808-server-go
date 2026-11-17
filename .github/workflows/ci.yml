@@ -26,18 +26,9 @@ jobs:
       run: make all
 
     - name: Coverage matrix consistency
-      run: ./scripts/check-coverage.sh
+      run: make check-registry-doc
 
     # make all 已在 -race 下跑全量测试；这里再显式点名 outbox 回归，
     # 避免后续重构把 replay 测试移出默认包列表后只剩「绿灯但没跑」。
     - name: Outbox replay regression
-      run: |
-        set -eo pipefail
-        go test -race -count=1 -v \
-          ./internal/control/ \
-          ./internal/repository/ \
-          ./internal/repository/memory/ \
-          ./internal/repository/sqlite/ | tee outbox-regression.log
-        grep -q -- '--- PASS: TestReplayAfterRestart' outbox-regression.log
-        grep -q -- '--- PASS: TestCommandRepositoryMemoryPendingScanAndLease' outbox-regression.log
-        grep -q -- '--- PASS: TestSQLiteCommandOutboxIdempotencyAndResult' outbox-regression.log
+      run: make test-outbox

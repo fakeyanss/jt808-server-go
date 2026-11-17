@@ -25,7 +25,7 @@ jobs:
       - name: Run cluster terminal smoke
         env:
           JT808_SMOKE_WORK_DIR: ${{ github.workspace }}/target/cluster-smoke
-        run: bash scripts/smoke-cluster.sh
+        run: make smoke-cluster
 
       - name: Upload smoke logs
         if: always()
