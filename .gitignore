@@ -1,6 +1,8 @@
 target
 cov
 *.log
+# 服务运行期数据目录（SQLite 库、报警与附件落盘），不属于源码
+data/
 
 # Created by https://www.toptal.com/developers/gitignore/api/go,visualstudiocode
 # Edit at https://www.toptal.com/developers/gitignore?templates=go,visualstudiocode
