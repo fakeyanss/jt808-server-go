@@ -51,9 +51,9 @@ RUN apk add --no-cache ca-certificates tzdata && \
 WORKDIR /app
 
 COPY --from=build /out/ /usr/local/bin/
-COPY --chown=jt808:jt808 build/docker/standalone.yaml /etc/jt808/standalone.yaml
-COPY --chown=jt808:jt808 build/docker/entrypoint.sh /usr/local/bin/jt808-entrypoint
-COPY --chown=jt808:jt808 build/docker/healthcheck.sh /usr/local/bin/jt808-healthcheck
+COPY --chown=jt808:jt808 build/image/server/standalone.yaml /etc/jt808/standalone.yaml
+COPY --chown=jt808:jt808 build/image/server/entrypoint.sh /usr/local/bin/jt808-entrypoint
+COPY --chown=jt808:jt808 build/image/server/healthcheck.sh /usr/local/bin/jt808-healthcheck
 RUN chmod 0755 /usr/local/bin/jt808-entrypoint /usr/local/bin/jt808-healthcheck
 
 # 运行时配置与业务数据全部通过 volume 挂载；镜像内只带 standalone 默认配置。
