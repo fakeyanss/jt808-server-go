@@ -43,9 +43,13 @@ clean:
 
 # 构建镜像（单架构，使用本机 Docker）
 IMAGE ?= fakeyanss/jt808-server-go
+# 模拟终端镜像只含 jt808-client-go，供测试环境连接服务端
+IMAGE_CLIENT ?= fakeyanss/jt808-client-go
 IMAGE_TAG ?= $(BUILD_COMMIT)
 dockerbuild:
 	docker build -f build/Dockerfile -t $(IMAGE):$(IMAGE_TAG) .
+dockerbuild-client:
+	docker build -f build/Dockerfile.client -t $(IMAGE_CLIENT):$(IMAGE_TAG) .
 
 # 统计代码行数
 statline:
@@ -53,4 +57,4 @@ statline:
 	echo "TOTAL_CODE_LINE: $$total"
 
 # avoid filename conflict and speed up build
-.PHONY: all set-env test compile run run-client release smoke clean dockerbuild statline
+.PHONY: all set-env test compile run run-client release smoke clean dockerbuild dockerbuild-client statline

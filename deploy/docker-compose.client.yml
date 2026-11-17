@@ -1,0 +1,35 @@
+name: jt808-client
+
+# 模拟终端示例：加入 deploy/docker-compose.cluster.yml 创建的网络，
+# 通过服务名 jt-signal:8080 连接网关。先启动集群再运行本文件。
+# 启动：docker compose -f deploy/docker-compose.client.yml up
+services:
+  jt808-client:
+    image: fakeyanss/jt808-client-go:latest
+    build:
+      context: ..
+      dockerfile: build/Dockerfile.client
+      args:
+        VERSION: local
+    restart: "no"
+    environment:
+      TZ: Asia/Shanghai
+    networks:
+      - jt808-cluster
+    volumes:
+      - jt808-client-logs:/app/logs
+      # 覆盖镜像内默认配置时挂载宿主机 YAML
+      # - ./my-client.yaml:/etc/jt808/client.yaml:ro
+    security_opt:
+      - no-new-privileges:true
+    # 示例：注册上报后注销退出；留空则常驻发心跳与位置
+    # command: ["-logout"]
+
+networks:
+  # 由 deploy/docker-compose.cluster.yml 的顶层 name: jt808-cluster 创建
+  jt808-cluster:
+    external: true
+    name: jt808-cluster_default
+
+volumes:
+  jt808-client-logs:

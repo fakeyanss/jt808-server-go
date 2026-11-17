@@ -1,0 +1,62 @@
+# syntax=docker/dockerfile:1
+
+# 模拟终端镜像：只包含 jt808-client，不改变服务端镜像。
+# 二进制清单仍来自 build/targets.tsv，通过 scripts/build.sh 显式点名构建。
+FROM golang:1.26.10-alpine AS build
+
+ARG GOPROXY=https://proxy.golang.org,direct
+ARG TARGETOS
+ARG TARGETARCH
+
+ENV CGO_ENABLED=0 \
+    GOPROXY=${GOPROXY} \
+    GOTOOLCHAIN=local
+
+WORKDIR /src
+
+RUN apk add --no-cache bash
+
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY . .
+
+RUN mkdir -p /out && bash scripts/build.sh image /out jt808-client-go
+
+# Runtime stage：与配置、日志分离；默认配置连集群网关 jt-signal。
+FROM alpine:3.22
+
+ARG VERSION=dev
+ARG COMMIT=unknown
+ARG BUILD_TIME=unknown
+
+LABEL org.opencontainers.image.title="jt808-client-go" \
+      org.opencontainers.image.description="JT/T 808 模拟终端（测试环境客户端）" \
+      org.opencontainers.image.source="https://github.com/fakeyanss/jt808-server-go" \
+      org.opencontainers.image.version="${VERSION}" \
+      org.opencontainers.image.revision="${COMMIT}" \
+      org.opencontainers.image.created="${BUILD_TIME}"
+
+RUN apk add --no-cache ca-certificates tzdata && \
+    addgroup -S -g 10001 jt808 && \
+    adduser -S -D -H -u 10001 -G jt808 jt808 && \
+    mkdir -p /app/logs /etc/jt808 && \
+    chown -R jt808:jt808 /app /etc/jt808
+
+WORKDIR /app
+
+COPY --from=build /out/ /usr/local/bin/
+COPY --chown=jt808:jt808 build/docker/client.yaml /etc/jt808/client.yaml
+COPY --chown=jt808:jt808 build/docker/client-entrypoint.sh /usr/local/bin/jt808-client-entrypoint
+RUN chmod 0755 /usr/local/bin/jt808-client-entrypoint
+
+# 配置外挂到 /etc/jt808/client.yaml；日志目录可挂载持久化。
+VOLUME ["/app/logs"]
+
+ENV TZ=Asia/Shanghai \
+    JT808_CONFIG=/etc/jt808/client.yaml
+
+USER jt808:jt808
+
+ENTRYPOINT ["/usr/local/bin/jt808-client-entrypoint"]
+CMD []

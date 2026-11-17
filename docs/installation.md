@@ -318,6 +318,68 @@ docker compose -f deploy/docker-compose.cluster.yml exec mysql \
 - **attachment**：复制 `attachment.yaml`，改 `cluster.attachment.nodeId`、`advertiseUrl` 和 FTP 端口，共享 `jt808-blobs`，使用独立暂存卷；同时把新节点加入 control 的 `cluster.attachment.nodes`。
 - **control**：control 的上行邮箱是进程内结构，日志明确提示单副本推荐；不要直接水平扩容，需单独评估 outbox、节点注册与下行路由的一致性。
 
+### 5.8 模拟终端镜像
+
+模拟终端使用独立镜像 `fakeyanss/jt808-client-go`，只包含 `jt808-client-go`，不改变服务端镜像：
+
+```sh
+make dockerbuild-client IMAGE_TAG=local
+# 等价于
+docker build -f build/Dockerfile.client -t fakeyanss/jt808-client-go:local .
+```
+
+镜像以 UID/GID `10001` 运行，内置默认配置 `/etc/jt808/client.yaml`：`client.conn.remoteAddr` 指向集群网关服务名 `jt-signal:8080`，日志写入 `/app/logs`。配置优先级从高到低：
+
+1. 命令行 `-c <path>` / `--config <path>`；
+2. 环境变量 `JT808_CONFIG`；
+3. 默认路径 `/etc/jt808/client.yaml`；
+4. 二进制内嵌默认配置（`remoteAddr` 为 `localhost:8080`）。
+
+#### 连接集群网关
+
+与 `deploy/docker-compose.cluster.yml` 在同一网络时，用服务名与容器端口即可，镜像默认配置已经指向它：
+
+```sh
+docker run --rm --network jt808-cluster_default \
+  fakeyanss/jt808-client-go:local -industry-reports
+```
+
+`jt808-cluster_default` 由集群 compose 顶层 `name: jt808-cluster` 创建；集群换了项目名时替换成对应网络。仓库也提供了 compose 示例：
+
+```sh
+docker compose -f deploy/docker-compose.cluster.yml up -d
+docker compose -f deploy/docker-compose.client.yml up
+```
+
+示例加入同一个外部网络，默认常驻发心跳与位置；在 `command` 中加 `-logout` 可注册后注销退出。
+
+#### 外挂配置与参数透传
+
+把宿主机 YAML 挂载到默认路径即可覆盖，命令行开关原样传给 `jt808-client-go`：
+
+```sh
+docker run --rm --network jt808-cluster_default \
+  -v "$PWD/my-client.yaml:/etc/jt808/client.yaml:ro" \
+  fakeyanss/jt808-client-go:local \
+  -industry-reports -logout
+```
+
+`my-client.yaml` 可直接从 `build/docker/client.yaml` 复制后修改；故障注入与分包开关同样透传，例如 `-fault-frame bad-checksum`、`-fragment-size 200 -reverse-fragments`。也可以用 `-c /path/in/container` 或 `JT808_CONFIG=/path` 指定其他挂载路径。
+
+#### 连接宿主机服务端
+
+容器内 `localhost` 指向容器自身，连接宿主机 8080 时需要把 `remoteAddr` 改为 `host.docker.internal:8080`：
+
+```sh
+docker run --rm --add-host=host.docker.internal:host-gateway \
+  -v "$PWD/my-client.yaml:/etc/jt808/client.yaml:ro" \
+  fakeyanss/jt808-client-go:local
+```
+
+Docker Desktop（macOS/Windows）默认解析 `host.docker.internal`；Linux 需要上面的 `--add-host`，或改用 `--network host` 后直接写 `localhost:8080`。
+
+模拟终端镜像只供测试环境使用，不参与 `make release`、镜像发布流水线与 Docker Hub 推送。
+
 ## 6. 集群角色部署
 
 ### 6.1 角色与二进制
