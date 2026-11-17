@@ -19,7 +19,7 @@ server:
     httpPort: "8008"
   banner:
     enable: false
-    bannerPath: "configs/banner.txt"
+    bannerPath: "conf/banner.txt"
 
 probes:
   addr: "0.0.0.0:9106"

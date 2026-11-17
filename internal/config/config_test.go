@@ -9,7 +9,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	clientconfigs "github.com/fakeyanss/jt808-server-go/client/configs"
-	serverconfigs "github.com/fakeyanss/jt808-server-go/configs"
+	serverconf "github.com/fakeyanss/jt808-server-go/conf"
 )
 
 // 旧 storage 段必须启动失败，不能被 viper 静默忽略。
@@ -68,7 +68,7 @@ func TestRejectUnknownAttemptClassKeys(t *testing.T) {
 	require.Contains(t, err.Error(), "default, location, batchLocation, alarm, sessionClosed")
 
 	// 内嵌默认配置必须通过校验。
-	raw, err := serverconfigs.FS.ReadFile(defaultServConfFile)
+	raw, err := serverconf.FS.ReadFile(defaultServConfFile)
 	require.NoError(t, err)
 	require.NoError(t, rejectUnknownAttemptClassKeys(load(t, string(raw))))
 }
@@ -108,7 +108,7 @@ func TestLoad(t *testing.T) {
 					},
 					Banner: &servBanner{
 						Enable:     true,
-						BannerPath: "./configs/banner.txt",
+						BannerPath: "./conf/banner.txt",
 					},
 				},
 			},
@@ -123,7 +123,7 @@ func TestLoad(t *testing.T) {
 }
 
 func TestEmbeddedDefaultsMatchCheckedInConfigs(t *testing.T) {
-	server, err := serverconfigs.FS.ReadFile("default.yaml")
+	server, err := serverconf.FS.ReadFile("default.yaml")
 	assert.NoError(t, err)
 	assert.True(t, strings.Contains(string(server), "ackTimeoutMs: 5000"))
 	assert.True(t, strings.Contains(string(server), "udpPort: \"8081\""))
