@@ -188,6 +188,8 @@ Docker 与 compose：
 
 ```sh
 make dockerbuild IMAGE_TAG=local
+# 模拟终端镜像（只含 jt808-client-go）
+make dockerbuild-client IMAGE_TAG=local
 docker compose -f deploy/docker-compose.yml up -d
 
 # SQLite 后端（自动执行迁移）

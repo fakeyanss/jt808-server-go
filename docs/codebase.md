@@ -217,3 +217,10 @@ Foo: NewFooRepository(),
 ### 节点模型暂不合并
 
 gateway、media、attachment 继续保留各自的节点模型、表、仓储接口与内部注册/心跳路径。三者的调度语义不同：media 有端点池与容量占位，gateway 注册要清理旧实例的会话目录，attachment 的差异在 FTP 登录与任务链路。等出现第四类节点，或需要统一的 drain/状态查询能力时，再按 `role` 合并为统一节点表与接口；在此之前不为了减少 DTO 重复而承担迁移与混合版本兼容成本。
+
+## 10. 构建入口与镜像
+
+- `scripts/build.sh` 是唯一构建入口，目标清单只有 `build/targets.tsv` 一份。`compile`、`release`、`image` 三种模式分别面向本机、发布包与镜像。
+- `image <outdir> [target...]` 不传目标时按清单第 3 列筛选服务端镜像目标；传目标名时只构建这些目标，供模拟终端镜像复用同一份清单。`build/Dockerfile` 调用前者，`build/Dockerfile.client` 显式点名 `jt808-client-go`。
+- `make dockerbuild` 构建服务端镜像 `fakeyanss/jt808-server-go`；`make dockerbuild-client` 构建模拟终端镜像 `fakeyanss/jt808-client-go`。镜像内配置与用法见[安装部署](installation.md#58-模拟终端镜像)。
+- 模拟终端镜像只用于测试环境，不进入 release 产物与发布流水线；新增镜像相关目标时不要绕过 `targets.tsv` 另起二进制清单。

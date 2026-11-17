@@ -7,6 +7,7 @@
 #   scripts/build.sh test                        # 单元测试与覆盖率报告
 #   scripts/build.sh compile                     # 本机平台，全部目标 -> target/debug/
 #   scripts/build.sh image <outdir>              # 镜像内目标，输出到 outdir（Dockerfile 使用）
+#   scripts/build.sh image <outdir> <target>...  # 只构建指定目标（模拟终端镜像使用）
 #   scripts/build.sh release <version>            # 6 个平台打包 -> target/dist/
 #   scripts/build.sh release <version> <os> <arch> # 单平台，供 CI matrix 使用
 #   scripts/build.sh clean
@@ -23,18 +24,30 @@ cd "$root_dir"
 
 # 按清单筛选目标，输出 "<二进制名>\t<包路径>"。
 # filter: all / image / release
+# 额外传入目标名时只构建这些目标，忽略清单里的镜像/发布列；
+# 模拟终端镜像据此只取 jt808-client-go。
 function targets() {
 	local filter=$1
-	awk -F'\t' -v filter="$filter" '
+	shift
+	awk -F'\t' -v filter="$filter" -v only="$*" '
+		BEGIN {
+			n = split(only, names, " ")
+			for (i = 1; i <= n; i++) wanted[names[i]] = 1
+		}
 		/^[[:space:]]*#/ || NF < 4 { next }
-		filter == "all" ||
-		(filter == "image" && $3 == 1) ||
-		(filter == "release" && $4 == 1) { print $1 "\t" $2 }
+		{
+			picked = (filter == "all" ||
+				(filter == "image" && $3 == 1) ||
+				(filter == "release" && $4 == 1))
+			if (n > 0) picked = ($1 in wanted)
+			if (picked) print $1 "\t" $2
+		}
 	' "$manifest"
 }
 
 function build_targets() {
 	local outdir=$1 os=$2 arch=$3 filter=$4
+	shift 4
 	local exe="" name pkg
 	if [ "$os" = "windows" ]; then
 		exe=".exe"
@@ -47,7 +60,7 @@ function build_targets() {
 		CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" \
 			go build -trimpath -buildvcs=false -ldflags "$ldflags" \
 			-o "$outdir/$name$exe" "$pkg"
-	done < <(targets "$filter")
+	done < <(targets "$filter" "$@")
 }
 
 function test() {
@@ -67,9 +80,10 @@ function test() {
 }
 
 function image() {
-	local outdir=${1:?usage: $0 image <outdir>}
+	local outdir=${1:?usage: $0 image <outdir> [target...]}
+	shift
 	# 多架构构建时由 buildx 注入 TARGETOS/TARGETARCH；本机直接构建时回退到 go env。
-	build_targets "$outdir" "${TARGETOS:-$(go env GOOS)}" "${TARGETARCH:-$(go env GOARCH)}" image
+	build_targets "$outdir" "${TARGETOS:-$(go env GOOS)}" "${TARGETARCH:-$(go env GOARCH)}" image "$@"
 }
 
 function release() {
@@ -136,7 +150,7 @@ compile)
 	build_targets "$target_dir/debug" "$(go env GOOS)" "$(go env GOARCH)" all
 	;;
 image)
-	image "${2:-}"
+	image "${@:2}"
 	;;
 release)
 	release "${2:-}" "${3:-}" "${4:-}"
@@ -147,7 +161,7 @@ clean)
 	;;
 *)
 	echo "UnknownArgs: ${1:-}" >&2
-	echo "usage: $0 {test|compile|image <outdir>|release <version> [<os> <arch>]|clean}" >&2
+	echo "usage: $0 {test|compile|image <outdir> [target...]|release <version> [<os> <arch>]|clean}" >&2
 	exit 1
 	;;
 esac
