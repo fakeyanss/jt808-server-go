@@ -13,6 +13,8 @@
 # 依赖：docker（含 compose v2）、go、curl。macOS 3.2 bash 可用。
 # 选项 / 环境变量：
 #   --keep-logs               保留临时工作目录（含 compose 日志与客户端日志）
+#   --goproxy <url>           镜像构建的 Go 模块代理，传给 docker --build-arg GOPROXY；
+#                             也可用环境变量 GOPROXY。命令行优先，都没设时用 Dockerfile 默认
 #   JT808_SMOKE_IMAGE         冒烟镜像 tag，默认 fakeyanss/jt808-server-go:smoke
 #   JT808_SMOKE_PROJECT       compose 项目名，默认 jt808-smoke
 #   JT808_SMOKE_WORK_DIR      工作目录（CI 用它固定日志位置）
@@ -29,7 +31,29 @@ CONTROL=http://127.0.0.1:8008
 GW1_PORT=8080
 GW2_PORT=18080
 KEEP_LOGS=0
-[ "${1:-}" = "--keep-logs" ] && KEEP_LOGS=1
+GOPROXY_ARG=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --keep-logs)
+      KEEP_LOGS=1
+      ;;
+    --goproxy)
+      [ "$#" -ge 2 ] || { echo "smoke-cluster: --goproxy requires a value" >&2; exit 64; }
+      GOPROXY_ARG=$2
+      shift
+      ;;
+    --goproxy=*)
+      GOPROXY_ARG=${1#*=}
+      ;;
+    *)
+      echo "smoke-cluster: unknown option: $1" >&2
+      exit 64
+      ;;
+  esac
+  shift
+done
+# 命令行优先于环境变量；都没设时保持 Dockerfile 自身默认（不传 build-arg）。
+BUILD_GOPROXY=${GOPROXY_ARG:-${GOPROXY:-}}
 
 if ! command -v docker >/dev/null 2>&1; then
   echo "smoke-cluster: docker not found in PATH" >&2
@@ -263,8 +287,10 @@ sed -E \
   "$ROOT/deploy/docker/cluster/signal.yaml" >"$CFG_DIR/signal-2.yaml"
 
 if [ "${JT808_SMOKE_SKIP_BUILD:-0}" != "1" ]; then
-  echo "smoke-cluster: building image $IMAGE"
-  if ! docker build -f "$ROOT/build/Dockerfile" -t "$IMAGE" "$ROOT" >"$WORK/docker-build.log" 2>&1; then
+  build_args=()
+  [ -n "$BUILD_GOPROXY" ] && build_args=(--build-arg "GOPROXY=$BUILD_GOPROXY")
+  echo "smoke-cluster: building image $IMAGE${BUILD_GOPROXY:+ (GOPROXY=$BUILD_GOPROXY)}"
+  if ! docker build ${build_args[@]+"${build_args[@]}"} -f "$ROOT/build/Dockerfile" -t "$IMAGE" "$ROOT" >"$WORK/docker-build.log" 2>&1; then
     echo "smoke-cluster: image build failed, tail of $WORK/docker-build.log:" >&2
     tail -n 40 "$WORK/docker-build.log" >&2
     exit 1

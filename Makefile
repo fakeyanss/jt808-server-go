@@ -59,8 +59,10 @@ smoke:
 	bash $(CURDIR)/scripts/smoke.sh
 
 # 集群终端级冒烟：真实 compose 集群 + 模拟终端，可单独执行: make smoke-cluster
+# 镜像构建可传 Go 模块代理: make smoke-cluster GOPROXY=https://goproxy.cn,direct
+# 未设置时不传 build-arg，沿用 Dockerfile 自身默认代理。
 smoke-cluster:
-	bash $(CURDIR)/scripts/smoke-cluster.sh
+	bash $(CURDIR)/scripts/smoke-cluster.sh $(if $(GOPROXY),--goproxy '$(GOPROXY)')
 
 # 本地压测基线，可单独执行: make loadtest 或 make loadtest LOAD_DURATION=30
 LOAD_DURATION ?= 60
