@@ -2,7 +2,6 @@ package protocol
 
 import (
 	"context"
-	"sync"
 
 	"github.com/pkg/errors"
 	"github.com/rs/zerolog/log"
@@ -38,18 +37,16 @@ type JT808PacketCodec struct {
 	stores *runtime.State
 }
 
-var jt808PacketCodec *JT808PacketCodec
-var codecOnce sync.Once
-
+// NewJT808PacketCodec 每次返回独立编解码器并绑定调用方注入的运行时状态。
+// 编码器本身无可变状态，分包缓存存放在 runtime.State 中，因此不能复用首个
+// 调用者的单例：附件服务器等无状态调用方会先初始化，导致后续会话 pipeline
+// 的注入状态被忽略，分包缓存与缺片查询落到不同的 FragmentAssembler。
 func NewJT808PacketCodec(stores ...*runtime.State) *JT808PacketCodec {
-	codecOnce.Do(func() {
-		codec := &JT808PacketCodec{}
-		if len(stores) > 0 && stores[0] != nil {
-			codec.stores = stores[0]
-		}
-		jt808PacketCodec = codec
-	})
-	return jt808PacketCodec
+	codec := &JT808PacketCodec{}
+	if len(stores) > 0 && stores[0] != nil {
+		codec.stores = stores[0]
+	}
+	return codec
 }
 
 func (pc *JT808PacketCodec) runtimeState() *runtime.State {

@@ -991,7 +991,10 @@ func (mp *JT808MsgProcessor) checkDeviceExists(ctx context.Context, phone string
 // 集群网关只清理本地会话与保活状态：档案归 control，网关不删库记录。
 func (mp *JT808MsgProcessor) processMsg0003(ctx context.Context, data *model.ProcessData) error {
 	phone := data.Incoming.GetHeader().PhoneNumber
-	if mp.deps.AuthProvider != nil {
+	// 集群网关只清理本地会话与保活状态：档案归 control，网关不删库记录。
+	// 单机进程同时具备 control 角色（AuthProvider 为本地只读实现），档案就在
+	// 本进程，注销必须删档，否则同一终端再次注册会被判为“已注册”。
+	if mp.deps.AuthProvider != nil && mp.deps.Business == nil {
 		if err := mp.checkDeviceExists(ctx, phone); err != nil {
 			return err
 		}
