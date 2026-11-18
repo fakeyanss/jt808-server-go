@@ -1,6 +1,7 @@
 package protocol
 
 import (
+	"context"
 	stdhex "encoding/hex"
 	"reflect"
 	"testing"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/fakeyanss/jt808-server-go/internal/codec/hex"
 	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
+	"github.com/fakeyanss/jt808-server-go/internal/runtime"
 )
 
 func TestJT808PacketCodecStandardGoldenVectors(t *testing.T) {
@@ -243,4 +245,38 @@ func TestJT808PacketCodecReassemblesOutOfOrderFragments(t *testing.T) {
 	require.Equal(t, uint16(50), completed.Header.SerialNumber)
 	require.False(t, completed.Header.IsFragmented())
 	require.Nil(t, completed.Header.Frag)
+}
+
+// TestJT808PacketCodecBindsInjectedRuntimeState 防止编解码器复用首个调用者的
+// 运行时状态：附件服务器会先以无状态方式创建编解码器，会话 pipeline 随后注入
+// 自己的 runtime.State。若注入被忽略，分包缓存会写进 runtime.Default()，
+// 而缺片查询读注入实例，服务端就发不出 0x8003 补传请求。
+func TestJT808PacketCodecBindsInjectedRuntimeState(t *testing.T) {
+	_ = NewJT808PacketCodec() // 模拟附件服务器先行初始化
+
+	stores := runtime.NewState()
+	codec := NewJT808PacketCodec(stores)
+	require.Same(t, stores, codec.runtimeState())
+
+	phone := "019900001111"
+	parts := [][]byte{[]byte("AB"), []byte("CD"), []byte("EF")}
+	// 只发第 1、2 片，第 3 片缺失。
+	for i := 0; i < 2; i++ {
+		header := &model.MsgHeader{
+			MsgID:        0x0100,
+			Attr:         &model.MsgBodyAttr{VersionDesc: model.Version2013, PacketFragmented: 1, PacketFragmentedDesc: model.PacketFragmentedTrue},
+			PhoneNumber:  phone,
+			SerialNumber: uint16(60 + i),
+			Frag:         &model.MsgFragmentation{Total: 3, Index: uint16(i + 1)},
+		}
+		frame, err := codec.EncodePacketData(header, parts[i])
+		require.NoError(t, err)
+		packet, err := codec.Decode(frame)
+		require.NoError(t, err)
+		require.False(t, packet.SegCompleted)
+	}
+
+	segment := &model.Segment{Phone: phone, MsgID: 0x0100, SegTotal: 3, SegNo: 1}
+	require.Equal(t, []uint16{3}, stores.Fragment.MissingIndexes(context.Background(), segment, 60))
+	require.Nil(t, runtime.Default().Fragment.MissingIndexes(context.Background(), segment, 60))
 }

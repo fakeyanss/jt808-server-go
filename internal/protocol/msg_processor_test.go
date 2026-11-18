@@ -386,3 +386,67 @@ func TestGatewayHandlersUseAuthProviderWithoutDatabase(t *testing.T) {
 	unknown := &model.Msg0002{Header: &model.MsgHeader{MsgID: 0x0002, PhoneNumber: "188765499006", Attr: &model.MsgBodyAttr{}}}
 	require.Error(t, processor.processMsg0002(ctx, &model.ProcessData{Incoming: unknown}))
 }
+
+// stubLogoutAuthProvider 模拟单机进程里指向本地档案的只读鉴权来源。
+type stubLogoutAuthProvider struct {
+	devices repository.DeviceRepository
+}
+
+func (p stubLogoutAuthProvider) Device(ctx context.Context, phone string) (*domain.Device, error) {
+	return p.devices.GetByPhone(ctx, phone)
+}
+
+func (p stubLogoutAuthProvider) AuthCode(context.Context, string) (string, error) {
+	return "", nil
+}
+
+type stubLogoutBusiness struct{}
+
+func (stubLogoutBusiness) Process(context.Context, uint16, *model.ProcessData) error { return nil }
+
+func newLogoutTestDeps(t *testing.T, withBusiness bool) (*database.Repositories, ProcessorDeps) {
+	t.Helper()
+	repos, err := database.Open(database.Config{})
+	require.NoError(t, err)
+	deps := ProcessorDeps{
+		Repos:        repos.Repositories,
+		Runtime:      runtime.NewState(),
+		AuthProvider: stubLogoutAuthProvider{devices: repos.Devices},
+	}
+	if withBusiness {
+		deps.Business = stubLogoutBusiness{}
+	}
+	return repos, deps
+}
+
+// TestLogoutDeletesDeviceWhenBusinessRunsInProcess 覆盖 standalone：AuthProvider
+// 是本地实现，档案就在本进程，注销必须删档，否则同一终端再次注册会被判为已注册。
+func TestLogoutDeletesDeviceWhenBusinessRunsInProcess(t *testing.T) {
+	repos, deps := newLogoutTestDeps(t, true)
+	device := &domain.Device{ID: "1193697", Plate: "京A12345", Phone: "013012345678", Status: domain.DeviceStatusOnline}
+	require.NoError(t, repos.Devices.Upsert(context.Background(), device))
+
+	mp := NewJT808MsgProcessor(nil, WithProcessorDeps(deps))
+	data := &model.ProcessData{Incoming: &model.Msg0003{Header: &model.MsgHeader{MsgID: 0x0003, PhoneNumber: device.Phone}}}
+	require.NoError(t, mp.processMsg0003(context.Background(), data))
+
+	_, err := repos.Devices.GetByPhone(context.Background(), device.Phone)
+	require.ErrorIs(t, err, repository.ErrDeviceNotFound)
+	_, err = repos.Devices.GetByPlate(context.Background(), device.Plate)
+	require.ErrorIs(t, err, repository.ErrDeviceNotFound)
+}
+
+// TestLogoutKeepsDeviceOnClusterGateway 覆盖集群网关：Business 为空，档案归 control，
+// 网关注销只清理本地运行时，不得删除远端档案。
+func TestLogoutKeepsDeviceOnClusterGateway(t *testing.T) {
+	repos, deps := newLogoutTestDeps(t, false)
+	device := &domain.Device{ID: "1193697", Plate: "京A12345", Phone: "013012345678", Status: domain.DeviceStatusOnline}
+	require.NoError(t, repos.Devices.Upsert(context.Background(), device))
+
+	mp := NewJT808MsgProcessor(nil, WithProcessorDeps(deps))
+	data := &model.ProcessData{Incoming: &model.Msg0003{Header: &model.MsgHeader{MsgID: 0x0003, PhoneNumber: device.Phone}}}
+	require.NoError(t, mp.processMsg0003(context.Background(), data))
+
+	_, err := repos.Devices.GetByPhone(context.Background(), device.Phone)
+	require.NoError(t, err)
+}
