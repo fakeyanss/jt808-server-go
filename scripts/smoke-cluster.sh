@@ -97,7 +97,6 @@ bad() { echo "FAIL: $*"; FAIL=$((FAIL + 1)); }
 
 compose() {
   $COMPOSE_BIN --project-name "$PROJECT" \
-    -f "$ROOT/deploy/cluster/docker-compose.yml" \
     -f "$ROOT/deploy/smoketest/cluster/docker-compose.yml" "$@"
 }
 export JT808_SMOKE_IMAGE=$IMAGE

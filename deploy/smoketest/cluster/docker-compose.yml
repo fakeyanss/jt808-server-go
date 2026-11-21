@@ -1,10 +1,10 @@
-# 集群终端级冒烟的 compose 覆盖文件。本文件是覆盖层，必须叠加 deploy/cluster/docker-compose.yml。
-# 推荐入口：deploy/smoketest/cluster/run.sh（自带默认值与两层 -f）；
-# make smoke-cluster（scripts/smoke-cluster.sh）也使用本文件。
+# 集群终端级冒烟 compose：通过顶层 include 引入 deploy/cluster/docker-compose.yml，
+# 因此可在本目录直接执行 docker-compose up -d，无需额外 -f 或预先 export 变量。
+# run.sh 与 make smoke-cluster（scripts/smoke-cluster.sh）仍可继续使用。
 #
 # 在 deploy/cluster/docker-compose.yml 基础上：
 #   - 把 jt808 角色镜像替换成本地构建的冒烟镜像（不重新 tag latest）；
-#   - 用脚本生成的 1 号网关配置覆盖 jt-signal；
+#   - 用目录内的 1 号网关配置覆盖 jt-signal；
 #   - 增加 2 号网关 jt-signal-2，用于验证下行按目录路由与会话归属转移；
 #   - 增加 jt808-client 终端模拟器，与集群同一网络，默认连 jt-signal:8080。
 #
@@ -12,6 +12,11 @@
 #   JT808_SMOKE_IMAGE        服务端镜像，默认 fakeyanss/jt808-server-go:latest
 #   JT808_SMOKE_CLIENT_IMAGE 终端镜像，默认 fakeyanss/jt808-client-go:latest
 #   JT808_SMOKE_CONFIG_DIR   网关配置目录，默认为本目录（含 signal-1.yaml / signal-2.yaml）
+include:
+  - path: ../../cluster/docker-compose.yml
+
+name: jt808-cluster
+
 services:
   jt808-client:
     image: ${JT808_SMOKE_CLIENT_IMAGE:-fakeyanss/jt808-client-go:latest}
