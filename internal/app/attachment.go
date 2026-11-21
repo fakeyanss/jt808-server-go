@@ -78,7 +78,6 @@ func (d *deps) installUploadHooks() {
 	clusterOptions := d.settings.options
 	metrics := d.metrics
 	hooks := d.hooks
-	devices := d.storeSet.Devices
 	processorDeps := d.processorDeps
 	serv := d.serv
 
@@ -90,7 +89,11 @@ func (d *deps) installUploadHooks() {
 			UDPPort: alarmOptions.UDPPort,
 		}, func(phone string, msg *model.Msg9208) error {
 			ctx := context.Background()
-			device, err := devices.GetByPhone(ctx, phone)
+			// 数据面角色没有业务库；自动上传触发只在 standalone 下安装。
+			if d.storeSet == nil {
+				return errors.New("device store is unavailable")
+			}
+			device, err := d.storeSet.Devices.GetByPhone(ctx, phone)
 			if err != nil {
 				return fmt.Errorf("device is offline: %w", err)
 			}
