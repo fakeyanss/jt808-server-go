@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 集群冒烟一键入口：叠加 deploy/cluster/docker-compose.yml 与本目录覆盖文件启动。
+# 集群冒烟一键入口。compose 文件已通过 include 引入基础集群，本脚本只负责默认值与 up/down。
 #
 # 用法：
 #   ./run.sh          # 启动（默认）
@@ -22,7 +22,7 @@ export JT808_SMOKE_IMAGE=${JT808_SMOKE_IMAGE:-fakeyanss/jt808-server-go:latest}
 export JT808_SMOKE_CLIENT_IMAGE=${JT808_SMOKE_CLIENT_IMAGE:-fakeyanss/jt808-client-go:latest}
 export JT808_SMOKE_CONFIG_DIR=${JT808_SMOKE_CONFIG_DIR:-$PWD}
 
-FILES=(-f "$PWD/../../cluster/docker-compose.yml" -f "$PWD/docker-compose.yml")
+FILES=(-f "$PWD/docker-compose.yml")
 
 case "${1:-up}" in
   up) "${DC[@]}" "${FILES[@]}" up -d ;;
