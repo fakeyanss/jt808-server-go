@@ -35,6 +35,7 @@ type UplinkEnvelope struct {
 	Payload             json.RawMessage          `json:"payload,omitempty"`
 	PayloadBase64       string                   `json:"payloadBase64,omitempty"`
 	Meta                map[string]any           `json:"meta,omitempty"`
+	Profile             *contracts.DeviceProfile `json:"profile,omitempty"`
 	Reply               *contracts.TerminalReply `json:"reply,omitempty"`
 }
 
@@ -61,6 +62,7 @@ func BuildUplinkEnvelope(event contracts.UplinkEvent) (UplinkEnvelope, error) {
 		ReplyMsgID:          event.ReplyMsgID,
 		ReplyResult:         event.ReplyResult,
 		Meta:                event.Meta,
+		Profile:             event.Profile,
 		Reply:               event.Reply,
 	}
 	if !event.OccurredAt.IsZero() {
@@ -108,6 +110,7 @@ func (envelope UplinkEnvelope) ToEvent() (contracts.UplinkEvent, error) {
 		Payload:             envelope.Payload,
 		PayloadRaw:          nil,
 		Meta:                envelope.Meta,
+		Profile:             envelope.Profile,
 		Reply:               envelope.Reply,
 	}
 	if envelope.RawMsgID == 0 {

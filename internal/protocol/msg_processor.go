@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/pkg/errors"
@@ -63,8 +62,8 @@ type ProcessorDeps struct {
 	MediaUpload *mediaupload.Store
 	// AuthProvider 是 cluster 下网关的只读鉴权来源；为空时回退本地档案。
 	AuthProvider contracts.AuthProvider
-	// RegisterCache 是网关本地的注册缓存，保存 0x0100 计算出的鉴权码。
-	RegisterCache *RegisterCache
+	// DeviceProfileCache 是网关进程内的 0x0100 档案缓存，随 0x0102 事件交给管控。
+	DeviceProfileCache *DeviceProfileCache
 	// UplinkMaxBodyBytes 限制交给出口的原始消息体；超限仍应答但记账并告警。
 	UplinkMaxBodyBytes int64
 	// OnOversized 是超限事件的旁路回调，用于指标与日志。
@@ -1033,96 +1032,110 @@ func markSessionLoggedOut(ctx context.Context) {
 	session.MarkLoggedOut()
 }
 
-// 收到注册，应校验设备ID，如果可注册，则缓存设备信息并返回鉴权码
+// 收到注册：不查库、不写库，只缓存本次报文的静态字段并回 f(phone)。
 func (mp *JT808MsgProcessor) processMsg0100(ctx context.Context, data *model.ProcessData) error {
 	in := data.Incoming.(*model.Msg0100)
-
-	devices := mp.deps.Repos.Devices
-	// 校验注册逻辑
 	out := data.Outgoing.(*model.Msg8100)
-	// 车辆已被注册
-	if _, err := devices.GetByPlate(ctx, in.PlateNumber); err == nil {
-		out.Result = model.ResCarAlreadyRegister
-		return nil
-	}
-	// 终端已被注册
-	if _, err := devices.GetByPhone(ctx, in.Header.PhoneNumber); err == nil {
-		out.Result = model.ResDeviceAlreadyRegister
-		return nil
+	phone := in.Header.PhoneNumber
+
+	out.Result = model.ResSuccess
+	out.AuthCode = AuthCodeForPhone(phone)
+	// 先写缓存再应答：随后的 0x0102 依赖它补写档案静态字段。
+	if mp.deps.DeviceProfileCache != nil {
+		mp.deps.DeviceProfileCache.Put(phone, profileFromMsg0100(in))
 	}
 
 	session := ctx.Value(model.SessionCtxKey{}).(*model.Session)
-	device := model.NewDevice(in, session)
-	out.AuthCode = genAuthCode(device) // 设置鉴权码
-
-	_ = devices.Upsert(ctx, device)
-
 	// 手机号未被其它活会话占用时立即绑定；已被占用则不在注册阶段踢旧连接，
 	// 留到 0x0102 鉴权通过后再顶替，避免伪造注册报文把在线终端踢下线。
-	bound, bindErr := mp.deps.Runtime.Conn.BindPhoneIfFree(ctx, device.Phone, session.ID)
+	bound, bindErr := mp.deps.Runtime.Conn.BindPhoneIfFree(ctx, phone, session.ID)
 	if bindErr != nil {
-		log.Warn().Err(bindErr).Str("phone", device.Phone).Str("session", session.ID).Msg("Fail to bind phone on registration")
+		log.Warn().Err(bindErr).Str("phone", phone).Str("session", session.ID).Msg("Fail to bind phone on registration")
 	} else if !bound {
-		log.Info().Str("phone", device.Phone).Str("session", session.ID).Msg("Phone is already bound, deferring takeover until authentication")
+		log.Info().Str("phone", phone).Str("session", session.ID).Msg("Phone is already bound, deferring takeover until authentication")
 	}
 
 	timer := NewKeepaliveTimer()
-	timer.Register(device.Phone, device.Keepalive, mp.deps.Repos, mp.deps.Runtime)
+	timer.Register(phone, time.Minute, mp.deps.Repos, mp.deps.Runtime)
 	return nil
 }
 
-// 收到鉴权，应校验鉴权token
+// 收到鉴权：只比 f(phone)；通过后用进程内档案缓存补写静态字段，并刷新终端信息。
 func (mp *JT808MsgProcessor) processMsg0102(ctx context.Context, data *model.ProcessData) error {
 	in := data.Incoming.(*model.Msg0102)
-
 	devices := mp.deps.Repos.Devices
-	device, err := devices.GetByPhone(ctx, in.Header.PhoneNumber)
-	// 缓存不存在，说明设备不合法，需要返回错误，让服务层处理关闭
-	if errors.Is(err, repository.ErrDeviceNotFound) {
-		return errors.Wrapf(err, "Fail to find device cache, phoneNumber=%s", in.Header.PhoneNumber)
-	}
-
 	out := data.Outgoing.(*model.Msg8001)
 	session, _ := ctx.Value(model.SessionCtxKey{}).(*model.Session)
-	// 校验鉴权逻辑
-	if in.AuthCode != genAuthCode(device) {
+	phone := in.Header.PhoneNumber
+
+	if in.AuthCode != AuthCodeForPhone(phone) {
 		out.Result = model.ResultFail
 		// 手机号已被其它活会话占用：本次鉴权只可能来自冒名连接。
 		// 保留原连接与设备档案，只拒绝当前连接，避免伪造报文头把在线终端踢下线。
 		if session != nil {
-			if owner, ownerErr := mp.deps.Runtime.Conn.GetByPhone(ctx, in.Header.PhoneNumber); ownerErr == nil && owner.ID != session.ID {
-				log.Warn().Str("phone", in.Header.PhoneNumber).Str("session", session.ID).Str("owner", owner.ID).
+			if owner, ownerErr := mp.deps.Runtime.Conn.GetByPhone(ctx, phone); ownerErr == nil && owner.ID != session.ID {
+				log.Warn().Str("phone", phone).Str("session", session.ID).Str("owner", owner.ID).
 					Msg("Reject authentication from superseded session")
 				session.MarkCloseAfterResponse()
-				return nil
 			}
 		}
-		// 首次注册鉴权失败：维持既有语义，清理未完成注册的设备记录。
-		timer := NewKeepaliveTimer()
-		timer.Cancel(device.Phone)
-		_ = devices.DeleteByPhone(ctx, device.Phone)
-		mp.deps.Runtime.Heartbeat.Remove(ctx, device.Phone)
-	} else {
-		// 鉴权通过。先完成绑定再写设备档案：若本连接已被并发顶替，
-		// 绑定会失败，此时不能用它覆盖新会话的设备状态。
-		if session != nil {
-			if bindErr := mp.bindPhoneSession(ctx, in.Header.PhoneNumber, session); bindErr != nil {
-				log.Warn().Err(bindErr).Str("phone", in.Header.PhoneNumber).Str("session", session.ID).
-					Msg("Session was superseded during authentication, skip device update")
-				return nil
-			}
-			device.SessionID = session.ID
-			device.TransProto = session.GetTransProto()
-		}
-		device.Status = domain.DeviceStatusOnline
-		device.LastestComTime = time.Now()
-		device.AuthCode = in.AuthCode
-		device.IMEI = in.IMEI
-		device.SoftwareVersion = in.SoftwareVersion
-		_ = devices.Upsert(ctx, device)
+		mp.deps.Runtime.Heartbeat.Remove(ctx, phone)
+		return nil
 	}
 
-	return nil
+	// 鉴权通过。先完成绑定再写设备档案：若本连接已被并发顶替，
+	// 绑定会失败，此时不能用它覆盖新会话的设备状态。
+	if session != nil {
+		if bindErr := mp.bindPhoneSession(ctx, phone, session); bindErr != nil {
+			log.Warn().Err(bindErr).Str("phone", phone).Str("session", session.ID).
+				Msg("Session was superseded during authentication, skip device update")
+			return nil
+		}
+	}
+
+	device, err := devices.GetByPhone(ctx, phone)
+	missing := errors.Is(err, repository.ErrDeviceNotFound)
+	if err != nil && !missing {
+		return err
+	}
+	if missing {
+		device = &domain.Device{Phone: phone, Keepalive: time.Minute}
+	}
+
+	profile, cached := mp.deviceProfile(phone)
+	switch {
+	case cached:
+		device.ID = profile.DeviceID
+		device.Plate = profile.Plate
+		device.VersionDesc = profile.VersionDesc
+		device.ProtocolVersion = profile.ProtocolVersion
+		if err := devices.SaveRegistration(ctx, device); err != nil {
+			return err
+		}
+	case missing:
+		// 无档案也无缓存：建最小档案，后续 0x0100 到来再补静态字段。
+		if err := devices.SaveRegistration(ctx, device); err != nil {
+			return err
+		}
+	}
+
+	device.Status = domain.DeviceStatusOnline
+	device.LastestComTime = time.Now()
+	device.IMEI = in.IMEI
+	device.SoftwareVersion = in.SoftwareVersion
+	if session != nil {
+		device.SessionID = session.ID
+		device.TransProto = session.GetTransProto()
+	}
+	return devices.SaveAuthState(ctx, device)
+}
+
+// deviceProfile 返回本进程缓存的 0x0100 档案快照。
+func (mp *JT808MsgProcessor) deviceProfile(phone string) (model.DeviceProfile, bool) {
+	if mp.deps.DeviceProfileCache == nil {
+		return model.DeviceProfile{}, false
+	}
+	return mp.deps.DeviceProfileCache.Get(phone)
 }
 
 // bindPhoneSession 在鉴权成功后把手机号绑定到当前会话。
@@ -1151,15 +1164,9 @@ func (mp *JT808MsgProcessor) bindPhoneSession(ctx context.Context, phone string,
 	return nil
 }
 
-func genAuthCode(d *domain.Device) string {
-	var splitByte byte = '_'
-	codeBuilder := new(strings.Builder)
-	codeBuilder.WriteString(d.ID)
-	codeBuilder.WriteByte(splitByte)
-	codeBuilder.WriteString(d.Plate)
-	codeBuilder.WriteByte(splitByte)
-	codeBuilder.WriteString(d.Phone)
-	return strconv.Itoa(int(hash.FNV32(codeBuilder.String())))
+// AuthCodeForPhone 计算终端鉴权码：只由手机号决定，不依赖设备 ID/车牌。
+func AuthCodeForPhone(phone string) string {
+	return strconv.Itoa(int(hash.FNV32(phone)))
 }
 
 // processMsg0104 routes a terminal parameter response to the API request that

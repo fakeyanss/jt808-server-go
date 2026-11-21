@@ -91,6 +91,14 @@ func buildUplinkEvent(
 		Payload:             in,
 		Meta:                map[string]any{"packetCount": packetCount},
 	}
+	if data.UplinkProfile != nil {
+		event.Profile = &contracts.DeviceProfile{
+			DeviceID:        data.UplinkProfile.DeviceID,
+			Plate:           data.UplinkProfile.Plate,
+			VersionDesc:     data.UplinkProfile.VersionDesc,
+			ProtocolVersion: data.UplinkProfile.ProtocolVersion,
+		}
+	}
 	if out := data.Outgoing; out != nil {
 		switch reply := out.(type) {
 		case *model.Msg8100:

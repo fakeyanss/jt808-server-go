@@ -19,6 +19,7 @@ import (
 	clockpkg "github.com/fakeyanss/jt808-server-go/internal/clock"
 	"github.com/fakeyanss/jt808-server-go/internal/contracts"
 	"github.com/fakeyanss/jt808-server-go/internal/controlhttp"
+	"github.com/fakeyanss/jt808-server-go/internal/domain"
 	"github.com/fakeyanss/jt808-server-go/internal/mediaupload"
 	"github.com/fakeyanss/jt808-server-go/internal/protocol"
 	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
@@ -177,12 +178,12 @@ func (b *BusinessExecutor) ConsumeEvent(ctx context.Context, event contracts.Upl
 	return contracts.UplinkResult{Accepted: true, Generation: generation}, nil
 }
 
-// claimSession 在 0x0102 业务路径内为会话建立归属。
+// claimSession 在 0x0102 业务路径内完成鉴权落库与会话归属。
 //
-// 先校验鉴权码再 claim：鉴权不通过时不建立目录，避免伪造报文覆盖归属。
+// 先校验 f(phone) 再落库、claim：鉴权不通过时不写档案、不建立目录。
 // claim 幂等，重复的 0x0102 返回同一 generation。
 func (b *BusinessExecutor) claimSession(ctx context.Context, event contracts.UplinkEvent, incoming model.JT808Msg) (uint64, error) {
-	if b.opts.Sessions == nil || event.MsgID != 0x0102 {
+	if event.MsgID != 0x0102 {
 		return 0, nil
 	}
 	in, ok := incoming.(*model.Msg0102)
@@ -192,24 +193,49 @@ func (b *BusinessExecutor) claimSession(ctx context.Context, event contracts.Upl
 	if b.opts.Devices == nil {
 		return 0, fmt.Errorf("session claim requires device repository")
 	}
-	device, err := b.opts.Devices.GetByPhone(ctx, event.Phone)
-	if errors.Is(err, repository.ErrDeviceNotFound) {
-		return 0, &controlhttp.StatusError{
-			Status:  http.StatusConflict,
-			Code:    "unknown_device",
-			Message: "device is not registered",
-		}
-	}
-	if err != nil {
-		return 0, err
-	}
-	if in.AuthCode != device.AuthCode {
+	if in.AuthCode != protocol.AuthCodeForPhone(event.Phone) {
 		return 0, &controlhttp.StatusError{
 			Status:  http.StatusForbidden,
 			Code:    "auth_rejected",
-			Message: "authentication code does not match control state",
+			Message: "authentication code does not match phone",
 		}
 	}
+
+	device, err := b.opts.Devices.GetByPhone(ctx, event.Phone)
+	missing := errors.Is(err, repository.ErrDeviceNotFound)
+	if err != nil && !missing {
+		return 0, err
+	}
+	if missing {
+		device = &domain.Device{Phone: event.Phone}
+	}
+
+	// 缓存命中：用 0x0100 的档案快照补写静态字段；缺失且无档案时建最小档案。
+	// 缓存缺失但档案存在：不触碰 ID/车牌，只刷新运行时字段。
+	if event.Profile != nil {
+		device.ID = event.Profile.DeviceID
+		device.Plate = event.Profile.Plate
+		device.VersionDesc = event.Profile.VersionDesc
+		device.ProtocolVersion = event.Profile.ProtocolVersion
+	}
+	if event.Profile != nil || missing {
+		if err := b.opts.Devices.SaveRegistration(ctx, device); err != nil {
+			return 0, err
+		}
+	}
+
+	device.IMEI = in.IMEI
+	device.SoftwareVersion = in.SoftwareVersion
+	device.Status = domain.DeviceStatusOnline
+	device.SessionID = event.SessionID
+	device.LastestComTime = b.opts.Clock.Now()
+	if err := b.opts.Devices.SaveAuthState(ctx, device); err != nil {
+		return 0, err
+	}
+	if b.opts.Sessions == nil {
+		return 0, nil
+	}
+
 	owner := repository.SessionOwner{
 		GatewayID:  event.GatewayID,
 		InstanceID: event.InstanceID,

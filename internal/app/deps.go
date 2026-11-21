@@ -387,9 +387,10 @@ func buildDeps(spec Spec, cfg *config.Config, s settings) *deps {
 		authProvider = provider
 	}
 	processorDeps.AuthProvider = authProvider
+	// 0x0100 只写本进程档案缓存，0x0102 随事件带给管控；standalone 同进程也用它补写档案。
+	processorDeps.DeviceProfileCache = protocol.NewDeviceProfileCache(5 * time.Minute)
 	if uplinkSink != nil {
-		// 网关出口才需要本地注册缓存与消息体上限；standalone/local 不走事件出口。
-		processorDeps.RegisterCache = protocol.NewRegisterCache(5 * time.Minute)
+		// 网关出口才需要消息体上限；standalone/local 不走事件出口。
 		processorDeps.UplinkMaxBodyBytes = clusterOptions.Uplink.MaxBodyBytes
 		processorDeps.OnOversized = func(msgID uint16, phone string, size int) {
 			metrics.IncUplinkOversized()

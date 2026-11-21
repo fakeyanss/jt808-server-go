@@ -474,8 +474,19 @@ type PacketData struct {
 	SegCompleted bool       // 是否分包传输结束
 }
 
+// DeviceProfile 是 0x0100 注册时报文携带的档案快照。
+// 网关只在进程内缓存它，0x0102 鉴权时随事件交给管控落库；nil 表示缓存缺失。
+type DeviceProfile struct {
+	DeviceID        string
+	Plate           string
+	VersionDesc     domain.VersionType
+	ProtocolVersion uint8
+}
+
 // 定义消息处理结果数据
 type ProcessData struct {
 	Incoming JT808Msg // 收到的消息
 	Outgoing JT808Msg // 发出的消息, 无需回复时可为nil
+	// UplinkProfile 仅在 0x0102 且网关命中注册档案缓存时非空。
+	UplinkProfile *DeviceProfile
 }

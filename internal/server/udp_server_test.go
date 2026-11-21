@@ -137,8 +137,9 @@ func TestUDPServerProcessesJT808Registration(t *testing.T) {
 func standaloneDeps() protocol.ProcessorDeps {
 	repos := database.Default().Repositories
 	return protocol.ProcessorDeps{
-		Repos:    repos,
-		Business: business.New(business.Options{Repositories: repos}),
+		Repos:              repos,
+		Business:           business.New(business.Options{Repositories: repos}),
+		DeviceProfileCache: protocol.NewDeviceProfileCache(time.Minute),
 	}
 }
 
@@ -1944,7 +1945,7 @@ func TestTCPServerTerminalUplink8500Echoes0500(t *testing.T) {
 	require.Equal(t, uint16(0x0007), database.Default().Industry.VehicleControl(phone))
 }
 
-func TestTCPServerRejectsDuplicateRegistration(t *testing.T) {
+func TestTCPServerDuplicateRegistrationReissuesCode(t *testing.T) {
 	server := NewTCPServer()
 	server.SetDeps(standaloneDeps())
 	require.NoError(t, server.Listen("127.0.0.1:0"))
@@ -1972,9 +1973,10 @@ func TestTCPServerRejectsDuplicateRegistration(t *testing.T) {
 	})
 	carDup := &model.Msg8100{}
 	b2.recvInto(t, 3*time.Second, 0x8100, carDup)
-	require.Equal(t, model.ResCarAlreadyRegister, carDup.Result)
+	require.Equal(t, model.ResSuccess, carDup.Result)
+	require.Equal(t, protocol.AuthCodeForPhone(phoneB), carDup.AuthCode)
 	_, err := devices.GetByPhone(context.Background(), phoneB)
-	require.ErrorIs(t, err, repository.ErrDeviceNotFound)
+	require.ErrorIs(t, err, repository.ErrDeviceNotFound, "registration no longer writes to the device table")
 
 	// Same phone, different plate on a new conn -> device already registered.
 	b3 := newBareTerminal(t, server.listener.Addr().String())
@@ -1990,13 +1992,45 @@ func TestTCPServerRejectsDuplicateRegistration(t *testing.T) {
 	})
 	devDup := &model.Msg8100{}
 	b3.recvInto(t, 3*time.Second, 0x8100, devDup)
-	require.Equal(t, model.ResDeviceAlreadyRegister, devDup.Result)
+	require.Equal(t, model.ResSuccess, devDup.Result)
+	require.Equal(t, protocol.AuthCodeForPhone(phoneA), devDup.AuthCode)
 	_, err = devices.GetByPlate(context.Background(), plateC)
-	require.ErrorIs(t, err, repository.ErrDeviceNotFound, "rejected registration must not cache its plate")
+	require.ErrorIs(t, err, repository.ErrDeviceNotFound, "registration must not write the new plate")
 
 	original, err := devices.GetByPhone(context.Background(), phoneA)
 	require.NoError(t, err)
+	require.Equal(t, plateA, original.Plate, "existing profile must stay untouched until authentication")
 	require.Equal(t, domain.DeviceStatusOnline, original.Status, "original device must stay untouched")
+}
+
+func TestTCPServerAuthCodeUnaffectedByDeviceIDChange(t *testing.T) {
+	server := NewTCPServer()
+	server.SetDeps(standaloneDeps())
+	require.NoError(t, server.Listen("127.0.0.1:0"))
+	go server.Start()
+	t.Cleanup(server.Stop)
+
+	const phone = "188765433239"
+	const plateA = "京B00039"
+	const plateB = "京B00040"
+	devices := database.Default().Devices
+
+	first := dialBareTerminal(t, server.listener.Addr().String(), phone, plateA, "IDA1234")
+	require.Equal(t, protocol.AuthCodeForPhone(phone), first.authCode)
+
+	device, err := devices.GetByPhone(context.Background(), phone)
+	require.NoError(t, err)
+	require.Equal(t, "IDA1234", device.ID)
+	require.Equal(t, plateA, device.Plate)
+
+	// 设备 ID/车牌变化后重新注册：鉴权码只由手机号决定，必须保持不变。
+	second := dialBareTerminal(t, server.listener.Addr().String(), phone, plateB, "IDB1234")
+	require.Equal(t, first.authCode, second.authCode, "auth code must not depend on device id or plate")
+
+	device, err = devices.GetByPhone(context.Background(), phone)
+	require.NoError(t, err)
+	require.Equal(t, "IDB1234", device.ID, "profile cache must update the device id on authentication")
+	require.Equal(t, plateB, device.Plate)
 }
 
 func TestTCPServerRejectsWrongAuthCode(t *testing.T) {
@@ -2407,31 +2441,14 @@ func TestTCPServerConcurrentSamePhoneRegistrationConverges(t *testing.T) {
 	}
 	wg.Wait()
 
-	// 鉴权码由设备字段推导，并发注册中只有成功的一方拿到了鉴权码；
-	// 其余被判重复注册的连接复用同一鉴权码继续鉴权。
-	var authCode string
+	// 0x0100 不落库：并发注册都应回 result=0 与同一个 f(phone)，档案在鉴权后才建立。
+	authCode := protocol.AuthCodeForPhone(phone)
 	for i := range terminals {
 		regReply := &model.Msg8100{}
 		terminals[i].recvInto(t, 3*time.Second, 0x8100, regReply)
-		require.Contains(t,
-			[]model.ResultCodeType{model.ResSuccess, model.ResCarAlreadyRegister, model.ResDeviceAlreadyRegister},
-			regReply.Result)
-		// 只有注册成功的结果才携带有效鉴权码，失败结果里的 AuthCode 是消息默认值。
-		if regReply.Result == model.ResSuccess && regReply.AuthCode != "" {
-			authCode = regReply.AuthCode
-		}
+		require.Equal(t, model.ResSuccess, regReply.Result)
+		require.Equal(t, authCode, regReply.AuthCode)
 	}
-	require.NotEmpty(t, authCode, "one of the concurrent registrations must succeed")
-
-	deadline := time.Now().Add(3 * time.Second)
-	for time.Now().Before(deadline) {
-		if _, err := database.Default().Devices.GetByPhone(context.Background(), phone); err == nil {
-			break
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
-	_, err := database.Default().Devices.GetByPhone(context.Background(), phone)
-	require.NoError(t, err, "device should be registered by one of the concurrent contenders")
 
 	authFrames := make([][]byte, contenders)
 	for i := range terminals {
@@ -2452,6 +2469,15 @@ func TestTCPServerConcurrentSamePhoneRegistrationConverges(t *testing.T) {
 		}(i)
 	}
 	wg.Wait()
+
+	var persistErr error
+	for i := 0; i < 100; i++ {
+		if _, persistErr = database.Default().Devices.GetByPhone(context.Background(), phone); persistErr == nil {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	require.NoError(t, persistErr, "authentication must persist the device")
 
 	eventuallyDeadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(eventuallyDeadline) {

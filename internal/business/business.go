@@ -73,15 +73,15 @@ func (p *Processor) ProcessControl(ctx context.Context, msgID uint16, data *mode
 		// 0x0001 的管控半边不落库：应答由 uplink 入口直接交给 outbox 收尾。
 		return p.processTerminalReplyBusiness(ctx, data)
 	case 0x0100:
-		err := p.processRegisterBusiness(ctx, data)
+		// 0x0100 的静态字段由网关缓存并随 0x0102 事件上行，控制面不再落库。
 		protocol.ApplyHookReply(ctx, msgID, data)
 		protocol.DispatchHooks(ctx, p.hooks, data)
-		return err
+		return nil
 	case 0x0102:
-		err := p.processAuthBusiness(ctx, data)
+		// 鉴权与档案写入已在 claimSession 完成，这里只派发事件钩子。
 		protocol.ApplyHookReply(ctx, msgID, data)
 		protocol.DispatchHooks(ctx, p.hooks, data)
-		return err
+		return nil
 	case 0x0200:
 		// 控制面也需要报警事件：自动 0x9208 与报警动作回调在这里触发。
 		protocol.DispatchHooks(ctx, p.hooks, data)
