@@ -33,6 +33,15 @@ const (
 	ReliabilityConfirmBeforeAck Reliability = "confirm_before_ack"
 )
 
+// DeviceProfile 是 0x0100 注册档案中随 0x0102 事件上行的静态字段。
+// nil 表示网关缓存缺失，管控不得用空值覆盖既有档案。
+type DeviceProfile struct {
+	DeviceID        string             `json:"deviceId"`
+	Plate           string             `json:"plate"`
+	VersionDesc     domain.VersionType `json:"versionDesc"`
+	ProtocolVersion uint8              `json:"protocolVersion"`
+}
+
 // UplinkEvent 是网关交给管控的一条上行事件。
 //
 // Body 是已解码的原始消息体，管控用 DecodeMessageBody 单次解码，避免与网关
@@ -73,6 +82,9 @@ type UplinkEvent struct {
 	Payload    any
 	PayloadRaw []byte
 	Meta       map[string]any
+
+	// Profile 仅 0x0102 携带：网关在进程内命中的 0x0100 档案快照；nil 表示缓存缺失。
+	Profile *DeviceProfile
 
 	// Reply 仅在终端通用应答（0x0001）时非空，是给管控应答入口的归一化字段。
 	Reply *TerminalReply

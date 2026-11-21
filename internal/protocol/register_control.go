@@ -5,12 +5,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/pkg/errors"
 	"github.com/rs/zerolog/log"
 
-	"github.com/fakeyanss/jt808-server-go/internal/domain"
 	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
-	"github.com/fakeyanss/jt808-server-go/internal/repository"
 )
 
 // UplinkEventCtxKey 承载控制面执行器从事件带到 handler 的上下文。
@@ -31,32 +28,31 @@ func UplinkEventFromContext(ctx context.Context) UplinkEventContext {
 	return value
 }
 
-// RegisterCache 是网关本地的注册缓存。
+// DeviceProfileCache 是网关进程内的 0x0100 档案缓存。
 //
-// 它只保存 0x0100 当次计算出的鉴权码与占用会话，TTL 覆盖一次注册/鉴权往返；
-// 设备档案的权威副本仍在管控，缓存丢失只会让网关回退到只读查询。
-type RegisterCache struct {
+// 只保存本次注册报文携带的静态字段（设备 ID、车牌、协议版本），0x0102 鉴权时
+// 随事件交给管控落库。鉴权码由手机号现算，不进入缓存。
+type DeviceProfileCache struct {
 	mu      sync.Mutex
 	ttl     time.Duration
-	entries map[string]registerEntry
+	entries map[string]profileEntry
 }
 
-type registerEntry struct {
-	authCode  string
-	sessionID string
+type profileEntry struct {
+	profile   model.DeviceProfile
 	expiresAt time.Time
 }
 
-// NewRegisterCache 创建注册缓存；ttl 为零时使用 5 分钟。
-func NewRegisterCache(ttl time.Duration) *RegisterCache {
+// NewDeviceProfileCache 创建档案缓存；ttl 为零时使用 5 分钟。
+func NewDeviceProfileCache(ttl time.Duration) *DeviceProfileCache {
 	if ttl <= 0 {
 		ttl = 5 * time.Minute
 	}
-	return &RegisterCache{ttl: ttl, entries: map[string]registerEntry{}}
+	return &DeviceProfileCache{ttl: ttl, entries: map[string]profileEntry{}}
 }
 
-// Put 记录一次注册计算出的鉴权码。
-func (c *RegisterCache) Put(phone, authCode, sessionID string) {
+// Put 记录一次注册携带的档案快照。
+func (c *DeviceProfileCache) Put(phone string, profile model.DeviceProfile) {
 	if c == nil || phone == "" {
 		return
 	}
@@ -70,29 +66,29 @@ func (c *RegisterCache) Put(phone, authCode, sessionID string) {
 			}
 		}
 	}
-	c.entries[phone] = registerEntry{authCode: authCode, sessionID: sessionID, expiresAt: now.Add(c.ttl)}
+	c.entries[phone] = profileEntry{profile: profile, expiresAt: now.Add(c.ttl)}
 }
 
-// Get 返回未过期的缓存项。
-func (c *RegisterCache) Get(phone string) (authCode, sessionID string, ok bool) {
+// Get 返回未过期的档案快照。
+func (c *DeviceProfileCache) Get(phone string) (model.DeviceProfile, bool) {
 	if c == nil {
-		return "", "", false
+		return model.DeviceProfile{}, false
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	entry, found := c.entries[phone]
 	if !found {
-		return "", "", false
+		return model.DeviceProfile{}, false
 	}
 	if time.Now().After(entry.expiresAt) {
 		delete(c.entries, phone)
-		return "", "", false
+		return model.DeviceProfile{}, false
 	}
-	return entry.authCode, entry.sessionID, true
+	return entry.profile, true
 }
 
-// processRegisterProtocol 是 0x0100 的网关半边：只读判断、计算鉴权码并回 0x8100。
-// 不做任何档案写入，档案由管控消费注册事件后落库。
+// processRegisterProtocol 是 0x0100 的网关半边：只写本进程档案缓存并回 0x8100。
+// 不查库、不写库；档案由管控在 0x0102 鉴权通过后落库。
 func (mp *JT808MsgProcessor) processRegisterProtocol(ctx context.Context, data *model.ProcessData) error {
 	in, ok := data.Incoming.(*model.Msg0100)
 	if !ok || in == nil {
@@ -103,48 +99,29 @@ func (mp *JT808MsgProcessor) processRegisterProtocol(ctx context.Context, data *
 		return nil
 	}
 
-	// 已知档案：沿用既有语义，拒绝重复注册。
-	if mp.deps.AuthProvider != nil {
-		if _, err := mp.deps.AuthProvider.Device(ctx, in.Header.PhoneNumber); err == nil {
-			// 重复注册不签发新码，但必须回填档案里的鉴权码：
-			// 否则应答会带 GenOutgoing 的占位符，终端无法完成鉴权。
-			code, codeErr := mp.deps.AuthProvider.AuthCode(ctx, in.Header.PhoneNumber)
-			if codeErr != nil {
-				log.Warn().Err(codeErr).Str("phone", in.Header.PhoneNumber).
-					Msg("Auth provider lookup failed while returning existing auth code")
-				return codeErr
-			}
-			out.Result = model.ResDeviceAlreadyRegister
-			out.AuthCode = code
-			return nil
-		} else if !errors.Is(err, repository.ErrDeviceNotFound) {
-			// 管控不可用时不放行注册，避免在档案未知的情况下签发鉴权码。
-			log.Warn().Err(err).Str("phone", in.Header.PhoneNumber).Msg("Auth provider lookup failed during registration")
-			return err
-		}
+	phone := in.Header.PhoneNumber
+	out.Result = model.ResSuccess
+	out.AuthCode = AuthCodeForPhone(phone)
+
+	// 先写缓存再应答：随后的 0x0102 依赖它把档案带给管控。
+	if mp.deps.DeviceProfileCache != nil {
+		mp.deps.DeviceProfileCache.Put(phone, profileFromMsg0100(in))
 	}
 
-	code := RegisterAuthCode(in)
-	out.AuthCode = code
-	if mp.deps.RegisterCache != nil {
-		sessionID := ""
-		if session, ok := ctx.Value(model.SessionCtxKey{}).(*model.Session); ok && session != nil {
-			sessionID = session.ID
-			// 手机号未被其它活会话占用时立即绑定；已被占用则留到鉴权通过后再顶替。
-			if bound, bindErr := mp.deps.Runtime.Conn.BindPhoneIfFree(ctx, in.Header.PhoneNumber, session.ID); bindErr != nil {
-				log.Warn().Err(bindErr).Str("phone", in.Header.PhoneNumber).Str("session", session.ID).
-					Msg("Fail to bind phone on registration")
-			} else if !bound {
-				log.Info().Str("phone", in.Header.PhoneNumber).Str("session", session.ID).
-					Msg("Phone is already bound, deferring takeover until authentication")
-			}
+	if session, ok := ctx.Value(model.SessionCtxKey{}).(*model.Session); ok && session != nil {
+		// 手机号未被其它活会话占用时立即绑定；已被占用则留到鉴权通过后再顶替。
+		if bound, bindErr := mp.deps.Runtime.Conn.BindPhoneIfFree(ctx, phone, session.ID); bindErr != nil {
+			log.Warn().Err(bindErr).Str("phone", phone).Str("session", session.ID).
+				Msg("Fail to bind phone on registration")
+		} else if !bound {
+			log.Info().Str("phone", phone).Str("session", session.ID).
+				Msg("Phone is already bound, deferring takeover until authentication")
 		}
-		mp.deps.RegisterCache.Put(in.Header.PhoneNumber, code, sessionID)
 	}
 	return nil
 }
 
-// processAuthProtocol 是 0x0102 的网关半边：本地校验鉴权码并回 0x8001。
+// processAuthProtocol 是 0x0102 的网关半边：只比 f(phone)，并把命中的档案随事件上行。
 func (mp *JT808MsgProcessor) processAuthProtocol(ctx context.Context, data *model.ProcessData) error {
 	in, ok := data.Incoming.(*model.Msg0102)
 	if !ok || in == nil {
@@ -155,31 +132,17 @@ func (mp *JT808MsgProcessor) processAuthProtocol(ctx context.Context, data *mode
 		return nil
 	}
 	phone := in.Header.PhoneNumber
-	expected, _, cached := "", "", false
-	if mp.deps.RegisterCache != nil {
-		expected, _, cached = mp.deps.RegisterCache.Get(phone)
-	}
-	if !cached && mp.deps.AuthProvider != nil {
-		code, err := mp.deps.AuthProvider.AuthCode(ctx, phone)
-		if err != nil && !errors.Is(err, repository.ErrDeviceNotFound) {
-			log.Warn().Err(err).Str("phone", phone).Msg("Auth provider lookup failed during authentication")
-			return err
-		}
-		if err == nil {
-			expected, cached = code, true
-		}
-	}
-	if !cached {
-		// 没有注册缓存也没有档案：交给管控 409，由网关重投注册事件后让终端重传。
-		out.Result = model.ResultFail
-		return nil
-	}
-	if in.AuthCode != expected {
+	if in.AuthCode != AuthCodeForPhone(phone) {
 		out.Result = model.ResultFail
 		return nil
 	}
 
 	out.Result = model.ResultSuccess
+	if mp.deps.DeviceProfileCache != nil {
+		if profile, cached := mp.deps.DeviceProfileCache.Get(phone); cached {
+			data.UplinkProfile = &profile
+		}
+	}
 	if session, ok := ctx.Value(model.SessionCtxKey{}).(*model.Session); ok && session != nil {
 		if bindErr := mp.bindPhoneSession(ctx, phone, session); bindErr != nil {
 			log.Warn().Err(bindErr).Str("phone", phone).Str("session", session.ID).
@@ -190,8 +153,17 @@ func (mp *JT808MsgProcessor) processAuthProtocol(ctx context.Context, data *mode
 	return nil
 }
 
-// RegisterAuthCode 计算注册鉴权码；standalone、网关半边与管控半边共用同一算法。
-func RegisterAuthCode(in *model.Msg0100) string {
-	device := &domain.Device{ID: in.DeviceID, Plate: in.PlateNumber, Phone: in.Header.PhoneNumber}
-	return genAuthCode(device)
+// profileFromMsg0100 提取注册报文携带的档案静态字段。
+func profileFromMsg0100(in *model.Msg0100) model.DeviceProfile {
+	profile := model.DeviceProfile{
+		DeviceID: in.DeviceID,
+		Plate:    in.PlateNumber,
+	}
+	if in.Header != nil {
+		if in.Header.Attr != nil {
+			profile.VersionDesc = in.Header.Attr.VersionDesc
+		}
+		profile.ProtocolVersion = in.Header.ProtocolVersion
+	}
+	return profile
 }

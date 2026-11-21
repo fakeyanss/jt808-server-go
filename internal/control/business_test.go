@@ -218,73 +218,66 @@ func TestBusinessExecutorAcceptsTerminalReplyHalf(t *testing.T) {
 	require.True(t, result.Accepted)
 }
 
-// TestRegistrationAndAuthStateAreOrderIndependent 覆盖乱序自愈：
-//  1. 先 0x0102（档案不存在）→ 409，注册到达后重投成功；
-//  2. 先 0x0100 再 0x0102。
-//
-// 两种顺序的终态必须一致：档案字段完整，在线状态、会话与最后通信时间不被注册覆盖。
-func TestRegistrationAndAuthStateAreOrderIndependent(t *testing.T) {
+// TestAuthenticationPersistsProfileAndPreservesExistingFields 覆盖新口径：
+// 0x0100 不落库，档案静态字段只随 0x0102 事件的 Profile 写入；
+// 缓存缺失时不得用空值覆盖既有档案；既无档案也无缓存时建最小档案。
+func TestAuthenticationPersistsProfileAndPreservesExistingFields(t *testing.T) {
 	const phone = "188765410001"
-	registration := func() contracts.UplinkEvent {
-		return contracts.UplinkEvent{
-			EventID:         "evt-reg",
-			MsgID:           0x0100,
-			Phone:           phone,
-			ProtocolVersion: "2019",
-			Body:            registrationBody2019(),
-		}
+	ctx := context.Background()
+	stores := database.NewMemory()
+	devices := stores.Devices
+	executor := NewBusinessExecutor(BusinessOptions{
+		Devices:       devices,
+		ProcessorDeps: protocol.ProcessorDeps{Repos: stores.Repositories},
+	})
+	profile := &contracts.DeviceProfile{
+		DeviceID:    strings.Repeat("D", 30),
+		Plate:       "京A12345",
+		VersionDesc: 0,
 	}
-	auth := func() contracts.UplinkEvent {
+	auth := func(eventID, phone, sessionID, imei string, profile *contracts.DeviceProfile) contracts.UplinkEvent {
 		return contracts.UplinkEvent{
-			EventID:         "evt-auth",
+			EventID:         eventID,
 			MsgID:           0x0102,
 			Phone:           phone,
-			SessionID:       "sess-order",
+			SessionID:       sessionID,
 			ProtocolVersion: "2019",
-			Body:            authBody2019(authCode2019(phone), "123456789012345", "V1.0.0"),
+			Profile:         profile,
+			Body:            authBody2019(authCode2019(phone), imei, "V1.0.0"),
 		}
 	}
 
-	run := func(t *testing.T, authFirst bool) *domain.Device {
-		t.Helper()
-		ctx := context.Background()
-		stores := database.NewMemory()
-		devices := stores.Devices
-		executor := NewBusinessExecutor(BusinessOptions{
-			Devices:       devices,
-			ProcessorDeps: protocol.ProcessorDeps{Repos: stores.Repositories},
-		})
-		if authFirst {
-			_, err := executor.ConsumeEvent(ctx, auth())
-			require.Error(t, err, "鉴权先到时应返回 409 等待注册")
-			_, err = executor.ConsumeEvent(ctx, registration())
-			require.NoError(t, err)
-			_, err = executor.ConsumeEvent(ctx, auth())
-			require.NoError(t, err)
-		} else {
-			_, err := executor.ConsumeEvent(ctx, registration())
-			require.NoError(t, err)
-			_, err = executor.ConsumeEvent(ctx, auth())
-			require.NoError(t, err)
-		}
-		device, err := devices.GetByPhone(ctx, phone)
-		require.NoError(t, err)
-		return device
-	}
+	_, err := executor.ConsumeEvent(ctx, auth("evt-auth-1", phone, "sess-1", "123456789012345", profile))
+	require.NoError(t, err)
+	device, err := devices.GetByPhone(ctx, phone)
+	require.NoError(t, err)
+	require.Equal(t, profile.DeviceID, device.ID)
+	require.Equal(t, profile.Plate, device.Plate)
+	require.Equal(t, "123456789012345", device.IMEI)
+	require.Equal(t, "V1.0.0", device.SoftwareVersion)
+	require.Equal(t, domain.DeviceStatusOnline, device.Status)
+	require.Equal(t, "sess-1", device.SessionID)
 
-	authFirst := run(t, true)
-	registerFirst := run(t, false)
+	// 缓存缺失但档案存在：保留 ID/车牌，只刷新终端信息。
+	_, err = executor.ConsumeEvent(ctx, auth("evt-auth-2", phone, "sess-2", "123456789012346", nil))
+	require.NoError(t, err)
+	device, err = devices.GetByPhone(ctx, phone)
+	require.NoError(t, err)
+	require.Equal(t, profile.DeviceID, device.ID, "cache miss must not clear device id")
+	require.Equal(t, profile.Plate, device.Plate, "cache miss must not clear plate")
+	require.Equal(t, "123456789012346", device.IMEI)
+	require.Equal(t, "sess-2", device.SessionID)
 
-	require.Equal(t, registerFirst.ID, authFirst.ID)
-	require.Equal(t, registerFirst.Plate, authFirst.Plate)
-	require.Equal(t, registerFirst.AuthCode, authFirst.AuthCode)
-	require.Equal(t, registerFirst.VersionDesc, authFirst.VersionDesc)
-	require.Equal(t, registerFirst.IMEI, authFirst.IMEI)
-	require.Equal(t, registerFirst.SoftwareVersion, authFirst.SoftwareVersion)
-	require.Equal(t, domain.DeviceStatusOnline, authFirst.Status)
-	require.Equal(t, "sess-order", authFirst.SessionID)
-	require.False(t, authFirst.LastestComTime.IsZero())
-	require.Equal(t, "京A12345", authFirst.Plate)
+	// 既无档案也无缓存：建最小档案，静态字段留空。
+	const newPhone = "188765410003"
+	_, err = executor.ConsumeEvent(ctx, auth("evt-auth-3", newPhone, "sess-3", "123456789012347", nil))
+	require.NoError(t, err)
+	minimal, err := devices.GetByPhone(ctx, newPhone)
+	require.NoError(t, err)
+	require.Empty(t, minimal.ID)
+	require.Empty(t, minimal.Plate)
+	require.Equal(t, "123456789012347", minimal.IMEI)
+	require.Equal(t, domain.DeviceStatusOnline, minimal.Status)
 }
 
 // TestBusinessExecutorClaimsSessionGeneration 覆盖 0x0102 claim：
@@ -364,10 +357,9 @@ func authBody2019(authCode, imei, software string) []byte {
 	return append(body, softwareBytes...)
 }
 
-// authCode2019 复算注册鉴权码，与被测实现保持同一算法。
+// authCode2019 复算注册鉴权码：只依赖手机号，与被测实现保持同一算法。
 func authCode2019(phone string) string {
-	source := strings.Repeat("D", 30) + "_" + "京A12345" + "_" + phone
-	return strconv.Itoa(int(hash.FNV32(source)))
+	return strconv.Itoa(int(hash.FNV32(phone)))
 }
 
 type failingMediaFiles struct{}
