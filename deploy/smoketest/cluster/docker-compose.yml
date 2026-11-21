@@ -3,7 +3,7 @@
 # run.sh 与 make smoke-cluster（scripts/smoke-cluster.sh）仍可继续使用。
 #
 # 在 deploy/cluster/docker-compose.yml 基础上：
-#   - 把 jt808 角色镜像替换成本地构建的冒烟镜像（不重新 tag latest）；
+#   - 把 jt808 角色镜像替换为冒烟镜像（默认 latest，可用环境变量覆盖）；
 #   - 用目录内的 1 号网关配置覆盖 jt-signal；
 #   - 增加 2 号网关 jt-signal-2，用于验证下行按目录路由与会话归属转移；
 #   - 增加 jt808-client 终端模拟器，与集群同一网络，默认连 jt-signal:8080。
@@ -20,11 +20,6 @@ name: jt808-cluster
 services:
   jt808-client:
     image: ${JT808_SMOKE_CLIENT_IMAGE:-fakeyanss/jt808-client-go:latest}
-    build:
-      context: ../../..
-      dockerfile: build/Dockerfile.client
-      args:
-        VERSION: local
     restart: "no"
     environment:
       TZ: Asia/Shanghai

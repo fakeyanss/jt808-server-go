@@ -6,11 +6,6 @@ name: jt808-cluster
 # control 在 migrate 成功、共享卷标记文件创建后才启动。
 x-jt808: &jt808
   image: fakeyanss/jt808-server-go:latest
-  build:
-    context: ../..
-    dockerfile: build/Dockerfile
-    args:
-      VERSION: local
   restart: unless-stopped
   security_opt:
     - no-new-privileges:true
