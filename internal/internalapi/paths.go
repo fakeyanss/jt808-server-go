@@ -10,8 +10,6 @@ package internalapi
 const (
 	// PathUplink 是网关上行事件的入口。
 	PathUplink = "/internal/v1/uplink"
-	// PathDeviceLookup 是网关只读查询设备档案的入口。
-	PathDeviceLookup = "/internal/v1/device/lookup"
 	// PathMediaSegment 是 media 节点上报切片索引的入口。
 	PathMediaSegment = "/internal/v1/media/segments"
 	// PathAttachmentProgress 是附件节点上报进度、查询恢复点的入口。

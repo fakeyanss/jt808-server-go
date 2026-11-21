@@ -13,11 +13,9 @@ import (
 	"github.com/fakeyanss/jt808-server-go/internal/contracts"
 	"github.com/fakeyanss/jt808-server-go/internal/contracts/attachment"
 	"github.com/fakeyanss/jt808-server-go/internal/contracts/media"
-	"github.com/fakeyanss/jt808-server-go/internal/domain"
 	"github.com/fakeyanss/jt808-server-go/internal/mediaupload"
 	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
 	"github.com/fakeyanss/jt808-server-go/internal/repository"
-	"github.com/fakeyanss/jt808-server-go/internal/repository/database"
 )
 
 func TestLocalUplinkSinkDelivers(t *testing.T) {
@@ -33,26 +31,6 @@ func TestLocalUplinkSinkDelivers(t *testing.T) {
 
 func TestLocalUplinkSinkRequiresHandler(t *testing.T) {
 	_, err := NewLocalUplinkSink(nil).Deliver(context.Background(), contracts.UplinkEvent{})
-	require.Error(t, err)
-}
-
-func TestLocalAuthProviderReadsDevice(t *testing.T) {
-	ctx := context.Background()
-	const phone = "188765499001"
-	devices := database.Default().Devices
-	require.NoError(t, devices.Upsert(ctx, &domain.Device{Phone: phone, AuthCode: "AUTH-1"}))
-	t.Cleanup(func() { _ = devices.DeleteByPhone(ctx, phone) })
-
-	provider := NewLocalAuthProvider(devices)
-	device, err := provider.Device(ctx, phone)
-	require.NoError(t, err)
-	require.Equal(t, phone, device.Phone)
-
-	code, err := provider.AuthCode(ctx, phone)
-	require.NoError(t, err)
-	require.Equal(t, "AUTH-1", code)
-
-	_, err = provider.AuthCode(ctx, "188765499099")
 	require.Error(t, err)
 }
 

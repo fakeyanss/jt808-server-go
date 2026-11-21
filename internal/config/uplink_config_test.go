@@ -81,8 +81,7 @@ func TestParseUplinkSinkHTTPNormalizes(t *testing.T) {
 				Alarm:         2,
 				SessionClosed: 3,
 			},
-			GatewayID:   " gw-test ",
-			AuthGraceMS: 60000,
+			GatewayID: " gw-test ",
 		},
 	}}).ParseUplinkSink()
 	require.NoError(t, err)
@@ -100,17 +99,6 @@ func TestParseUplinkSinkHTTPNormalizes(t *testing.T) {
 		SessionClosed: 3,
 	}, options.HTTP.MaxAttemptsByClass)
 	require.Equal(t, "gw-test", options.HTTP.GatewayID)
-	require.Equal(t, time.Minute, options.HTTP.AuthGrace)
-}
-
-func TestParseUplinkSinkDefaultsAuthGrace(t *testing.T) {
-	options, err := (&Config{Uplink: &uplinkConf{
-		Sink: UplinkSinkHTTP,
-		HTTP: &uplinkHTTPConf{URL: "http://127.0.0.1:9090/uplink", Token: "token"},
-	}}).ParseUplinkSink()
-	require.NoError(t, err)
-	require.Equal(t, DefaultUplinkAuthGrace, options.HTTP.AuthGrace)
-	require.Equal(t, 30*time.Minute, options.HTTP.AuthGrace)
 }
 
 func TestParseUplinkSinkDefaultsHTTPGatewayID(t *testing.T) {
@@ -181,11 +169,6 @@ func TestParseUplinkSinkRejectsInvalidConfig(t *testing.T) {
 				MaxAttemptsByClass: &uplinkAttemptsConf{SessionClosed: 4},
 			}},
 			errKey: "uplink.http.maxAttemptsByClass.sessionClosed",
-		},
-		{
-			name:   "invalid auth grace",
-			conf:   &uplinkConf{Sink: UplinkSinkHTTP, HTTP: &uplinkHTTPConf{URL: "http://127.0.0.1/uplink", Token: "token", AuthGraceMS: 86400001}},
-			errKey: "uplink.http.authGraceMs",
 		},
 	}
 	for _, tc := range cases {

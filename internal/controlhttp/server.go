@@ -1,6 +1,6 @@
 // Package controlhttp 是 control 侧的内部 HTTP 入口。
 //
-// 它承载网关上行事件、设备档案只读查询，以及 media/附件节点的注册、心跳、
+// 它承载网关上行事件，以及 media/附件节点的注册、心跳、
 // 切片上报、FTP 登录与进度恢复点。网关侧的上行出口在 internal/uplink，
 // 两侧通过 internal/internalapi 共享路径与信封，互不依赖彼此的实现。
 package controlhttp
@@ -22,7 +22,6 @@ import (
 	"github.com/fakeyanss/jt808-server-go/internal/attachmentnode"
 	clockpkg "github.com/fakeyanss/jt808-server-go/internal/clock"
 	"github.com/fakeyanss/jt808-server-go/internal/contracts"
-	"github.com/fakeyanss/jt808-server-go/internal/domain"
 	"github.com/fakeyanss/jt808-server-go/internal/gatewaynode"
 	"github.com/fakeyanss/jt808-server-go/internal/internalapi"
 	"github.com/fakeyanss/jt808-server-go/internal/medianode"
@@ -80,7 +79,6 @@ type Server struct {
 	defaultConsumer EventConsumer
 	replyHandler    contracts.TerminalReplyHandler
 	dedup           *dedupCache
-	deviceLookup    func(ctx context.Context, phone string) (*domain.Device, error)
 	nodes           repository.GatewayNodeRepository
 	sessions        repository.SessionDirectoryRepository
 	segments        repository.RecordingSegmentRepository
@@ -167,16 +165,6 @@ func (s *Server) SetTerminalReplyHandler(handler contracts.TerminalReplyHandler)
 	s.mu.Unlock()
 }
 
-// SetDeviceLookup 设置网关只读查询设备档案的回调。
-func (s *Server) SetDeviceLookup(lookup func(ctx context.Context, phone string) (*domain.Device, error)) {
-	if s == nil {
-		return
-	}
-	s.mu.Lock()
-	s.deviceLookup = lookup
-	s.mu.Unlock()
-}
-
 // ValidateCoverage 校验 confirm-before-ack 覆盖：所有 at_least_once 类别，
 // 以及被强制 confirm 的 0x0001、0x0801，都必须已经注册处理方。
 // 缺失时返回一次性列出的错误；E1 不提供跳过开关。
@@ -248,7 +236,6 @@ func (s *Server) SetAttachmentProgressStore(store AttachmentProgressStore) {
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc(internalapi.PathUplink, s.handle)
-	mux.HandleFunc(internalapi.PathDeviceLookup, s.handleDeviceLookup)
 	if s.nodes != nil {
 		mux.HandleFunc(gatewaynode.PathRegister, s.handleGatewayRegister)
 		mux.HandleFunc(gatewaynode.PathHeartbeat, s.handleGatewayHeartbeat)
@@ -525,46 +512,6 @@ func (s *Server) fencedByDirectory(ctx context.Context, envelope internalapi.Upl
 		return false, err
 	}
 	return !valid, nil
-}
-
-func (s *Server) handleDeviceLookup(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "use POST")
-		return
-	}
-	if !s.authorized(r) {
-		writeError(w, http.StatusUnauthorized, "unauthorized", "invalid or missing bearer token")
-		return
-	}
-	s.mu.RLock()
-	lookup := s.deviceLookup
-	s.mu.RUnlock()
-	if lookup == nil {
-		writeError(w, http.StatusServiceUnavailable, "not_configured", "device lookup is not configured")
-		return
-	}
-	var request struct {
-		Phone string `json:"phone"`
-	}
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&request); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_json", err.Error())
-		return
-	}
-	device, err := lookup(r.Context(), strings.TrimSpace(request.Phone))
-	if err != nil {
-		if errors.Is(err, repository.ErrDeviceNotFound) {
-			writeError(w, http.StatusNotFound, "device_not_found", "device is not registered")
-			return
-		}
-		writeError(w, http.StatusServiceUnavailable, "lookup_failed", err.Error())
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"phone":    device.Phone,
-		"id":       device.ID,
-		"plate":    device.Plate,
-		"authCode": device.AuthCode,
-	})
 }
 
 func (s *Server) authorized(r *http.Request) bool {

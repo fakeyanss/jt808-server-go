@@ -12,10 +12,8 @@ import (
 
 	"github.com/fakeyanss/jt808-server-go/internal/action"
 	"github.com/fakeyanss/jt808-server-go/internal/contracts"
-	"github.com/fakeyanss/jt808-server-go/internal/domain"
 	"github.com/fakeyanss/jt808-server-go/internal/protocol"
 	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
-	"github.com/fakeyanss/jt808-server-go/internal/repository"
 )
 
 type endSessionHooks struct {
@@ -125,19 +123,6 @@ func TestEndSessionRespectsSkipActionHooks(t *testing.T) {
 	require.Empty(t, hooks.disconnects)
 }
 
-type sessionClosedAuthProvider struct{}
-
-func (sessionClosedAuthProvider) Device(_ context.Context, phone string) (*domain.Device, error) {
-	if phone != "13800000009" {
-		return nil, repository.ErrDeviceNotFound
-	}
-	return &domain.Device{Phone: phone}, nil
-}
-
-func (sessionClosedAuthProvider) AuthCode(context.Context, string) (string, error) {
-	return "auth-code", nil
-}
-
 // 0x0003 注销与传输层断连必须落到不同的 reason。
 func TestServeSessionCloseReason(t *testing.T) {
 	const phone = "13800000009"
@@ -185,8 +170,7 @@ func TestServeSessionCloseReason(t *testing.T) {
 			go func() {
 				defer close(done)
 				serveSession(session, action.Noop{}, protocol.ProcessorDeps{
-					UplinkSink:   sink,
-					AuthProvider: sessionClosedAuthProvider{},
+					UplinkSink: sink,
 				})
 			}()
 

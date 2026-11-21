@@ -60,10 +60,11 @@ type ProcessorDeps struct {
 	InstanceID string
 	// MediaUpload 为空表示 0x0801 只保留行业内存快照，不落盘也不写媒体文件仓储。
 	MediaUpload *mediaupload.Store
-	// AuthProvider 是 cluster 下网关的只读鉴权来源；为空时回退本地档案。
-	AuthProvider contracts.AuthProvider
 	// DeviceProfileCache 是网关进程内的 0x0100 档案缓存，随 0x0102 事件交给管控。
 	DeviceProfileCache *DeviceProfileCache
+	// DeviceStoreAvailable 表示本进程可读设备档案（standalone 或含 control 角色）。
+	// 纯网关进程没有档案库，存在性校验交给 control。
+	DeviceStoreAvailable bool
 	// UplinkMaxBodyBytes 限制交给出口的原始消息体；超限仍应答但记账并告警。
 	UplinkMaxBodyBytes int64
 	// OnOversized 是超限事件的旁路回调，用于指标与日志。
@@ -964,17 +965,10 @@ func (mp *JT808MsgProcessor) processMsg0002(_ context.Context, data *model.Proce
 	return nil
 }
 
-// checkDeviceExists 校验终端档案：集群网关查 control（AuthProvider），
-// 其余装配回退本地仓储。AuthProvider 在 control 不可达时按有界宽限放行
-// （见 HTTPAuthProvider）；无缓存或宽限耗尽仍返回错误。
+// checkDeviceExists 校验终端档案：只有本进程具备档案库时才做本地校验；
+// 纯网关进程没有档案库，存在性由 control 在鉴权时判定。
 func (mp *JT808MsgProcessor) checkDeviceExists(ctx context.Context, phone string) error {
-	if mp.deps.AuthProvider != nil {
-		if _, err := mp.deps.AuthProvider.Device(ctx, phone); err != nil {
-			if errors.Is(err, repository.ErrDeviceNotFound) {
-				return errors.Wrapf(err, "Fail to find device cache, phoneNumber=%s", phone)
-			}
-			return err
-		}
+	if !mp.deps.DeviceStoreAvailable {
 		return nil
 	}
 	if _, err := mp.deps.Repos.Devices.GetByPhone(ctx, phone); err != nil {
@@ -991,9 +985,8 @@ func (mp *JT808MsgProcessor) checkDeviceExists(ctx context.Context, phone string
 func (mp *JT808MsgProcessor) processMsg0003(ctx context.Context, data *model.ProcessData) error {
 	phone := data.Incoming.GetHeader().PhoneNumber
 	// 集群网关只清理本地会话与保活状态：档案归 control，网关不删库记录。
-	// 单机进程同时具备 control 角色（AuthProvider 为本地只读实现），档案就在
-	// 本进程，注销必须删档，否则同一终端再次注册会被判为“已注册”。
-	if mp.deps.AuthProvider != nil && mp.deps.Business == nil {
+	// 单机进程（无上行出口）档案就在本进程，注销必须删档。
+	if mp.deps.Business == nil {
 		if err := mp.checkDeviceExists(ctx, phone); err != nil {
 			return err
 		}

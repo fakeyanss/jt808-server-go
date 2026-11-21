@@ -257,9 +257,6 @@ type uplinkHTTPConf struct {
 	// MaxAttemptsByClass 按上行分类覆盖 maxAttempts；未配置的分类回落到 maxAttempts。
 	MaxAttemptsByClass *uplinkAttemptsConf `yaml:"maxAttemptsByClass"`
 	GatewayID          string              `yaml:"gatewayId"`
-	// AuthGraceMS 是网关只读鉴权的宽限期（毫秒）：缓存过期后 control 不可达时，
-	// 在该窗口内继续按缓存档案放行；0 表示使用默认值。
-	AuthGraceMS int `yaml:"authGraceMs"`
 }
 
 // uplinkAttemptsConf 按上行分类覆盖投递次数（含首次）。
@@ -364,9 +361,6 @@ const (
 	// 默认不重试：confirm-before-ack 的重试会成倍放大应答时延，
 	// 必须严格小于终端重传窗口。
 	DefaultUplinkHTTPAttempts = 1
-	// DefaultUplinkAuthGrace 是网关只读鉴权的默认宽限期：
-	// 缓存过期后 control 不可达时，最多再按缓存档案放行这么久。
-	DefaultUplinkAuthGrace = 30 * time.Minute
 )
 
 // UplinkSinkOptions 是上行出口的归一化配置。
@@ -388,8 +382,6 @@ type UplinkHTTPOptions struct {
 	// MaxAttemptsByClass 是分类覆盖；零值字段回落到 MaxAttempts。
 	MaxAttemptsByClass UplinkAttemptOverrides
 	GatewayID          string
-	// AuthGrace 是缓存过期后 control 不可达时的有限放行窗口。
-	AuthGrace time.Duration
 }
 
 // UplinkAttemptOverrides 是分类投递次数的归一化配置。
@@ -411,7 +403,6 @@ func DefaultUplinkSinkOptions() UplinkSinkOptions {
 			QueueSize:   DefaultUplinkHTTPQueue,
 			Workers:     DefaultUplinkHTTPWorkers,
 			MaxAttempts: DefaultUplinkHTTPAttempts,
-			AuthGrace:   DefaultUplinkAuthGrace,
 		},
 	}
 }
@@ -501,12 +492,6 @@ func (c *Config) ParseUplinkSink() (UplinkSinkOptions, error) {
 			}
 			*field.dest = field.value
 		}
-	}
-	if conf.AuthGraceMS != 0 {
-		if conf.AuthGraceMS < 1 || conf.AuthGraceMS > int((24*time.Hour).Milliseconds()) {
-			return UplinkSinkOptions{}, fmt.Errorf("uplink.http.authGraceMs must be in [1, 86400000], got %d", conf.AuthGraceMS)
-		}
-		options.HTTP.AuthGrace = time.Duration(conf.AuthGraceMS) * time.Millisecond
 	}
 	options.HTTP.GatewayID = strings.TrimSpace(conf.GatewayID)
 	if options.HTTP.GatewayID == "" {

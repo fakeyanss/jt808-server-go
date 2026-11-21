@@ -329,46 +329,18 @@ func TestOnAlarmHTTPCallbackIncludesExtItems(t *testing.T) {
 	}
 }
 
-// fakeAuthProvider 模拟 control 的只读档案查询。
-type fakeAuthProvider struct {
-	devices map[string]*domain.Device
-	err     error
-}
-
-func (f fakeAuthProvider) Device(_ context.Context, phone string) (*domain.Device, error) {
-	if f.err != nil {
-		return nil, f.err
-	}
-	if device, ok := f.devices[phone]; ok {
-		return device, nil
-	}
-	return nil, repository.ErrDeviceNotFound
-}
-
-func (f fakeAuthProvider) AuthCode(_ context.Context, phone string) (string, error) {
-	device, err := f.Device(context.Background(), phone)
-	if err != nil {
-		return "", err
-	}
-	return device.AuthCode, nil
-}
-
-// 集群网关不连库：心跳与注销的档案校验走 AuthProvider，且注销不得删除本地库记录。
-func TestGatewayHandlersUseAuthProviderWithoutDatabase(t *testing.T) {
+// 集群网关不连库：心跳与注销不做本地档案校验，也不得删除本地库记录。
+func TestGatewayHandlersSkipDeviceLookupWithoutDatabase(t *testing.T) {
 	const phone = "188765499005"
 	ctx := context.Background()
 	repos := database.NewMemory()
 	require.NoError(t, repos.Devices.Upsert(ctx, &domain.Device{
 		Phone:     phone,
 		Keepalive: time.Minute,
-		AuthCode:  "code-1",
 	}))
-	provider := fakeAuthProvider{devices: map[string]*domain.Device{
-		phone: {Phone: phone, Keepalive: time.Minute, AuthCode: "code-1"},
-	}}
 	processor := NewJT808MsgProcessor(nil, WithProcessorDeps(ProcessorDeps{
-		Repos:        repos.Repositories,
-		AuthProvider: provider,
+		Repos:                repos.Repositories,
+		DeviceStoreAvailable: false,
 	}))
 	t.Cleanup(func() { runtime.Default().Heartbeat.Remove(ctx, phone) })
 
@@ -382,22 +354,9 @@ func TestGatewayHandlersUseAuthProviderWithoutDatabase(t *testing.T) {
 	_, err := repos.Devices.GetByPhone(ctx, phone)
 	require.NoError(t, err)
 
-	// 未知终端仍按原语义拒绝。
+	// 纯网关没有档案库，未知终端也不在协议层拒绝；身份由 control 的 0x0102 判定。
 	unknown := &model.Msg0002{Header: &model.MsgHeader{MsgID: 0x0002, PhoneNumber: "188765499006", Attr: &model.MsgBodyAttr{}}}
-	require.Error(t, processor.processMsg0002(ctx, &model.ProcessData{Incoming: unknown}))
-}
-
-// stubLogoutAuthProvider 模拟单机进程里指向本地档案的只读鉴权来源。
-type stubLogoutAuthProvider struct {
-	devices repository.DeviceRepository
-}
-
-func (p stubLogoutAuthProvider) Device(ctx context.Context, phone string) (*domain.Device, error) {
-	return p.devices.GetByPhone(ctx, phone)
-}
-
-func (p stubLogoutAuthProvider) AuthCode(context.Context, string) (string, error) {
-	return "", nil
+	require.NoError(t, processor.processMsg0002(ctx, &model.ProcessData{Incoming: unknown}))
 }
 
 type stubLogoutBusiness struct{}
@@ -409,9 +368,9 @@ func newLogoutTestDeps(t *testing.T, withBusiness bool) (*database.Repositories,
 	repos, err := database.Open(database.Config{})
 	require.NoError(t, err)
 	deps := ProcessorDeps{
-		Repos:        repos.Repositories,
-		Runtime:      runtime.NewState(),
-		AuthProvider: stubLogoutAuthProvider{devices: repos.Devices},
+		Repos:                repos.Repositories,
+		Runtime:              runtime.NewState(),
+		DeviceStoreAvailable: true,
 	}
 	if withBusiness {
 		deps.Business = stubLogoutBusiness{}
@@ -419,8 +378,8 @@ func newLogoutTestDeps(t *testing.T, withBusiness bool) (*database.Repositories,
 	return repos, deps
 }
 
-// TestLogoutDeletesDeviceWhenBusinessRunsInProcess 覆盖 standalone：AuthProvider
-// 是本地实现，档案就在本进程，注销必须删档，否则同一终端再次注册会被判为已注册。
+// TestLogoutDeletesDeviceWhenBusinessRunsInProcess 覆盖 standalone：
+// 档案就在本进程，注销必须删档，否则同一终端再次注册会被判为已注册。
 func TestLogoutDeletesDeviceWhenBusinessRunsInProcess(t *testing.T) {
 	repos, deps := newLogoutTestDeps(t, true)
 	device := &domain.Device{ID: "1193697", Plate: "京A12345", Phone: "013012345678", Status: domain.DeviceStatusOnline}
