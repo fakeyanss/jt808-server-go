@@ -34,7 +34,6 @@ func TestMySQLPersistence(t *testing.T) {
 		LastestComTime:  time.Now(),
 		Status:          domain.DeviceStatusOnline,
 		VersionDesc:     model.Version2019,
-		AuthCode:        "auth-001",
 		IMEI:            "IMEI-001",
 		SoftwareVersion: "1.0.0",
 	}

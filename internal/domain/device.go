@@ -32,7 +32,6 @@ type Device struct {
 
 	VersionDesc     VersionType `json:"versionDesc"`     // jt808协议版本描述, 区分 2011 / 2013 / 2019
 	ProtocolVersion uint8       `json:"protocolVersion"` // jt808协议版本定义, 区分 (2011&2013) / 2019后续版本修订
-	AuthCode        string      `json:"authcode"`
 	IMEI            string      `json:"imei"`
 	SoftwareVersion string      `json:"softwareVersion"` // 终端软件版本号(非jt808协议版本)
 }

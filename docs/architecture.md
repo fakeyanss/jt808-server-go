@@ -165,7 +165,7 @@ go list -deps ./cmd/jt-signal ./cmd/jt-media ./cmd/jt-attachment \
 4. 上行事件信封携带 `gatewayId` 与 generation；旧 generation 的事件被丢弃并返回 `fenced`，网关收到后关闭本地会话；
 5. 网关重启换实例时，注册会清理同 `gatewayId` 的旧实例目录行，旧会话不再被路由。
 
-网关只缓存设备档案用于鉴权与信令判断。缓存新鲜时直接命中；缓存过期且 control 不可达时，在 `uplink.http.authGraceMs` 宽限期内继续按缓存放行；从未查到过档案的终端始终拒绝。
+网关不校验设备库，也不缓存鉴权码：0x0100 只把本次报文的 ID/车牌/版本写入进程内档案缓存并立即应答，0x0102 按 `f(phone)` 校验后把命中的档案随事件交给 control 落库。缓存缺失时放行，但不用空值覆盖已有档案。
 
 ### 4.2 上行
 

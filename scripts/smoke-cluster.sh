@@ -348,10 +348,10 @@ if [ -n "$resolved" ]; then
   else
     bad "S1 0x0102 claim did not land on gateway-1"
   fi
-  if [ -n "$(mysql_q "select auth_code from devices where phone='$PHONE';" | head -1)" ]; then
-    ok "S1 auth code persisted for reconnect"
+  if [ -n "$(mysql_q "select id from devices where phone='$PHONE' and id<>'';" | head -1)" ]; then
+    ok "S1 profile persisted after authentication"
   else
-    bad "S1 no auth code persisted; reconnect will fail"
+    bad "S1 profile was not persisted after authentication"
   fi
 else
   bad "S1 no device/session row appeared after registration"

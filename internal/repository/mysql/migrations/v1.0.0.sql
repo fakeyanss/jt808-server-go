@@ -25,7 +25,6 @@ CREATE TABLE IF NOT EXISTS devices (
     keepalive_ms BIGINT NOT NULL DEFAULT 0,
     version_desc SMALLINT NOT NULL DEFAULT 0,
     protocol_version SMALLINT NOT NULL DEFAULT 0,
-    auth_code VARCHAR(64) NOT NULL DEFAULT '',
     imei VARCHAR(64) NOT NULL DEFAULT '',
     software_version VARCHAR(64) NOT NULL DEFAULT '',
     updated_at BIGINT NOT NULL,

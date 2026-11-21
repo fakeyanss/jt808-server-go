@@ -14,7 +14,7 @@ var _ sqlcore.Statements = statements{}
 func Statements() sqlcore.Statements { return statements{} }
 
 const deviceStaticColumns = `phone, id, plate, keepalive_ms, version_desc, protocol_version,
-	auth_code, imei, software_version, updated_at`
+	imei, software_version, updated_at`
 
 const attachmentColumns = `source, phone, alarm_no, file_name, terminal_id, alarm_sign, alarm_serial,
 	file_type, total_size, received_bytes, watermark, staging_path, staging_base, ranges, segments,
@@ -29,22 +29,22 @@ func (statements) SchemaMigrationsTableExistsQuery() string {
 
 func (statements) UpsertDevice() string {
 	return `INSERT INTO devices (` + deviceStaticColumns + `)
-	VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 	ON CONFLICT(phone) DO UPDATE SET
 		id = excluded.id, plate = excluded.plate, keepalive_ms = excluded.keepalive_ms,
 		version_desc = excluded.version_desc, protocol_version = excluded.protocol_version,
-		auth_code = excluded.auth_code, imei = excluded.imei,
+		imei = excluded.imei,
 		software_version = excluded.software_version, updated_at = excluded.updated_at`
 }
 
 func (statements) UpsertDeviceRegistration() string {
 	return `INSERT INTO devices (phone, id, plate, keepalive_ms, version_desc,
-		protocol_version, auth_code, imei, software_version, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, '', '', ?)
+		protocol_version, imei, software_version, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, '', '', ?)
 		ON CONFLICT(phone) DO UPDATE SET
 			id = excluded.id, plate = excluded.plate,
 			version_desc = excluded.version_desc, protocol_version = excluded.protocol_version,
-			auth_code = excluded.auth_code, updated_at = excluded.updated_at`
+			updated_at = excluded.updated_at`
 }
 
 func (statements) UpsertDeviceParams() string {

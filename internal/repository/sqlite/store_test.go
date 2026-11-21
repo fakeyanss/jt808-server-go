@@ -45,7 +45,6 @@ func sampleDevice(phone string) *domain.Device {
 		Status:          domain.DeviceStatusOnline,
 		VersionDesc:     model.Version2019,
 		ProtocolVersion: 1,
-		AuthCode:        "auth-" + phone,
 		IMEI:            "IMEI-" + phone,
 		SoftwareVersion: "1.2.3",
 	}
@@ -96,7 +95,6 @@ func TestSQLitePersistsDeviceAndParamsAcrossReopen(t *testing.T) {
 	require.Equal(t, device.Keepalive, got.Keepalive)
 	require.Equal(t, device.VersionDesc, got.VersionDesc)
 	require.Equal(t, device.ProtocolVersion, got.ProtocolVersion)
-	require.Equal(t, device.AuthCode, got.AuthCode)
 	require.Equal(t, device.IMEI, got.IMEI)
 	require.Equal(t, device.SoftwareVersion, got.SoftwareVersion)
 

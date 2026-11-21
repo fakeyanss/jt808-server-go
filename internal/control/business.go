@@ -60,7 +60,7 @@ type BusinessOptions struct {
 // BusinessExecutor 是管控侧的上行事件消费者。
 //
 // 业务处理复用的是 internal/business 的管控半边：输入从活连接换成“事件 + 原始消息体”，
-// 并按手机号串行处理；多副本下顺序不保证，但字段所有权隔离与 409 有界重投
+// 并按手机号串行处理；多副本下顺序不保证，但字段所有权隔离
 // 保证最终状态一致（0x0100 与 0x0102 互不覆盖对方字段）。
 type BusinessExecutor struct {
 	opts     BusinessOptions

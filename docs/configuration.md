@@ -108,7 +108,6 @@
 | `uplink.http.maxAttempts` | `1` | 单条事件投递次数上限，范围 1–3 |
 | `uplink.http.maxAttemptsByClass.*` | `sessionClosed` 为 2，其余回落到 `maxAttempts` | 按分类覆盖投递次数；只接受 `default`/`location`/`batchLocation`/`alarm`/`sessionClosed` 五个键，范围 1–3；键名写错（如 `session_closed`）会启动失败 |
 | `uplink.http.gatewayId` | 主机名-进程号 | 事件信封中的网关标识 |
-| `uplink.http.authGraceMs` | `1800000` | 缓存档案过期且 control 不可达时的放行宽限期；从未查到档案始终拒绝 |
 | `uplink.reliability.default` | `best_effort` | 其余上行 |
 | `uplink.reliability.location` | `best_effort` | 普通定位 `0x0200` |
 | `uplink.reliability.batchLocation` | `at_least_once` | 批量定位 `0x0704` |
