@@ -3,12 +3,31 @@
 # 在 deploy/docker-compose.cluster.yml 基础上：
 #   - 把 jt808 角色镜像替换成本地构建的冒烟镜像（不重新 tag latest）；
 #   - 用脚本生成的 1 号网关配置覆盖 jt-signal；
-#   - 增加 2 号网关 jt-signal-2，用于验证下行按目录路由与会话归属转移。
+#   - 增加 2 号网关 jt-signal-2，用于验证下行按目录路由与会话归属转移；
+#   - 增加 jt808-client 终端模拟器，与集群同一网络，默认连 jt-signal:8080。
 #
 # 必需环境变量（脚本会设置）：
 #   JT808_SMOKE_IMAGE       冒烟镜像 tag
 #   JT808_SMOKE_CONFIG_DIR  脚本生成的网关配置目录（绝对路径）
 services:
+  jt808-client:
+    image: fakeyanss/jt808-client-go:latest
+    build:
+      context: ..
+      dockerfile: build/Dockerfile.client
+      args:
+        VERSION: local
+    restart: "no"
+    environment:
+      TZ: Asia/Shanghai
+    volumes:
+      - jt808-client-logs:/app/logs
+    security_opt:
+      - no-new-privileges:true
+    depends_on:
+      jt-signal:
+        condition: service_started
+
   shared-volume-init:
     image: ${JT808_SMOKE_IMAGE:?JT808_SMOKE_IMAGE is required}
   migrate:
@@ -46,3 +65,4 @@ services:
 
 volumes:
   jt808-signal2-data:
+  jt808-client-logs:
