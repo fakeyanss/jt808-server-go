@@ -392,7 +392,7 @@ type ownershipTable struct {
 
 var (
 	ownerLinePattern  = regexp.MustCompile(`(?m)^\s*(0x[0-9A-Fa-f]{4}):\s*(Owner[A-Za-z]+)\s*,`)
-	halfLinePattern   = regexp.MustCompile(`(?m)^\s*(0x[0-9A-Fa-f]{4}):\s*"([A-Za-z0-9_]+)"\s*,`)
+	halfLinePattern   = regexp.MustCompile(`(?m)^\s*(0x[0-9A-Fa-f]{4}):\s*"([A-Za-z0-9_]*)"\s*,`)
 	businessHalfBlock = regexp.MustCompile(`(?s)var\s+BusinessHalves\s*=\s*map\[uint16\]string\s*\{(.*?)\n\}`)
 )
 
@@ -452,6 +452,10 @@ func checkOwnership(entries []registryEntry, functions map[string]bool, ownershi
 			half, ok := ownership.businessHalves[entry.id]
 			if !ok {
 				problems = append(problems, fmt.Sprintf("`0x%04X` 归属双方，但 BusinessHalves 未声明业务半边", entry.id))
+				continue
+			}
+			// 空串是显式声明“没有独立业务半边”，例如钩子派发或由其它包处理。
+			if half == "" {
 				continue
 			}
 			if !functions[half] {

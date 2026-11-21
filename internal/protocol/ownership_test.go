@@ -21,13 +21,16 @@ func TestOwnershipCoversAllRegisteredMessages(t *testing.T) {
 	}
 }
 
-// 两边归属的消息必须有业务半边，且不得被误标记为纯网关消息。
+// 两边归属的消息必须有明确的业务半边声明；空串表示管控侧没有独立处理函数
+// （0x0100 只派发注册钩子，0x0102 的落库与 claim 在 control.BusinessExecutor）。
 func TestOwnershipBothSidesHaveBusinessHalf(t *testing.T) {
 	for _, msgID := range []uint16{0x0100, 0x0102} {
 		owner, ok := OwnershipOf(msgID)
 		require.True(t, ok)
 		require.Equal(t, OwnerBoth, owner)
-		require.NotEmpty(t, BusinessHalves[msgID], "msg 0x%04X must declare a business half", msgID)
+		half, declared := BusinessHalves[msgID]
+		require.True(t, declared, "msg 0x%04X must declare its business half (empty means none)", msgID)
+		require.Empty(t, half, "msg 0x%04X now has no dedicated business half", msgID)
 	}
 }
 
