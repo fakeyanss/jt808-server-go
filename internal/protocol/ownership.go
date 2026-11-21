@@ -135,12 +135,17 @@ var Ownership = map[uint16]Owner{
 
 // BusinessHalves 是“两边都要”的消息在管控侧的业务半边函数名。
 // registrydoc 用它校验控制面归属确实有业务半边。
+//
+// 空字符串表示管控侧没有独立的业务处理函数：
+//   - 0x0100：控制面只派发注册钩子，静态档案由网关缓存并随 0x0102 上行；
+//   - 0x0102：档案落库与 claim 由 control.BusinessExecutor.claimSession 完成，
+//     不在 internal/business 包内。
 var BusinessHalves = map[uint16]string{
 	// 0x0001 的业务半边不落库：应答由管控的 uplink 入口直接交给
 	// TerminalReplyHandler（outbox）收尾，这里只保留归属声明。
 	0x0001: "processTerminalReplyBusiness",
-	0x0100: "processRegisterBusiness",
-	0x0102: "processAuthBusiness",
+	0x0100: "",
+	0x0102: "",
 }
 
 // ControlSide 表示消息是否有管控侧业务处理。
