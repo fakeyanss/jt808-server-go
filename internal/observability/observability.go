@@ -66,10 +66,9 @@ type Metrics struct {
 	terminalReplyUnmatched      atomic.Int64
 	terminalReplyIgnored        atomic.Int64
 	// 上行事件在控制面的终态计数：409 丢弃、超限丢弃、非图片 0x0801、提交标记失败。
-	uplinkUnknownDropped atomic.Int64
-	uplinkOversized      atomic.Int64
-	mediaTypeRejected    atomic.Int64
-	storageCommitFailed  atomic.Int64
+	uplinkOversized     atomic.Int64
+	mediaTypeRejected   atomic.Int64
+	storageCommitFailed atomic.Int64
 	// 0x9208 自动触发因角色拆分未装配的次数；>0 表示附件上行需要人工触发。
 	autoUploadSkipped atomic.Int64
 	// 目录路由与围栏事件：命中、离线、上行 generation 围栏、节点实例围栏。
@@ -160,18 +159,9 @@ func (m *Metrics) TerminalReplySnapshot() TerminalReplySnapshot {
 
 // UplinkEventSnapshot 是上行事件在控制面的终态计数。
 type UplinkEventSnapshot struct {
-	UnknownDeviceDropped int64
-	Oversized            int64
-	MediaTypeRejected    int64
-	StorageCommitFailed  int64
-}
-
-// IncUplinkUnknownDropped 记录一次 409 unknown_device 重投后仍失败的丢弃。
-func (m *Metrics) IncUplinkUnknownDropped() {
-	if m == nil {
-		return
-	}
-	m.uplinkUnknownDropped.Add(1)
+	Oversized           int64
+	MediaTypeRejected   int64
+	StorageCommitFailed int64
 }
 
 // IncUplinkOversized 记录一次超过 maxBodyBytes 的消息体丢弃（仍会应答）。
@@ -377,10 +367,9 @@ func (m *Metrics) UplinkEventSnapshot() UplinkEventSnapshot {
 		return UplinkEventSnapshot{}
 	}
 	return UplinkEventSnapshot{
-		UnknownDeviceDropped: m.uplinkUnknownDropped.Load(),
-		Oversized:            m.uplinkOversized.Load(),
-		MediaTypeRejected:    m.mediaTypeRejected.Load(),
-		StorageCommitFailed:  m.storageCommitFailed.Load(),
+		Oversized:           m.uplinkOversized.Load(),
+		MediaTypeRejected:   m.mediaTypeRejected.Load(),
+		StorageCommitFailed: m.storageCommitFailed.Load(),
 	}
 }
 
@@ -690,7 +679,6 @@ func WritePrometheus(w io.Writer, snapshot Snapshot) error {
 		{"jt808_uplink_dropped_total", "Uplink events dropped by the sink queue.", "counter", fmt.Sprint(snapshot.Uplink.Dropped)},
 		{"jt808_uplink_rejected_total", "Confirm-before-ack events rejected due to in-flight limits.", "counter", fmt.Sprint(snapshot.Uplink.Rejected)},
 		{"jt808_uplink_in_flight", "Confirm-before-ack uplink deliveries in flight.", "gauge", fmt.Sprint(snapshot.Uplink.InFlight)},
-		{"jt808_uplink_unknown_device_dropped_total", "Uplink events dropped after a 409 unknown_device redelivery.", "counter", fmt.Sprint(snapshot.UplinkEvent.UnknownDeviceDropped)},
 		{"jt808_uplink_oversized_total", "Uplink events dropped because the message body exceeded maxBodyBytes.", "counter", fmt.Sprint(snapshot.UplinkEvent.Oversized)},
 		{"jt808_media_type_rejected_total", "0x0801 uploads rejected because the media type is not an image.", "counter", fmt.Sprint(snapshot.UplinkEvent.MediaTypeRejected)},
 		{"jt808_storage_commit_failed_total", "Media files written but not confirmed as committed.", "counter", fmt.Sprint(snapshot.UplinkEvent.StorageCommitFailed)},

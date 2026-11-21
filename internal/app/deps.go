@@ -69,7 +69,6 @@ type deps struct {
 	mediaOptions     config.MediaServerOptions
 	mediaEnabled     bool
 	mediaUploadStore *mediaupload.Store
-	authProvider     contracts.AuthProvider
 	adminOptions     config.AdminOptions
 	adminEnabled     bool
 	apiOptions       config.APIOptions
@@ -200,12 +199,12 @@ func buildDeps(spec Spec, cfg *config.Config, s settings) *deps {
 	if storeSet != nil {
 		protocolRepos = storeSet.Repositories
 	} else {
-		// 数据面角色不连库：用进程内仓储占位，协议层的设备档案查询改走 AuthProvider。
+		// 数据面角色不连库：用进程内仓储占位，设备档案由 control 在鉴权时落库。
 		protocolRepos = memory.NewRepositories()
 	}
 	processorDeps := protocol.ProcessorDeps{Repos: protocolRepos, Runtime: d.runtimeState, Uplink: &uplinkPolicy}
 
-	// 指标在出口之前创建：409 丢弃、超限丢弃等事件需要在网关侧计数。
+	// 指标在出口之前创建：超限丢弃等事件需要在网关侧计数。
 	metrics := observability.NewMetrics()
 
 	// 上行出口：默认 local 保持进程内直连处理；http 把业务事件投递给管控。
@@ -225,9 +224,6 @@ func buildDeps(spec Spec, cfg *config.Config, s settings) *deps {
 				BatchLocation: uplinkSinkOptions.HTTP.MaxAttemptsByClass.BatchLocation,
 				Alarm:         uplinkSinkOptions.HTTP.MaxAttemptsByClass.Alarm,
 				SessionClosed: uplinkSinkOptions.HTTP.MaxAttemptsByClass.SessionClosed,
-			},
-			OnUnknownDeviceDropped: func(phone string) {
-				metrics.IncUplinkUnknownDropped()
 			},
 			OnFenced: func(phone, sessionID string) {
 				// best-effort 事件被 control 围栏：立即关闭本地会话，不再接收该 phone 的上行。
@@ -365,30 +361,9 @@ func buildDeps(spec Spec, cfg *config.Config, s settings) *deps {
 		})
 	}
 
-	// 鉴权提供者是网关只读查询设备档案的契约：gateway+control 同进程直接读本地库，
-	// gateway-only 通过管控内部入口查询（与 uplink 出口同源）。
-	var authProvider contracts.AuthProvider
-	switch {
-	case hasControl:
-		authProvider = control.NewLocalAuthProvider(storeSet.Devices)
-	case hasGateway && uplinkSinkOptions.Mode == config.UplinkSinkHTTP:
-		parsed, parseErr := url.Parse(uplinkSinkOptions.HTTP.URL)
-		if parseErr != nil || parsed.Scheme == "" || parsed.Host == "" {
-			log.Error().Str("url", uplinkSinkOptions.HTTP.URL).Msg("Invalid uplink.http.url for device lookup")
-			os.Exit(1)
-		}
-		provider, providerErr := control.NewHTTPAuthProvider(
-			parsed.Scheme+"://"+parsed.Host, uplinkSinkOptions.HTTP.Token,
-			uplinkSinkOptions.HTTP.Timeout, 5*time.Minute, uplinkSinkOptions.HTTP.AuthGrace)
-		if providerErr != nil {
-			log.Error().Err(providerErr).Msg("Fail to create HTTP auth provider")
-			os.Exit(1)
-		}
-		authProvider = provider
-	}
-	processorDeps.AuthProvider = authProvider
 	// 0x0100 只写本进程档案缓存，0x0102 随事件带给管控；standalone 同进程也用它补写档案。
 	processorDeps.DeviceProfileCache = protocol.NewDeviceProfileCache(5 * time.Minute)
+	processorDeps.DeviceStoreAvailable = storeSet != nil
 	if uplinkSink != nil {
 		// 网关出口才需要消息体上限；standalone/local 不走事件出口。
 		processorDeps.UplinkMaxBodyBytes = clusterOptions.Uplink.MaxBodyBytes
@@ -544,7 +519,6 @@ func buildDeps(spec Spec, cfg *config.Config, s settings) *deps {
 	d.mediaOptions = mediaOptions
 	d.mediaEnabled = mediaEnabled
 	d.mediaUploadStore = mediaUploadStore
-	d.authProvider = authProvider
 	d.adminOptions = adminOptions
 	d.adminEnabled = adminEnabled
 	d.apiOptions = apiOptions

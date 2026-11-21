@@ -2,8 +2,7 @@
 //
 // 这些接口是角色拆分后的稳定边界，不是内部实现细节：
 //   - UplinkSink：网关把上行业务事件交给管控；
-//   - Downlink：管控把下行命令交给网关；
-//   - AuthProvider：网关向管控查询设备档案与鉴权码。
+//   - Downlink：管控把下行命令交给网关。
 //
 // 媒体、附件与对象存储等按领域拆到 internal/contracts/media、
 // internal/contracts/attachment、internal/storage 与 internal/media/playback。
@@ -308,12 +307,4 @@ func ClassifyDownlinkStatus(statusCode int) DownlinkErrorKind {
 	default:
 		return DownlinkErrorTransient
 	}
-}
-
-// AuthProvider 是网关向管控查询设备档案与鉴权码的只读契约。
-//
-// 网关不得反向写入设备档案；注册受理属于上行出口的业务结果。
-type AuthProvider interface {
-	Device(ctx context.Context, phone string) (*domain.Device, error)
-	AuthCode(ctx context.Context, phone string) (string, error)
 }

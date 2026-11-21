@@ -137,9 +137,10 @@ func TestUDPServerProcessesJT808Registration(t *testing.T) {
 func standaloneDeps() protocol.ProcessorDeps {
 	repos := database.Default().Repositories
 	return protocol.ProcessorDeps{
-		Repos:              repos,
-		Business:           business.New(business.Options{Repositories: repos}),
-		DeviceProfileCache: protocol.NewDeviceProfileCache(time.Minute),
+		Repos:                repos,
+		Business:             business.New(business.Options{Repositories: repos}),
+		DeviceProfileCache:   protocol.NewDeviceProfileCache(time.Minute),
+		DeviceStoreAvailable: true,
 	}
 }
 

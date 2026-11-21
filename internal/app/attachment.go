@@ -78,7 +78,7 @@ func (d *deps) installUploadHooks() {
 	clusterOptions := d.settings.options
 	metrics := d.metrics
 	hooks := d.hooks
-	authProvider := d.authProvider
+	devices := d.storeSet.Devices
 	processorDeps := d.processorDeps
 	serv := d.serv
 
@@ -90,7 +90,7 @@ func (d *deps) installUploadHooks() {
 			UDPPort: alarmOptions.UDPPort,
 		}, func(phone string, msg *model.Msg9208) error {
 			ctx := context.Background()
-			device, err := authProvider.Device(ctx, phone)
+			device, err := devices.GetByPhone(ctx, phone)
 			if err != nil {
 				return fmt.Errorf("device is offline: %w", err)
 			}

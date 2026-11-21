@@ -35,8 +35,6 @@ type HTTPSinkOptions struct {
 	MaxAttempts int
 	// Attempts 按分类覆盖 MaxAttempts；零值字段回落到 MaxAttempts。
 	Attempts AttemptOverrides
-	// OnUnknownDeviceDropped 在 409 重投仍失败时回调，用于指标与告警。
-	OnUnknownDeviceDropped func(phone string)
 	// OnFenced 在 best-effort 响应携带 fenced 时回调；网关据此关闭本地会话。
 	// confirm 路径通过 UplinkResult.Fenced 同步返回，不走该回调。
 	OnFenced func(phone, sessionID string)
@@ -49,7 +47,6 @@ type HTTPSinkStats struct {
 	Timeouts  int64
 	Dropped   int64
 	Rejected  int64
-	Unknown   int64
 	InFlight  int64
 	// ShardQueues 是每个 phone 分片队列的当前深度，下标即分片号。
 	// 出口按 phone 哈希分片、分片内单 goroutine 顺序消费，因此不再存在
@@ -85,15 +82,10 @@ type HTTPSink struct {
 	timeouts  atomic.Int64
 	dropped   atomic.Int64
 	rejected  atomic.Int64
-	unknown   atomic.Int64
 	inFlight  atomic.Int64
 	closed    atomic.Bool
 
-	onUnknownDropped func(phone string)
-	onFenced         func(phone, sessionID string)
-	regMu            sync.Mutex
-	registrations    map[string]cachedRegistration
-	unknownSince     map[string]time.Time
+	onFenced func(phone, sessionID string)
 }
 
 // sinkJob 是一次分片内投递任务。
@@ -110,19 +102,7 @@ type sinkResult struct {
 	err    error
 }
 
-const (
-	// registrationEventTTL 是注册事件缓存的有效期；只用于 409 时的一次性重投。
-	registrationEventTTL = 10 * time.Minute
-	// knownDeviceCooldown 是同一手机号连续 409 的熔断窗口，避免事件反复弹跳。
-	knownDeviceCooldown = 30 * time.Second
-)
-
-type cachedRegistration struct {
-	envelope  internalapi.UplinkEnvelope
-	expiresAt time.Time
-}
-
-// NewHTTPSink 构造 HTTP 上行出口；URL、凭据与边界参数非法时返回错误。
+// 分片内单 goroutine 顺序消费，confirm-before-ack 的并发上限与队列容量一致。
 func NewHTTPSink(options HTTPSinkOptions) (*HTTPSink, error) {
 	if options.URL == "" {
 		return nil, fmt.Errorf("uplink http sink: url is required")
@@ -163,11 +143,8 @@ func NewHTTPSink(options HTTPSinkOptions) (*HTTPSink, error) {
 		shards: shards,
 		done:   make(chan struct{}),
 		// confirm-before-ack 的并发上限与队列容量一致，避免无界 goroutine。
-		slot:             make(chan struct{}, options.QueueSize),
-		onUnknownDropped: options.OnUnknownDeviceDropped,
-		onFenced:         options.OnFenced,
-		registrations:    map[string]cachedRegistration{},
-		unknownSince:     map[string]time.Time{},
+		slot:     make(chan struct{}, options.QueueSize),
+		onFenced: options.OnFenced,
 	}, nil
 }
 
@@ -221,7 +198,6 @@ func (s *HTTPSink) Stats() HTTPSinkStats {
 		Timeouts:    s.timeouts.Load(),
 		Dropped:     s.dropped.Load(),
 		Rejected:    s.rejected.Load(),
-		Unknown:     s.unknown.Load(),
 		InFlight:    s.inFlight.Load(),
 		ShardQueues: shardQueues,
 	}
@@ -242,11 +218,6 @@ func (s *HTTPSink) Deliver(ctx context.Context, event contracts.UplinkEvent) (co
 		s.dropped.Add(1)
 		log.Warn().Err(err).Str("event_id", event.EventID).Msg("uplink http sink dropped event: encode failed")
 		return contracts.UplinkResult{Accepted: true}, nil
-	}
-
-	if event.MsgID == 0x0100 {
-		// 注册事件是 409 重投的唯一依据；即使 best-effort 也要先缓存再投递。
-		s.rememberRegistration(envelope)
 	}
 
 	attempts := s.attempts.ForEvent(event)
@@ -340,92 +311,6 @@ func (s *HTTPSink) deliverSync(ctx context.Context, envelope internalapi.UplinkE
 	}
 }
 
-// handleUnknownDevice 处理管控返回的 409。
-//
-// 边界：
-//   - 每个入站事件最多重投一次注册事件；
-//   - 重投后仍 409 则熔断 30s，期间同手机号事件直接丢弃并计数；
-//   - 丢弃返回错误，网关不应答终端，计入终端自身的重传窗口，不在网关内部循环。
-func (s *HTTPSink) handleUnknownDevice(ctx context.Context, envelope internalapi.UplinkEnvelope, attempts int, cause error) (contracts.UplinkResult, error) {
-	if s.unknownRecently(envelope.Phone) {
-		s.dropUnknown(envelope, "device remains unknown within cooldown window")
-		return contracts.UplinkResult{Reason: "unknown_device"}, fmt.Errorf("uplink http sink: unknown device (cooldown): %w", cause)
-	}
-	if registration, ok := s.registration(envelope.Phone); ok && registration.EventID != envelope.EventID {
-		if _, _, retryErr := s.postWithRetryStatus(ctx, registration, attempts); retryErr == nil {
-			if status, resp, err := s.postWithRetryStatus(ctx, envelope, attempts); err == nil {
-				return contracts.UplinkResult{
-					Accepted:   true,
-					Generation: resp.Generation,
-					Fenced:     resp.Fenced,
-				}, nil
-			} else if status != http.StatusConflict {
-				return contracts.UplinkResult{Reason: err.Error()}, err
-			}
-		}
-	}
-	s.markUnknown(envelope.Phone)
-	s.dropUnknown(envelope, "device is not registered after registration replay")
-	return contracts.UplinkResult{Reason: "unknown_device"}, fmt.Errorf("uplink http sink: unknown device: %w", cause)
-}
-
-func (s *HTTPSink) dropUnknown(envelope internalapi.UplinkEnvelope, reason string) {
-	s.unknown.Add(1)
-	log.Error().
-		Str("event_id", envelope.EventID).
-		Str("phone", envelope.Phone).
-		Str("msg_id", fmt.Sprintf("0x%04X", envelope.MsgID)).
-		Msg("Uplink event dropped: " + reason)
-	if s.onUnknownDropped != nil {
-		s.onUnknownDropped(envelope.Phone)
-	}
-}
-
-func (s *HTTPSink) rememberRegistration(envelope internalapi.UplinkEnvelope) {
-	s.regMu.Lock()
-	defer s.regMu.Unlock()
-	now := time.Now()
-	if len(s.registrations) > 20000 {
-		for phone, entry := range s.registrations {
-			if now.After(entry.expiresAt) {
-				delete(s.registrations, phone)
-			}
-		}
-	}
-	s.registrations[envelope.Phone] = cachedRegistration{envelope: envelope, expiresAt: now.Add(registrationEventTTL)}
-}
-
-func (s *HTTPSink) registration(phone string) (internalapi.UplinkEnvelope, bool) {
-	s.regMu.Lock()
-	defer s.regMu.Unlock()
-	entry, ok := s.registrations[phone]
-	if !ok || time.Now().After(entry.expiresAt) {
-		delete(s.registrations, phone)
-		return internalapi.UplinkEnvelope{}, false
-	}
-	return entry.envelope, true
-}
-
-func (s *HTTPSink) unknownRecently(phone string) bool {
-	s.regMu.Lock()
-	defer s.regMu.Unlock()
-	since, ok := s.unknownSince[phone]
-	return ok && time.Since(since) < knownDeviceCooldown
-}
-
-func (s *HTTPSink) markUnknown(phone string) {
-	s.regMu.Lock()
-	defer s.regMu.Unlock()
-	if len(s.unknownSince) > 20000 {
-		for key, since := range s.unknownSince {
-			if time.Since(since) >= knownDeviceCooldown {
-				delete(s.unknownSince, key)
-			}
-		}
-	}
-	s.unknownSince[phone] = time.Now()
-}
-
 func (s *HTTPSink) worker(ctx context.Context, jobs <-chan sinkJob) {
 	for {
 		select {
@@ -463,16 +348,13 @@ func (s *HTTPSink) runJob(job sinkJob) {
 }
 
 func (s *HTTPSink) deliverConfirm(ctx context.Context, envelope internalapi.UplinkEnvelope, attempts int) (contracts.UplinkResult, error) {
-	status, resp, err := s.postWithRetryStatus(ctx, envelope, attempts)
+	_, resp, err := s.postWithRetryStatus(ctx, envelope, attempts)
 	if err == nil {
 		return contracts.UplinkResult{
 			Accepted:   true,
 			Generation: resp.Generation,
 			Fenced:     resp.Fenced,
 		}, nil
-	}
-	if status == http.StatusConflict && envelope.MsgID != 0x0100 {
-		return s.handleUnknownDevice(ctx, envelope, attempts, err)
 	}
 	return contracts.UplinkResult{Reason: err.Error()}, err
 }
@@ -482,8 +364,7 @@ func (s *HTTPSink) postWithRetry(ctx context.Context, envelope internalapi.Uplin
 	return resp, err
 }
 
-// postWithRetryStatus 与 postWithRetry 相同，但把最后一次 HTTP 状态码带回，
-// 供 409 unknown_device 判定使用。
+// postWithRetryStatus 与 postWithRetry 相同，但把最后一次 HTTP 状态码带回。
 // controlResponse 是 control 上行入口返回的最小结果，confirm 与 best-effort 共用。
 type controlResponse struct {
 	Outcome    string `json:"outcome"`

@@ -10,9 +10,7 @@ import (
 	"github.com/fakeyanss/jt808-server-go/internal/contracts"
 	"github.com/fakeyanss/jt808-server-go/internal/contracts/attachment"
 	"github.com/fakeyanss/jt808-server-go/internal/contracts/media"
-	"github.com/fakeyanss/jt808-server-go/internal/domain"
 	"github.com/fakeyanss/jt808-server-go/internal/mediaupload"
-	"github.com/fakeyanss/jt808-server-go/internal/repository"
 )
 
 // LocalUplinkHandler 是内置管控对上行事件的处理函数。
@@ -35,33 +33,6 @@ func (s *LocalUplinkSink) Deliver(ctx context.Context, event contracts.UplinkEve
 		return contracts.UplinkResult{}, fmt.Errorf("local uplink handler is not configured")
 	}
 	return s.handler(ctx, event)
-}
-
-// LocalAuthProvider 是鉴权提供者的进程内实现，直接读取仓储层。
-type LocalAuthProvider struct {
-	devices repository.DeviceRepository
-}
-
-// NewLocalAuthProvider 创建进程内鉴权提供者。
-func NewLocalAuthProvider(devices repository.DeviceRepository) *LocalAuthProvider {
-	return &LocalAuthProvider{devices: devices}
-}
-
-// Device 返回设备档案。
-func (p *LocalAuthProvider) Device(ctx context.Context, phone string) (*domain.Device, error) {
-	if p == nil || p.devices == nil {
-		return nil, fmt.Errorf("device repository is not configured")
-	}
-	return p.devices.GetByPhone(ctx, phone)
-}
-
-// AuthCode 返回设备鉴权码。
-func (p *LocalAuthProvider) AuthCode(ctx context.Context, phone string) (string, error) {
-	device, err := p.Device(ctx, phone)
-	if err != nil {
-		return "", err
-	}
-	return device.AuthCode, nil
 }
 
 // StreamCounter 是媒体流的只读计数接口，便于测试替换。

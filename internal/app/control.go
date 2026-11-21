@@ -13,7 +13,6 @@ import (
 	"github.com/fakeyanss/jt808-server-go/internal/control"
 	"github.com/fakeyanss/jt808-server-go/internal/controlhttp"
 	"github.com/fakeyanss/jt808-server-go/internal/coordination"
-	"github.com/fakeyanss/jt808-server-go/internal/domain"
 	"github.com/fakeyanss/jt808-server-go/internal/protocol/model"
 	"github.com/fakeyanss/jt808-server-go/internal/storage"
 	"github.com/fakeyanss/jt808-server-go/pkg/routines"
@@ -166,9 +165,6 @@ func (d *deps) setupControl() {
 		srv.RegisterConsumer(0x0200, executor)
 		srv.RegisterConsumer(0x0704, executor)
 		srv.RegisterConsumer(0x0801, executor)
-		srv.SetDeviceLookup(func(ctx context.Context, phone string) (*domain.Device, error) {
-			return storeSet.Devices.GetByPhone(ctx, phone)
-		})
 		srv.SetGatewayNodeRepository(storeSet.GatewayNodes)
 		srv.SetSessionDirectoryRepository(storeSet.SessionDirectory)
 		srv.SetRecordingSegmentRepository(storeSet.RecordingSegments)
