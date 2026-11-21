@@ -1,0 +1,49 @@
+# standalone 拓扑冒烟：memory 后端 + 终端模拟器，同一网络内直连 jt808:8080。
+#
+# 启动：docker compose -f deploy/smoketest/standalone/docker-compose.yml up -d
+# 宿主机端口刻意避开 smoke.sh / smoke-cluster.sh 使用的 8080/8081/8008/18080。
+name: jt808-standalone-smoke
+
+services:
+  jt808:
+    image: fakeyanss/jt808-server-go:latest
+    build:
+      context: ../../..
+      dockerfile: build/Dockerfile
+    restart: "no"
+    environment:
+      TZ: Asia/Shanghai
+      JT808_ROLE: standalone
+    ports:
+      - "28080:8080/tcp"
+      - "28081:8081/udp"
+      - "28008:8008/tcp"
+    volumes:
+      - jt808-data:/app/data
+      - jt808-logs:/app/logs
+    security_opt:
+      - no-new-privileges:true
+
+  jt808-client:
+    image: fakeyanss/jt808-client-go:latest
+    build:
+      context: ../../..
+      dockerfile: build/Dockerfile.client
+      args:
+        VERSION: local
+    restart: "no"
+    environment:
+      TZ: Asia/Shanghai
+    volumes:
+      - ./client.yaml:/etc/jt808/client.yaml:ro
+      - jt808-client-logs:/app/logs
+    security_opt:
+      - no-new-privileges:true
+    depends_on:
+      jt808:
+        condition: service_started
+
+volumes:
+  jt808-data:
+  jt808-logs:
+  jt808-client-logs:
