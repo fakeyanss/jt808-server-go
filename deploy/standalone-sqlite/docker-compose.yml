@@ -5,11 +5,6 @@ name: jt808-sqlite
 services:
   migrate:
     image: fakeyanss/jt808-server-go:latest
-    build:
-      context: ../..
-      dockerfile: build/Dockerfile
-      args:
-        VERSION: local
     restart: "no"
     command: ["migrate"]
     environment:
@@ -22,11 +17,6 @@ services:
 
   jt808:
     image: fakeyanss/jt808-server-go:latest
-    build:
-      context: ../..
-      dockerfile: build/Dockerfile
-      args:
-        VERSION: local
     restart: unless-stopped
     depends_on:
       migrate:

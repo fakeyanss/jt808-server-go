@@ -257,7 +257,7 @@ docker run -d --name jt808-mysql \
   fakeyanss/jt808-server-go:latest
 ```
 
-Compose 文件同时声明了 `build`，本地没有镜像时会从源码构建；CI 发布后也可以直接 `docker pull fakeyanss/jt808-server-go:latest`。
+Compose 文件只声明 `image`，`up` 时直接从远程仓库拉取（缺镜像不会本地构建）。需要本地镜像时用 `make dockerbuild` / `make dockerbuild-client`，或在 `scripts/smoke-cluster.sh` 中由脚本显式构建。
 
 ### 5.7 集群 Compose 示例
 

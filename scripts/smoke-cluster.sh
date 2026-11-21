@@ -24,6 +24,7 @@ set -u
 SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 ROOT=$(cd "$SCRIPT_DIR/.." && pwd)
 IMAGE=${JT808_SMOKE_IMAGE:-fakeyanss/jt808-server-go:smoke}
+CLIENT_IMAGE=${JT808_SMOKE_CLIENT_IMAGE:-fakeyanss/jt808-client-go:latest}
 PROJECT=${JT808_SMOKE_PROJECT:-jt808-smoke}
 # 宿主机模拟器手机号：与 compose 内 client 的 13012345678 区分，避免同号互相 fence。
 SIM_PHONE=13912345678
@@ -100,6 +101,7 @@ compose() {
     -f "$ROOT/deploy/smoketest/cluster/docker-compose.yml" "$@"
 }
 export JT808_SMOKE_IMAGE=$IMAGE
+export JT808_SMOKE_CLIENT_IMAGE=$CLIENT_IMAGE
 export JT808_SMOKE_CONFIG_DIR=$CFG_DIR
 
 cleanup() {
@@ -295,6 +297,12 @@ if [ "${JT808_SMOKE_SKIP_BUILD:-0}" != "1" ]; then
   if ! docker build ${build_args[@]+"${build_args[@]}"} -f "$ROOT/build/Dockerfile" -t "$IMAGE" "$ROOT" >"$WORK/docker-build.log" 2>&1; then
     echo "smoke-cluster: image build failed, tail of $WORK/docker-build.log:" >&2
     tail -n 40 "$WORK/docker-build.log" >&2
+    exit 1
+  fi
+  echo "smoke-cluster: building client image $CLIENT_IMAGE${BUILD_GOPROXY:+ (GOPROXY=$BUILD_GOPROXY)}"
+  if ! docker build ${build_args[@]+"${build_args[@]}"} -f "$ROOT/build/Dockerfile.client" -t "$CLIENT_IMAGE" "$ROOT" >"$WORK/docker-build-client.log" 2>&1; then
+    echo "smoke-cluster: client image build failed, tail of $WORK/docker-build-client.log:" >&2
+    tail -n 40 "$WORK/docker-build-client.log" >&2
     exit 1
   fi
 fi

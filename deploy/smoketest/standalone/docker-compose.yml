@@ -7,9 +7,6 @@ name: jt808-standalone-smoke
 services:
   jt808:
     image: ${JT808_SMOKE_IMAGE:-fakeyanss/jt808-server-go:latest}
-    build:
-      context: ../../..
-      dockerfile: build/Dockerfile
     restart: "no"
     environment:
       TZ: Asia/Shanghai
@@ -26,11 +23,6 @@ services:
 
   jt808-client:
     image: ${JT808_SMOKE_CLIENT_IMAGE:-fakeyanss/jt808-client-go:latest}
-    build:
-      context: ../../..
-      dockerfile: build/Dockerfile.client
-      args:
-        VERSION: local
     restart: "no"
     environment:
       TZ: Asia/Shanghai
