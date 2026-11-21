@@ -1,4 +1,6 @@
-# 集群终端级冒烟的 compose 覆盖文件，仅由 make smoke-cluster（scripts/smoke-cluster.sh）使用。
+# 集群终端级冒烟的 compose 覆盖文件。本文件是覆盖层，必须叠加 deploy/cluster/docker-compose.yml。
+# 推荐入口：deploy/smoketest/cluster/run.sh（自带默认值与两层 -f）；
+# make smoke-cluster（scripts/smoke-cluster.sh）也使用本文件。
 #
 # 在 deploy/cluster/docker-compose.yml 基础上：
 #   - 把 jt808 角色镜像替换成本地构建的冒烟镜像（不重新 tag latest）；
@@ -6,12 +8,13 @@
 #   - 增加 2 号网关 jt-signal-2，用于验证下行按目录路由与会话归属转移；
 #   - 增加 jt808-client 终端模拟器，与集群同一网络，默认连 jt-signal:8080。
 #
-# 必需环境变量（脚本会设置）：
-#   JT808_SMOKE_IMAGE       冒烟镜像 tag
-#   JT808_SMOKE_CONFIG_DIR  脚本生成的网关配置目录（绝对路径）
+# 可选环境变量（均有默认值，run.sh 会按需设置）：
+#   JT808_SMOKE_IMAGE        服务端镜像，默认 fakeyanss/jt808-server-go:latest
+#   JT808_SMOKE_CLIENT_IMAGE 终端镜像，默认 fakeyanss/jt808-client-go:latest
+#   JT808_SMOKE_CONFIG_DIR   网关配置目录，默认为本目录（含 signal-1.yaml / signal-2.yaml）
 services:
   jt808-client:
-    image: fakeyanss/jt808-client-go:latest
+    image: ${JT808_SMOKE_CLIENT_IMAGE:-fakeyanss/jt808-client-go:latest}
     build:
       context: ../../..
       dockerfile: build/Dockerfile.client
@@ -29,21 +32,21 @@ services:
         condition: service_started
 
   shared-volume-init:
-    image: ${JT808_SMOKE_IMAGE:?JT808_SMOKE_IMAGE is required}
+    image: ${JT808_SMOKE_IMAGE:-fakeyanss/jt808-server-go:latest}
   migrate:
-    image: ${JT808_SMOKE_IMAGE:?JT808_SMOKE_IMAGE is required}
+    image: ${JT808_SMOKE_IMAGE:-fakeyanss/jt808-server-go:latest}
   jt-control:
-    image: ${JT808_SMOKE_IMAGE:?JT808_SMOKE_IMAGE is required}
+    image: ${JT808_SMOKE_IMAGE:-fakeyanss/jt808-server-go:latest}
   jt-media:
-    image: ${JT808_SMOKE_IMAGE:?JT808_SMOKE_IMAGE is required}
+    image: ${JT808_SMOKE_IMAGE:-fakeyanss/jt808-server-go:latest}
   jt-attachment:
-    image: ${JT808_SMOKE_IMAGE:?JT808_SMOKE_IMAGE is required}
+    image: ${JT808_SMOKE_IMAGE:-fakeyanss/jt808-server-go:latest}
   jt-signal:
-    image: ${JT808_SMOKE_IMAGE:?JT808_SMOKE_IMAGE is required}
+    image: ${JT808_SMOKE_IMAGE:-fakeyanss/jt808-server-go:latest}
     volumes:
-      - ${JT808_SMOKE_CONFIG_DIR:?JT808_SMOKE_CONFIG_DIR is required}/signal-1.yaml:/etc/jt808/signal.yaml:ro
+      - ${JT808_SMOKE_CONFIG_DIR:-.}/signal-1.yaml:/etc/jt808/signal.yaml:ro
   jt-signal-2:
-    image: ${JT808_SMOKE_IMAGE:?JT808_SMOKE_IMAGE is required}
+    image: ${JT808_SMOKE_IMAGE:-fakeyanss/jt808-server-go:latest}
     restart: unless-stopped
     security_opt:
       - no-new-privileges:true
@@ -54,7 +57,7 @@ services:
     ports:
       - "18080:8080/tcp" # 2 号网关的终端接入端口
     volumes:
-      - ${JT808_SMOKE_CONFIG_DIR:?JT808_SMOKE_CONFIG_DIR is required}/signal-2.yaml:/etc/jt808/signal.yaml:ro
+      - ${JT808_SMOKE_CONFIG_DIR:-.}/signal-2.yaml:/etc/jt808/signal.yaml:ro
       - jt808-signal2-data:/app/data
       - jt808-logs:/app/logs
     depends_on:
