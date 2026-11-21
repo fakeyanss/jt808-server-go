@@ -344,7 +344,7 @@ docker run --rm --network jt808-cluster_default \
   fakeyanss/jt808-client-go:local -industry-reports
 ```
 
-`jt808-cluster_default` 由集群 compose 顶层 `name: jt808-cluster` 创建；集群换了项目名时替换成对应网络。终端模拟器已并入集群冒烟覆盖文件 `deploy/smoketest/docker-compose.cluster-smoke.yml`，随集群一起启动（由 `make smoke-cluster` / `scripts/smoke-cluster.sh` 使用）；单独试跑可继续用上面的 `docker run`，默认常驻发心跳与位置，加 `-logout` 可注册后注销退出。
+`jt808-cluster_default` 由集群 compose 顶层 `name: jt808-cluster` 创建；集群换了项目名时替换成对应网络。终端模拟器已并入集群冒烟覆盖文件 `deploy/smoketest/docker-compose.yml`，随集群一起启动（由 `make smoke-cluster` / `scripts/smoke-cluster.sh` 使用）；单独试跑可继续用上面的 `docker run`，默认常驻发心跳与位置，加 `-logout` 可注册后注销退出。
 
 #### 外挂配置与参数透传
 
