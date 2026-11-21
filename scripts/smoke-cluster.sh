@@ -25,7 +25,9 @@ SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 ROOT=$(cd "$SCRIPT_DIR/.." && pwd)
 IMAGE=${JT808_SMOKE_IMAGE:-fakeyanss/jt808-server-go:smoke}
 PROJECT=${JT808_SMOKE_PROJECT:-jt808-smoke}
-PHONE=13012345678
+# 宿主机模拟器手机号：与 compose 内 client 的 13012345678 区分，避免同号互相 fence。
+SIM_PHONE=13912345678
+PHONE=$SIM_PHONE
 API_TOKEN=api-token
 CONTROL=http://127.0.0.1:8008
 GW1_PORT=8080
@@ -155,8 +157,8 @@ directory_row() {
 # API 与目录查询都必须用服务端规范化后的号码，这里从目录反查。
 resolve_phone() {
   local phone
-  phone=$(mysql_q "select phone from session_directory limit 1;" | head -1)
-  [ -z "$phone" ] && phone=$(mysql_q "select phone from devices limit 1;" | head -1)
+  phone=$(mysql_q "select phone from session_directory where phone like '%$SIM_PHONE' limit 1;" | head -1)
+  [ -z "$phone" ] && phone=$(mysql_q "select phone from devices where phone like '%$SIM_PHONE' limit 1;" | head -1)
   printf '%s' "$phone"
 }
 
@@ -216,6 +218,7 @@ make_client_config() { # name port
   sed -E \
     -e "s|(remoteAddr: \")[^\"]*|\1127.0.0.1:$2|" \
     -e 's|^    idReg: .*|    idReg: "1234567"|' \
+    -e "s|^    phoneReg: .*|    phoneReg: \"$SIM_PHONE\"|" \
     -e 's|(keepalive: )[0-9]+|\15|' \
     -e 's|(locationReportInterval: )[0-9]+|\13|' \
     -e "s|(logFile: \")[^\"]*|\1$1.log|" \
