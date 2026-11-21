@@ -1,13 +1,13 @@
 name: jt808-cluster
 
 # 集群形态：gateway / control / media / attachment 四角色各一个容器，共享 MySQL 与共享卷。
-# 启动：docker compose -f deploy/docker-compose.cluster.yml up -d
+# 启动：docker compose -f deploy/cluster/docker-compose.yml up -d
 # 只有 control 连接 MySQL；数据面角色（gateway/media/attachment）不连库。
 # control 在 migrate 成功、共享卷标记文件创建后才启动。
 x-jt808: &jt808
   image: fakeyanss/jt808-server-go:latest
   build:
-    context: ..
+    context: ../..
     dockerfile: build/Dockerfile
     args:
       VERSION: local
@@ -58,7 +58,7 @@ services:
       TZ: Asia/Shanghai
       JT808_CONFIG: /etc/jt808/control.yaml
     volumes:
-      - ./docker/cluster/control.yaml:/etc/jt808/control.yaml:ro
+      - ./control.yaml:/etc/jt808/control.yaml:ro
     depends_on:
       mysql:
         condition: service_healthy
@@ -72,7 +72,7 @@ services:
     ports:
       - "8008:8008/tcp"   # 业务 API
     volumes:
-      - ./docker/cluster/control.yaml:/etc/jt808/control.yaml:ro
+      - ./control.yaml:/etc/jt808/control.yaml:ro
       - jt808-control-data:/app/data
       - jt808-blobs:/app/data/blobs
       - jt808-logs:/app/logs
@@ -92,7 +92,7 @@ services:
       - "8080:8080/tcp"   # 808 终端接入
       - "8081:8081/udp"   # 808 终端接入
     volumes:
-      - ./docker/cluster/signal.yaml:/etc/jt808/signal.yaml:ro
+      - ./signal.yaml:/etc/jt808/signal.yaml:ro
       - jt808-signal-data:/app/data
       - jt808-logs:/app/logs
     depends_on:
@@ -112,7 +112,7 @@ services:
       - "7300:7300/udp"   # 1078 RTP
       - "7301:7301/tcp"   # 媒体内部 HTTP / FLV
     volumes:
-      - ./docker/cluster/media.yaml:/etc/jt808/media.yaml:ro
+      - ./media.yaml:/etc/jt808/media.yaml:ro
       - jt808-media-data:/app/data
       - jt808-blobs:/app/data/blobs
       - jt808-logs:/app/logs
@@ -136,7 +136,7 @@ services:
       - "7500:7500/tcp"   # 1078 FTP 控制通道
       - "7501-7510:7501-7510/tcp"  # 1078 FTP 被动数据端口
     volumes:
-      - ./docker/cluster/attachment.yaml:/etc/jt808/attachment.yaml:ro
+      - ./attachment.yaml:/etc/jt808/attachment.yaml:ro
       - jt808-attachment-data:/app/data
       - jt808-blobs:/app/data/blobs
       - jt808-logs:/app/logs

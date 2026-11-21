@@ -224,16 +224,16 @@ docker run -d --name jt808 \
 ### 5.6 Compose 示例
 
 ```sh
-# memory 后端：开箱即跑
-docker compose -f deploy/docker-compose.yml up -d
+# memory 后端：开箱即跑（docker run 脚本，参数可用环境变量覆盖）
+deploy/standalone-memory/run.sh
 
 # SQLite 后端：先执行 migrate，再启动主服务
-docker compose -f deploy/docker-compose.sqlite.yml up -d
+docker compose -f deploy/standalone-sqlite/docker-compose.yml up -d
 ```
 
-两份 compose 都映射 standalone 默认端口并挂载 `jt808-data`、`jt808-logs`。SQLite 示例使用 `deploy/docker/sqlite.yaml`，迁移服务以 `migrate` 角色运行，成功后主服务才启动。
+memory 脚本映射 standalone 默认端口并挂载 `jt808-standalone-data`、`jt808-standalone-logs`；`IMAGE`、`NAME`、`*_PORT`、`DATA_VOLUME`、`LOG_VOLUME`、`TZ` 均可覆盖，停止与清理见脚本头部注释。SQLite 示例使用 `deploy/standalone-sqlite/sqlite.yaml`，迁移服务以 `migrate` 角色运行，成功后主服务才启动。
 
-使用 MySQL 时，复制 `deploy/docker/sqlite.yaml`，把 `database` 段改为：
+使用 MySQL 时，复制 `deploy/standalone-sqlite/sqlite.yaml`，把 `database` 段改为：
 
 ```yaml
 database:
@@ -261,22 +261,22 @@ Compose 文件同时声明了 `build`，本地没有镜像时会从源码构建�
 
 ### 5.7 集群 Compose 示例
 
-`deploy/docker-compose.cluster.yml` 编排 gateway、control、media、attachment 四个角色，加 MySQL 与共享卷：
+`deploy/cluster/docker-compose.yml` 编排 gateway、control、media、attachment 四个角色，加 MySQL 与共享卷：
 
 ```sh
-docker compose -f deploy/docker-compose.cluster.yml up -d
-docker compose -f deploy/docker-compose.cluster.yml ps
+docker compose -f deploy/cluster/docker-compose.yml up -d
+docker compose -f deploy/cluster/docker-compose.yml ps
 ```
 
 启动顺序由 compose 依赖保证：
 
 1. `mysql` 健康检查通过；
 2. `shared-volume-init` 在 `jt808-blobs` 卷写入 `.jt808-shared-volume` 标记；
-3. `migrate` 使用 `deploy/docker/cluster/control.yaml` 执行迁移，成功退出；
+3. `migrate` 使用 `deploy/cluster/control.yaml` 执行迁移，成功退出；
 4. `jt-control` 在迁移完成后启动；
 5. `jt-signal`、`jt-media`、`jt-attachment` 在 control 启动后启动，并向 control 注册。
 
-只有 `jt-control` 的配置包含 `database`；`jt-signal`、`jt-media`、`jt-attachment` 不配置数据库。迁移使用 control 配置，修改 MySQL DSN 时只需改 `deploy/docker/cluster/control.yaml`。
+只有 `jt-control` 的配置包含 `database`；`jt-signal`、`jt-media`、`jt-attachment` 不配置数据库。迁移使用 control 配置，修改 MySQL DSN 时只需改 `deploy/cluster/control.yaml`。
 
 挂载点：
 
@@ -285,7 +285,7 @@ docker compose -f deploy/docker-compose.cluster.yml ps
 | `/app/data/blobs` | `jt808-blobs` | 四角色共享的 `sharedVolume` 根目录与标记文件 |
 | `/app/data` | `jt808-<角色>-data` | 各角色本地数据、附件暂存、媒体目录 |
 | `/app/logs` | `jt808-logs` | 各角色滚动日志 |
-| `/etc/jt808/*.yaml` | `deploy/docker/cluster/*.yaml` | 只读角色配置 |
+| `/etc/jt808/*.yaml` | `deploy/cluster/*.yaml` | 只读角色配置 |
 | `/var/lib/mysql` | `jt808-mysql` | MySQL 数据目录 |
 
 角色端口与探针：
@@ -301,8 +301,8 @@ docker compose -f deploy/docker-compose.cluster.yml ps
 验证节点注册与迁移：
 
 ```sh
-docker compose -f deploy/docker-compose.cluster.yml logs migrate | tail -5
-docker compose -f deploy/docker-compose.cluster.yml exec mysql \
+docker compose -f deploy/cluster/docker-compose.yml logs migrate | tail -5
+docker compose -f deploy/cluster/docker-compose.yml exec mysql \
   mysql -ujt808 -pjt808 jt808 -e \
   "select gateway_id,status from gateway_nodes; select node_id,status from media_nodes; select node_id,status from attachment_nodes;"
 ```
@@ -337,14 +337,14 @@ docker build -f build/Dockerfile.client -t fakeyanss/jt808-client-go:local .
 
 #### 连接集群网关
 
-与 `deploy/docker-compose.cluster.yml` 在同一网络时，用服务名与容器端口即可，镜像默认配置已经指向它：
+与 `deploy/cluster/docker-compose.yml` 在同一网络时，用服务名与容器端口即可，镜像默认配置已经指向它：
 
 ```sh
 docker run --rm --network jt808-cluster_default \
   fakeyanss/jt808-client-go:local -industry-reports
 ```
 
-`jt808-cluster_default` 由集群 compose 顶层 `name: jt808-cluster` 创建；集群换了项目名时替换成对应网络。终端模拟器已并入集群冒烟覆盖文件 `deploy/docker-compose.cluster-smoke.yml`，随集群一起启动（由 `make smoke-cluster` / `scripts/smoke-cluster.sh` 使用）；单独试跑可继续用上面的 `docker run`，默认常驻发心跳与位置，加 `-logout` 可注册后注销退出。
+`jt808-cluster_default` 由集群 compose 顶层 `name: jt808-cluster` 创建；集群换了项目名时替换成对应网络。终端模拟器已并入集群冒烟覆盖文件 `deploy/smoketest/docker-compose.cluster-smoke.yml`，随集群一起启动（由 `make smoke-cluster` / `scripts/smoke-cluster.sh` 使用）；单独试跑可继续用上面的 `docker run`，默认常驻发心跳与位置，加 `-logout` 可注册后注销退出。
 
 #### 外挂配置与参数透传
 

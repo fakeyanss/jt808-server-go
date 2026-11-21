@@ -95,8 +95,8 @@ bad() { echo "FAIL: $*"; FAIL=$((FAIL + 1)); }
 
 compose() {
   $COMPOSE_BIN --project-name "$PROJECT" \
-    -f "$ROOT/deploy/docker-compose.cluster.yml" \
-    -f "$ROOT/deploy/docker-compose.cluster-smoke.yml" "$@"
+    -f "$ROOT/deploy/cluster/docker-compose.yml" \
+    -f "$ROOT/deploy/smoketest/docker-compose.cluster-smoke.yml" "$@"
 }
 export JT808_SMOKE_IMAGE=$IMAGE
 export JT808_SMOKE_CONFIG_DIR=$CFG_DIR
@@ -276,7 +276,7 @@ echo "smoke-cluster: work dir $WORK"
 sed -E \
   -e 's|logLevel: "INFO"|logLevel: "DEBUG"|' \
   -e 's|logFile: "[^"]*"|logFile: "jt-signal-1.log"|' \
-  "$ROOT/deploy/docker/cluster/signal.yaml" >"$CFG_DIR/signal-1.yaml"
+  "$ROOT/deploy/cluster/signal.yaml" >"$CFG_DIR/signal-1.yaml"
 
 sed -E \
   -e 's|nodeId: "gateway-1"|nodeId: "gateway-2"|' \
@@ -284,7 +284,7 @@ sed -E \
   -e 's|addr: "0.0.0.0:9106"|addr: "0.0.0.0:9116"|' \
   -e 's|logLevel: "INFO"|logLevel: "DEBUG"|' \
   -e 's|logFile: "[^"]*"|logFile: "jt-signal-2.log"|' \
-  "$ROOT/deploy/docker/cluster/signal.yaml" >"$CFG_DIR/signal-2.yaml"
+  "$ROOT/deploy/cluster/signal.yaml" >"$CFG_DIR/signal-2.yaml"
 
 if [ "${JT808_SMOKE_SKIP_BUILD:-0}" != "1" ]; then
   build_args=()

@@ -1,5 +1,5 @@
 # 模拟终端镜像的默认配置。
-# 默认连集群形态的网关服务名 jt-signal（deploy/docker-compose.cluster.yml），
+# 默认连集群形态的网关服务名 jt-signal（deploy/cluster/docker-compose.yml），
 # 宿主机运行时请挂载自己的配置覆盖 remoteAddr。
 log:
   consoleEnable: true
