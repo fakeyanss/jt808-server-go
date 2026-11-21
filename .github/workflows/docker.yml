@@ -20,6 +20,7 @@ permissions:
 
 env:
   IMAGE_NAME: fakeyanss/jt808-server-go
+  CLIENT_IMAGE_NAME: fakeyanss/jt808-client-go
 
 jobs:
   prepare:
@@ -29,6 +30,7 @@ jobs:
       publish: ${{ steps.meta.outputs.publish }}
       version: ${{ steps.meta.outputs.version }}
       tags: ${{ steps.meta.outputs.tags }}
+      client_tags: ${{ steps.meta.outputs.client_tags }}
       build_time: ${{ steps.meta.outputs.build_time }}
       skip_reason: ${{ steps.meta.outputs.skip_reason }}
     steps:
@@ -105,14 +107,17 @@ jobs:
           fi
 
           tags="${IMAGE_NAME}:${version}"
+          client_tags="${CLIENT_IMAGE_NAME}:${version}"
           if [ "$publish" = "true" ]; then
             tags="${tags},${IMAGE_NAME}:latest"
+            client_tags="${client_tags},${CLIENT_IMAGE_NAME}:latest"
           fi
 
           {
             echo "publish=${publish}"
             echo "version=${version}"
             echo "tags=${tags}"
+            echo "client_tags=${client_tags}"
             echo "build_time=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
             echo "skip_reason=${skip_reason}"
           } >> "$GITHUB_OUTPUT"
@@ -146,10 +151,28 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+      - name: Build multi-arch client image (no push)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./build/Dockerfile.client
+          platforms: linux/amd64,linux/arm64
+          push: false
+          tags: ${{ needs.prepare.outputs.client_tags }}
+          build-args: |
+            VERSION=${{ needs.prepare.outputs.version }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.version=${{ needs.prepare.outputs.version }}
+            org.opencontainers.image.revision=${{ github.sha }}
+          cache-from: type=gha,scope=client
+          cache-to: type=gha,mode=max,scope=client
+
       - name: Summary
         run: |
           echo "publish: skipped - ${{ needs.prepare.outputs.skip_reason }}"
-          echo "built tags (not pushed): ${{ needs.prepare.outputs.tags }}"
+          echo "server built tags (not pushed): ${{ needs.prepare.outputs.tags }}"
+          echo "client built tags (not pushed): ${{ needs.prepare.outputs.client_tags }}"
 
   publish:
     name: publish to Docker Hub
@@ -204,11 +227,30 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+      - name: Build and optionally push client
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./build/Dockerfile.client
+          platforms: linux/amd64,linux/arm64
+          push: ${{ steps.creds.outputs.enabled == 'true' }}
+          tags: ${{ needs.prepare.outputs.client_tags }}
+          build-args: |
+            VERSION=${{ needs.prepare.outputs.version }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.version=${{ needs.prepare.outputs.version }}
+            org.opencontainers.image.revision=${{ github.sha }}
+          cache-from: type=gha,scope=client
+          cache-to: type=gha,mode=max,scope=client
+
       - name: Summary
         run: |
           if [ "${{ steps.creds.outputs.enabled }}" = "true" ]; then
-            echo "pushed: ${{ needs.prepare.outputs.tags }}"
+            echo "pushed server: ${{ needs.prepare.outputs.tags }}"
+            echo "pushed client: ${{ needs.prepare.outputs.client_tags }}"
           else
             echo "push: skipped - dockerhub environment credentials are missing"
-            echo "built tags (not pushed): ${{ needs.prepare.outputs.tags }}"
+            echo "server built tags (not pushed): ${{ needs.prepare.outputs.tags }}"
+            echo "client built tags (not pushed): ${{ needs.prepare.outputs.client_tags }}"
           fi
