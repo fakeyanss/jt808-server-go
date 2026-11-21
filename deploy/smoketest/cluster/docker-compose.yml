@@ -13,7 +13,7 @@ services:
   jt808-client:
     image: fakeyanss/jt808-client-go:latest
     build:
-      context: ../..
+      context: ../../..
       dockerfile: build/Dockerfile.client
       args:
         VERSION: local
