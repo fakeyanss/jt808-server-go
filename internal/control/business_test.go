@@ -53,7 +53,7 @@ func newTestBlob(t *testing.T) *storage.SharedVolume {
 func registerTestDevice(t *testing.T, phone string) {
 	t.Helper()
 	ctx := context.Background()
-	require.NoError(t, database.Default().Devices.Upsert(ctx, &domain.Device{Phone: phone, AuthCode: "AUTH"}))
+	require.NoError(t, database.Default().Devices.Upsert(ctx, &domain.Device{Phone: phone}))
 	t.Cleanup(func() { _ = database.Default().Devices.DeleteByPhone(ctx, phone) })
 }
 

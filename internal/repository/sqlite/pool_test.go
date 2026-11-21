@@ -53,7 +53,7 @@ func TestReadPoolRejectsWrites(t *testing.T) {
 		require.NoError(t, err)
 		_, err = conn.ExecContext(ctx,
 			`INSERT INTO devices (phone, id, plate, keepalive_ms, version_desc, protocol_version,
-				auth_code, imei, software_version, updated_at) VALUES ('1', 'D', 'P', 1, 1, 1, 'A', '', '', 1)`)
+				imei, software_version, updated_at) VALUES ('1', 'D', 'P', 1, 1, 1, '', '', 1)`)
 		require.Error(t, err)
 		require.Contains(t, err.Error(), "readonly")
 		require.NoError(t, conn.Close())
@@ -74,7 +74,7 @@ func TestReadPoolNotBlockedByWriter(t *testing.T) {
 	require.NoError(t, err)
 	_, err = tx.ExecContext(ctx,
 		`INSERT INTO devices (phone, id, plate, keepalive_ms, version_desc, protocol_version,
-			auth_code, imei, software_version, updated_at) VALUES ('1', 'D', 'P', 1, 1, 1, 'A', '', '', 1)`)
+			imei, software_version, updated_at) VALUES ('1', 'D', 'P', 1, 1, 1, '', '', 1)`)
 	require.NoError(t, err)
 
 	readCtx, cancel := context.WithTimeout(ctx, 2*time.Second)

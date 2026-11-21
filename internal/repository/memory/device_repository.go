@@ -103,12 +103,11 @@ func (cache *memoryDeviceRepository) SaveRegistration(_ context.Context, d *doma
 	existing.ID = d.ID
 	existing.VersionDesc = d.VersionDesc
 	existing.ProtocolVersion = d.ProtocolVersion
-	existing.AuthCode = d.AuthCode
 	return nil
 }
 
 // SaveAuthState 只更新 0x0102 拥有的在线状态与终端信息。
-// 档案不存在时返回 ErrDeviceNotFound，由管控 409 让网关有界重投注册事件。
+// 档案不存在时返回 ErrDeviceNotFound。
 func (cache *memoryDeviceRepository) SaveAuthState(_ context.Context, d *domain.Device) error {
 	if d == nil || d.Phone == "" {
 		return repository.ErrDeviceNotFound

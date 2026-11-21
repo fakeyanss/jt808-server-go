@@ -22,7 +22,7 @@ type deviceRepository struct {
 
 const (
 	deviceStaticColumns = `phone, id, plate, keepalive_ms, version_desc, protocol_version,
-		auth_code, imei, software_version, updated_at`
+		imei, software_version, updated_at`
 
 	// 鉴权只写终端信息（运行时在线态不落库，由各进程 runtime 注册表持有）。
 	deviceAuthStateUpdateSQL = `UPDATE devices
@@ -38,7 +38,6 @@ type deviceRow struct {
 	keepaliveMS     int64
 	versionDesc     int16
 	protocolVersion int16
-	authCode        string
 	imei            string
 	softwareVersion string
 	updatedAt       int64
@@ -52,7 +51,6 @@ func newDeviceRow(d *domain.Device) deviceRow {
 		keepaliveMS:     d.Keepalive.Milliseconds(),
 		versionDesc:     int16(d.VersionDesc),
 		protocolVersion: int16(d.ProtocolVersion),
-		authCode:        d.AuthCode,
 		imei:            d.IMEI,
 		softwareVersion: d.SoftwareVersion,
 		updatedAt:       time.Now().UnixMilli(),
@@ -62,7 +60,7 @@ func newDeviceRow(d *domain.Device) deviceRow {
 func (r deviceRow) args() []any {
 	return []any{
 		r.phone, r.id, r.plate, r.keepaliveMS, r.versionDesc, r.protocolVersion,
-		r.authCode, r.imei, r.softwareVersion, r.updatedAt,
+		r.imei, r.softwareVersion, r.updatedAt,
 	}
 }
 
@@ -75,7 +73,6 @@ func (r deviceRow) device() *domain.Device {
 		Keepalive:       time.Duration(r.keepaliveMS) * time.Millisecond,
 		VersionDesc:     model.VersionType(r.versionDesc),
 		ProtocolVersion: uint8(r.protocolVersion),
-		AuthCode:        r.authCode,
 		IMEI:            r.imei,
 		SoftwareVersion: r.softwareVersion,
 	}
@@ -85,7 +82,7 @@ func scanDeviceRow(scanner interface{ Scan(...any) error }) (*domain.Device, err
 	var r deviceRow
 	if err := scanner.Scan(
 		&r.phone, &r.id, &r.plate, &r.keepaliveMS, &r.versionDesc, &r.protocolVersion,
-		&r.authCode, &r.imei, &r.softwareVersion, &r.updatedAt,
+		&r.imei, &r.softwareVersion, &r.updatedAt,
 	); err != nil {
 		return nil, err
 	}
@@ -172,7 +169,7 @@ func (r *deviceRepository) SaveRegistration(ctx context.Context, device *domain.
 	stmt := r.store.stmts.UpsertDeviceRegistration()
 	if _, err := r.store.db.ExecContext(ctx, stmt,
 		device.Phone, device.ID, device.Plate, keepalive.Milliseconds(),
-		int16(device.VersionDesc), int16(device.ProtocolVersion), device.AuthCode,
+		int16(device.VersionDesc), int16(device.ProtocolVersion),
 		time.Now().UnixMilli(),
 	); err != nil {
 		return fmt.Errorf("save device registration %s: %w", device.Phone, err)

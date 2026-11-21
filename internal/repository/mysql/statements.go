@@ -14,7 +14,7 @@ var _ sqlcore.Statements = statements{}
 func Statements() sqlcore.Statements { return statements{} }
 
 const deviceStaticColumns = `phone, id, plate, keepalive_ms, version_desc, protocol_version,
-	auth_code, imei, software_version, updated_at`
+	imei, software_version, updated_at`
 
 const attachmentColumns = `source, phone, alarm_no, file_name, terminal_id, alarm_sign, alarm_serial,
 	file_type, total_size, received_bytes, watermark, staging_path, staging_base, ranges, segments,
@@ -29,22 +29,22 @@ func (statements) SchemaMigrationsTableExistsQuery() string {
 
 func (statements) UpsertDevice() string {
 	return `INSERT INTO devices (` + deviceStaticColumns + `)
-	VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 	ON DUPLICATE KEY UPDATE
 		id = VALUES(id), plate = VALUES(plate), keepalive_ms = VALUES(keepalive_ms),
 		version_desc = VALUES(version_desc), protocol_version = VALUES(protocol_version),
-		auth_code = VALUES(auth_code), imei = VALUES(imei),
+		imei = VALUES(imei),
 		software_version = VALUES(software_version), updated_at = VALUES(updated_at)`
 }
 
 func (statements) UpsertDeviceRegistration() string {
 	return `INSERT INTO devices (phone, id, plate, keepalive_ms, version_desc,
-		protocol_version, auth_code, imei, software_version, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, '', '', ?)
+		protocol_version, imei, software_version, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, '', '', ?)
 		ON DUPLICATE KEY UPDATE
 			id = VALUES(id), plate = VALUES(plate),
 			version_desc = VALUES(version_desc), protocol_version = VALUES(protocol_version),
-			auth_code = VALUES(auth_code), updated_at = VALUES(updated_at)`
+			updated_at = VALUES(updated_at)`
 }
 
 func (statements) UpsertDeviceParams() string {

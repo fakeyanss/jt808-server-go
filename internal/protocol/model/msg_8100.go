@@ -51,7 +51,6 @@ func (m *Msg8100) GenOutgoing(incoming JT808Msg) error {
 	}
 	m.AnswerSerialNumber = in.Header.SerialNumber
 	m.Result = 0
-	m.AuthCode = "AuthCode" // 初始值，在后续处理中根据id重写
 
 	m.Header = in.Header
 	m.Header.MsgID = 0x8100

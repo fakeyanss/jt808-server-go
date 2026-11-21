@@ -49,13 +49,13 @@ go list -deps ./cmd/jt-signal ./cmd/jt-media ./cmd/jt-attachment \
 | `internal/business/` | 管控业务半边：注册/鉴权落库、定位报警、行业上报、多媒体与附件元数据 | 只依赖 `repository` 接口；由 control 调用或单机注入 |
 | `internal/server/` | TCP/UDP 接入、会话表、可靠重传、下行 `Send` | 通过 `protocol.ProcessorDeps` 注入依赖 |
 | `internal/control/` | 集群控制面、上行事件消费、outbox、媒体与附件调度、节点与会话目录、FTP 任务 | 唯一连业务库的角色 |
-| `internal/controlhttp/` | control 侧内部 HTTP 入口：上行事件、设备档案查询、节点注册/心跳、FTP 登录、进度与切片上报 | 只由 control 装配；路径常量取自 `internalapi` |
+| `internal/controlhttp/` | control 侧内部 HTTP 入口：上行事件、节点注册/心跳、FTP 登录、进度与切片上报 | 只由 control 装配；路径常量取自 `internalapi` |
 | `internal/uplink/` | 网关侧上行出口：HTTP 投递、可靠性分类与重投 | 不承载 control 侧入口 |
 | `internal/downlinkhttp/` | control → 网关下行 HTTP 的 client、router 与 server | 与 `uplink` 对称，不混入上行逻辑 |
 | `internal/internalapi/` | 服务间内部 HTTP 的路径常量与上行事件信封（`/internal/v1/*`） | 只描述线上契约，不对公网暴露，不放请求处理 |
 | `internal/api/` | 对外管理面 HTTP（`/api/*`）：设备、位置、下行、媒体/附件/播放接口 | 路由表只做声明；handler 按资源分文件，请求结构、校验与处理分离；仓储由装配层注入 |
 | `internal/adminapi/` | 管理面 HTTP：健康/就绪/指标/会话/历史 | `Dependencies` 显式注入 |
-| `internal/contracts/` | 跨进程最小信封：`UplinkSink`、`Downlink`、`AuthProvider`、终端应答 | 不再承载媒体、附件与对象存储类型 |
+| `internal/contracts/` | 跨进程最小信封：`UplinkSink`、`Downlink`、终端应答 | 不再承载媒体、附件与对象存储类型 |
 | `internal/contracts/media/` | 媒体端点、租约、`MediaAllocator`、`MediaReader` 与调度错误码 | 只放媒体领域契约 |
 | `internal/contracts/attachment/` | 附件端点、租约、`AttachmentAllocator`、进度与 FTP 登录错误 | 只放附件领域契约 |
 | `internal/repository/` | 持久化契约：按领域拆分的 `XxxRepository` 接口、读写 DTO、哨兵错误、保留策略 | 接口唯一来源；不引入任何后端实现 |
@@ -105,7 +105,6 @@ go list -deps ./cmd/jt-signal ./cmd/jt-media ./cmd/jt-attachment \
 |---|---|---|
 | `contracts.UplinkSink` | `uplink.HTTPSink`（集群）、`control.LocalUplinkSink`（单机） | 协议内核投递上行事件 |
 | `contracts.Downlink` | `control` 的 outbox（`durable`/`memory`）或直连实现 | 业务 API |
-| `contracts.AuthProvider` | `control` 的本地/远程鉴权代理 | 网关注册鉴权 |
 | `contracts/media.MediaAllocator` | `control.RemoteMedia`、`control.LocalMedia` | 业务 API、自动上传 |
 | `contracts/attachment.AttachmentAllocator` | `control.RemoteAttachment`、`control.LocalAttachment` | 业务 API、自动上传 |
 | `playback.PlaybackLibrary` | `media.Library` | 业务 API、control 停机释放 |
