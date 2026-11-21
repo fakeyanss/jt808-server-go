@@ -1,6 +1,6 @@
 # 集群终端级冒烟的 compose 覆盖文件，仅由 make smoke-cluster（scripts/smoke-cluster.sh）使用。
 #
-# 在 deploy/docker-compose.cluster.yml 基础上：
+# 在 deploy/cluster/docker-compose.yml 基础上：
 #   - 把 jt808 角色镜像替换成本地构建的冒烟镜像（不重新 tag latest）；
 #   - 用脚本生成的 1 号网关配置覆盖 jt-signal；
 #   - 增加 2 号网关 jt-signal-2，用于验证下行按目录路由与会话归属转移；
@@ -13,7 +13,7 @@ services:
   jt808-client:
     image: fakeyanss/jt808-client-go:latest
     build:
-      context: ..
+      context: ../..
       dockerfile: build/Dockerfile.client
       args:
         VERSION: local
